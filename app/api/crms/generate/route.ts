@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server"
 import fs from "fs"
 
-const OPENROUTER_KEY = process.env.OPENROUTER_API_KEY || "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"
+const OPENROUTER_KEY = process.env.OPENROUTER_API_KEY || ""
 const MODEL = "anthropic/claude-sonnet-4-5"
 const DATA_DIR = "/Users/ryanlarocca/.openclaw/workspace/PROJECTS/comprehensive-relationship-management/data"
 const PREFS_FILE = `${DATA_DIR}/modality_prefs.json`
