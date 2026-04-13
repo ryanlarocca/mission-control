@@ -7,7 +7,7 @@ import { cn } from "@/lib/utils"
 import {
   Home, Activity, Calendar, MessageSquare, Terminal, Bot, Monitor,
   FileText, Zap, BarChart2, TrendingUp, Search, Dumbbell, FolderKanban,
-  Brain, Menu, X, Bug,
+  Brain, Menu, X, Bug, Users,
 } from "lucide-react"
 
 const navGroups = [
@@ -24,6 +24,7 @@ const navGroups = [
     label: "Real Estate",
     items: [
       { href: "/pipeline", label: "Pipeline", icon: Home },
+      { href: "/relationships", label: "Relationships", icon: Users },
       { href: "/redfin", label: "Redfin Search", icon: Search },
     ],
   },
