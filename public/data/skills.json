@@ -1,0 +1,74 @@
+{
+  "skills": [
+    {
+      "id": "coi-outreach",
+      "name": "COI Outreach",
+      "description": "Daily Circle of Influence outreach. A/B/C tier cadence (30/60/90 days). Sends via iMessage→SMS fallback or email.",
+      "status": "active",
+      "triggerType": "cron",
+      "triggerDetail": "Daily at 8:00 AM M-F",
+      "lastRun": "2026-03-31T08:00:00",
+      "scriptPath": "/ACTIVE_SKILLS/COI_OUTREACH/coi_outreach.py"
+    },
+    {
+      "id": "redfin-scan",
+      "name": "Redfin Fixer Scan",
+      "description": "Nightly scan of 18 South Bay regions for fixer-upper SFR listings. Scores via Claude vision. Auto-adds 7.0+ to sheet.",
+      "status": "active",
+      "triggerType": "cron",
+      "triggerDetail": "Nightly at 3:00 AM M-F",
+      "lastRun": "2026-03-31T03:00:00",
+      "scriptPath": "/ACTIVE_SKILLS/REDFIN_SKILL/redfin-scan/scripts/redfin-scan.py"
+    },
+    {
+      "id": "redfin-outreach",
+      "name": "Redfin Agent Outreach",
+      "description": "Daily outreach to listing agents from the Redfin Fixer sheet. Checks property status via Firecrawl before sending.",
+      "status": "active",
+      "triggerType": "cron",
+      "triggerDetail": "Daily at 9:00 AM M-F",
+      "lastRun": "2026-03-31T09:00:00",
+      "scriptPath": "/ACTIVE_SKILLS/REDFIN_SKILL/redfin-outreach-approval.py.v3"
+    },
+    {
+      "id": "agent-email",
+      "name": "Agent Email Campaign",
+      "description": "Drafts 50 Gmail outreach emails per day to real estate agents. Manual approval before send.",
+      "status": "active",
+      "triggerType": "cron",
+      "triggerDetail": "Daily at 9:00 AM M-F",
+      "lastRun": "2026-03-31T09:00:00",
+      "scriptPath": "/ACTIVE_SKILLS/AGENT_EMAIL/draft/scripts/draft_batch.py"
+    },
+    {
+      "id": "lead-tracker",
+      "name": "Lead Tracker",
+      "description": "Monitors inbound leads from Google Ads and direct mail. Auto-logs to Lead Tracker sheet.",
+      "status": "active",
+      "triggerType": "event",
+      "triggerDetail": "Triggered on inbound SMS/form submission",
+      "lastRun": "2026-03-30T14:22:00",
+      "scriptPath": "/ACTIVE_SKILLS/LEAD_TRACKER"
+    },
+    {
+      "id": "calendar-skill",
+      "name": "Calendar Skill",
+      "description": "Screenshot-to-calendar event. Parse event details from an image and create a Google Calendar entry.",
+      "status": "active",
+      "triggerType": "manual",
+      "triggerDetail": "On demand — send screenshot to Thadius",
+      "lastRun": "2026-03-28T10:00:00",
+      "scriptPath": "/ACTIVE_SKILLS/CALENDAR_SKILL"
+    },
+    {
+      "id": "coi-addition",
+      "name": "COI Addition",
+      "description": "Add a new contact to the Book of Business sheet via Thadius. Normalizes phone/email, assigns tier.",
+      "status": "active",
+      "triggerType": "manual",
+      "triggerDetail": "On demand — message Thadius",
+      "lastRun": "2026-03-29T16:45:00",
+      "scriptPath": "/ACTIVE_SKILLS/COI_ADDITION"
+    }
+  ]
+}

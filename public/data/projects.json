@@ -1,0 +1,79 @@
+{
+  "version": "v0.1",
+  "lastUpdated": "2026-03-31",
+  "projects": [
+    {
+      "id": "mission-control",
+      "title": "Mission Control",
+      "status": "under-construction",
+      "description": "Main dashboard app. UI redesign pass in progress.",
+      "workspacePath": "/PROJECTS/mission-control",
+      "dateStarted": "2026-03-01",
+      "version": "v0.1",
+      "updates": [
+        { "version": "v0.1", "date": "2026-03-31", "note": "Initial UI redesign pass — Projects, Memory, Skills, Pipeline tabs." }
+      ]
+    },
+    {
+      "id": "redfin-automation",
+      "title": "Redfin Fixer Automation",
+      "status": "under-construction",
+      "description": "Nightly cron scan + agent outreach pipeline. Skip-all deferral fixed.",
+      "workspacePath": "/ACTIVE_SKILLS/REDFIN_SKILL",
+      "dateStarted": "2026-02-15",
+      "version": "v3.1",
+      "updates": [
+        { "version": "v3.1", "date": "2026-03-31", "note": "Fixed skip-all deferral, added --mark-contacted, fixed $$ price bug." },
+        { "version": "v3.0", "date": "2026-03-15", "note": "SMS fallback, Firecrawl status checks, consolidation by phone." }
+      ]
+    },
+    {
+      "id": "agent-email",
+      "title": "Agent Email Campaign",
+      "status": "under-construction",
+      "description": "Daily email drafting + send approval workflow.",
+      "workspacePath": "/ACTIVE_SKILLS/AGENT_EMAIL",
+      "dateStarted": "2026-03-10",
+      "version": "v2.0",
+      "updates": [
+        { "version": "v2.0", "date": "2026-03-26", "note": "Draft batch script, bounce cleanup, DNS validation." }
+      ]
+    },
+    {
+      "id": "coi-outreach",
+      "title": "COI Outreach System",
+      "status": "complete",
+      "description": "A/B/C tier daily outreach via iMessage. All 9 features implemented.",
+      "workspacePath": "/ACTIVE_SKILLS/COI_OUTREACH",
+      "dateCompleted": "2026-03-31",
+      "version": "v3.0",
+      "updates": [
+        { "version": "v3.0", "date": "2026-03-31", "note": "Added --delete, --rename, --set-phone, --set-email, --block, --offset, letter variants, name override, no-contact grouping." }
+      ]
+    },
+    {
+      "id": "lrg-homes-website",
+      "title": "LRG Homes Website",
+      "status": "complete",
+      "description": "Marketing site deployed on Vercel. Google Ads conversion tracking live.",
+      "workspacePath": "/PROJECTS/lrg-homes-website",
+      "dateCompleted": "2026-03-20",
+      "version": "v1.2",
+      "updates": [
+        { "version": "v1.2", "date": "2026-03-20", "note": "AW conversion tracking, lead tunnel webhook, ngrok static domain." }
+      ]
+    },
+    {
+      "id": "physiq-api",
+      "title": "Physiq API",
+      "status": "under-construction",
+      "description": "Supabase backend for Physiq fitness app. Macro tracking live.",
+      "workspacePath": "/PROJECTS/physiq-api",
+      "dateStarted": "2026-02-01",
+      "version": "v1.3",
+      "updates": [
+        { "version": "v1.3", "date": "2026-03-27", "note": "Macro fixes (Sonnet), freeze partially fixed (dbOp retry), SW cache fixed." }
+      ]
+    }
+  ]
+}
