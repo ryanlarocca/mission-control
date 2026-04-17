@@ -6,55 +6,63 @@ const MODEL = "anthropic/claude-sonnet-4-5"
 const DATA_DIR = "/Users/ryanlarocca/.openclaw/workspace/PROJECTS/comprehensive-relationship-management/data"
 const PREFS_FILE = `${DATA_DIR}/modality_prefs.json`
 
-type Modality = "Direct" | "Collaborative" | "Check-in" | "Casual"
+type Modality = "Familiar" | "Reconnect" | "ColdReintro"
 
-const PROMPTS: Record<Modality, string> = {
-  Direct: `You are writing a short iMessage on behalf of Ryan LaRocca, a real estate investor in the Bay Area.
-Write a 1-2 sentence message to {name}, a Tier {tier} {category}.
-Be direct and deal-focused. If notes are available and relevant, reference something specific from them: {notes}
-If no notes or nothing relevant, ask if they've seen any interesting deals lately.
-Do NOT introduce Ryan by name — they already know him. No fluff, no sign-off, no emojis.`,
-
-  Collaborative: `You are writing a short iMessage on behalf of Ryan LaRocca, a real estate investor in the Bay Area.
-Write a 1-2 sentence message to {name}, a Tier {tier} {category}.
-Lead with a partnership angle — working together, finding deals together, or mutual benefit.
-If notes are available, reference something specific: {notes}
-If no notes, suggest connecting to find deals together.
-Do NOT introduce Ryan by name. No fluff, no sign-off, no emojis.`,
-
-  "Check-in": `You are writing a short iMessage on behalf of Ryan LaRocca, a real estate investor in the Bay Area.
-Write a 1-2 sentence message to {name}, a Tier {tier} {category}.
-Low-pressure, how's-business tone. If notes are available, reference something from their situation: {notes}
-If no notes, ask how the market's been treating them lately.
-Do NOT introduce Ryan by name. No fluff, no sign-off, no emojis.`,
-
-  Casual: `You are writing a short iMessage on behalf of Ryan LaRocca, a real estate investor in the Bay Area.
-Write a 1-2 sentence message to {name}, a Tier {tier} {category}.
-Warm and friendly, like a text from a friend. If notes have something personal or specific, reference it: {notes}
-If no notes, keep it simple — something like "Hey, been a minute, how's everything?"
-Do NOT introduce Ryan by name. No fluff, no sign-off, no emojis.`,
+const LEGACY_MODALITY_MAP: Record<string, Modality> = {
+  Direct:          "Reconnect",
+  Collaborative:   "Reconnect",
+  "Check-in":      "ColdReintro",
+  Casual:          "Familiar",
 }
 
-// COI-style fallback for contacts with no notes
-const COI_FALLBACK: Record<string, string[]> = {
-  A: [`Hey {first}! How are you?`, `Hey {first}, been thinking about you! What's new?`],
-  B: [
-    `Hey {first}, this is Ryan LaRocca — we connected before about buying off market property. Seeing anything good lately?`,
-    `Hey {first}, Ryan LaRocca here. I'm actively buying in the Bay Area right now — any interesting deals on your end?`,
-  ],
-  C: [
-    `Hey {first}, this is Ryan LaRocca with LRG Homes. I'm an investor looking for value-add SFR and multi-unit properties — ready to move fast on the right deal. Seen anything interesting?`,
-    `Hey {first}, Ryan LaRocca here. I buy fixers and multi-units throughout the Bay Area and move quickly. Have you come across anything that might be a fit?`,
-  ],
-  D: [
-    `Hey {first}, this is Ryan LaRocca — long time! Hoping to reconnect. What's new with you?`,
-    `Hey {first}, Ryan LaRocca here. It's been a while — would love to catch up whenever you have a minute.`,
-  ],
+function normalizeModality(m: unknown): Modality {
+  if (typeof m !== "string") return "Reconnect"
+  if (m === "Familiar" || m === "Reconnect" || m === "ColdReintro") return m
+  if (m === "Cold Reintro") return "ColdReintro"
+  return LEGACY_MODALITY_MAP[m] || "Reconnect"
+}
+
+const PROMPTS: Record<Modality, string> = {
+  Familiar: `You are writing a short iMessage on behalf of Ryan LaRocca, a real estate investor in the Bay Area.
+Write a 1-3 sentence message to {name}. Ryan knows this person well — first-name basis, casual tone.
+Reference something specific from these notes if relevant: {notes}
+The core ask: Ryan is looking for a project / deal. Work that in naturally.
+Do NOT introduce Ryan by full name. No sign-off, no emojis. Sound like a real text, not a template.`,
+
+  Reconnect: `You are writing a short iMessage on behalf of Ryan LaRocca, a real estate investor in the Bay Area.
+Write a 2-3 sentence message to {name}. Ryan has spoken to this person before but it's been a while.
+Open with "Hey {name}, it's Ryan LaRocca" and reference how they connected if notes suggest it: {notes}
+The core ask: Ryan is still actively buying and wants to know if they've seen anything interesting.
+No sign-off, no emojis. Sound like a real text between two professionals catching up.`,
+
+  ColdReintro: `You are writing a short iMessage on behalf of Ryan LaRocca, a real estate investor in the Bay Area.
+Write a 2-3 sentence message to {name}. Ryan doesn't really know this person — it's a reintroduction.
+Open with "Hey {name}, this is Ryan LaRocca" and briefly establish who he is (investor, buys fixers/value-add).
+If notes have any context, reference it: {notes}
+The ask should be soft: "are you still active in real estate?" or "have you come across anything interesting?"
+No sign-off, no emojis. Conversational but professional.`,
+}
+
+const FALLBACK: Record<Modality, string> = {
+  Familiar: `Hey {first}, hope you're doing well. I'm looking for a project right now — been seeing anything good lately?`,
+
+  Reconnect: `Hey {first}, it's Ryan LaRocca — we connected a while back about off-market deals.
+
+I'm still actively buying in the area — curious if anything interesting has crossed your desk lately?`,
+
+  ColdReintro: `Hey {first}, this is Ryan LaRocca — I had your contact saved from a while back and wanted to reintroduce myself.
+
+I'm an investor in the Bay Area buying fixers and value-add properties. Are you still active in real estate?`,
 }
 
 function readPrefs(): Record<string, { preferred_modality: Modality; last_used: string; count: number }> {
   try {
-    return JSON.parse(fs.readFileSync(PREFS_FILE, "utf8"))
+    const raw = JSON.parse(fs.readFileSync(PREFS_FILE, "utf8")) as Record<string, { preferred_modality: string; last_used: string; count: number }>
+    const migrated: Record<string, { preferred_modality: Modality; last_used: string; count: number }> = {}
+    for (const [k, v] of Object.entries(raw)) {
+      migrated[k] = { ...v, preferred_modality: normalizeModality(v.preferred_modality) }
+    }
+    return migrated
   } catch {
     return {}
   }
@@ -66,14 +74,25 @@ function savePrefs(prefs: Record<string, { preferred_modality: Modality; last_us
   } catch {}
 }
 
+function isBadFirstName(first: string): boolean {
+  if (!first) return true
+  if (first.length < 2) return true
+  if (/^agent$/i.test(first)) return true
+  return false
+}
+
 export async function POST(request: Request) {
   try {
-    const { name, phone, tier, category, modality, notes, hasNotes, savePreference } = await request.json()
+    const { name, phone, modality: rawModality, notes, hasNotes, savePreference } = await request.json()
 
-    const firstName = (name || "").split(" ")[0]
+    const firstName = (name || "").trim().split(/\s+/)[0] || ""
+    if (isBadFirstName(firstName)) {
+      return NextResponse.json({ error: "Bad contact data — fix name in sheet" }, { status: 400 })
+    }
 
-    // Save modality preference if requested
-    if (savePreference && phone && modality) {
+    const modality = normalizeModality(rawModality)
+
+    if (savePreference && phone) {
       const prefs = readPrefs()
       const norm = String(phone).replace(/\D/g, "").slice(-10)
       const existing = prefs[norm]
@@ -85,27 +104,21 @@ export async function POST(request: Request) {
       savePrefs(prefs)
     }
 
-    // No notes — return COI-style fallback variants (no Claude call)
     if (!hasNotes) {
-      const variants = COI_FALLBACK[tier] || COI_FALLBACK.C
+      const template = FALLBACK[modality]
       return NextResponse.json({
-        message: variants[0].replace(/{first}/g, firstName),
-        variants: variants.map(v => v.replace(/{first}/g, firstName)),
+        message: template.replace(/{first}/g, firstName),
         isFallback: true,
       })
     }
 
-    // Build prompt
-    const promptTemplate = PROMPTS[modality as Modality] || PROMPTS["Check-in"]
-    const prompt = promptTemplate
+    const prompt = PROMPTS[modality]
       .replace(/{name}/g, firstName)
-      .replace(/{tier}/g, tier || "C")
-      .replace(/{category}/g, category || "Agent")
       .replace(/{notes}/g, notes || "No notes available.")
 
     const body = JSON.stringify({
       model: MODEL,
-      max_tokens: 100,
+      max_tokens: 120,
       messages: [{ role: "user", content: prompt }],
     })
 
@@ -133,7 +146,6 @@ export async function POST(request: Request) {
   }
 }
 
-// GET preferred modality for a phone number
 export async function GET(request: Request) {
   const { searchParams } = new URL(request.url)
   const phone = searchParams.get("phone")

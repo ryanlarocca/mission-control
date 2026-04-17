@@ -3,7 +3,7 @@ import { NextResponse } from "next/server"
 // Proxies to the CRMS FDA sidecar on localhost:5799
 // Sidecar handles iMessage → SMS fallback via AppleScript + chat.db error detection.
 
-const SIDECAR_URL = "http://localhost:5799"
+const SIDECAR_URL = process.env.SIDECAR_URL || "http://localhost:5799"
 const SIDECAR_TIMEOUT = 35000 // 35s — iMessage send + 5s error check + SMS fallback
 
 export async function POST(request: Request) {

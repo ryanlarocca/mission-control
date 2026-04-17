@@ -5,7 +5,7 @@ import { NextResponse } from "next/server"
 // If the sidecar is not running, returns { enriched: false } gracefully —
 // the UI will still generate a message using existing notes.
 
-const SIDECAR_URL = "http://localhost:5799"
+const SIDECAR_URL = process.env.SIDECAR_URL || "http://localhost:5799"
 const SIDECAR_TIMEOUT = 20000 // 20s — enrichment can take a moment
 
 export async function POST(request: Request) {
