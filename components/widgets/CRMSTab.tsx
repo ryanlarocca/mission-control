@@ -1,43 +1,94 @@
 "use client"
 
-import { useState, useEffect, useRef, Component, ReactNode } from "react"
+import { useState, useEffect, useRef, useMemo, Component, ReactNode } from "react"
 import {
   Send, RefreshCw, SkipForward, Phone, Loader2,
   UserCheck, User, Wrench, TrendingUp, Home, Building2,
-  MessageSquare, AlertTriangle,
+  MessageSquare, AlertTriangle, CheckCircle2,
 } from "lucide-react"
 import type { LucideIcon } from "lucide-react"
+import { ContactDetailModal } from "./ContactDetailModal"
+import type { TouchesSummary } from "./ContactDetailModal"
 
 // ══════════════════════════════════════════════════════════════════════════════
 // TYPES
 // ══════════════════════════════════════════════════════════════════════════════
 
-type Category = "Agent" | "Personal" | "Vendor" | "Investor" | "Seller" | "Property Manager"
-type Tier     = "A" | "B" | "C" | "D" | "E"
-type Modality = "Familiar" | "Reconnect" | "ColdReintro"
+type ContactType = "Agent" | "Personal" | "Vendor" | "PM" | "Investor" | "Seller"
+type Tier = "A" | "B" | "C" | "D" | "E"
+type Modality =
+  | "Familiar" | "Reconnect" | "ColdReintro"
+  | "Portfolio" | "CatchUp" | "CheckIn"
 
 const MODALITY_LABEL: Record<Modality, string> = {
   Familiar:    "Familiar",
   Reconnect:   "Reconnect",
   ColdReintro: "Cold Reintro",
+  Portfolio:   "Portfolio",
+  CatchUp:     "Catch Up",
+  CheckIn:     "Check In",
 }
-const MODALITIES: Modality[] = ["Familiar", "Reconnect", "ColdReintro"]
+
+const MODALITIES_BY_TYPE: Record<ContactType, Modality[]> = {
+  Agent:    ["Familiar", "Reconnect", "ColdReintro"],
+  Vendor:   ["Familiar", "Reconnect", "ColdReintro"],
+  Investor: ["Familiar", "Reconnect", "ColdReintro"],
+  Seller:   ["Familiar", "Reconnect", "ColdReintro"],
+  PM:       ["Portfolio", "Reconnect", "ColdReintro"],
+  Personal: ["CatchUp", "CheckIn", "Reconnect"],
+}
+
+const DEFAULT_MODALITY: Record<ContactType, Modality> = {
+  Agent:    "Reconnect",
+  Vendor:   "Reconnect",
+  Investor: "Reconnect",
+  Seller:   "Reconnect",
+  PM:       "Portfolio",
+  Personal: "CheckIn",
+}
+
 const TIERS: Tier[] = ["A", "B", "C", "D", "E"]
 
-function coerceModality(m: unknown): Modality {
-  if (m === "Familiar" || m === "Reconnect" || m === "ColdReintro") return m
-  if (m === "Cold Reintro") return "ColdReintro"
-  if (m === "Casual") return "Familiar"
-  if (m === "Direct" || m === "Collaborative") return "Reconnect"
-  if (m === "Check-in") return "ColdReintro"
-  return "Reconnect"
+const TYPE_LABEL: Record<ContactType, string> = {
+  Agent: "Agent", Personal: "Personal", Vendor: "Vendor",
+  PM: "PM", Investor: "Investor", Seller: "Seller",
+}
+
+const TYPE_LABEL_PLURAL: Record<ContactType, string> = {
+  Agent: "Agents", Personal: "Personal", Vendor: "Vendors",
+  PM: "PMs", Investor: "Investors", Seller: "Sellers",
+}
+
+const ALL_TYPES: ContactType[] = ["Agent", "Vendor", "Personal", "PM", "Investor", "Seller"]
+
+function coerceType(t: unknown): ContactType {
+  if (typeof t !== "string") return "Agent"
+  if (t === "Property Manager") return "PM"
+  if (t === "Personal Contact") return "Personal"
+  if (ALL_TYPES.includes(t as ContactType)) return t as ContactType
+  return "Agent"
+}
+
+function coerceModality(m: unknown, type: ContactType): Modality {
+  const allowed = MODALITIES_BY_TYPE[type]
+  if (typeof m === "string") {
+    if ((allowed as string[]).includes(m)) return m as Modality
+    if (m === "Cold Reintro" && (allowed as string[]).includes("ColdReintro")) return "ColdReintro"
+    if (m === "Catch Up" && (allowed as string[]).includes("CatchUp")) return "CatchUp"
+    if (m === "Check In" && (allowed as string[]).includes("CheckIn")) return "CheckIn"
+    if (m === "Casual" && (allowed as string[]).includes("Familiar")) return "Familiar"
+    if ((m === "Direct" || m === "Collaborative") && (allowed as string[]).includes("Reconnect")) return "Reconnect"
+    if (m === "Check-in" && (allowed as string[]).includes("ColdReintro")) return "ColdReintro"
+  }
+  return DEFAULT_MODALITY[type]
 }
 
 interface CRMSContact {
   id:            string
   sheetRow:      number
   name:          string
-  category:      Category
+  category:      ContactType
+  type:          ContactType
   tier:          Tier
   phone:         string
   lastContact:   string
@@ -61,28 +112,40 @@ const tierStyle: Record<string, string> = {
   E: "bg-zinc-700/20 text-zinc-600 border-zinc-700/30",
 }
 
-const categoryColor: Record<string, string> = {
-  Agent:              "text-violet-400",
-  Personal:           "text-pink-400",
-  Vendor:             "text-orange-400",
-  Investor:           "text-blue-400",
-  Seller:             "text-emerald-400",
-  "Property Manager": "text-teal-400",
+const categoryColor: Record<ContactType, string> = {
+  Agent:    "text-violet-400",
+  Personal: "text-pink-400",
+  Vendor:   "text-orange-400",
+  Investor: "text-blue-400",
+  Seller:   "text-emerald-400",
+  PM:       "text-teal-400",
 }
 
-const categoryIcon: Record<string, LucideIcon> = {
-  Agent:              UserCheck,
-  Personal:           User,
-  Vendor:             Wrench,
-  Investor:           TrendingUp,
-  Seller:             Home,
-  "Property Manager": Building2,
+const categoryIcon: Record<ContactType, LucideIcon> = {
+  Agent:    UserCheck,
+  Personal: User,
+  Vendor:   Wrench,
+  Investor: TrendingUp,
+  Seller:   Home,
+  PM:       Building2,
+}
+
+const categoryBadge: Record<ContactType, string> = {
+  Agent:    "bg-violet-500/15 text-violet-300 border-violet-500/30",
+  Personal: "bg-pink-500/15 text-pink-300 border-pink-500/30",
+  Vendor:   "bg-orange-500/15 text-orange-300 border-orange-500/30",
+  Investor: "bg-blue-500/15 text-blue-300 border-blue-500/30",
+  Seller:   "bg-emerald-500/15 text-emerald-300 border-emerald-500/30",
+  PM:       "bg-teal-500/15 text-teal-300 border-teal-500/30",
 }
 
 const modalityActive: Record<Modality, string> = {
   Familiar:    "bg-emerald-500/10 text-emerald-400 border-emerald-500/40",
   Reconnect:   "bg-blue-500/10 text-blue-400 border-blue-500/40",
   ColdReintro: "bg-amber-500/10 text-amber-400 border-amber-500/40",
+  Portfolio:   "bg-teal-500/10 text-teal-400 border-teal-500/40",
+  CatchUp:     "bg-pink-500/10 text-pink-400 border-pink-500/40",
+  CheckIn:     "bg-violet-500/10 text-violet-400 border-violet-500/40",
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -148,6 +211,28 @@ class CRMSErrorBoundary extends Component<{ children: ReactNode }, { hasError: b
 const SEND_TIMEOUT_MS = 30000
 const GENERATE_DEBOUNCE_MS = 300
 
+const DEFAULT_DAILY_TARGET: Record<ContactType, number> = {
+  Agent: 20, Vendor: 5, Personal: 5, PM: 2, Investor: 2, Seller: 1,
+}
+
+function formatAbsoluteDate(iso: string | null): string {
+  if (!iso) return "—"
+  const d = new Date(iso)
+  if (isNaN(d.getTime())) return "—"
+  return d.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })
+}
+
+function daysAgoHint(iso: string | null): string {
+  if (!iso) return ""
+  const d = new Date(iso)
+  if (isNaN(d.getTime())) return ""
+  const days = Math.floor((Date.now() - d.getTime()) / 86400000)
+  if (days < 0) return ""
+  if (days === 0) return "(today)"
+  if (days === 1) return "(1d ago)"
+  return `(${days}d ago)`
+}
+
 export function CRMSTab() {
   return (
     <CRMSErrorBoundary>
@@ -160,6 +245,7 @@ function CRMSTabInner() {
   // ── Data state ──
   const [contacts, setContacts]               = useState<CRMSContact[]>([])
   const [total, setTotal]                     = useState(0)
+  const [dailyTarget, setDailyTarget]         = useState<Record<ContactType, number>>(DEFAULT_DAILY_TARGET)
   const [loadingContacts, setLoadingContacts] = useState(true)
   const [contactsError, setContactsError]     = useState<string | null>(null)
 
@@ -170,6 +256,9 @@ function CRMSTabInner() {
   const [skipped, setSkipped]         = useState<Set<string>>(() => new Set(loadSession().skipped))
   const [mobileView, setMobileView]   = useState<"list" | "compose">("list")
   const [sendError, setSendError]     = useState<string | null>(null)
+  const [sendToast, setSendToast]     = useState<string | null>(null)
+  const [touchesByPhone, setTouchesByPhone] = useState<Record<string, TouchesSummary>>({})
+  const [detailPhone, setDetailPhone] = useState<string | null>(null)
 
   // ── Message state ──
   const [generatedMessages, setGeneratedMessages] = useState<Record<string, string>>({})
@@ -182,6 +271,29 @@ function CRMSTabInner() {
   // ── Refs for debounce + abort ──
   const generateAbortRef = useRef<AbortController | null>(null)
   const selectDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  function showSendToast(msg: string) {
+    if (toastTimerRef.current) clearTimeout(toastTimerRef.current)
+    setSendToast(msg)
+    toastTimerRef.current = setTimeout(() => setSendToast(null), 5000)
+  }
+
+  async function fetchTouches(phone: string) {
+    if (!phone || touchesByPhone[phone]) return
+    try {
+      const res = await fetch(`/api/crms/touches?phone=${encodeURIComponent(phone)}`, { cache: "no-store" })
+      const data = await res.json()
+      setTouchesByPhone(prev => ({
+        ...prev,
+        [phone]: {
+          count: data.count ?? 0,
+          lastSentAt: data.lastSentAt ?? null,
+          lastMessagePreview: data.lastMessagePreview ?? null,
+        },
+      }))
+    } catch {}
+  }
 
   // Persist session progress on change
   useEffect(() => { saveSession(sent, skipped) }, [sent, skipped])
@@ -191,6 +303,7 @@ function CRMSTabInner() {
     fetchContacts()
     return () => {
       if (selectDebounceRef.current) clearTimeout(selectDebounceRef.current)
+      if (toastTimerRef.current) clearTimeout(toastTimerRef.current)
       generateAbortRef.current?.abort()
     }
   }, []) // eslint-disable-line react-hooks/exhaustive-deps
@@ -202,14 +315,23 @@ function CRMSTabInner() {
       const res = await fetch("/api/crms/contacts")
       if (!res.ok) throw new Error()
       const data = await res.json()
-      const loaded: CRMSContact[] = data.contacts || []
+      const loaded: CRMSContact[] = (data.contacts || []).map((c: CRMSContact) => ({
+        ...c,
+        type: coerceType(c.type ?? c.category),
+        category: coerceType(c.type ?? c.category),
+      }))
       setContacts(loaded)
       setTotal(data.total || 0)
+      if (data.dailyTarget) setDailyTarget({ ...DEFAULT_DAILY_TARGET, ...data.dailyTarget })
+
       // Auto-select first contact not already sent/skipped
       const firstDue = loaded.find(c => !sent.has(c.id) && !skipped.has(c.id))
       if (firstDue) {
         setSelectedId(firstDue.id)
-        generate(firstDue, modality)
+        const initialMod = DEFAULT_MODALITY[firstDue.type]
+        setModality(initialMod)
+        generate(firstDue, initialMod)
+        fetchTouches(firstDue.phone)
       }
     } catch {
       setContactsError("Could not load contacts — check Sheets API / service account.")
@@ -236,7 +358,7 @@ function CRMSTabInner() {
           name:     contact.name,
           phone:    contact.phone,
           tier:     contact.tier,
-          category: contact.category,
+          category: contact.type,
           modality: mod,
           notes:    contact.notes,
           hasNotes: contact.hasNotes,
@@ -260,19 +382,25 @@ function CRMSTabInner() {
     setSelectedId(contact.id)
     setMobileView("compose")
     setSendError(null)
+    fetchTouches(contact.phone)
+
+    // If current modality isn't valid for this type, snap to type's default
+    let initialMod: Modality = (MODALITIES_BY_TYPE[contact.type] as string[]).includes(modality)
+      ? modality
+      : DEFAULT_MODALITY[contact.type]
+    setModality(initialMod)
 
     if (selectDebounceRef.current) clearTimeout(selectDebounceRef.current)
     selectDebounceRef.current = setTimeout(async () => {
-      let mod: Modality = modality
       try {
         const res = await fetch(`/api/crms/generate?phone=${encodeURIComponent(contact.phone)}`)
         const data = await res.json()
         if (data.preferred_modality) {
-          mod = coerceModality(data.preferred_modality)
-          setModality(mod)
+          initialMod = coerceModality(data.preferred_modality, contact.type)
+          setModality(initialMod)
         }
       } catch {}
-      generate(contact, mod)
+      generate(contact, initialMod)
     }, GENERATE_DEBOUNCE_MS)
   }
 
@@ -318,59 +446,62 @@ function CRMSTabInner() {
     }
   }
 
-  // ── Send: await the critical path; fire-and-forget the rest ──
-  async function handleSend() {
-    if (!selectedContact || actionPending) return
+  // ── Send: advance UI immediately; fire API calls in background ──
+  function handleSend() {
+    if (!selectedContact) return
     const message = getMessage(selectedContact)
     if (!message) return
 
-    setActionPending(true)
+    const contact = selectedContact
+    const mod = modality
     setSendError(null)
 
-    const contact = selectedContact
+    // Optimistic: mark sent and advance immediately
+    setSent(prev => new Set(prev).add(contact.id))
+    advanceSelection(contact.id)
+
+    // Fire send in background
     const controller = new AbortController()
     const timeout = setTimeout(() => controller.abort(), SEND_TIMEOUT_MS)
 
-    try {
-      const res = await fetch("/api/crms/send", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ phone: contact.phone, message }),
-        signal: controller.signal,
+    fetch("/api/crms/send", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ phone: contact.phone, message }),
+      signal: controller.signal,
+    })
+      .then(res => {
+        clearTimeout(timeout)
+        if (!res.ok) throw new Error(`send ${res.status}`)
+
+        fetch("/api/crms/log", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            name: contact.name, phone: contact.phone,
+            sheetRow: contact.sheetRow, modality: mod, message,
+            action: "sent", tier: contact.tier, category: contact.type,
+          }),
+        }).catch(() => {})
+
+        fetch("/api/crms/generate", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            name: contact.name, phone: contact.phone,
+            tier: contact.tier, category: contact.type,
+            modality: mod, notes: contact.notes, hasNotes: contact.hasNotes,
+            savePreference: true,
+          }),
+        }).catch(() => {})
       })
-      clearTimeout(timeout)
-      if (!res.ok) throw new Error(`send ${res.status}`)
-
-      fetch("/api/crms/log", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          name: contact.name, phone: contact.phone,
-          sheetRow: contact.sheetRow, modality, message,
-          action: "sent", tier: contact.tier, category: contact.category,
-        }),
-      }).catch(() => {})
-
-      fetch("/api/crms/generate", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          name: contact.name, phone: contact.phone,
-          tier: contact.tier, category: contact.category,
-          modality, notes: contact.notes, hasNotes: contact.hasNotes,
-          savePreference: true,
-        }),
-      }).catch(() => {})
-
-      setSent(prev => new Set(prev).add(contact.id))
-      advanceSelection(contact.id)
-    } catch (err) {
-      clearTimeout(timeout)
-      const aborted = (err as Error)?.name === "AbortError"
-      setSendError(aborted ? "Send timed out — try again or skip" : "Send failed — try again or skip")
-    } finally {
-      setActionPending(false)
-    }
+      .catch(err => {
+        clearTimeout(timeout)
+        const aborted = (err as Error)?.name === "AbortError"
+        const label = aborted ? "timed out" : "failed"
+        console.error(`Send to ${contact.name} ${label}:`, err)
+        showSendToast(`Send to ${contact.name} ${label}`)
+      })
   }
 
   async function handleSkip() {
@@ -384,7 +515,7 @@ function CRMSTabInner() {
         body: JSON.stringify({
           name: contact.name, phone: contact.phone,
           sheetRow: contact.sheetRow, modality, message: "",
-          action: "skipped", tier: contact.tier, category: contact.category,
+          action: "skipped", tier: contact.tier, category: contact.type,
         }),
       })
     } catch {}
@@ -428,7 +559,12 @@ function CRMSTabInner() {
     const next = remaining[0]
     if (!next) { setSelectedId(""); setMobileView("list"); return }
     setSelectedId(next.id)
-    generate(next, modality)
+    const nextMod: Modality = (MODALITIES_BY_TYPE[next.type] as string[]).includes(modality)
+      ? modality
+      : DEFAULT_MODALITY[next.type]
+    if (nextMod !== modality) setModality(nextMod)
+    generate(next, nextMod)
+    fetchTouches(next.phone)
   }
 
   function getMessage(contact: CRMSContact): string {
@@ -445,10 +581,32 @@ function CRMSTabInner() {
   const dueContacts     = contacts.filter(c => !sent.has(c.id) && !skipped.has(c.id))
   const selectedContact = dueContacts.find(c => c.id === selectedId) ?? null
 
+  // Per-type sent counts (for progress bar)
+  const sentByType = useMemo(() => {
+    const counts: Record<ContactType, number> = {
+      Agent: 0, Vendor: 0, Personal: 0, PM: 0, Investor: 0, Seller: 0,
+    }
+    for (const c of contacts) {
+      if (sent.has(c.id)) counts[c.type] = (counts[c.type] || 0) + 1
+    }
+    return counts
+  }, [contacts, sent])
+
+  const totalTarget = ALL_TYPES.reduce((s, t) => s + (dailyTarget[t] || 0), 0)
+  const totalSent = ALL_TYPES.reduce((s, t) => s + sentByType[t], 0)
+  const allDone = totalSent >= totalTarget && totalTarget > 0
+  const progressPct = totalTarget > 0 ? Math.min(100, Math.round((totalSent / totalTarget) * 100)) : 0
+
   const isGenerating   = generatingFor === selectedContact?.id
   const isEnriching    = enrichingFor  === selectedContact?.id
   const isChangingTier = tierChangingFor === selectedContact?.id
   const currentMessage = selectedContact ? getMessage(selectedContact) : ""
+  const touches        = selectedContact ? touchesByPhone[selectedContact.phone] : undefined
+  const detailContact  = detailPhone ? contacts.find(c => c.phone === detailPhone) ?? null : null
+
+  const availableModalities: Modality[] = selectedContact
+    ? MODALITIES_BY_TYPE[selectedContact.type]
+    : MODALITIES_BY_TYPE.Agent
 
   if (loadingContacts) {
     return (
@@ -471,6 +629,44 @@ function CRMSTabInner() {
   return (
     <div className="space-y-3">
 
+      {/* Progress bar */}
+      <div className="bg-zinc-900 border border-zinc-800 rounded-lg px-3 py-2.5 space-y-2">
+        <div className="flex items-center gap-3">
+          {allDone ? (
+            <div className="flex items-center gap-1.5 text-xs text-emerald-400 font-medium">
+              <CheckCircle2 className="w-3.5 h-3.5" />
+              Done for today
+            </div>
+          ) : (
+            <span className="text-xs text-zinc-300 font-medium">
+              {totalSent} / {totalTarget} done today
+            </span>
+          )}
+          <div className="flex-1 h-1.5 bg-zinc-800 rounded overflow-hidden">
+            <div
+              className={`h-full transition-all ${allDone ? "bg-emerald-500" : "bg-blue-500"}`}
+              style={{ width: `${progressPct}%` }}
+            />
+          </div>
+          <button onClick={fetchContacts} className="text-zinc-600 hover:text-zinc-400 transition-colors" title="Refresh">
+            <RefreshCw className="w-3.5 h-3.5" />
+          </button>
+        </div>
+        <div className="flex flex-wrap gap-x-3 gap-y-1 text-xs text-zinc-500">
+          {ALL_TYPES.map(t => {
+            const target = dailyTarget[t] || 0
+            if (target === 0) return null
+            const done = sentByType[t] || 0
+            const hit = done >= target
+            return (
+              <span key={t} className={hit ? "text-emerald-400" : ""}>
+                {TYPE_LABEL_PLURAL[t]}: {done}/{target}
+              </span>
+            )
+          })}
+        </div>
+      </div>
+
       {/* Header bar */}
       <div className="flex items-center gap-3 flex-wrap">
         <div className="bg-amber-500/10 border border-amber-500/20 rounded px-3 py-1.5">
@@ -484,9 +680,6 @@ function CRMSTabInner() {
             <p className="text-xs text-emerald-400 font-medium">{sent.size} sent this session</p>
           </div>
         )}
-        <button onClick={fetchContacts} className="text-zinc-600 hover:text-zinc-400 transition-colors ml-auto" title="Refresh">
-          <RefreshCw className="w-3.5 h-3.5" />
-        </button>
       </div>
 
       {dueContacts.length === 0 ? (
@@ -499,13 +692,16 @@ function CRMSTabInner() {
           {/* Left panel: contact list */}
           <div className={`sm:block sm:w-52 sm:shrink-0 sm:space-y-1 sm:max-h-[520px] sm:overflow-y-auto ${mobileView === "compose" ? "hidden" : "block space-y-1"}`}>
             {dueContacts.map(contact => {
-              const Icon     = categoryIcon[contact.category] ?? User
+              const Icon     = categoryIcon[contact.type] ?? User
               const isActive = contact.id === selectedContact?.id
               return (
-                <button
+                <div
                   key={contact.id}
+                  role="button"
+                  tabIndex={0}
                   onClick={() => handleSelectContact(contact)}
-                  className={`w-full text-left px-3 py-2.5 rounded-lg border transition-colors ${
+                  onKeyDown={e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); handleSelectContact(contact) } }}
+                  className={`w-full text-left px-3 py-2.5 rounded-lg border transition-colors cursor-pointer ${
                     isActive
                       ? "bg-zinc-800 border-zinc-600"
                       : "bg-zinc-900 border-zinc-800 hover:border-zinc-700"
@@ -515,7 +711,7 @@ function CRMSTabInner() {
                     <span className={`text-xs font-bold px-1 py-0.5 rounded border leading-none ${tierStyle[contact.tier] ?? tierStyle.C}`}>
                       {contact.tier}
                     </span>
-                    <Icon className={`w-3 h-3 shrink-0 ${categoryColor[contact.category] ?? "text-zinc-400"}`} />
+                    <Icon className={`w-3 h-3 shrink-0 ${categoryColor[contact.type] ?? "text-zinc-400"}`} />
                     {contact.status === "overdue" && (
                       <span className="ml-auto w-1.5 h-1.5 rounded-full bg-red-400 shrink-0" title="Overdue" />
                     )}
@@ -523,12 +719,19 @@ function CRMSTabInner() {
                       <span className="w-1.5 h-1.5 rounded-full bg-amber-400 shrink-0 ml-auto" title="Notes stale" />
                     )}
                   </div>
-                  <p className="text-xs font-medium text-zinc-200 truncate leading-snug">{contact.name}</p>
-                  <p className={`text-xs truncate leading-snug ${categoryColor[contact.category] ?? "text-zinc-400"}`}>
-                    {contact.category}
+                  <button
+                    type="button"
+                    onClick={e => { e.stopPropagation(); setDetailPhone(contact.phone) }}
+                    className="text-xs font-medium text-zinc-200 truncate leading-snug hover:text-emerald-400 hover:underline underline-offset-2 block text-left w-full"
+                    title="Open full contact detail"
+                  >
+                    {contact.name}
+                  </button>
+                  <p className={`text-xs truncate leading-snug ${categoryColor[contact.type] ?? "text-zinc-400"}`}>
+                    {TYPE_LABEL[contact.type]}
                   </p>
                   <p className="text-xs text-zinc-600 mt-0.5">{contact.lastContact}</p>
-                </button>
+                </div>
               )
             })}
           </div>
@@ -546,9 +749,16 @@ function CRMSTabInner() {
                   ← All contacts
                 </button>
                 <div className="flex items-center gap-2 flex-wrap mb-2">
-                  <p className="text-sm font-semibold text-zinc-100">{selectedContact.name}</p>
-                  <span className={`text-xs font-medium ${categoryColor[selectedContact.category] ?? "text-zinc-400"}`}>
-                    {selectedContact.category}
+                  <button
+                    type="button"
+                    onClick={() => setDetailPhone(selectedContact.phone)}
+                    className="text-sm font-semibold text-zinc-100 hover:text-emerald-400 hover:underline underline-offset-2"
+                    title="Open full contact detail"
+                  >
+                    {selectedContact.name}
+                  </button>
+                  <span className={`text-xs px-1.5 py-0.5 rounded border leading-none ${categoryBadge[selectedContact.type] ?? ""}`}>
+                    {TYPE_LABEL[selectedContact.type]}
                   </span>
                   <span className={`ml-auto text-xs px-1.5 py-0.5 rounded border leading-none ${
                     selectedContact.status === "overdue"
@@ -580,6 +790,31 @@ function CRMSTabInner() {
                   {isChangingTier && <Loader2 className="w-3 h-3 text-zinc-500 animate-spin ml-1" />}
                 </div>
 
+                {/* Structured fields */}
+                <div className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 mb-3 text-xs">
+                  <span className="text-zinc-600">Last contacted</span>
+                  <span className="text-zinc-300">
+                    {formatAbsoluteDate(selectedContact.lastContacted || null)}
+                    {selectedContact.lastContacted && (
+                      <span className="text-zinc-600 ml-1">{daysAgoHint(selectedContact.lastContacted)}</span>
+                    )}
+                  </span>
+                  <span className="text-zinc-600"># of touches</span>
+                  <span className="text-zinc-300">
+                    {touches ? touches.count : <span className="text-zinc-600">…</span>}
+                  </span>
+                  {touches?.lastMessagePreview && (
+                    <>
+                      <span className="text-zinc-600">Last message</span>
+                      <span className="text-zinc-400 italic leading-snug">
+                        &ldquo;{touches.lastMessagePreview}&rdquo;
+                        <span className="text-zinc-600 not-italic ml-1">{daysAgoHint(touches.lastSentAt)}</span>
+                      </span>
+                    </>
+                  )}
+                </div>
+
+                <p className="text-xs text-zinc-600 mb-1">Notes</p>
                 {selectedContact.hasNotes ? (
                   <div className="flex items-start gap-2">
                     <p className="text-xs text-zinc-500 leading-relaxed flex-1">{selectedContact.notes}</p>
@@ -612,7 +847,7 @@ function CRMSTabInner() {
               {/* Modality selector */}
               <div className="px-4 py-2.5 border-b border-zinc-800">
                 <div className="flex gap-2 flex-wrap">
-                  {MODALITIES.map(m => (
+                  {availableModalities.map(m => (
                     <button
                       key={m}
                       onClick={() => handleModalityChange(m)}
@@ -659,10 +894,10 @@ function CRMSTabInner() {
               <div className="px-4 py-3 border-t border-zinc-800 flex items-center gap-2">
                 <button
                   onClick={handleSend}
-                  disabled={actionPending || isGenerating || !currentMessage}
+                  disabled={isGenerating || !currentMessage}
                   className="flex items-center gap-1.5 text-xs text-emerald-400 hover:text-emerald-300 bg-emerald-500/10 border border-emerald-500/20 hover:border-emerald-500/40 px-3 py-1.5 rounded transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                 >
-                  {actionPending ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Send className="w-3.5 h-3.5" />}
+                  <Send className="w-3.5 h-3.5" />
                   Send
                 </button>
                 <button
@@ -690,6 +925,35 @@ function CRMSTabInner() {
             </div>
           )}
         </div>
+      )}
+
+      {sendToast && (
+        <div className="fixed bottom-4 right-4 z-50 bg-red-500/15 border border-red-500/40 text-red-300 text-xs px-3 py-2 rounded shadow-lg flex items-center gap-2 max-w-xs">
+          <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
+          <span className="flex-1">{sendToast}</span>
+          <button
+            onClick={() => setSendToast(null)}
+            className="text-red-400 hover:text-red-200 shrink-0"
+            aria-label="Dismiss"
+          >
+            ×
+          </button>
+        </div>
+      )}
+
+      {detailContact && (
+        <ContactDetailModal
+          contact={detailContact}
+          onClose={() => setDetailPhone(null)}
+          onSendToast={showSendToast}
+          onNotesSaved={(sheetRow, newNotes) => {
+            setContacts(prev => prev.map(c =>
+              c.sheetRow === sheetRow
+                ? { ...c, notes: newNotes, hasNotes: newNotes.trim().length > 0, notesStale: false }
+                : c
+            ))
+          }}
+        />
       )}
     </div>
   )
