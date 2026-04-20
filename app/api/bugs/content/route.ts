@@ -1,8 +1,8 @@
 import { NextResponse } from "next/server"
-import fs from "fs"
-import path from "path"
 
-const BUGS_ROOT = "/Users/ryanlarocca/.openclaw/workspace/Bugs"
+export const dynamic = "force-dynamic"
+
+const SIDECAR_URL = process.env.SIDECAR_URL || "http://localhost:5799"
 
 export async function GET(req: Request) {
   const { searchParams } = new URL(req.url)
@@ -12,16 +12,14 @@ export async function GET(req: Request) {
     return NextResponse.json({ error: "No path provided" }, { status: 400 })
   }
 
-  // Safety: prevent path traversal
-  const resolved = path.resolve(BUGS_ROOT, filePath)
-  if (!resolved.startsWith(BUGS_ROOT)) {
-    return NextResponse.json({ error: "Invalid path" }, { status: 400 })
-  }
-
   try {
-    const content = fs.readFileSync(resolved, "utf-8")
-    return NextResponse.json({ content })
-  } catch {
-    return NextResponse.json({ error: "File not found" }, { status: 404 })
+    const qs = new URLSearchParams({ path: filePath })
+    const res = await fetch(`${SIDECAR_URL}/bugs/content?${qs}`, {
+      signal: AbortSignal.timeout(10000),
+      cache: "no-store",
+    })
+    return NextResponse.json(await res.json(), { status: res.status })
+  } catch (err) {
+    return NextResponse.json({ error: String(err) }, { status: 503 })
   }
 }

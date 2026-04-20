@@ -1,196 +1,162 @@
 "use client"
 
-import { useState } from "react"
-import { ChevronDown, ChevronRight } from "lucide-react"
+import { useEffect, useState } from "react"
+import { ChevronDown, ChevronRight, RefreshCw } from "lucide-react"
+import ReactMarkdown from "react-markdown"
+import remarkGfm from "remark-gfm"
 
 interface MemoryEntry {
-  date: string
-  summary: string
-  raw: string
+  file: string
+  name: string
+  description: string
+  type: string
+  body: string
+  modified: string
 }
 
-const thadiusEntries: MemoryEntry[] = [
-  {
-    date: "2026-03-31",
-    summary: "Fixed Redfin outreach skip-all bug. Contacts with blank N/P columns were reappearing daily because is_eligible() always returned true for Initial status. Added Q-column deferral and --mark-contacted command.",
-    raw: `BUG: is_eligible() returned True when N/P cols blank → contacts with Initial status re-queued every run.
-FIX: Added Q-column (deferred_until) check in is_eligible(). Added --mark-contacted flag that stamps today's date into the N col and writes "Contacted" to P col without sending.
-TESTED: Ran with --dry-run, confirmed eligible list collapsed from 18 → 3 after marking.`,
-  },
-  {
-    date: "2026-03-30",
-    summary: "COI outreach v3 deployed. Added --delete, --rename, --set-phone, --set-email, letter variants, name override. SKILL.md updated with correct paths and Before Implementing section.",
-    raw: `FEATURES ADDED:
---delete <name>: removes contact row from sheet
---rename <old> <new>: updates Display Name col
---set-phone <name> <phone>: normalizes + writes phone col
---set-email <name> <email>: writes email col
-Letter variants: A/B/C message templates per tier, selectable via --variant flag
-Name override: --name flag substitutes first name in template
-No-contact grouping: contacts with do-not-contact flag grouped at bottom of report
-SKILL.md: Updated paths (was pointing to v2 script). Added "Before Implementing" checklist.`,
-  },
-  {
-    date: "2026-03-27",
-    summary: "Physiq freeze issue partially resolved. dbOp retry logic added. SW cache cleared. REST migration still pending if retries prove insufficient.",
-    raw: `ISSUE: App freezing on heavy DB writes — WebSocket timeout cascading to full UI lock.
-PARTIAL FIX: Added dbOp() wrapper with exponential backoff retry (3x, 500/1000/2000ms).
-SW CACHE: Cleared stale service worker cache that was serving old broken bundle.
-PENDING: If retry insufficient → migrate all db.from() Supabase calls to plain fetch() REST API. Eliminates WebSocket dependency entirely.
-NOTE: Timeout confirmation still needed from user test session.`,
-  },
-  {
-    date: "2026-03-20",
-    summary: "LRG Homes lead tunnel deployed. ngrok static domain wired to Vercel env. AW-11434036654 conversion tracking confirmed firing on thank-you page.",
-    raw: `DEPLOYED: Lead tunnel webhook at /api/lead-notify
-NGROK: Static domain configured, launchd plist installed for auto-start.
-VERCEL ENV: NGROK_URL and TWILIO vars set in both preview + production.
-GA CONVERSION: AW-11434036654/[label] tag fires on /thank-you load. Confirmed via Tag Assistant.
-TESTED: Form submit → Twilio SMS to Ryan → Supabase insert → Telegram notify. All legs confirmed.`,
-  },
-  {
-    date: "2026-03-15",
-    summary: "Redfin scan v3 shipped. 18 South Bay regions. Firecrawl scraping + Claude Haiku vision scoring. Auto-adds 7.0+ listings to sheet.",
-    raw: `REGIONS: 18 South Bay ZIP codes configured in scan config.
-SCRAPING: Firecrawl used for JS-rendered page content. Rate limit: 2 req/s with jitter.
-SCORING: Claude Haiku vision model analyzes listing photos + description. Outputs 0-10 score.
-THRESHOLD: 7.0+ auto-appended to Redfin Fixer Google Sheet (tab: Eligible).
-RUNTIME: ~4 min per full scan pass. Runs nightly at 3 AM via launchd.`,
-  },
-]
+interface MemoryResponse {
+  index: string
+  entries: MemoryEntry[]
+}
 
-const codyEntries: MemoryEntry[] = [
-  {
-    date: "2026-03-31",
-    summary: "Mission Control UI redesign pass v0.1. Added Projects tab (JSON-backed), Memory tab, Skills expandable cards. Redesigned RealEstate pipeline with 5 sub-tabs.",
-    raw: `FILES CREATED:
-- public/data/projects.json (version tracking)
-- public/data/skills.json
-- app/(dashboard)/projects/page.tsx
-- app/(dashboard)/memory/page.tsx
-- components/widgets/ProjectsWidget.tsx
-- components/widgets/MemoryWidget.tsx
+const typeColors: Record<string, string> = {
+  user: "bg-blue-500/20 text-blue-400 border-blue-500/30",
+  feedback: "bg-amber-500/20 text-amber-400 border-amber-500/30",
+  project: "bg-emerald-500/20 text-emerald-400 border-emerald-500/30",
+  reference: "bg-purple-500/20 text-purple-400 border-purple-500/30",
+  unknown: "bg-zinc-500/20 text-zinc-400 border-zinc-500/30",
+}
 
-FILES MODIFIED:
-- components/Sidebar.tsx (added Projects + Memory nav items)
-- components/widgets/SkillsWidget.tsx (expandable accordion, JSON-backed)
-- components/widgets/GoogleAdsWidget.tsx (Today's Summary card, Pause/Resume toggle)
-- components/widgets/DocumentsWidget.tsx (File Browser coming soon callout)
-- components/widgets/PhysiqWidget.tsx (added Workout Log section)`,
-  },
-  {
-    date: "2026-03-28",
-    summary: "Built Mission Control skeleton. Next.js 14, Tailwind, shadcn/ui, zinc dark theme. All 13 routes scaffolded with mock data.",
-    raw: `STACK: Next.js 14 (App Router), Tailwind CSS, shadcn/ui, TypeScript.
-THEME: zinc-950 background, zinc-900 cards, zinc-800 borders. Green pulse indicator in sidebar header.
-ROUTES: /chat, /terminal, /agents, /macmini, /pipeline, /redfin, /physiq, /social, /ads, /stocks, /documents, /skills, /calendar.
-SIDEBAR: Grouped nav with 5 sections. Active state via pathname match.
-MOCK DATA: All widgets populated with realistic mock entries. No Supabase wiring yet.`,
-  },
-  {
-    date: "2026-03-27",
-    summary: "Physiq API: fixed macro calculation bug in Sonnet model. dbOp retry wrapper added to prevent WebSocket freeze on heavy DB writes.",
-    raw: `MACRO BUG: Protein calc was using carb multiplier (4→4 OK, but fat was 4 not 9). Fixed in macro_calc() function.
-RETRY WRAPPER: dbOp(fn, retries=3) wraps all Supabase calls. Exponential backoff: 500/1000/2000ms.
-MODEL: Switched macro parsing from GPT-3.5 to Claude Sonnet — better accuracy on edge cases (e.g. "2 scoops whey").`,
-  },
-  {
-    date: "2026-03-26",
-    summary: "Agent email draft_batch.py v2. DNS MX validation, bounce cleanup, 50 drafts/run. Offset tracking for resumable batches.",
-    raw: `FEATURES:
-- DNS MX validation before drafting (skip unresolvable domains)
-- Bounce cleanup: reads Gmail bounce labels, marks sheet rows as bounced
-- 50 drafts per run (configurable via --limit)
-- Offset tracking: --offset arg + last_offset.txt for resumable batches
-- Draft subject lines now include property address for context
-TESTED: 50 drafts created in Gmail drafts folder. MX check filtered out 3 bad domains.`,
-  },
-  {
-    date: "2026-03-25",
-    summary: "Redfin scan scoring refactor. 3x interior weight multiplier. Exclusion list for new construction keywords. Score threshold 7.0 for High Priority.",
-    raw: `SCORING REFACTOR:
-- Interior condition photos weighted 3x vs exterior
-- Exclusion keywords: "new construction", "builder grade", "never lived in" → score capped at 6.0
-- Threshold: 7.0+ = High Priority (auto-add to sheet), 5.0-6.9 = Watch, <5.0 = Skip
-- Added "price per sqft vs neighborhood median" as scoring factor (underpriced = +1 point)
-TESTED: Re-scored 40 historical listings. High Priority recall improved from 71% → 89%.`,
-  },
-]
+function timeAgo(iso: string) {
+  const diff = Date.now() - new Date(iso).getTime()
+  const h = Math.floor(diff / 3600000)
+  if (h < 1) return "just now"
+  if (h < 24) return `${h}h ago`
+  const d = Math.floor(h / 24)
+  if (d < 30) return `${d}d ago`
+  return new Date(iso).toLocaleDateString([], { month: "short", day: "numeric" })
+}
 
 function MemoryCard({ entry }: { entry: MemoryEntry }) {
-  const [showRaw, setShowRaw] = useState(false)
+  const [open, setOpen] = useState(false)
+  const color = typeColors[entry.type] ?? typeColors.unknown
 
   return (
-    <div className="flex gap-2.5">
-      {/* Timeline spine */}
-      <div className="flex flex-col items-center pt-[5px] shrink-0">
-        <div className="w-1 h-1 rounded-full bg-zinc-700" />
-        <div className="w-px flex-1 bg-zinc-800/70 mt-1" />
-      </div>
-
-      {/* Content */}
-      <div className="pb-3.5 flex-1 min-w-0">
-        <p className="text-[9px] font-mono text-zinc-600 mb-0.5 tracking-wide">{entry.date}</p>
-        <p className="text-[11px] text-zinc-500 leading-[1.5] tracking-wide">{entry.summary}</p>
-        <button
-          onClick={() => setShowRaw(!showRaw)}
-          className="flex items-center gap-0.5 text-[9px] text-zinc-700 hover:text-zinc-500 transition-colors mt-1.5 tracking-wide"
-        >
-          {showRaw ? <ChevronDown className="w-2.5 h-2.5" /> : <ChevronRight className="w-2.5 h-2.5" />}
-          {showRaw ? "hide" : "raw"}
-        </button>
-        {showRaw && (
-          <div className="mt-1.5 bg-zinc-900/60 border border-zinc-800/60 rounded px-2.5 py-2">
-            <pre className="text-[9px] text-zinc-600 font-mono leading-relaxed whitespace-pre-wrap">{entry.raw}</pre>
+    <div className="bg-zinc-900 border border-zinc-800 rounded-lg overflow-hidden hover:border-zinc-700 transition-colors">
+      <button
+        onClick={() => setOpen(o => !o)}
+        className="w-full flex items-start gap-3 px-4 py-3 text-left"
+      >
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-2 flex-wrap mb-1">
+            <span className={`text-[10px] px-1.5 py-0.5 rounded border uppercase tracking-wider ${color}`}>
+              {entry.type}
+            </span>
+            <p className="text-sm font-semibold text-zinc-100 truncate">{entry.name}</p>
           </div>
-        )}
-      </div>
+          <p className="text-xs text-zinc-400 leading-relaxed line-clamp-2">{entry.description}</p>
+          <p className="text-[10px] text-zinc-600 mt-1 font-mono">{timeAgo(entry.modified)}</p>
+        </div>
+        <span className="text-zinc-600 shrink-0 pt-0.5">
+          {open ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
+        </span>
+      </button>
+
+      {open && (
+        <div className="border-t border-zinc-800 bg-zinc-950/40 px-4 py-4 prose prose-invert prose-sm max-w-none
+          prose-headings:text-zinc-100 prose-p:text-zinc-300 prose-p:leading-relaxed
+          prose-code:text-emerald-400 prose-code:bg-zinc-800 prose-code:px-1 prose-code:rounded prose-code:text-xs
+          prose-li:text-zinc-300 prose-strong:text-zinc-100
+        ">
+          <ReactMarkdown remarkPlugins={[remarkGfm]}>{entry.body}</ReactMarkdown>
+          <p className="text-[10px] text-zinc-600 font-mono mt-3 not-prose">{entry.file}</p>
+        </div>
+      )}
     </div>
   )
 }
 
 export default function MemoryWidget() {
-  const [activeTab, setActiveTab] = useState<"thadius" | "cody">("thadius")
+  const [data, setData] = useState<MemoryResponse | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState("")
+  const [filter, setFilter] = useState<string>("all")
 
-  const entries = activeTab === "thadius" ? thadiusEntries : codyEntries
+  const load = () => {
+    setLoading(true)
+    setError("")
+    fetch("/api/memory", { cache: "no-store" })
+      .then(r => r.json())
+      .then(d => {
+        if (d.error) setError(d.error)
+        setData({ index: d.index ?? "", entries: d.entries ?? [] })
+      })
+      .catch(e => setError(String(e)))
+      .finally(() => setLoading(false))
+  }
+
+  useEffect(() => { load() }, [])
+
+  const entries = data?.entries ?? []
+  const types = Array.from(new Set(entries.map(e => e.type)))
+  const visible = filter === "all" ? entries : entries.filter(e => e.type === filter)
 
   return (
     <div>
-      {/* Header */}
-      <div className="mb-5">
-        <h1 className="text-lg font-semibold text-zinc-100">Memory</h1>
-        <p className="text-xs text-zinc-500 mt-0.5">Session logs and key decisions per agent</p>
-      </div>
-
-      {/* Tabs */}
-      <div className="flex items-center gap-1 bg-zinc-900 border border-zinc-800 rounded-lg p-1 w-fit mb-5">
+      <div className="flex items-center justify-between mb-5">
+        <div>
+          <h1 className="text-lg font-semibold text-zinc-100">Memory</h1>
+          <p className="text-xs text-zinc-500 mt-0.5">
+            {entries.length} entries · auto-memory (live filesystem)
+          </p>
+        </div>
         <button
-          onClick={() => setActiveTab("thadius")}
-          className={`px-3 py-1.5 rounded text-xs transition-colors ${
-            activeTab === "thadius"
-              ? "bg-amber-500/20 text-amber-400"
-              : "text-zinc-500 hover:text-zinc-300"
-          }`}
+          onClick={load}
+          className="flex items-center gap-1.5 text-xs text-zinc-500 hover:text-zinc-300 transition-colors px-2.5 py-1.5 rounded hover:bg-zinc-800"
         >
-          Thadius
-        </button>
-        <button
-          onClick={() => setActiveTab("cody")}
-          className={`px-3 py-1.5 rounded text-xs transition-colors ${
-            activeTab === "cody"
-              ? "bg-blue-500/20 text-blue-400"
-              : "text-zinc-500 hover:text-zinc-300"
-          }`}
-        >
-          Cody
+          <RefreshCw className={`w-3.5 h-3.5 ${loading ? "animate-spin" : ""}`} />
+          Refresh
         </button>
       </div>
 
-      {/* Entries */}
-      <div>
-        {entries.map((entry, i) => (
-          <MemoryCard key={i} entry={entry} />
-        ))}
+      {types.length > 1 && (
+        <div className="flex items-center gap-1 bg-zinc-900 border border-zinc-800 rounded-lg p-1 w-fit mb-5">
+          <button
+            onClick={() => setFilter("all")}
+            className={`px-3 py-1.5 rounded text-xs transition-colors ${
+              filter === "all" ? "bg-zinc-700 text-zinc-100" : "text-zinc-500 hover:text-zinc-300"
+            }`}
+          >
+            All ({entries.length})
+          </button>
+          {types.map(t => {
+            const count = entries.filter(e => e.type === t).length
+            return (
+              <button
+                key={t}
+                onClick={() => setFilter(t)}
+                className={`px-3 py-1.5 rounded text-xs transition-colors capitalize ${
+                  filter === t ? "bg-zinc-700 text-zinc-100" : "text-zinc-500 hover:text-zinc-300"
+                }`}
+              >
+                {t} ({count})
+              </button>
+            )
+          })}
+        </div>
+      )}
+
+      {loading && entries.length === 0 && (
+        <div className="py-20 text-center text-zinc-600 text-sm">Loading memory...</div>
+      )}
+      {error && entries.length === 0 && (
+        <div className="py-20 text-center text-zinc-600 text-sm">
+          Could not load memory. {error}
+        </div>
+      )}
+
+      <div className="space-y-2">
+        {visible.map(entry => <MemoryCard key={entry.file} entry={entry} />)}
       </div>
     </div>
   )
