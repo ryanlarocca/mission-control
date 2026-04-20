@@ -56,8 +56,9 @@ function normalizeModality(m: unknown, type: ContactType): Modality {
 
 // ── Prompts ────────────────────────────────────────────────────────────────
 
-// Keyed by `${type}_${modality}`. Lookup falls back to Agent_<modality> so that
-// Vendor / Investor / Seller share the agent prompts without duplication.
+// Keyed by `${type}_${modality}`. Lookup falls back to Agent_<modality> for
+// types without dedicated prompts (Investor, Seller). Vendor has its own —
+// agent-style real-estate prospecting language is wrong for vendor contacts.
 const PROMPTS: Record<string, string> = {
   Agent_Familiar: `You are writing a short iMessage on behalf of Ryan LaRocca, a real estate investor in the Bay Area.
 Write a 1-3 sentence message to {name}. Ryan knows this person well — first-name basis, casual tone.
@@ -77,6 +78,28 @@ Open with "Hey {name}, this is Ryan LaRocca" and briefly establish who he is (in
 If notes have any context, reference it: {notes}
 The ask should be soft: "are you still active in real estate?" or "have you come across anything interesting?"
 No sign-off, no emojis. Conversational but professional.`,
+
+  Vendor_Familiar: `You are writing a short iMessage on behalf of Ryan LaRocca to a vendor / tradesperson (e.g. contractor, handyman, window tinter, plumber, electrician).
+Write a 1-3 sentence message to {name}. Ryan has worked with them before and knows them on a first-name basis.
+Reference something specific from these notes if relevant: {notes}
+Tone: checking in on them and their work. You can mention appreciation for past work if the notes support it, and ask how they've been or if they've been busy.
+This is NOT a real estate prospecting message. Do NOT ask about "deals", "properties coming up", "anything interesting", or whether they're "still active in real estate" — they are a vendor, not an agent.
+It is fine to softly signal that Ryan may have work coming up, but do not push it.
+No sign-off, no emojis. Sound like a real text to someone whose work you've relied on.`,
+
+  Vendor_Reconnect: `You are writing a short iMessage on behalf of Ryan LaRocca to a vendor / tradesperson (e.g. contractor, handyman, window tinter, plumber, electrician).
+Write a 2-3 sentence message to {name}. Ryan has used their services before but it's been a while.
+Open with "Hey {name}, it's Ryan LaRocca" and, if the notes suggest the specific trade or past job, reference it naturally: {notes}
+Tone: warm check-in. Ask how their business has been, whether they're still taking on jobs, and mention that Ryan may have work coming up on a property.
+This is NOT a real estate prospecting message. Do NOT ask about "deals", "off-market properties", "anything on your desk", or whether they're "still active in real estate" — they are a vendor, not an agent.
+No sign-off, no emojis. Sound like someone reconnecting with a tradesperson they've lost touch with.`,
+
+  Vendor_ColdReintro: `You are writing a short iMessage on behalf of Ryan LaRocca to a vendor / tradesperson (e.g. contractor, handyman, window tinter, plumber, electrician).
+Write a 2-3 sentence message to {name}. Ryan has their contact saved but doesn't have a strong relationship — this is a reintroduction.
+Open with "Hey {name}, this is Ryan LaRocca" and briefly remind them of the context if the notes support it (e.g. a past job, a referral source): {notes}
+Tone: polite, a touch tentative. Ask whether they're still taking on {their trade, if known from notes} work.
+This is NOT a real estate prospecting message. Do NOT ask about "deals", "properties", or whether they're "still active in real estate" — they are a vendor. The question is about their trade / business availability, not the real estate market.
+No sign-off, no emojis.`,
 
   PM_Portfolio: `You are writing a short iMessage on behalf of Ryan LaRocca, a real estate investor in the Bay Area.
 Write a 1-3 sentence message to {name}, a property manager. Ryan is interested in any properties coming up for sale in their portfolio.
@@ -111,6 +134,9 @@ I'm still actively buying in the area — curious if anything interesting has cr
   Agent_ColdReintro: `Hey {first}, this is Ryan LaRocca — I had your contact saved from a while back and wanted to reintroduce myself.
 
 I'm an investor in the Bay Area buying fixers and value-add properties. Are you still active in real estate?`,
+  Vendor_Familiar: `Hey {first}, hope you've been staying busy. Been a minute since we had you out — how's the business?`,
+  Vendor_Reconnect: `Hey {first}, it's Ryan LaRocca — appreciated the work you did for us a while back. How's the business been? I may have something coming up and wanted to see if you're still taking on jobs.`,
+  Vendor_ColdReintro: `Hey {first}, this is Ryan LaRocca — I have your contact saved from a while back. Are you still taking on work these days?`,
   PM_Portfolio: `Hey {first}, it's Ryan LaRocca — I'm an investor in the Bay Area and I wanted to reach out. Do you have any properties in your portfolio where the owner might be looking to sell? Always looking for my next project.`,
   Personal_CatchUp: `Hey {first}, been a minute — how have you been? We need to catch up soon.`,
   Personal_CheckIn: `Hey {first}, was just thinking about you — hope you're doing well. What have you been up to?`,
@@ -118,9 +144,17 @@ I'm an investor in the Bay Area buying fixers and value-add properties. Are you 
 }
 
 function lookupPrompt(table: Record<string, string>, type: ContactType, modality: Modality): string {
-  return table[`${type}_${modality}`]
-    || table[`Agent_${modality}`]
-    || table.Agent_Reconnect
+  const direct = table[`${type}_${modality}`]
+  if (direct) return direct
+  // Vendor and Personal must never fall back to agent prompts — their copy
+  // is fundamentally different (no real-estate prospecting language).
+  if (type === "Vendor") {
+    return table.Vendor_Reconnect || table.Vendor_ColdReintro || table.Vendor_Familiar || table.Agent_Reconnect
+  }
+  if (type === "Personal") {
+    return table.Personal_CheckIn || table.Personal_CatchUp || table.Personal_Reconnect || table.Agent_Reconnect
+  }
+  return table[`Agent_${modality}`] || table.Agent_Reconnect
 }
 
 // ── Prefs ──────────────────────────────────────────────────────────────────

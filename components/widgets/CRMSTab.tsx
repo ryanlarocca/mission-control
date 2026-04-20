@@ -697,14 +697,10 @@ function CRMSTabInner() {
               return (
                 <div
                   key={contact.id}
-                  role="button"
-                  tabIndex={0}
-                  onClick={() => handleSelectContact(contact)}
-                  onKeyDown={e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); handleSelectContact(contact) } }}
-                  className={`w-full text-left px-3 py-2.5 rounded-lg border transition-colors cursor-pointer ${
+                  className={`w-full text-left px-3 py-2.5 rounded-lg border transition-colors ${
                     isActive
                       ? "bg-zinc-800 border-zinc-600"
-                      : "bg-zinc-900 border-zinc-800 hover:border-zinc-700"
+                      : "bg-zinc-900 border-zinc-800"
                   }`}
                 >
                   <div className="flex items-center gap-1.5 mb-1">
@@ -721,9 +717,9 @@ function CRMSTabInner() {
                   </div>
                   <button
                     type="button"
-                    onClick={e => { e.stopPropagation(); setDetailPhone(contact.phone) }}
+                    onClick={() => handleSelectContact(contact)}
+                    onKeyDown={e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); handleSelectContact(contact) } }}
                     className="text-xs font-medium text-zinc-200 truncate leading-snug hover:text-emerald-400 hover:underline underline-offset-2 block text-left w-full"
-                    title="Open full contact detail"
                   >
                     {contact.name}
                   </button>
