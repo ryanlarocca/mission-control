@@ -274,6 +274,26 @@ function CRMSTabInner() {
   const generateAbortRef = useRef<AbortController | null>(null)
   const selectDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const categoryPickerRef = useRef<HTMLDivElement>(null)
+
+  // Close the category picker when the user taps outside. Uses pointerdown
+  // (fires before click) and a setTimeout so the tap that opened the picker
+  // doesn't immediately close it on iOS Safari.
+  useEffect(() => {
+    if (!categoryPickerOpen) return
+    const handler = (e: PointerEvent) => {
+      if (categoryPickerRef.current && !categoryPickerRef.current.contains(e.target as Node)) {
+        setCategoryPickerOpen(false)
+      }
+    }
+    const timer = setTimeout(() => {
+      document.addEventListener("pointerdown", handler)
+    }, 0)
+    return () => {
+      clearTimeout(timer)
+      document.removeEventListener("pointerdown", handler)
+    }
+  }, [categoryPickerOpen])
 
   function showSendToast(msg: string) {
     if (toastTimerRef.current) clearTimeout(toastTimerRef.current)
@@ -804,13 +824,13 @@ function CRMSTabInner() {
                   >
                     {selectedContact.name}
                   </button>
-                  <div className="relative">
+                  <div className="relative" ref={categoryPickerRef}>
                     <button
                       type="button"
                       onClick={() => setCategoryPickerOpen(o => !o)}
                       disabled={!!categoryChangingFor}
                       title="Change contact type"
-                      className={`text-xs px-1.5 py-0.5 rounded border leading-none transition-colors hover:brightness-125 disabled:opacity-50 ${categoryBadge[selectedContact.type] ?? ""}`}
+                      className={`text-xs px-2 py-1 rounded border leading-none transition-colors hover:brightness-125 disabled:opacity-50 ${categoryBadge[selectedContact.type] ?? ""}`}
                     >
                       {TYPE_LABEL[selectedContact.type]}
                       {categoryChangingFor === selectedContact.id && (
@@ -818,34 +838,28 @@ function CRMSTabInner() {
                       )}
                     </button>
                     {categoryPickerOpen && (
-                      <>
-                        <div
-                          className="fixed inset-0 z-30"
-                          onClick={() => setCategoryPickerOpen(false)}
-                        />
-                        <div className="absolute left-0 top-full mt-1 z-40 bg-zinc-900 border border-zinc-700 rounded-lg shadow-xl p-1.5 flex flex-col gap-1 min-w-[140px]">
-                          {ALL_TYPES.map(t => {
-                            const Icon = categoryIcon[t] ?? User
-                            const isCurrent = selectedContact.type === t
-                            return (
-                              <button
-                                key={t}
-                                type="button"
-                                onClick={() => handleCategoryChange(t)}
-                                disabled={isCurrent}
-                                className={`flex items-center gap-2 text-xs px-2 py-1.5 rounded border leading-none transition-colors text-left ${
-                                  isCurrent
-                                    ? categoryBadge[t]
-                                    : "bg-transparent text-zinc-300 border-transparent hover:bg-zinc-800 hover:border-zinc-700"
-                                }`}
-                              >
-                                <Icon className={`w-3.5 h-3.5 ${categoryColor[t] ?? "text-zinc-400"}`} />
-                                {TYPE_LABEL[t]}
-                              </button>
-                            )
-                          })}
-                        </div>
-                      </>
+                      <div className="absolute left-0 top-full mt-1 z-40 bg-zinc-900 border border-zinc-700 rounded-lg shadow-xl p-1.5 flex flex-col gap-1 min-w-[160px]">
+                        {ALL_TYPES.map(t => {
+                          const Icon = categoryIcon[t] ?? User
+                          const isCurrent = selectedContact.type === t
+                          return (
+                            <button
+                              key={t}
+                              type="button"
+                              onClick={() => handleCategoryChange(t)}
+                              disabled={isCurrent}
+                              className={`flex items-center gap-2 text-sm px-3 py-2.5 rounded border leading-none transition-colors text-left min-h-[40px] ${
+                                isCurrent
+                                  ? categoryBadge[t]
+                                  : "bg-transparent text-zinc-300 border-transparent hover:bg-zinc-800 hover:border-zinc-700 active:bg-zinc-800"
+                              }`}
+                            >
+                              <Icon className={`w-4 h-4 shrink-0 ${categoryColor[t] ?? "text-zinc-400"}`} />
+                              {TYPE_LABEL[t]}
+                            </button>
+                          )
+                        })}
+                      </div>
                     )}
                   </div>
                   <span className={`ml-auto text-xs px-1.5 py-0.5 rounded border leading-none ${

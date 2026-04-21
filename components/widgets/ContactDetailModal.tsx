@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useState } from "react"
+import { useEffect, useRef, useState } from "react"
 import {
   X, Loader2, Send, Save, Phone,
   UserCheck, User, Wrench, TrendingUp, Home, Building2,
@@ -92,8 +92,27 @@ export function ContactDetailModal({ contact, onClose, onSendToast, onNotesSaved
   const [quickMessage, setQuickMessage] = useState("")
   const [categoryPickerOpen, setCategoryPickerOpen] = useState(false)
   const [savingCategory, setSavingCategory] = useState(false)
+  const categoryPickerRef = useRef<HTMLDivElement>(null)
 
   const currentCategory = coerceCategory(contact.category)
+
+  // Click-outside for the category picker. pointerdown + setTimeout(0) so the
+  // opening tap doesn't immediately close it on iOS Safari.
+  useEffect(() => {
+    if (!categoryPickerOpen) return
+    const handler = (e: PointerEvent) => {
+      if (categoryPickerRef.current && !categoryPickerRef.current.contains(e.target as Node)) {
+        setCategoryPickerOpen(false)
+      }
+    }
+    const timer = setTimeout(() => {
+      document.addEventListener("pointerdown", handler)
+    }, 0)
+    return () => {
+      clearTimeout(timer)
+      document.removeEventListener("pointerdown", handler)
+    }
+  }, [categoryPickerOpen])
 
   async function handleCategorySelect(next: CategoryOption) {
     setCategoryPickerOpen(false)
@@ -224,13 +243,13 @@ export function ContactDetailModal({ contact, onClose, onSendToast, onNotesSaved
           <div className="min-w-0">
             <p className="text-sm font-semibold text-zinc-100 truncate">{contact.name}</p>
             <div className="flex items-center gap-1.5 mt-0.5">
-              <div className="relative">
+              <div className="relative" ref={categoryPickerRef}>
                 <button
                   type="button"
                   onClick={() => setCategoryPickerOpen(o => !o)}
                   disabled={savingCategory}
                   title="Change contact type"
-                  className={`text-xs px-1.5 py-0.5 rounded border leading-none transition-colors hover:brightness-125 disabled:opacity-50 ${categoryBadge[currentCategory]}`}
+                  className={`text-xs px-2 py-1 rounded border leading-none transition-colors hover:brightness-125 disabled:opacity-50 ${categoryBadge[currentCategory]}`}
                 >
                   {currentCategory}
                   {savingCategory && (
@@ -238,34 +257,28 @@ export function ContactDetailModal({ contact, onClose, onSendToast, onNotesSaved
                   )}
                 </button>
                 {categoryPickerOpen && (
-                  <>
-                    <div
-                      className="fixed inset-0 z-40"
-                      onClick={() => setCategoryPickerOpen(false)}
-                    />
-                    <div className="absolute left-0 top-full mt-1 z-50 bg-zinc-900 border border-zinc-700 rounded-lg shadow-xl p-1.5 flex flex-col gap-1 min-w-[140px]">
-                      {CATEGORY_OPTIONS.map(t => {
-                        const Icon = categoryIcon[t]
-                        const isCurrent = currentCategory === t
-                        return (
-                          <button
-                            key={t}
-                            type="button"
-                            onClick={() => handleCategorySelect(t)}
-                            disabled={isCurrent}
-                            className={`flex items-center gap-2 text-xs px-2 py-1.5 rounded border leading-none transition-colors text-left ${
-                              isCurrent
-                                ? categoryBadge[t]
-                                : "bg-transparent text-zinc-300 border-transparent hover:bg-zinc-800 hover:border-zinc-700"
-                            }`}
-                          >
-                            <Icon className={`w-3.5 h-3.5 ${categoryColor[t]}`} />
-                            {t}
-                          </button>
-                        )
-                      })}
-                    </div>
-                  </>
+                  <div className="absolute left-0 top-full mt-1 z-50 bg-zinc-900 border border-zinc-700 rounded-lg shadow-xl p-1.5 flex flex-col gap-1 min-w-[160px]">
+                    {CATEGORY_OPTIONS.map(t => {
+                      const Icon = categoryIcon[t]
+                      const isCurrent = currentCategory === t
+                      return (
+                        <button
+                          key={t}
+                          type="button"
+                          onClick={() => handleCategorySelect(t)}
+                          disabled={isCurrent}
+                          className={`flex items-center gap-2 text-sm px-3 py-2.5 rounded border leading-none transition-colors text-left min-h-[40px] ${
+                            isCurrent
+                              ? categoryBadge[t]
+                              : "bg-transparent text-zinc-300 border-transparent hover:bg-zinc-800 hover:border-zinc-700 active:bg-zinc-800"
+                          }`}
+                        >
+                          <Icon className={`w-4 h-4 shrink-0 ${categoryColor[t]}`} />
+                          {t}
+                        </button>
+                      )
+                    })}
+                  </div>
                 )}
               </div>
               <span className="text-xs text-zinc-500">· Tier {contact.tier}</span>
