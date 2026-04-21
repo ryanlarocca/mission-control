@@ -266,6 +266,8 @@ function CRMSTabInner() {
   const [generatingFor, setGeneratingFor]         = useState<string | null>(null)
   const [enrichingFor, setEnrichingFor]           = useState<string | null>(null)
   const [tierChangingFor, setTierChangingFor]     = useState<string | null>(null)
+  const [categoryChangingFor, setCategoryChangingFor] = useState<string | null>(null)
+  const [categoryPickerOpen, setCategoryPickerOpen]   = useState(false)
   const [actionPending, setActionPending]         = useState(false)
 
   // ── Refs for debounce + abort ──
@@ -382,6 +384,7 @@ function CRMSTabInner() {
     setSelectedId(contact.id)
     setMobileView("compose")
     setSendError(null)
+    setCategoryPickerOpen(false)
     fetchTouches(contact.phone)
 
     // If current modality isn't valid for this type, snap to type's default
@@ -415,6 +418,39 @@ function CRMSTabInner() {
     setEditedMessages(prev => { const n = { ...prev }; delete n[msgKey]; return n })
     setGeneratedMessages(prev => { const n = { ...prev }; delete n[msgKey]; return n })
     await generate(selectedContact, modality, true)
+  }
+
+  // ── Category change: PATCH sheet + update local state ──
+  async function handleCategoryChange(newCategory: ContactType) {
+    if (!selectedContact || categoryChangingFor) return
+    setCategoryPickerOpen(false)
+    if (selectedContact.type === newCategory) return
+    const targetId = selectedContact.id
+    const targetRow = selectedContact.sheetRow
+    setCategoryChangingFor(targetId)
+    try {
+      const res = await fetch("/api/crms/category", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sheetRow: targetRow, category: newCategory }),
+      })
+      if (!res.ok) throw new Error()
+      setContacts(prev => prev.map(c =>
+        c.id === targetId ? { ...c, type: newCategory, category: newCategory } : c
+      ))
+      const allowed = MODALITIES_BY_TYPE[newCategory] as string[]
+      if (!allowed.includes(modality)) {
+        const next = DEFAULT_MODALITY[newCategory]
+        setModality(next)
+        // Regenerate for the new type — use the updated contact shape
+        const updated = { ...selectedContact, type: newCategory, category: newCategory }
+        generate(updated, next, true)
+      }
+    } catch {
+      setSendError("Type update failed — try again")
+    } finally {
+      setCategoryChangingFor(null)
+    }
   }
 
   // ── Tier change: PATCH sheet + update local state (or drop from queue on E) ──
@@ -470,19 +506,34 @@ function CRMSTabInner() {
       body: JSON.stringify({ phone: contact.phone, message }),
       signal: controller.signal,
     })
-      .then(res => {
+      .then(async res => {
         clearTimeout(timeout)
         if (!res.ok) throw new Error(`send ${res.status}`)
 
-        fetch("/api/crms/log", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            name: contact.name, phone: contact.phone,
-            sheetRow: contact.sheetRow, modality: mod, message,
-            action: "sent", tier: contact.tier, category: contact.type,
-          }),
-        }).catch(() => {})
+        // Await the log call so we can detect a failed LastContacted write.
+        // If it fails, the contact will re-appear tomorrow — warn the user.
+        try {
+          const logRes = await fetch("/api/crms/log", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              name: contact.name, phone: contact.phone,
+              sheetRow: contact.sheetRow, modality: mod, message,
+              action: "sent", tier: contact.tier, category: contact.type,
+            }),
+          })
+          if (!logRes.ok) {
+            showSendToast(`Sent to ${contact.name} but failed to record date — will re-appear`)
+          } else {
+            const logData = await logRes.json().catch(() => ({}))
+            if (logData?.lastContactedWritten === false) {
+              showSendToast(`Sent to ${contact.name} but failed to record date — will re-appear`)
+            }
+          }
+        } catch (e) {
+          console.error("Log call failed:", e)
+          showSendToast(`Sent to ${contact.name} but failed to record date — will re-appear`)
+        }
 
         fetch("/api/crms/generate", {
           method: "POST",
@@ -753,9 +804,50 @@ function CRMSTabInner() {
                   >
                     {selectedContact.name}
                   </button>
-                  <span className={`text-xs px-1.5 py-0.5 rounded border leading-none ${categoryBadge[selectedContact.type] ?? ""}`}>
-                    {TYPE_LABEL[selectedContact.type]}
-                  </span>
+                  <div className="relative">
+                    <button
+                      type="button"
+                      onClick={() => setCategoryPickerOpen(o => !o)}
+                      disabled={!!categoryChangingFor}
+                      title="Change contact type"
+                      className={`text-xs px-1.5 py-0.5 rounded border leading-none transition-colors hover:brightness-125 disabled:opacity-50 ${categoryBadge[selectedContact.type] ?? ""}`}
+                    >
+                      {TYPE_LABEL[selectedContact.type]}
+                      {categoryChangingFor === selectedContact.id && (
+                        <Loader2 className="inline-block w-3 h-3 animate-spin ml-1 -mb-0.5" />
+                      )}
+                    </button>
+                    {categoryPickerOpen && (
+                      <>
+                        <div
+                          className="fixed inset-0 z-30"
+                          onClick={() => setCategoryPickerOpen(false)}
+                        />
+                        <div className="absolute left-0 top-full mt-1 z-40 bg-zinc-900 border border-zinc-700 rounded-lg shadow-xl p-1.5 flex flex-col gap-1 min-w-[140px]">
+                          {ALL_TYPES.map(t => {
+                            const Icon = categoryIcon[t] ?? User
+                            const isCurrent = selectedContact.type === t
+                            return (
+                              <button
+                                key={t}
+                                type="button"
+                                onClick={() => handleCategoryChange(t)}
+                                disabled={isCurrent}
+                                className={`flex items-center gap-2 text-xs px-2 py-1.5 rounded border leading-none transition-colors text-left ${
+                                  isCurrent
+                                    ? categoryBadge[t]
+                                    : "bg-transparent text-zinc-300 border-transparent hover:bg-zinc-800 hover:border-zinc-700"
+                                }`}
+                              >
+                                <Icon className={`w-3.5 h-3.5 ${categoryColor[t] ?? "text-zinc-400"}`} />
+                                {TYPE_LABEL[t]}
+                              </button>
+                            )
+                          })}
+                        </div>
+                      </>
+                    )}
+                  </div>
                   <span className={`ml-auto text-xs px-1.5 py-0.5 rounded border leading-none ${
                     selectedContact.status === "overdue"
                       ? "bg-red-500/20 text-red-400 border-red-500/30"
@@ -871,7 +963,8 @@ function CRMSTabInner() {
                     value={currentMessage}
                     onChange={e => handleEdit(e.target.value)}
                     rows={3}
-                    className="w-full bg-zinc-800 border border-zinc-700 rounded px-3 py-2.5 text-xs text-zinc-200 leading-relaxed resize-none focus:outline-none focus:border-zinc-500 transition-colors"
+                    className="w-full bg-zinc-800 border border-zinc-700 rounded px-3 py-2.5 text-zinc-200 leading-relaxed resize-none focus:outline-none focus:border-zinc-500 transition-colors"
+                    style={{ fontSize: "16px" }}
                   />
                 )}
                 <div className="flex items-center gap-1.5 mt-1.5">
@@ -886,31 +979,32 @@ function CRMSTabInner() {
                 )}
               </div>
 
-              {/* Action buttons */}
+              {/* Action buttons — Skip left, Regenerate (secondary) + Send (primary) right with gap */}
               <div className="px-4 py-3 border-t border-zinc-800 flex items-center gap-2">
                 <button
-                  onClick={handleSend}
-                  disabled={isGenerating || !currentMessage}
-                  className="flex items-center gap-1.5 text-xs text-emerald-400 hover:text-emerald-300 bg-emerald-500/10 border border-emerald-500/20 hover:border-emerald-500/40 px-3 py-1.5 rounded transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                  onClick={handleSkip}
+                  disabled={actionPending}
+                  className="flex items-center gap-1.5 text-xs text-zinc-400 hover:text-zinc-200 bg-zinc-800 border border-zinc-700 px-3 py-1.5 rounded transition-colors disabled:opacity-50"
                 >
-                  <Send className="w-3.5 h-3.5" />
-                  Send
+                  <SkipForward className="w-3.5 h-3.5" />
+                  Skip
                 </button>
                 <button
                   onClick={regenerate}
                   disabled={!!generatingFor}
-                  className="flex items-center gap-1.5 text-xs text-blue-400 hover:text-blue-300 bg-blue-500/10 border border-blue-500/20 hover:border-blue-500/40 px-3 py-1.5 rounded transition-colors disabled:opacity-50"
+                  aria-label="Regenerate message"
+                  title="Regenerate message"
+                  className="ml-auto flex items-center justify-center text-zinc-500 hover:text-zinc-300 bg-transparent border border-zinc-700 hover:border-zinc-500 w-11 h-11 rounded transition-colors disabled:opacity-50"
                 >
-                  <RefreshCw className={`w-3.5 h-3.5 ${isGenerating ? "animate-spin" : ""}`} />
-                  Regenerate
+                  <RefreshCw className={`w-4 h-4 ${isGenerating ? "animate-spin" : ""}`} />
                 </button>
                 <button
-                  onClick={handleSkip}
-                  disabled={actionPending}
-                  className="flex items-center gap-1.5 text-xs text-zinc-400 hover:text-zinc-200 bg-zinc-800 border border-zinc-700 px-3 py-1.5 rounded transition-colors ml-auto disabled:opacity-50"
+                  onClick={handleSend}
+                  disabled={isGenerating || !currentMessage}
+                  className="flex items-center gap-1.5 text-sm font-medium text-emerald-400 hover:text-emerald-300 bg-emerald-500/10 border border-emerald-500/30 hover:border-emerald-500/50 px-4 py-2 rounded transition-colors disabled:opacity-50 disabled:cursor-not-allowed min-h-[44px] ml-4"
                 >
-                  <SkipForward className="w-3.5 h-3.5" />
-                  Skip
+                  <Send className="w-4 h-4" />
+                  Send
                 </button>
               </div>
 
@@ -948,6 +1042,22 @@ function CRMSTabInner() {
                 ? { ...c, notes: newNotes, hasNotes: newNotes.trim().length > 0, notesStale: false }
                 : c
             ))
+          }}
+          onCategoryChanged={(sheetRow, newCategory) => {
+            const next = coerceType(newCategory)
+            setContacts(prev => prev.map(c =>
+              c.sheetRow === sheetRow ? { ...c, type: next, category: next } : c
+            ))
+            // If the modal is on the currently selected contact, snap modality to a valid one
+            if (selectedContact && selectedContact.sheetRow === sheetRow) {
+              const allowed = MODALITIES_BY_TYPE[next] as string[]
+              if (!allowed.includes(modality)) {
+                const nextMod = DEFAULT_MODALITY[next]
+                setModality(nextMod)
+                const updated = { ...selectedContact, type: next, category: next }
+                generate(updated, nextMod, true)
+              }
+            }
           }}
         />
       )}

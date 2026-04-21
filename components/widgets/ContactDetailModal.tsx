@@ -1,7 +1,11 @@
 "use client"
 
 import { useEffect, useState } from "react"
-import { X, Loader2, Send, Save, Phone } from "lucide-react"
+import {
+  X, Loader2, Send, Save, Phone,
+  UserCheck, User, Wrench, TrendingUp, Home, Building2,
+} from "lucide-react"
+import type { LucideIcon } from "lucide-react"
 
 export interface TouchesSummary {
   count: number
@@ -33,6 +37,41 @@ interface Props {
   onClose: () => void
   onSendToast: (msg: string) => void
   onNotesSaved: (sheetRow: number, notes: string) => void
+  onCategoryChanged?: (sheetRow: number, category: string) => void
+}
+
+const CATEGORY_OPTIONS = ["Agent", "Vendor", "Personal", "PM", "Investor", "Seller"] as const
+type CategoryOption = typeof CATEGORY_OPTIONS[number]
+
+const categoryIcon: Record<CategoryOption, LucideIcon> = {
+  Agent: UserCheck, Personal: User, Vendor: Wrench,
+  Investor: TrendingUp, Seller: Home, PM: Building2,
+}
+
+const categoryColor: Record<CategoryOption, string> = {
+  Agent:    "text-violet-400",
+  Personal: "text-pink-400",
+  Vendor:   "text-orange-400",
+  Investor: "text-blue-400",
+  Seller:   "text-emerald-400",
+  PM:       "text-teal-400",
+}
+
+const categoryBadge: Record<CategoryOption, string> = {
+  Agent:    "bg-violet-500/15 text-violet-300 border-violet-500/30",
+  Personal: "bg-pink-500/15 text-pink-300 border-pink-500/30",
+  Vendor:   "bg-orange-500/15 text-orange-300 border-orange-500/30",
+  Investor: "bg-blue-500/15 text-blue-300 border-blue-500/30",
+  Seller:   "bg-emerald-500/15 text-emerald-300 border-emerald-500/30",
+  PM:       "bg-teal-500/15 text-teal-300 border-teal-500/30",
+}
+
+function coerceCategory(raw: string): CategoryOption {
+  const s = (raw || "").trim()
+  if (s === "Property Manager") return "PM"
+  if (s === "Personal Contact") return "Personal"
+  if ((CATEGORY_OPTIONS as readonly string[]).includes(s)) return s as CategoryOption
+  return "Agent"
 }
 
 function formatDateTime(iso: string): string {
@@ -44,13 +83,36 @@ function formatDateTime(iso: string): string {
   })
 }
 
-export function ContactDetailModal({ contact, onClose, onSendToast, onNotesSaved }: Props) {
+export function ContactDetailModal({ contact, onClose, onSendToast, onNotesSaved, onCategoryChanged }: Props) {
   const [history, setHistory] = useState<InteractionEntry[]>([])
   const [loadingHistory, setLoadingHistory] = useState(true)
   const [notes, setNotes] = useState(contact.notes)
   const [savingNotes, setSavingNotes] = useState(false)
   const [notesSaved, setNotesSaved] = useState(false)
   const [quickMessage, setQuickMessage] = useState("")
+  const [categoryPickerOpen, setCategoryPickerOpen] = useState(false)
+  const [savingCategory, setSavingCategory] = useState(false)
+
+  const currentCategory = coerceCategory(contact.category)
+
+  async function handleCategorySelect(next: CategoryOption) {
+    setCategoryPickerOpen(false)
+    if (next === currentCategory || savingCategory) return
+    setSavingCategory(true)
+    try {
+      const res = await fetch("/api/crms/category", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sheetRow: contact.sheetRow, category: next }),
+      })
+      if (!res.ok) throw new Error()
+      onCategoryChanged?.(contact.sheetRow, next)
+    } catch {
+      onSendToast(`Type update failed for ${contact.name}`)
+    } finally {
+      setSavingCategory(false)
+    }
+  }
 
   // Fetch full history on mount
   useEffect(() => {
@@ -112,17 +174,33 @@ export function ContactDetailModal({ contact, onClose, onSendToast, onNotesSaved
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ phone: contact.phone, message: msg }),
     })
-      .then(res => {
+      .then(async res => {
         if (!res.ok) throw new Error(`send ${res.status}`)
-        fetch("/api/crms/log", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            name: contact.name, phone: contact.phone,
-            sheetRow: contact.sheetRow, modality: "Reconnect", message: msg,
-            action: "sent", tier: contact.tier, category: contact.category,
-          }),
-        }).catch(() => {})
+
+        // Await the log call so we can warn if LastContacted didn't save.
+        try {
+          const logRes = await fetch("/api/crms/log", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              name: contact.name, phone: contact.phone,
+              sheetRow: contact.sheetRow, modality: "Reconnect", message: msg,
+              action: "sent", tier: contact.tier, category: contact.category,
+            }),
+          })
+          if (!logRes.ok) {
+            onSendToast(`Sent to ${contact.name} but failed to record date`)
+          } else {
+            const logData = await logRes.json().catch(() => ({}))
+            if (logData?.lastContactedWritten === false) {
+              onSendToast(`Sent to ${contact.name} but failed to record date`)
+            }
+          }
+        } catch (e) {
+          console.error("Log call failed:", e)
+          onSendToast(`Sent to ${contact.name} but failed to record date`)
+        }
+
         // Refresh history so the new message shows
         fetch(`/api/crms/touches?phone=${encodeURIComponent(contact.phone)}&full=1`, { cache: "no-store" })
           .then(r => r.json())
@@ -145,7 +223,53 @@ export function ContactDetailModal({ contact, onClose, onSendToast, onNotesSaved
         <div className="flex items-center justify-between px-4 py-3 border-b border-zinc-800 sticky top-0 bg-zinc-950 z-10">
           <div className="min-w-0">
             <p className="text-sm font-semibold text-zinc-100 truncate">{contact.name}</p>
-            <p className="text-xs text-zinc-500">{contact.category} · Tier {contact.tier}</p>
+            <div className="flex items-center gap-1.5 mt-0.5">
+              <div className="relative">
+                <button
+                  type="button"
+                  onClick={() => setCategoryPickerOpen(o => !o)}
+                  disabled={savingCategory}
+                  title="Change contact type"
+                  className={`text-xs px-1.5 py-0.5 rounded border leading-none transition-colors hover:brightness-125 disabled:opacity-50 ${categoryBadge[currentCategory]}`}
+                >
+                  {currentCategory}
+                  {savingCategory && (
+                    <Loader2 className="inline-block w-3 h-3 animate-spin ml-1 -mb-0.5" />
+                  )}
+                </button>
+                {categoryPickerOpen && (
+                  <>
+                    <div
+                      className="fixed inset-0 z-40"
+                      onClick={() => setCategoryPickerOpen(false)}
+                    />
+                    <div className="absolute left-0 top-full mt-1 z-50 bg-zinc-900 border border-zinc-700 rounded-lg shadow-xl p-1.5 flex flex-col gap-1 min-w-[140px]">
+                      {CATEGORY_OPTIONS.map(t => {
+                        const Icon = categoryIcon[t]
+                        const isCurrent = currentCategory === t
+                        return (
+                          <button
+                            key={t}
+                            type="button"
+                            onClick={() => handleCategorySelect(t)}
+                            disabled={isCurrent}
+                            className={`flex items-center gap-2 text-xs px-2 py-1.5 rounded border leading-none transition-colors text-left ${
+                              isCurrent
+                                ? categoryBadge[t]
+                                : "bg-transparent text-zinc-300 border-transparent hover:bg-zinc-800 hover:border-zinc-700"
+                            }`}
+                          >
+                            <Icon className={`w-3.5 h-3.5 ${categoryColor[t]}`} />
+                            {t}
+                          </button>
+                        )
+                      })}
+                    </div>
+                  </>
+                )}
+              </div>
+              <span className="text-xs text-zinc-500">· Tier {contact.tier}</span>
+            </div>
           </div>
           <button onClick={onClose} className="text-zinc-500 hover:text-zinc-200 p-1">
             <X className="w-4 h-4" />
@@ -186,8 +310,9 @@ export function ContactDetailModal({ contact, onClose, onSendToast, onNotesSaved
               value={notes}
               onChange={e => setNotes(e.target.value)}
               rows={5}
-              className="w-full bg-zinc-900 border border-zinc-800 rounded px-3 py-2 text-xs text-zinc-200 leading-relaxed resize-none focus:outline-none focus:border-zinc-600"
+              className="w-full bg-zinc-900 border border-zinc-800 rounded px-3 py-2 text-zinc-200 leading-relaxed resize-none focus:outline-none focus:border-zinc-600"
               placeholder="Add a note..."
+              style={{ fontSize: "16px" }}
             />
           </div>
 
@@ -198,8 +323,9 @@ export function ContactDetailModal({ contact, onClose, onSendToast, onNotesSaved
               value={quickMessage}
               onChange={e => setQuickMessage(e.target.value)}
               rows={3}
-              className="w-full bg-zinc-900 border border-zinc-800 rounded px-3 py-2 text-xs text-zinc-200 leading-relaxed resize-none focus:outline-none focus:border-zinc-600"
+              className="w-full bg-zinc-900 border border-zinc-800 rounded px-3 py-2 text-zinc-200 leading-relaxed resize-none focus:outline-none focus:border-zinc-600"
               placeholder="Type a message and tap Send — fires immediately."
+              style={{ fontSize: "16px" }}
             />
             <div className="flex justify-end mt-1.5">
               <button

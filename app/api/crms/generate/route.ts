@@ -157,6 +157,29 @@ function lookupPrompt(table: Record<string, string>, type: ContactType, modality
   return table[`Agent_${modality}`] || table.Agent_Reconnect
 }
 
+// Prepended to every AI prompt. Keeps the model from referencing expired
+// transactional details (old showings, unanswered texts, deals from years ago)
+// that make the message feel stale or passive-aggressive.
+const CONTEXT_FILTER_PREAMBLE = `CONTEXT FILTERING RULES (apply before writing):
+1. Today is {currentYear}. Only reference details that feel current and relevant NOW.
+2. DO NOT mention: specific property showings, listings, offers, or deals older than 2 years.
+3. DO NOT mention: unanswered messages, ignored calls, failed follow-ups ("you never got back to me", "last time I reached out", etc.) — always sounds passive-aggressive.
+4. DO NOT mention: time-sensitive past events that have clearly expired.
+5. DO OK mention: professional identity (their job, trade, company), relationship context ("we go back to our KW days"), personal facts that don't expire (hobbies, family, neighborhood).
+6. If the notes contain ONLY stale transactional data or nothing usable, skip the notes entirely and write a warm generic reconnect message instead — something like: "Hey [first name], it's been a while since we last connected! I've been a full-time investor for the last several years and was hoping we could work together on something." Vary the wording, keep the tone warm and forward-looking.
+7. When referencing ANY date, always include the year (e.g. "back in March 2022", not "back in March").
+
+`
+
+function buildPrompt(type: ContactType, modality: Modality, firstName: string, notes: string): string {
+  const base = lookupPrompt(PROMPTS, type, modality)
+  const currentYear = String(new Date().getFullYear())
+  return (CONTEXT_FILTER_PREAMBLE + base)
+    .replace(/{currentYear}/g, currentYear)
+    .replace(/{name}/g, firstName)
+    .replace(/{notes}/g, notes || "No notes available.")
+}
+
 // ── Prefs ──────────────────────────────────────────────────────────────────
 
 type PrefRecord = { preferred_modality: Modality; last_used: string; count: number }
@@ -224,9 +247,7 @@ export async function POST(request: Request) {
       })
     }
 
-    const prompt = lookupPrompt(PROMPTS, type, modality)
-      .replace(/{name}/g, firstName)
-      .replace(/{notes}/g, notes || "No notes available.")
+    const prompt = buildPrompt(type, modality, firstName, notes)
 
     const reqBody = JSON.stringify({
       model: MODEL,

@@ -13,6 +13,10 @@ export async function POST(request: Request) {
     const norm = normalize(phone)
     const sheets = getSheetsClient()
 
+    let logAppended = true
+    let lastContactedWritten: boolean | null = null
+    let snoozeWritten: boolean | null = null
+
     // Append to the "Log" tab in the BoB sheet
     try {
       await sheets.spreadsheets.values.append({
@@ -25,11 +29,11 @@ export async function POST(request: Request) {
       })
     } catch (e) {
       console.error("Failed to append to Log tab:", e)
-      // Non-fatal — continue
+      logAppended = false
     }
 
     if (action === "sent") {
-      // Update column G (LastContacted) in BoB Sheet1
+      // Update column G (LastContacted) in BoB Sheet1 — CRITICAL for cadence
       const today = new Date().toLocaleDateString("en-US", {
         month: "short", day: "numeric", year: "numeric",
       })
@@ -40,9 +44,10 @@ export async function POST(request: Request) {
           valueInputOption: "USER_ENTERED",
           requestBody: { values: [[today]] },
         })
+        lastContactedWritten = true
       } catch (e) {
         console.error("Failed to update LastContacted in BoB:", e)
-        // Non-fatal — log was already written
+        lastContactedWritten = false
       }
     }
 
@@ -56,12 +61,24 @@ export async function POST(request: Request) {
           valueInputOption: "USER_ENTERED",
           requestBody: { values: [[until]] },
         })
+        snoozeWritten = true
       } catch (e) {
         console.error("Failed to write snooze to sheet:", e)
+        snoozeWritten = false
       }
     }
 
-    return NextResponse.json({ ok: true })
+    // If the action was "sent" but we failed to write LastContacted, the
+    // contact will keep re-appearing in the queue. Return 500 so the client
+    // can surface the failure to the user.
+    if (action === "sent" && lastContactedWritten === false) {
+      return NextResponse.json(
+        { ok: false, logAppended, lastContactedWritten, error: "Failed to write LastContacted to sheet" },
+        { status: 500 }
+      )
+    }
+
+    return NextResponse.json({ ok: true, logAppended, lastContactedWritten, snoozeWritten })
   } catch (err) {
     console.error("crms/log error:", err)
     return NextResponse.json({ error: "Failed to log action" }, { status: 500 })
