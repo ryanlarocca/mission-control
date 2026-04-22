@@ -4,7 +4,7 @@ import { useState, useEffect, useRef, useMemo, Component, ReactNode } from "reac
 import {
   Send, RefreshCw, SkipForward, Phone, Loader2,
   UserCheck, User, Wrench, TrendingUp, Home, Building2,
-  MessageSquare, AlertTriangle, CheckCircle2,
+  MessageSquare, AlertTriangle, CheckCircle2, Check,
 } from "lucide-react"
 import type { LucideIcon } from "lucide-react"
 import { ContactDetailModal } from "./ContactDetailModal"
@@ -510,6 +510,9 @@ function CRMSTabInner() {
 
     const contact = selectedContact
     const mod = modality
+    const msgKey = `${contact.id}::${mod}`
+    const generatedMessage = generatedMessages[msgKey] || ""
+    const wasEdited = editedMessages[msgKey] !== undefined
     setSendError(null)
 
     // Optimistic: mark sent and advance immediately
@@ -540,6 +543,7 @@ function CRMSTabInner() {
               name: contact.name, phone: contact.phone,
               sheetRow: contact.sheetRow, modality: mod, message,
               action: "sent", tier: contact.tier, category: contact.type,
+              generatedMessage, wasEdited,
             }),
           })
           if (!logRes.ok) {
@@ -593,6 +597,45 @@ function CRMSTabInner() {
     setSkipped(prev => new Set(prev).add(contact.id))
     advanceSelection(contact.id)
     setActionPending(false)
+  }
+
+  // ── Mark Done: contact was already reached out to (e.g. via Messages directly).
+  // Writes a "sent" Log row + LastContacted date without firing iMessage.
+  async function handleMarkDone() {
+    if (!selectedContact || actionPending) return
+    const contact = selectedContact
+    const mod = modality
+    setActionPending(true)
+
+    // Optimistic: mark sent + advance immediately
+    setSent(prev => new Set(prev).add(contact.id))
+    advanceSelection(contact.id)
+
+    try {
+      const logRes = await fetch("/api/crms/log", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name: contact.name, phone: contact.phone,
+          sheetRow: contact.sheetRow, modality: mod, message: "[marked contacted manually]",
+          action: "sent", tier: contact.tier, category: contact.type,
+          generatedMessage: "", wasEdited: false,
+        }),
+      })
+      if (!logRes.ok) {
+        showSendToast(`Marked ${contact.name} done but failed to record date — will re-appear`)
+      } else {
+        const logData = await logRes.json().catch(() => ({}))
+        if (logData?.lastContactedWritten === false) {
+          showSendToast(`Marked ${contact.name} done but failed to record date — will re-appear`)
+        }
+      }
+    } catch (e) {
+      console.error("Mark Done log failed:", e)
+      showSendToast(`Marked ${contact.name} done but failed to record date — will re-appear`)
+    } finally {
+      setActionPending(false)
+    }
   }
 
   async function handleEnrich() {
@@ -974,10 +1017,24 @@ function CRMSTabInner() {
                   </div>
                 ) : (
                   <textarea
+                    ref={el => {
+                      if (el) {
+                        // Auto-grow: reset then expand to scrollHeight (capped at 200px)
+                        el.style.height = "auto"
+                        const next = Math.min(el.scrollHeight, 200)
+                        el.style.height = `${next}px`
+                      }
+                    }}
                     value={currentMessage}
-                    onChange={e => handleEdit(e.target.value)}
-                    rows={3}
-                    className="w-full bg-zinc-800 border border-zinc-700 rounded px-3 py-2.5 text-zinc-200 leading-relaxed resize-none focus:outline-none focus:border-zinc-500 transition-colors"
+                    onChange={e => {
+                      handleEdit(e.target.value)
+                      const el = e.target
+                      el.style.height = "auto"
+                      const next = Math.min(el.scrollHeight, 200)
+                      el.style.height = `${next}px`
+                    }}
+                    rows={5}
+                    className="w-full min-h-[120px] max-h-[200px] overflow-y-auto bg-zinc-800 border border-zinc-700 rounded px-3 py-2.5 text-zinc-200 leading-relaxed resize-none focus:outline-none focus:border-zinc-500 transition-colors"
                     style={{ fontSize: "16px" }}
                   />
                 )}
@@ -993,8 +1050,8 @@ function CRMSTabInner() {
                 )}
               </div>
 
-              {/* Action buttons — Skip left, Regenerate (secondary) + Send (primary) right with gap */}
-              <div className="px-4 py-3 border-t border-zinc-800 flex items-center gap-2">
+              {/* Action buttons — Skip, Mark Done (muted), Regenerate (secondary) + Send (primary) */}
+              <div className="px-4 py-3 border-t border-zinc-800 flex items-center gap-2 flex-wrap">
                 <button
                   onClick={handleSkip}
                   disabled={actionPending}
@@ -1002,6 +1059,15 @@ function CRMSTabInner() {
                 >
                   <SkipForward className="w-3.5 h-3.5" />
                   Skip
+                </button>
+                <button
+                  onClick={handleMarkDone}
+                  disabled={actionPending}
+                  title="Mark as contacted (no message sent)"
+                  className="flex items-center gap-1.5 text-xs text-zinc-400 hover:text-zinc-200 bg-zinc-800 border border-zinc-700 px-3 py-1.5 rounded transition-colors disabled:opacity-50"
+                >
+                  <Check className="w-3.5 h-3.5" />
+                  Mark Done
                 </button>
                 <button
                   onClick={regenerate}

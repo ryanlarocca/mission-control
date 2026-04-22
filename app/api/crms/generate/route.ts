@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server"
 import fs from "fs"
+import { getSheetsClient, SHEET_ID } from "@/lib/sheets"
 
 const OPENROUTER_KEY = process.env.OPENROUTER_API_KEY || ""
 const MODEL = "anthropic/claude-sonnet-4-5"
@@ -60,70 +61,63 @@ function normalizeModality(m: unknown, type: ContactType): Modality {
 // types without dedicated prompts (Investor, Seller). Vendor has its own —
 // agent-style real-estate prospecting language is wrong for vendor contacts.
 const PROMPTS: Record<string, string> = {
-  Agent_Familiar: `You are writing a short iMessage on behalf of Ryan LaRocca, a real estate investor in the Bay Area.
-Write a 1-3 sentence message to {name}. Ryan knows this person well — first-name basis, casual tone.
-Reference something specific from these notes if relevant: {notes}
-The core ask: Ryan is looking for a project / deal. Work that in naturally.
-Do NOT introduce Ryan by full name. No sign-off, no emojis. Sound like a real text, not a template.`,
+  Agent_Familiar: `Write a short iMessage from Ryan LaRocca (Bay Area real estate investor) to {name}, an agent Ryan knows well.
+Use these notes if anything is current and relevant: {notes}
+Naturally work in that Ryan is looking for a project/deal.
+1-3 sentences. No sign-off, no emojis, no "hope you're doing well", no "I know it's been a while." Sound exactly like the voice examples above.`,
 
-  Agent_Reconnect: `You are writing a short iMessage on behalf of Ryan LaRocca, a real estate investor in the Bay Area.
-Write a 2-3 sentence message to {name}. Ryan has spoken to this person before but it's been a while.
-Open with "Hey {name}, it's Ryan LaRocca" and reference how they connected if notes suggest it: {notes}
-The core ask: Ryan is still actively buying and wants to know if they've seen anything interesting.
-No sign-off, no emojis. Sound like a real text between two professionals catching up.`,
+  Agent_Reconnect: `Write a short iMessage from Ryan LaRocca (Bay Area real estate investor) to {name}, an agent Ryan has spoken to before but it's been a while.
+Open with "Hey {name}, it's Ryan LaRocca" or similar.
+Use these notes for context on how they connected: {notes}
+Ryan is still actively buying — work that in naturally.
+2-3 sentences. No sign-off, no emojis. Match the voice examples exactly.`,
 
-  Agent_ColdReintro: `You are writing a short iMessage on behalf of Ryan LaRocca, a real estate investor in the Bay Area.
-Write a 2-3 sentence message to {name}. Ryan doesn't really know this person — it's a reintroduction.
-Open with "Hey {name}, this is Ryan LaRocca" and briefly establish who he is (investor, buys fixers/value-add).
-If notes have any context, reference it: {notes}
-The ask should be soft: "are you still active in real estate?" or "have you come across anything interesting?"
-No sign-off, no emojis. Conversational but professional.`,
+  Agent_ColdReintro: `Write a short iMessage from Ryan LaRocca (Bay Area real estate investor) to {name}. Ryan doesn't really know this person — this is a reintroduction.
+Open with "Hey {name}, this is Ryan LaRocca."
+Briefly establish: investor, buys fixers/value-add.
+Notes (use only if relevant): {notes}
+Soft ask: "are you still active in real estate?" or similar.
+2-3 sentences. No sign-off, no emojis. Match the voice examples exactly.`,
 
-  Vendor_Familiar: `You are writing a short iMessage on behalf of Ryan LaRocca to a vendor / tradesperson (e.g. contractor, handyman, window tinter, plumber, electrician).
-Write a 1-3 sentence message to {name}. Ryan has worked with them before and knows them on a first-name basis.
-Reference something specific from these notes if relevant: {notes}
-Tone: checking in on them and their work. You can mention appreciation for past work if the notes support it, and ask how they've been or if they've been busy.
-This is NOT a real estate prospecting message. Do NOT ask about "deals", "properties coming up", "anything interesting", or whether they're "still active in real estate" — they are a vendor, not an agent.
-It is fine to softly signal that Ryan may have work coming up, but do not push it.
-No sign-off, no emojis. Sound like a real text to someone whose work you've relied on.`,
+  Vendor_Familiar: `Write a short iMessage from Ryan LaRocca to {name}, a vendor/tradesperson Ryan has worked with and knows well.
+Notes: {notes}
+Tone: checking in on them and their work. NOT a real estate prospecting message — no "deals", "properties coming up", or "anything interesting."
+OK to softly signal Ryan may have work coming up.
+1-3 sentences. No sign-off, no emojis. Match the voice examples exactly.`,
 
-  Vendor_Reconnect: `You are writing a short iMessage on behalf of Ryan LaRocca to a vendor / tradesperson (e.g. contractor, handyman, window tinter, plumber, electrician).
-Write a 2-3 sentence message to {name}. Ryan has used their services before but it's been a while.
-Open with "Hey {name}, it's Ryan LaRocca" and, if the notes suggest the specific trade or past job, reference it naturally: {notes}
-Tone: warm check-in. Ask how their business has been, whether they're still taking on jobs, and mention that Ryan may have work coming up on a property.
-This is NOT a real estate prospecting message. Do NOT ask about "deals", "off-market properties", "anything on your desk", or whether they're "still active in real estate" — they are a vendor, not an agent.
-No sign-off, no emojis. Sound like someone reconnecting with a tradesperson they've lost touch with.`,
+  Vendor_Reconnect: `Write a short iMessage from Ryan LaRocca to {name}, a vendor/tradesperson. It's been a while.
+Open with "Hey {name}, it's Ryan LaRocca."
+Notes: {notes}
+Ask how their business has been, whether they're still taking on jobs. Ryan may have work coming up.
+NOT a real estate prospecting message.
+2-3 sentences. No sign-off, no emojis. Match the voice examples exactly.`,
 
-  Vendor_ColdReintro: `You are writing a short iMessage on behalf of Ryan LaRocca to a vendor / tradesperson (e.g. contractor, handyman, window tinter, plumber, electrician).
-Write a 2-3 sentence message to {name}. Ryan has their contact saved but doesn't have a strong relationship — this is a reintroduction.
-Open with "Hey {name}, this is Ryan LaRocca" and briefly remind them of the context if the notes support it (e.g. a past job, a referral source): {notes}
-Tone: polite, a touch tentative. Ask whether they're still taking on {their trade, if known from notes} work.
-This is NOT a real estate prospecting message. Do NOT ask about "deals", "properties", or whether they're "still active in real estate" — they are a vendor. The question is about their trade / business availability, not the real estate market.
-No sign-off, no emojis.`,
+  Vendor_ColdReintro: `Write a short iMessage from Ryan LaRocca to {name}, a vendor/tradesperson. This is a reintroduction.
+Open with "Hey {name}, this is Ryan LaRocca."
+Notes: {notes}
+Ask whether they're still taking on work. Polite, a touch tentative.
+NOT a real estate prospecting message.
+2-3 sentences. No sign-off, no emojis. Match the voice examples exactly.`,
 
-  PM_Portfolio: `You are writing a short iMessage on behalf of Ryan LaRocca, a real estate investor in the Bay Area.
-Write a 1-3 sentence message to {name}, a property manager. Ryan is interested in any properties coming up for sale in their portfolio.
-Reference anything relevant from these notes: {notes}
-The core ask: has anything in their portfolio come up for sale or are any owners looking to sell?
-No sign-off, no emojis. Sound like a real text — casual and direct.`,
+  PM_Portfolio: `Write a short iMessage from Ryan LaRocca (Bay Area investor) to {name}, a property manager.
+Notes: {notes}
+Ask if anything in their portfolio has come up for sale or any owners looking to sell.
+1-3 sentences. No sign-off, no emojis. Match the voice examples exactly.`,
 
-  Personal_CatchUp: `You are writing a short iMessage on behalf of Ryan LaRocca.
-Write a 1-3 sentence message to {name}. This is a close friend or someone Ryan knows well personally.
-Reference something from these notes if relevant: {notes}
-This is NOT a business message. No deals, no real estate. Just genuine "how are you" energy.
-No sign-off, no emojis. Sound like a real text to a friend.`,
+  Personal_CatchUp: `Write a short iMessage from Ryan to {name}, a close friend.
+Notes: {notes}
+This is NOT a business message. No deals, no real estate. Genuine "how are you" energy.
+1-3 sentences. No sign-off, no emojis. Match the voice examples exactly.`,
 
-  Personal_CheckIn: `You are writing a short iMessage on behalf of Ryan LaRocca.
-Write a 1-3 sentence message to {name}. Ryan knows this person but they've drifted apart.
-Reference something from these notes if relevant: {notes}
-Tone: warm but not forced. "Hey, thinking about you" energy. No business talk.
-No sign-off, no emojis. Sound like a real text.`,
+  Personal_CheckIn: `Write a short iMessage from Ryan to {name}. They've drifted apart.
+Notes: {notes}
+Warm but not forced. "Thinking about you" energy. No business talk.
+1-3 sentences. No sign-off, no emojis. Match the voice examples exactly.`,
 
-  Personal_Reconnect: `You are writing a short iMessage on behalf of Ryan LaRocca.
-Write a 2-3 sentence message to {name}. Ryan has lost touch with this person and wants to reconnect.
-If notes have any context about how they know each other, reference it: {notes}
-Tone: genuine, slightly nostalgic. "It's been way too long" energy. No business talk.
-No sign-off, no emojis.`,
+  Personal_Reconnect: `Write a short iMessage from Ryan to {name}. Lost touch, wants to reconnect.
+Notes: {notes}
+Genuine, forward-looking. No business talk. No "I know it's been a while."
+2-3 sentences. No sign-off, no emojis. Match the voice examples exactly.`,
 }
 
 const FALLBACKS: Record<string, string> = {
@@ -168,13 +162,131 @@ const CONTEXT_FILTER_PREAMBLE = `CONTEXT FILTERING RULES (apply before writing):
 5. DO OK mention: professional identity (their job, trade, company), relationship context ("we go back to our KW days"), personal facts that don't expire (hobbies, family, neighborhood).
 6. If the notes contain ONLY stale transactional data or nothing usable, skip the notes entirely and write a warm generic reconnect message instead — something like: "Hey [first name], it's been a while since we last connected! I've been a full-time investor for the last several years and was hoping we could work together on something." Vary the wording, keep the tone warm and forward-looking.
 7. When referencing ANY date, always include the year (e.g. "back in March 2022", not "back in March").
+8. NEVER use these phrases — Ryan does not talk like this:
+   - "I know it's been a while"
+   - "I hope this finds you well"
+   - "I've been keeping a lower profile"
+   - "I was just thinking about you" (for business contacts)
+   - "I hope you're doing well" (overused — only OK for close friends)
+   - "that [specific] sale/deal/property" when referencing vague old transactions — be general ("we worked together on a deal in Palo Alto") not falsely specific ("that Palo Alto sale")
+9. Keep sentences SHORT. Ryan averages 8-12 words per sentence in texts. Never write a sentence longer than 20 words.
+10. Ryan says "Hey" not "Hi". He uses dashes (—) not semicolons. He writes like a text message, not an email.
 
 `
 
-function buildPrompt(type: ContactType, modality: Modality, firstName: string, notes: string): string {
+// ── Voice examples (dynamic few-shot from Log tab) ─────────────────────────
+
+// Log tab columns: A=timestamp B=name C=phone D=sheetRow E=modality F=action
+// G=tier H=category I=message
+type LogRow = {
+  timestamp: string
+  modality: string
+  action: string
+  category: string
+  message: string
+}
+
+const VOICE_CACHE_TTL_MS = 5 * 60 * 1000
+let voiceCache: { data: LogRow[]; fetchedAt: number } | null = null
+
+async function loadLogRows(): Promise<LogRow[]> {
+  const now = Date.now()
+  if (voiceCache && now - voiceCache.fetchedAt < VOICE_CACHE_TTL_MS) {
+    return voiceCache.data
+  }
+  try {
+    const sheets = getSheetsClient()
+    const res = await sheets.spreadsheets.values.get({
+      spreadsheetId: SHEET_ID,
+      range: "Log!A:I",
+    })
+    const raw = (res.data.values || []) as string[][]
+    // Drop header row if present (first cell contains "timestamp" or similar
+    // non-ISO text — easiest detection: not parseable as date).
+    const rows: LogRow[] = []
+    for (let i = 0; i < raw.length; i++) {
+      const r = raw[i]
+      if (!r || r.length < 9) continue
+      const ts = r[0] || ""
+      // Skip header: if row 0 and timestamp is not a parseable date
+      if (i === 0 && isNaN(new Date(ts).getTime())) continue
+      rows.push({
+        timestamp: ts,
+        modality: r[4] || "",
+        action: r[5] || "",
+        category: r[7] || "",
+        message: r[8] || "",
+      })
+    }
+    voiceCache = { data: rows, fetchedAt: now }
+    return rows
+  } catch (e) {
+    console.error("loadLogRows failed:", e)
+    // Cache empty so we don't hammer the API on repeated failures
+    voiceCache = { data: [], fetchedAt: now }
+    return []
+  }
+}
+
+function rowMatchesType(row: LogRow, type: ContactType): boolean {
+  return normalizeType(row.category) === type
+}
+
+function rowMatchesModality(row: LogRow, modality: Modality, type: ContactType): boolean {
+  return normalizeModality(row.modality, type) === modality
+}
+
+async function fetchVoiceExamples(
+  type: ContactType,
+  modality: Modality,
+  limit = 5
+): Promise<string[]> {
+  const rows = await loadLogRows()
+  if (rows.length === 0) return []
+
+  const sent = rows.filter(r => (r.action || "").toLowerCase() === "sent" && r.message && r.message.trim())
+
+  // Pass 1: exact type + modality match
+  let matched = sent.filter(r => rowMatchesType(r, type) && rowMatchesModality(r, modality, type))
+
+  // Pass 2: same type, any modality — if we don't have 3+
+  if (matched.length < 3) {
+    matched = sent.filter(r => rowMatchesType(r, type))
+  }
+
+  // Sort by timestamp desc, take the first `limit`
+  matched.sort((a, b) => {
+    const ta = new Date(a.timestamp).getTime() || 0
+    const tb = new Date(b.timestamp).getTime() || 0
+    return tb - ta
+  })
+
+  return matched.slice(0, limit).map(r => r.message.trim()).filter(Boolean)
+}
+
+function buildVoiceBlock(examples: string[], firstName: string): string {
+  if (!examples.length) return ""
+  const lines = examples.map((ex, i) => `Example ${i + 1}: "${ex}"`).join("\n")
+  return `RYAN'S VOICE — study these real messages Ryan sent to similar contacts. Match his exact tone, vocabulary, sentence length, and phrasing. Do NOT add formality, filler phrases, or AI-isms he doesn't use:
+
+${lines}
+
+Now write a message to ${firstName} in this same voice.
+
+`
+}
+
+function buildPrompt(
+  type: ContactType,
+  modality: Modality,
+  firstName: string,
+  notes: string,
+  voiceExamples: string[] = []
+): string {
   const base = lookupPrompt(PROMPTS, type, modality)
   const currentYear = String(new Date().getFullYear())
-  return (CONTEXT_FILTER_PREAMBLE + base)
+  const voiceBlock = buildVoiceBlock(voiceExamples, firstName)
+  return (CONTEXT_FILTER_PREAMBLE + voiceBlock + base)
     .replace(/{currentYear}/g, currentYear)
     .replace(/{name}/g, firstName)
     .replace(/{notes}/g, notes || "No notes available.")
@@ -247,7 +359,9 @@ export async function POST(request: Request) {
       })
     }
 
-    const prompt = buildPrompt(type, modality, firstName, notes)
+    // Voice few-shot examples (dynamic — from Log tab, 5-min cache)
+    const voiceExamples = await fetchVoiceExamples(type, modality, 5)
+    const prompt = buildPrompt(type, modality, firstName, notes, voiceExamples)
 
     const reqBody = JSON.stringify({
       model: MODEL,

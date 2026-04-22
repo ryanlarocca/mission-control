@@ -197,6 +197,7 @@ export function ContactDetailModal({ contact, onClose, onSendToast, onNotesSaved
         if (!res.ok) throw new Error(`send ${res.status}`)
 
         // Await the log call so we can warn if LastContacted didn't save.
+        // Quick-send is always manual (no AI draft) → generatedMessage empty, wasEdited true.
         try {
           const logRes = await fetch("/api/crms/log", {
             method: "POST",
@@ -205,6 +206,7 @@ export function ContactDetailModal({ contact, onClose, onSendToast, onNotesSaved
               name: contact.name, phone: contact.phone,
               sheetRow: contact.sheetRow, modality: "Reconnect", message: msg,
               action: "sent", tier: contact.tier, category: contact.category,
+              generatedMessage: "", wasEdited: true,
             }),
           })
           if (!logRes.ok) {
@@ -335,7 +337,7 @@ export function ContactDetailModal({ contact, onClose, onSendToast, onNotesSaved
             <textarea
               value={quickMessage}
               onChange={e => setQuickMessage(e.target.value)}
-              rows={3}
+              rows={4}
               className="w-full bg-zinc-900 border border-zinc-800 rounded px-3 py-2 text-zinc-200 leading-relaxed resize-none focus:outline-none focus:border-zinc-600"
               placeholder="Type a message and tap Send — fires immediately."
               style={{ fontSize: "16px" }}

@@ -7,7 +7,10 @@ function normalize(phone: string): string {
 
 export async function POST(request: Request) {
   try {
-    const { name, phone, sheetRow, modality, message, action, tier, category } = await request.json()
+    const {
+      name, phone, sheetRow, modality, message, action, tier, category,
+      generatedMessage, wasEdited,
+    } = await request.json()
 
     const timestamp = new Date().toISOString()
     const norm = normalize(phone)
@@ -18,13 +21,18 @@ export async function POST(request: Request) {
     let snoozeWritten: boolean | null = null
 
     // Append to the "Log" tab in the BoB sheet
+    // Columns A-I are existing; J=generatedMessage (original AI draft),
+    // K=wasEdited ("true" or "false"). Append-only — no downstream logic
+    // reads these yet; they feed future voice-learning analysis.
+    const genMsgCol = typeof generatedMessage === "string" ? generatedMessage : ""
+    const wasEditedCol = wasEdited === true ? "true" : wasEdited === false ? "false" : ""
     try {
       await sheets.spreadsheets.values.append({
         spreadsheetId: SHEET_ID,
         range: "Log!A1",
         valueInputOption: "USER_ENTERED",
         requestBody: {
-          values: [[timestamp, name, norm, sheetRow, modality, action, tier, category, message]],
+          values: [[timestamp, name, norm, sheetRow, modality, action, tier, category, message, genMsgCol, wasEditedCol]],
         },
       })
     } catch (e) {
