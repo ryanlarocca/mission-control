@@ -166,14 +166,33 @@ export async function GET() {
 
     // Sort each bucket: most overdue first, then tier priority A > B > C > D
     const tierOrder: Record<string, number> = { A: 0, B: 1, C: 2, D: 3 }
+    const fullBuckets: Record<ContactType, DueContact[]> = {
+      Agent: [], Vendor: [], Personal: [], PM: [], Investor: [], Seller: [],
+    }
     for (const t of ALL_TYPES) {
       buckets[t].sort((a, b) => {
         if (a.hasNotes !== b.hasNotes) return a.hasNotes ? -1 : 1
         if (b.daysOverdue !== a.daysOverdue) return b.daysOverdue - a.daysOverdue
         return (tierOrder[a.tier] ?? 3) - (tierOrder[b.tier] ?? 3)
       })
+      // Retain full sorted bucket for potential Agent backfill below
+      fullBuckets[t] = buckets[t]
       // Cap each bucket at its daily target
       buckets[t] = buckets[t].slice(0, DAILY_TARGETS[t])
+    }
+
+    // Backfill: if Vendor/Personal (or any non-Agent type) is short of its
+    // target, redistribute the shortfall to Agent so the queue always delivers
+    // totalTarget contacts.
+    const totalTargetVal = ALL_TYPES.reduce((s, t) => s + DAILY_TARGETS[t], 0)
+    const totalFilled = ALL_TYPES.reduce((s, t) => s + buckets[t].length, 0)
+    const shortfall = Math.max(0, totalTargetVal - totalFilled)
+    if (shortfall > 0) {
+      const agentOverflow = fullBuckets.Agent.slice(
+        DAILY_TARGETS.Agent,
+        DAILY_TARGETS.Agent + shortfall
+      )
+      buckets.Agent = [...buckets.Agent, ...agentOverflow]
     }
 
     const queue = interleave(buckets)

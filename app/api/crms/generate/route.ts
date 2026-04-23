@@ -170,6 +170,12 @@ const CONTEXT_FILTER_PREAMBLE = `CONTEXT FILTERING RULES (apply before writing):
 9. Keep sentences SHORT. Ryan averages 8-12 words per sentence in texts. Never write a sentence longer than 20 words.
 10. Ryan says "Hey" not "Hi". He uses dashes (—) not semicolons. He writes like a text message, not an email.
 
+STALE REFERENCE RULES (strict — applies to every modality: Familiar, Reconnect, ColdReintro, CatchUp, CheckIn, Portfolio):
+- NEVER mention a specific property address, street name, or neighborhood-level location in any outreach message. Not "the Winchester property", not "that place on Oak Ave", not "the Menlo house". Generic city-level is fine ("in Palo Alto"); street/address level is never fine.
+- If notes mention a property, deal, offer, or showing without a clear date within the last 6 months (relative to {currentYear}), treat it as stale — do not reference it at all.
+- Dates without years in the notes are stale by default — do not reference them.
+- If unsure whether a reference is current, omit it entirely. A warm generic message is always better than a specific but inaccurate one.
+
 `
 
 // ── Voice examples (dynamic few-shot from Log tab) ─────────────────────────

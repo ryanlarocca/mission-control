@@ -61,6 +61,8 @@ const TYPE_LABEL_PLURAL: Record<ContactType, string> = {
 
 const ALL_TYPES: ContactType[] = ["Agent", "Vendor", "Personal", "PM", "Investor", "Seller"]
 
+const QUICK_EMOJIS = ["👍", "🙏", "💪", "😂", "🔥", "✅"]
+
 function coerceType(t: unknown): ContactType {
   if (typeof t !== "string") return "Agent"
   if (t === "Property Manager") return "PM"
@@ -275,6 +277,7 @@ function CRMSTabInner() {
   const selectDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const categoryPickerRef = useRef<HTMLDivElement>(null)
+  const textareaRef = useRef<HTMLTextAreaElement | null>(null)
 
   // Close the category picker when the user taps outside. Uses pointerdown
   // (fires before click) and a setTimeout so the tap that opened the picker
@@ -691,6 +694,19 @@ function CRMSTabInner() {
     setEditedMessages(prev => ({ ...prev, [`${selectedContact.id}::${modality}`]: value }))
   }
 
+  function insertAtCursor(text: string) {
+    const ta = textareaRef.current
+    if (!ta || !selectedContact) return
+    const start = ta.selectionStart ?? ta.value.length
+    const end = ta.selectionEnd ?? ta.value.length
+    const newVal = ta.value.slice(0, start) + text + ta.value.slice(end)
+    handleEdit(newVal)
+    requestAnimationFrame(() => {
+      ta.selectionStart = ta.selectionEnd = start + text.length
+      ta.focus()
+    })
+  }
+
   // ── Derived ──
   const dueContacts     = contacts.filter(c => !sent.has(c.id) && !skipped.has(c.id))
   const selectedContact = dueContacts.find(c => c.id === selectedId) ?? null
@@ -1016,27 +1032,43 @@ function CRMSTabInner() {
                     <span className="text-xs text-zinc-500">Generating…</span>
                   </div>
                 ) : (
-                  <textarea
-                    ref={el => {
-                      if (el) {
-                        // Auto-grow: reset then expand to scrollHeight (capped at 200px)
+                  <>
+                    <div className="flex gap-1 mb-1.5 flex-wrap">
+                      {QUICK_EMOJIS.map(emoji => (
+                        <button
+                          key={emoji}
+                          type="button"
+                          onClick={() => insertAtCursor(emoji)}
+                          className="text-lg px-1.5 py-0.5 rounded hover:bg-zinc-800 active:scale-95 transition-transform leading-none"
+                          aria-label={`Insert ${emoji}`}
+                        >
+                          {emoji}
+                        </button>
+                      ))}
+                    </div>
+                    <textarea
+                      ref={el => {
+                        textareaRef.current = el
+                        if (el) {
+                          // Auto-grow: reset then expand to scrollHeight (capped at 200px)
+                          el.style.height = "auto"
+                          const next = Math.min(el.scrollHeight, 200)
+                          el.style.height = `${next}px`
+                        }
+                      }}
+                      value={currentMessage}
+                      onChange={e => {
+                        handleEdit(e.target.value)
+                        const el = e.target
                         el.style.height = "auto"
                         const next = Math.min(el.scrollHeight, 200)
                         el.style.height = `${next}px`
-                      }
-                    }}
-                    value={currentMessage}
-                    onChange={e => {
-                      handleEdit(e.target.value)
-                      const el = e.target
-                      el.style.height = "auto"
-                      const next = Math.min(el.scrollHeight, 200)
-                      el.style.height = `${next}px`
-                    }}
-                    rows={5}
-                    className="w-full min-h-[120px] max-h-[200px] overflow-y-auto bg-zinc-800 border border-zinc-700 rounded px-3 py-2.5 text-zinc-200 leading-relaxed resize-none focus:outline-none focus:border-zinc-500 transition-colors"
-                    style={{ fontSize: "16px" }}
-                  />
+                      }}
+                      rows={5}
+                      className="w-full min-h-[120px] max-h-[200px] overflow-y-auto bg-zinc-800 border border-zinc-700 rounded px-3 py-2.5 text-zinc-200 leading-relaxed resize-none focus:outline-none focus:border-zinc-500 transition-colors"
+                      style={{ fontSize: "16px" }}
+                    />
+                  </>
                 )}
                 <div className="flex items-center gap-1.5 mt-1.5">
                   <Phone className="w-3 h-3 text-zinc-600" />
