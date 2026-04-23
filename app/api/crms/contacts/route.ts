@@ -9,9 +9,9 @@ const CADENCE: Record<string, number> = { A: 30, B: 45, C: 60, D: 365 }
 type ContactType = "Agent" | "Personal" | "Vendor" | "PM" | "Investor" | "Seller"
 
 const DAILY_TARGETS: Record<ContactType, number> = {
-  Agent:    20,
-  Vendor:   5,
-  Personal: 5,
+  Agent:    10,
+  Vendor:   3,
+  Personal: 2,
   PM:       0,
   Investor: 0,
   Seller:   0,

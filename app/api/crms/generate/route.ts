@@ -63,13 +63,13 @@ function normalizeModality(m: unknown, type: ContactType): Modality {
 const PROMPTS: Record<string, string> = {
   Agent_Familiar: `Write a short iMessage from Ryan LaRocca (Bay Area real estate investor) to {name}, an agent Ryan knows well.
 Use these notes if anything is current and relevant: {notes}
-Naturally work in that Ryan is looking for a project/deal.
-1-3 sentences. No sign-off, no emojis, no "hope you're doing well", no "I know it's been a while." Sound exactly like the voice examples above.`,
+Start with a genuine check-in — ask how they're doing, reference something from the notes if relevant. Then naturally work in that Ryan is an investor looking for a project or deal they could work on together. This is a warm message to someone Ryan has a real relationship with — it should sound like texting a colleague you like.
+2-4 sentences. No sign-off, no emojis. Sound exactly like the voice examples above.`,
 
   Agent_Reconnect: `Write a short iMessage from Ryan LaRocca (Bay Area real estate investor) to {name}, an agent Ryan has spoken to before but it's been a while.
 Open with "Hey {name}, it's Ryan LaRocca" or similar.
 Use these notes for context on how they connected: {notes}
-Ryan is still actively buying — work that in naturally.
+Ryan is still actively buying investment properties (fixers, value-add) in the Bay Area — work that in naturally so the agent knows exactly what Ryan is looking for.
 2-3 sentences. No sign-off, no emojis. Match the voice examples exactly.`,
 
   Agent_ColdReintro: `Write a short iMessage from Ryan LaRocca (Bay Area real estate investor) to {name}. Ryan doesn't really know this person — this is a reintroduction.
@@ -79,11 +79,11 @@ Notes (use only if relevant): {notes}
 Soft ask: "are you still active in real estate?" or similar.
 2-3 sentences. No sign-off, no emojis. Match the voice examples exactly.`,
 
-  Vendor_Familiar: `Write a short iMessage from Ryan LaRocca to {name}, a vendor/tradesperson Ryan has worked with and knows well.
+  Vendor_Familiar: `Write a short iMessage from Ryan to {name}, a vendor/tradesperson Ryan has worked with and knows well. They know who Ryan is — do NOT open with "it's Ryan LaRocca" or any self-introduction.
 Notes: {notes}
-Tone: checking in on them and their work. NOT a real estate prospecting message — no "deals", "properties coming up", or "anything interesting."
-OK to softly signal Ryan may have work coming up.
-1-3 sentences. No sign-off, no emojis. Match the voice examples exactly.`,
+Tone: checking in on them personally and their work. Ask how they've been or how business is going. NOT a real estate prospecting message — no "deals", "properties coming up", or "anything interesting."
+OK to softly signal Ryan may have work coming up soon.
+2-3 sentences. No sign-off, no emojis. Match the voice examples exactly.`,
 
   Vendor_Reconnect: `Write a short iMessage from Ryan LaRocca to {name}, a vendor/tradesperson. It's been a while.
 Open with "Hey {name}, it's Ryan LaRocca."
@@ -114,17 +114,15 @@ Notes: {notes}
 Warm but not forced. "Thinking about you" energy. No business talk.
 1-3 sentences. No sign-off, no emojis. Match the voice examples exactly.`,
 
-  Personal_Reconnect: `Write a short iMessage from Ryan to {name}. Lost touch, wants to reconnect.
+  Personal_Reconnect: `Write a short iMessage from Ryan to {name}. They've lost touch but this is someone Ryan actually knows — do NOT open with "it's Ryan" or any self-introduction.
 Notes: {notes}
 Genuine, forward-looking. No business talk. No "I know it's been a while."
 2-3 sentences. No sign-off, no emojis. Match the voice examples exactly.`,
 }
 
 const FALLBACKS: Record<string, string> = {
-  Agent_Familiar: `Hey {first}, hope you're doing well. I'm looking for a project right now — been seeing anything good lately?`,
-  Agent_Reconnect: `Hey {first}, it's Ryan LaRocca — we connected a while back about off-market deals.
-
-I'm still actively buying in the area — curious if anything interesting has crossed your desk lately?`,
+  Agent_Familiar: `Hey {first}, how are you? I've been ramping up on the investment side and looking for my next project — would love to work on something together if you come across anything.`,
+  Agent_Reconnect: `Hey {first}, it's Ryan LaRocca — it's been a minute. I'm still actively buying investment properties in the Bay Area — fixers, value-add, that kind of thing. If anything crosses your desk, I'd love to hear about it.`,
   Agent_ColdReintro: `Hey {first}, this is Ryan LaRocca — I had your contact saved from a while back and wanted to reintroduce myself.
 
 I'm an investor in the Bay Area buying fixers and value-add properties. Are you still active in real estate?`,
