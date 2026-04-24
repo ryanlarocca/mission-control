@@ -154,12 +154,16 @@ const modalityActive: Record<Modality, string> = {
 // SESSION STORAGE (progress survives refresh)
 // ══════════════════════════════════════════════════════════════════════════════
 
-const sessionKey = () => `crms-session-${new Date().toISOString().slice(0, 10)}`
+// Daily progress lives in localStorage (date-keyed) so it survives tab kills
+// and browser restarts. sessionStorage was wrong — a freeze/reload on mobile
+// would reset the 8/15 counter back to 0/15.
+const SESSION_KEY_PREFIX = "crms-session-"
+const sessionKey = () => `${SESSION_KEY_PREFIX}${new Date().toISOString().slice(0, 10)}`
 
 function loadSession(): { sent: string[]; skipped: string[] } {
   try {
     if (typeof window === "undefined") return { sent: [], skipped: [] }
-    const raw = sessionStorage.getItem(sessionKey())
+    const raw = localStorage.getItem(sessionKey())
     if (!raw) return { sent: [], skipped: [] }
     const parsed = JSON.parse(raw)
     return { sent: parsed.sent || [], skipped: parsed.skipped || [] }
@@ -169,10 +173,24 @@ function loadSession(): { sent: string[]; skipped: string[] } {
 function saveSession(sent: Set<string>, skipped: Set<string>) {
   try {
     if (typeof window === "undefined") return
-    sessionStorage.setItem(sessionKey(), JSON.stringify({
+    localStorage.setItem(sessionKey(), JSON.stringify({
       sent: Array.from(sent),
       skipped: Array.from(skipped),
     }))
+  } catch {}
+}
+
+function pruneOldSessions() {
+  try {
+    if (typeof window === "undefined") return
+    const today = new Date().toISOString().slice(0, 10)
+    const yesterday = new Date(Date.now() - 86400000).toISOString().slice(0, 10)
+    const keep = new Set([`${SESSION_KEY_PREFIX}${today}`, `${SESSION_KEY_PREFIX}${yesterday}`])
+    for (const key of Object.keys(localStorage)) {
+      if (key.startsWith(SESSION_KEY_PREFIX) && !keep.has(key)) {
+        localStorage.removeItem(key)
+      }
+    }
   } catch {}
 }
 
@@ -325,6 +343,7 @@ function CRMSTabInner() {
 
   // Fetch contacts on mount
   useEffect(() => {
+    pruneOldSessions()
     fetchContacts()
     return () => {
       if (selectDebounceRef.current) clearTimeout(selectDebounceRef.current)
