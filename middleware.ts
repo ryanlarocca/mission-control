@@ -2,7 +2,14 @@ import { NextResponse } from "next/server"
 import type { NextRequest } from "next/server"
 
 const SESSION_COOKIE = "mc_session"
-const PUBLIC_PATHS = ["/login", "/api/auth"]
+// Only Twilio's webhook callbacks are public. Everything else under
+// /api/leads (CRUD, recording-proxy) stays auth-gated.
+const PUBLIC_PATHS = [
+  "/login",
+  "/api/auth",
+  "/api/leads/voice",
+  "/api/leads/sms",
+]
 
 export function middleware(request: NextRequest) {
   const { pathname } = request.nextUrl
@@ -27,7 +34,7 @@ export function middleware(request: NextRequest) {
 
 export const config = {
   matcher: [
-    // Protect all routes except static assets
-    "/((?!_next/static|_next/image|favicon.ico|fonts|icons).*)",
+    // Protect all routes except static assets and public audio
+    "/((?!_next/static|_next/image|favicon.ico|fonts|icons|voicemail-).*)",
   ],
 }
