@@ -35,11 +35,13 @@ function recordTwiml(): string {
 export async function POST(request: Request) {
   let dialStatus = ""
   let callerPhone = ""
+  let twilioNumber = ""
   try {
     const body = await request.text()
     const params = parseTwilioBody(body)
     dialStatus = params.get("DialCallStatus") || ""
     callerPhone = params.get("From") || params.get("Caller") || ""
+    twilioNumber = params.get("To") || params.get("Called") || ""
   } catch (e) {
     console.error("[no-answer] Failed to parse Twilio body:", e)
   }
@@ -51,13 +53,15 @@ export async function POST(request: Request) {
       try {
         const sb = getLeadsClient()
         const fiveMinAgo = new Date(Date.now() - 5 * 60 * 1000).toISOString()
-        const { data, error } = await sb
+        let lookup = sb
           .from("leads")
           .select("id")
           .eq("caller_phone", callerPhone)
           .gte("created_at", fiveMinAgo)
           .order("created_at", { ascending: false })
           .limit(1)
+        if (twilioNumber) lookup = lookup.eq("twilio_number", twilioNumber)
+        const { data, error } = await lookup
         if (error) {
           console.error("[no-answer] Lookup failed:", error)
           return

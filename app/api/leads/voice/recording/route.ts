@@ -66,8 +66,12 @@ export async function POST(request: Request) {
       return twimlResponse()
     }
 
+    // Filter by twilio_number too — without it, a caller who hits both
+    // numbers within 15 min would have the second call's recording overwrite
+    // the first call's row. Confirmed bug 2026-04-28: an MFM-A voicemail row
+    // got its recording_url overwritten with the MFM-B recording.
     const fifteenMinAgo = new Date(Date.now() - 15 * 60 * 1000).toISOString()
-    const { data, error } = await sb
+    let lookup = sb
       .from("leads")
       .select("id")
       .eq("caller_phone", callerPhone)
@@ -75,6 +79,8 @@ export async function POST(request: Request) {
       .gte("created_at", fifteenMinAgo)
       .order("created_at", { ascending: false })
       .limit(1)
+    if (twilioNumber) lookup = lookup.eq("twilio_number", twilioNumber)
+    const { data, error } = await lookup
     if (error) console.error("[recording] Lookup failed:", error)
 
     const id = data?.[0]?.id

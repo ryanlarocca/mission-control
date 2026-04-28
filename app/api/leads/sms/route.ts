@@ -29,27 +29,28 @@ export async function POST(request: Request) {
   const source = getCampaignSource(to)
 
   if (from) {
-    void (async () => {
-      try {
-        const sb = getLeadsClient()
-        const { error } = await sb.from("leads").insert({
-          source,
-          twilio_number: to || null,
-          caller_phone: from,
-          lead_type: "sms",
-          message: bodyText,
-          status: "new",
-        })
-        if (error) console.error("[sms] Supabase insert failed:", error)
-      } catch (e) {
-        console.error("[sms] Supabase threw:", e)
-      }
-      const preview = bodyText.length > 300 ? bodyText.slice(0, 300) + "…" : bodyText
-      const escaped = preview.replace(/[<>&]/g, c => c === "<" ? "&lt;" : c === ">" ? "&gt;" : "&amp;")
-      await sendTelegramAlert(
-        `💬 New lead text — <b>${source}</b> — ${from}\n"${escaped}"`
-      )
-    })()
+    // AWAIT the insert — see comment in /api/leads/voice/route.ts on why
+    // fire-and-forget fails in Vercel serverless. Telegram stays
+    // fire-and-forget since it's best-effort.
+    try {
+      const sb = getLeadsClient()
+      const { error } = await sb.from("leads").insert({
+        source,
+        twilio_number: to || null,
+        caller_phone: from,
+        lead_type: "sms",
+        message: bodyText,
+        status: "new",
+      })
+      if (error) console.error("[sms] Supabase insert failed:", error)
+    } catch (e) {
+      console.error("[sms] Supabase threw:", e)
+    }
+    const preview = bodyText.length > 300 ? bodyText.slice(0, 300) + "…" : bodyText
+    const escaped = preview.replace(/[<>&]/g, c => c === "<" ? "&lt;" : c === ">" ? "&gt;" : "&amp;")
+    void sendTelegramAlert(
+      `💬 New lead text — <b>${source}</b> — ${from}\n"${escaped}"`
+    )
   }
 
   return new NextResponse(EMPTY_TWIML, {
