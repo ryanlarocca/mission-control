@@ -8,10 +8,11 @@ import { getLeadsClient, parseTwilioBody } from "@/lib/leads"
 
 const PROD_BASE = "https://mission-control-three-chi.vercel.app"
 const GREETING_URL = `${PROD_BASE}/voicemail-greeting.mp3`
-// Twilio fires recordingStatusCallback from its own servers, not from the
-// browser. A relative path resolves unreliably (Dial.action works, Record
-// callback does not in practice — silently dropped). Always use absolute.
-const RECORDING_CALLBACK_URL = `${PROD_BASE}/api/leads/voice/recording`
+// Use Record's `action` (synchronous, fires immediately with recording params)
+// instead of `recordingStatusCallback` (async, was not firing reliably). Without
+// `action`, Twilio falls back to the parent Dial action URL after recording —
+// which sends the recording params to /no-answer and triggers a re-record loop.
+const RECORDING_HANDLER_URL = `${PROD_BASE}/api/leads/voice/recording`
 
 function hangupTwiml(): string {
   return `<?xml version="1.0" encoding="UTF-8"?>
@@ -25,8 +26,8 @@ function recordTwiml(): string {
 <Response>
   <Play>${GREETING_URL}</Play>
   <Record maxLength="120" timeout="5" transcribe="false"
-    recordingStatusCallback="${RECORDING_CALLBACK_URL}"
-    recordingStatusCallbackMethod="POST" />
+    action="${RECORDING_HANDLER_URL}"
+    method="POST" />
   <Say voice="alice">Thank you. Goodbye.</Say>
 </Response>`
 }

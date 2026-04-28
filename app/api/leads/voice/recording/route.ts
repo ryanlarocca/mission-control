@@ -6,41 +6,72 @@ import {
   sendTelegramAlert,
 } from "@/lib/leads"
 
-// Twilio fires this when a voicemail recording is ready. We attach the URL
-// to the most recent voicemail-flagged lead for that caller and alert Ryan.
-// Twilio just needs a 200 to acknowledge.
+// Called as the <Record action="..."> target (synchronous). Twilio fires
+// this immediately after the voicemail is captured with the recording URL
+// + caller info. We update the lead row, send the Telegram alert, and
+// return Hangup TwiML so the call ends cleanly.
+//
+// Twilio's recording params naming on an `action` callback:
+//   RecordingUrl, RecordingSid, RecordingDuration
+//   From / Caller (lead's number), To / Called (the Twilio number)
+
+const HANGUP_TWIML = `<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+  <Hangup />
+</Response>`
+
+function twimlResponse(): NextResponse {
+  return new NextResponse(HANGUP_TWIML, {
+    headers: { "Content-Type": "text/xml" },
+  })
+}
 
 export async function POST(request: Request) {
   let recordingUrl = ""
   let callerPhone = ""
   let twilioNumber = ""
+  let recordingSid = ""
   try {
     const body = await request.text()
     const params = parseTwilioBody(body)
     recordingUrl = params.get("RecordingUrl") || ""
     callerPhone = params.get("From") || params.get("Caller") || ""
     twilioNumber = params.get("To") || params.get("Called") || ""
+    recordingSid = params.get("RecordingSid") || ""
   } catch (e) {
     console.error("[recording] Failed to parse Twilio body:", e)
-    return NextResponse.json({ ok: true }, { status: 200 })
+    return twimlResponse()
   }
 
   if (!recordingUrl || !callerPhone) {
     console.warn(`[recording] Missing fields — url:${!!recordingUrl} from:${!!callerPhone}`)
-    return NextResponse.json({ ok: true }, { status: 200 })
+    return twimlResponse()
   }
 
   const fullUrl = `${recordingUrl}.mp3`
   const source = getCampaignSource(twilioNumber)
+  console.log(`[recording] Processing ${recordingSid} for ${callerPhone} (${source})`)
 
   try {
     const sb = getLeadsClient()
+
+    // Idempotency: if this RecordingSid is already attached, do nothing.
+    const { data: existing } = await sb
+      .from("leads")
+      .select("id")
+      .eq("recording_url", fullUrl)
+      .limit(1)
+    if (existing && existing.length > 0) {
+      console.log(`[recording] ${recordingSid} already processed; skipping`)
+      return twimlResponse()
+    }
+
     const fifteenMinAgo = new Date(Date.now() - 15 * 60 * 1000).toISOString()
     const { data, error } = await sb
       .from("leads")
       .select("id")
       .eq("caller_phone", callerPhone)
-      .eq("lead_type", "voicemail")
+      .in("lead_type", ["voicemail", "call"])
       .gte("created_at", fifteenMinAgo)
       .order("created_at", { ascending: false })
       .limit(1)
@@ -50,13 +81,12 @@ export async function POST(request: Request) {
     if (id) {
       const { error: updErr } = await sb
         .from("leads")
-        .update({ recording_url: fullUrl })
+        .update({ recording_url: fullUrl, lead_type: "voicemail" })
         .eq("id", id)
       if (updErr) console.error("[recording] Update failed:", updErr)
+      else console.log(`[recording] Updated lead ${id} with recording`)
     } else {
-      // No matching voicemail row — insert a fresh one so the recording
-      // isn't orphaned.
-      console.warn(`[recording] No voicemail lead found for ${callerPhone}; inserting fresh row`)
+      console.warn(`[recording] No matching lead for ${callerPhone}; inserting fresh row`)
       const { error: insErr } = await sb.from("leads").insert({
         source,
         twilio_number: twilioNumber || null,
@@ -71,9 +101,13 @@ export async function POST(request: Request) {
     console.error("[recording] Supabase threw:", e)
   }
 
-  await sendTelegramAlert(
-    `🎙️ New voicemail — <b>${source}</b> — ${callerPhone}\n🔗 ${fullUrl}`
-  )
+  try {
+    await sendTelegramAlert(
+      `🎙️ New voicemail — <b>${source}</b> — ${callerPhone}\n🔗 ${fullUrl}`
+    )
+  } catch (e) {
+    console.error("[recording] Telegram threw:", e)
+  }
 
-  return NextResponse.json({ ok: true }, { status: 200 })
+  return twimlResponse()
 }
