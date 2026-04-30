@@ -11,7 +11,9 @@ export const FORWARD_TO = "+14085006293"
 // (`/api/leads/call` + `/api/leads/call/bridge`). Throws on missing so a
 // misconfigured env doesn't silently fall back and surprise the lead.
 export function getTwilioNumber(): string {
-  const n = process.env.TWILIO_NUMBER
+  // Defensive trim — `echo "..." | vercel env add` ships a trailing newline
+  // which then ends up inside `callerId="…"` in TwiML and breaks Twilio.
+  const n = process.env.TWILIO_NUMBER?.trim()
   if (!n) throw new Error("TWILIO_NUMBER must be set")
   return n
 }
