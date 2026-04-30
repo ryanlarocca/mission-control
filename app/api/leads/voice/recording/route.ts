@@ -8,21 +8,24 @@ import {
   sendTelegramAlert,
   sendTelegramVoice,
   transcribeAudio,
+  triageLeadFromTranscript,
+  type TriageResult,
 } from "@/lib/leads"
 
-// Called as the <Record action="..."> target (synchronous). Twilio fires
-// this immediately after the voicemail is captured with the recording URL
-// + caller info. Flow:
-//   1. Synchronously update the lead row (recording_url + lead_type=voicemail)
-//      so the Leads tab can render the audio player as soon as it loads.
-//   2. Return Hangup TwiML immediately so the caller doesn't sit through
-//      silence while Whisper + Telegram run.
-//   3. waitUntil(...) the slow work: download audio → Whisper transcription
-//      → save transcription → send Telegram voice note. waitUntil keeps the
-//      Vercel function alive past the response so the work actually finishes
-//      (plain fire-and-forget gets killed in serverless).
+// Recording handler — fires for both voicemails (<Record action="...">) and
+// live-call recordings (<Dial recordingStatusCallback="...">). Flow:
+//   1. Attach recording_url to the matching lead row (does NOT touch
+//      lead_type — that was set correctly by /voice or /no-answer earlier).
+//   2. Return Hangup TwiML so the caller's session ends immediately (only
+//      meaningful for voicemails; harmless for the live-call callback).
+//   3. waitUntil(...) the slow work: download audio → Whisper → save
+//      transcription → AI triage → Telegram voice note. waitUntil keeps
+//      the Vercel function alive past the response so the work finishes.
 //
-// Twilio's recording params on an `action` callback:
+// Lookup window is 60 minutes because live calls can run long, and the
+// recordingStatusCallback fires after the call ends.
+//
+// Twilio's recording params on an `action`/recordingStatusCallback:
 //   RecordingUrl, RecordingSid, RecordingDuration
 //   From / Caller (lead's number), To / Called (the Twilio number)
 
@@ -80,15 +83,15 @@ export async function POST(request: Request) {
     }
 
     // Filter by twilio_number too — without it, a caller who hits both
-    // numbers within 15 min would have the second call's recording overwrite
-    // the first call's row.
-    const fifteenMinAgo = new Date(Date.now() - 15 * 60 * 1000).toISOString()
+    // numbers within the window would have the second call's recording
+    // overwrite the first call's row. 60 min covers long live calls.
+    const sixtyMinAgo = new Date(Date.now() - 60 * 60 * 1000).toISOString()
     let lookup = sb
       .from("leads")
       .select("id")
       .eq("caller_phone", callerPhone)
       .in("lead_type", ["voicemail", "call"])
-      .gte("created_at", fifteenMinAgo)
+      .gte("created_at", sixtyMinAgo)
       .order("created_at", { ascending: false })
       .limit(1)
     if (twilioNumber) lookup = lookup.eq("twilio_number", twilioNumber)
@@ -97,9 +100,12 @@ export async function POST(request: Request) {
 
     const id = data?.[0]?.id
     if (id) {
+      // Only attach recording_url — leave lead_type alone. /voice already set
+      // it to "call"; /no-answer already promoted it to "voicemail" if the
+      // call wasn't answered.
       const { error: updErr } = await sb
         .from("leads")
-        .update({ recording_url: fullUrl, lead_type: "voicemail" })
+        .update({ recording_url: fullUrl })
         .eq("id", id)
       if (updErr) console.error("[recording] Update failed:", updErr)
       else {
@@ -112,6 +118,7 @@ export async function POST(request: Request) {
         .from("leads")
         .insert({
           source,
+          source_type: "direct_mail",
           twilio_number: twilioNumber || null,
           caller_phone: callerPhone,
           lead_type: "voicemail",
@@ -128,9 +135,9 @@ export async function POST(request: Request) {
   }
 
   // ── Step 2: return Hangup TwiML immediately so the caller's call ends ──
-  // The slow work (Whisper transcription + Telegram voice send) is queued
+  // The slow work (Whisper transcription + AI triage + Telegram) is queued
   // via waitUntil so it completes after the response.
-  waitUntil(processVoicemailBackground({
+  waitUntil(processRecordingBackground({
     fullUrl,
     callerPhone,
     source,
@@ -140,7 +147,7 @@ export async function POST(request: Request) {
   return twimlResponse()
 }
 
-async function processVoicemailBackground(args: {
+async function processRecordingBackground(args: {
   fullUrl: string
   callerPhone: string
   source: string
@@ -156,8 +163,8 @@ async function processVoicemailBackground(args: {
       transcription = await transcribeAudio(audio)
       if (transcription && leadId) {
         // Store transcription in the existing `message` column rather than
-        // adding a `transcription` column. For voicemail rows, `message` is
-        // otherwise null — see lib/leads.ts conventions comment.
+        // adding a `transcription` column. For voicemail/call rows, `message`
+        // is otherwise null — see lib/leads.ts conventions comment.
         try {
           const sb = getLeadsClient()
           const { error } = await sb
@@ -172,12 +179,45 @@ async function processVoicemailBackground(args: {
       }
     }
 
-    // Build Telegram caption — include transcription if we have it.
-    const captionLines = [`🎙️ New voicemail — <b>${source}</b> — ${callerPhone}`]
+    // ── AI auto-triage — only if status is still "new" so manual triage
+    //    decisions Ryan made before the callback arrived aren't clobbered.
+    let triage: TriageResult | null = null
+    if (transcription && leadId) {
+      try {
+        const sb = getLeadsClient()
+        const { data: currentLead } = await sb
+          .from("leads")
+          .select("status")
+          .eq("id", leadId)
+          .single()
+
+        if (currentLead?.status === "new") {
+          triage = await triageLeadFromTranscript(transcription)
+          if (triage) {
+            const { error } = await sb
+              .from("leads")
+              .update({ status: triage.status, ai_notes: triage.summary })
+              .eq("id", leadId)
+            if (error) console.error("[triage] Update failed:", error)
+            else console.log(`[triage] Lead ${leadId} → ${triage.status}: ${triage.summary}`)
+          }
+        } else {
+          console.log(`[triage] Skipping — lead ${leadId} is no longer "new" (${currentLead?.status})`)
+        }
+      } catch (e) {
+        console.error("[triage] Threw:", e)
+      }
+    }
+
+    // Build Telegram caption — include transcription + AI verdict if we have them.
+    const captionLines = [`🎙️ New recording — <b>${source}</b> — ${callerPhone}`]
     if (transcription) {
       captionLines.push("", `📝 ${transcription}`)
     } else {
       captionLines.push("", `🔗 ${fullUrl}`)
+    }
+    if (triage) {
+      captionLines.push("", `🤖 AI: <b>${triage.status.toUpperCase()}</b> — ${triage.summary}`)
     }
     const caption = captionLines.join("\n")
 

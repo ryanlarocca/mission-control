@@ -18,10 +18,19 @@ import {
 // imperceptible to the caller. Telegram stays fire-and-forget after the
 // response since it's not load-bearing for the data layer.
 
+// `record="record-from-answer"` records both legs of the live call (silently —
+// disclosure TwiML will be added later as a separate change). When the
+// recording is ready Twilio fires `recordingStatusCallback`, which hits the
+// same endpoint used for voicemails — that handler attaches recording_url +
+// triggers Whisper + AI triage. The absolute URL is required because Twilio
+// can't resolve relative URLs on a recordingStatusCallback.
+const RECORDING_CALLBACK_URL =
+  "https://mission-control-three-chi.vercel.app/api/leads/voice/recording"
+
 function buildTwiml(callerId: string): string {
   return `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-  <Dial timeout="15" action="/api/leads/voice/no-answer" method="POST" callerId="${callerId}">
+  <Dial timeout="10" action="/api/leads/voice/no-answer" method="POST" callerId="${callerId}" record="record-from-answer" recordingStatusCallback="${RECORDING_CALLBACK_URL}" recordingStatusCallbackMethod="POST">
     <Number>${FORWARD_TO}</Number>
   </Dial>
 </Response>`
@@ -46,6 +55,7 @@ export async function POST(request: Request) {
       const sb = getLeadsClient()
       const { error } = await sb.from("leads").insert({
         source,
+        source_type: "direct_mail",
         twilio_number: twilioNumber,
         caller_phone: callerPhone,
         lead_type: "call",

@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server"
 import { getLeadsClient, type LeadStatus } from "@/lib/leads"
 
-const VALID_STATUSES: LeadStatus[] = ["new", "hot", "qualified", "junk", "contacted"]
+const VALID_STATUSES: LeadStatus[] = ["new", "hot", "qualified", "warm", "junk", "contacted"]
 
 export async function GET(request: NextRequest) {
   const url = request.nextUrl

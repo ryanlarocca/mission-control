@@ -36,6 +36,7 @@ export async function POST(request: Request) {
       const sb = getLeadsClient()
       const { error } = await sb.from("leads").insert({
         source,
+        source_type: "direct_mail",
         twilio_number: to || null,
         caller_phone: from,
         lead_type: "sms",
