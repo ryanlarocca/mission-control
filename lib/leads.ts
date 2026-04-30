@@ -7,6 +7,15 @@ export const CAMPAIGN_MAP: Record<string, string> = {
 
 export const FORWARD_TO = "+14085006293"
 
+// Outbound Twilio number used as caller ID for click-to-call relays
+// (`/api/leads/call` + `/api/leads/call/bridge`). Throws on missing so a
+// misconfigured env doesn't silently fall back and surprise the lead.
+export function getTwilioNumber(): string {
+  const n = process.env.TWILIO_NUMBER
+  if (!n) throw new Error("TWILIO_NUMBER must be set")
+  return n
+}
+
 export type LeadType = "call" | "voicemail" | "sms" | "form"
 export type LeadStatus = "new" | "hot" | "qualified" | "warm" | "junk" | "contacted"
 
@@ -181,6 +190,100 @@ export function parseTwilioBody(body: string): URLSearchParams {
 export interface TriageResult {
   status: LeadStatus
   summary: string
+}
+
+// Shared background pipeline for both inbound recording callbacks
+// (/api/leads/voice/recording) and outbound call recordings
+// (/api/leads/call/recording). Downloads audio, runs Whisper, optionally
+// runs AI auto-triage (only when status is still "new" so manual triage
+// isn't clobbered), and posts the audio + caption to Telegram.
+//
+// `direction` flips the Telegram caption header so Ryan can tell at a
+// glance whether the recording is from an inbound voicemail/call or an
+// outbound call he made.
+export async function processRecordingBackground(args: {
+  fullUrl: string
+  callerPhone: string
+  source: string
+  leadId: string | null
+  direction?: "inbound" | "outbound"
+}): Promise<void> {
+  const { fullUrl, callerPhone, source, leadId } = args
+  const direction = args.direction ?? "inbound"
+  try {
+    const audio = await fetchTwilioAudio(fullUrl)
+
+    let transcription: string | null = null
+    if (audio) {
+      transcription = await transcribeAudio(audio)
+      if (transcription && leadId) {
+        try {
+          const sb = getLeadsClient()
+          const { error } = await sb
+            .from("leads")
+            .update({ message: transcription })
+            .eq("id", leadId)
+          if (error) console.error("[recording-bg] Transcription save failed:", error)
+          else console.log(`[recording-bg] Saved transcription for lead ${leadId}`)
+        } catch (e) {
+          console.error("[recording-bg] Transcription save threw:", e)
+        }
+      }
+    }
+
+    // AI auto-triage is only meaningful for inbound recordings — for
+    // outbound calls Ryan already knows what the conversation was about
+    // and the row was inserted with status="contacted", not "new".
+    let triage: TriageResult | null = null
+    if (direction === "inbound" && transcription && leadId) {
+      try {
+        const sb = getLeadsClient()
+        const { data: currentLead } = await sb
+          .from("leads")
+          .select("status")
+          .eq("id", leadId)
+          .single()
+
+        if (currentLead?.status === "new") {
+          triage = await triageLeadFromTranscript(transcription)
+          if (triage) {
+            const { error } = await sb
+              .from("leads")
+              .update({ status: triage.status, ai_notes: triage.summary })
+              .eq("id", leadId)
+            if (error) console.error("[triage] Update failed:", error)
+            else console.log(`[triage] Lead ${leadId} → ${triage.status}: ${triage.summary}`)
+          }
+        } else {
+          console.log(`[triage] Skipping — lead ${leadId} is no longer "new" (${currentLead?.status})`)
+        }
+      } catch (e) {
+        console.error("[triage] Threw:", e)
+      }
+    }
+
+    const header = direction === "outbound"
+      ? `📤 Outbound call recording — <b>${source}</b> — ${callerPhone}`
+      : `🎙️ New recording — <b>${source}</b> — ${callerPhone}`
+    const captionLines = [header]
+    if (transcription) {
+      captionLines.push("", `📝 ${transcription}`)
+    } else {
+      captionLines.push("", `🔗 ${fullUrl}`)
+    }
+    if (triage) {
+      captionLines.push("", `🤖 AI: <b>${triage.status.toUpperCase()}</b> — ${triage.summary}`)
+    }
+    const caption = captionLines.join("\n")
+
+    if (audio) {
+      await sendTelegramVoice(audio, caption)
+    } else {
+      await sendTelegramAlert(caption)
+    }
+  } catch (e) {
+    console.error("[recording-bg] Threw:", e)
+  }
 }
 
 export async function triageLeadFromTranscript(

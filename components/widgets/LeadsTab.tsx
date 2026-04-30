@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState, useCallback } from "react"
 import {
-  Phone, Voicemail, MessageSquare, ClipboardList, ChevronDown, ChevronRight,
+  Phone, PhoneOutgoing, Voicemail, MessageSquare, ClipboardList, ChevronDown, ChevronRight,
   Loader2, RefreshCw, Send, Check,
 } from "lucide-react"
 
@@ -191,6 +191,9 @@ export function LeadsTab() {
   const [sendingFor, setSendingFor]     = useState<string | null>(null)
   const [sendError, setSendError]       = useState<string | null>(null)
   const [sendSuccess, setSendSuccess]   = useState<string | null>(null)
+  const [callingFor, setCallingFor]     = useState<string | null>(null)
+  const [callError, setCallError]       = useState<string | null>(null)
+  const [callSuccess, setCallSuccess]   = useState<string | null>(null)
 
   const fetchLeads = useCallback(async (silent = false) => {
     if (!silent) setRefreshing(true)
@@ -260,6 +263,33 @@ export function LeadsTab() {
     // Optimistic
     setLeads(prev => prev.map(l => l.id === group.mostRecentId ? { ...l, notes: val } : l))
     void patchLead(group.mostRecentId, { notes: val })
+  }
+
+  async function callLead(group: LeadGroup) {
+    setCallingFor(group.phone)
+    setCallError(null)
+    try {
+      const res = await fetch("/api/leads/call", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          phone: group.phone,
+          source: group.source,
+        }),
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok || !data.success) {
+        throw new Error(data.error || `HTTP ${res.status}`)
+      }
+      setCallSuccess(group.phone)
+      setTimeout(() => setCallSuccess(null), 4000)
+      // Refetch to surface the new outbound call row in the timeline.
+      void fetchLeads(true)
+    } catch (e) {
+      setCallError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setCallingFor(null)
+    }
   }
 
   async function sendOutbound(group: LeadGroup) {
@@ -383,6 +413,10 @@ export function LeadsTab() {
               sending={sendingFor === group.phone}
               sendError={sendingFor === null && sendError && expandedPhone === group.phone ? sendError : null}
               sendSuccess={sendSuccess === group.phone}
+              onCall={() => callLead(group)}
+              calling={callingFor === group.phone}
+              callError={callingFor === null && callError && expandedPhone === group.phone ? callError : null}
+              callSuccess={callSuccess === group.phone}
             />
           ))}
         </div>
@@ -407,6 +441,10 @@ interface LeadCardProps {
   sending: boolean
   sendError: string | null
   sendSuccess: boolean
+  onCall: () => void
+  calling: boolean
+  callError: string | null
+  callSuccess: boolean
 }
 
 function LeadCard(p: LeadCardProps) {
@@ -454,7 +492,7 @@ function LeadCard(p: LeadCardProps) {
 
       {expanded && (
         <div className="border-t border-zinc-800 px-3 py-3 space-y-3">
-          <div className="text-sm">
+          <div className="text-sm flex items-center gap-3 flex-wrap">
             <a
               href={`tel:${group.phone}`}
               className="inline-flex items-center gap-1.5 text-emerald-400 hover:text-emerald-300 underline-offset-2 hover:underline"
@@ -462,8 +500,25 @@ function LeadCard(p: LeadCardProps) {
               <Phone className="w-3.5 h-3.5" />
               {formatPhone(group.phone)}
             </a>
+            <button
+              onClick={p.onCall}
+              disabled={p.calling}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 min-h-[36px] rounded bg-emerald-600 hover:bg-emerald-500 disabled:bg-zinc-800 disabled:text-zinc-600 text-white text-xs font-medium transition-colors"
+              title="Ring my cell, then bridge to this lead with recording"
+            >
+              {p.calling ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <PhoneOutgoing className="w-3.5 h-3.5" />}
+              {p.calling ? "Dialing…" : "Call"}
+            </button>
+            {p.callSuccess && (
+              <span className="text-emerald-400 text-xs inline-flex items-center gap-1">
+                <Check className="w-3 h-3" /> Ringing your cell
+              </span>
+            )}
+            {p.callError && (
+              <span className="text-red-300 text-xs">{p.callError}</span>
+            )}
             {group.email && (
-              <span className="ml-3 text-zinc-400 text-xs">📧 {group.email}</span>
+              <span className="ml-auto text-zinc-400 text-xs">📧 {group.email}</span>
             )}
           </div>
 
@@ -572,16 +627,40 @@ function TimelineEvent({ ev }: { ev: Lead }) {
   })
 
   if (outbound) {
-    // Right-aligned bubble, emerald accent — Ryan's outbound message
+    // Right-aligned bubble, emerald accent — Ryan's outbound message or call.
+    // For outbound calls: show recording + transcription if attached, else
+    // a placeholder so a fresh "ringing" call isn't rendered as "(empty)".
+    const isOutboundCall = ev.lead_type === "call"
     return (
       <div className="flex justify-end">
-        <div className="max-w-[85%] bg-emerald-900/30 border border-emerald-900/50 rounded px-3 py-2">
-          <div className="text-[10px] uppercase tracking-wider text-emerald-400/70 mb-1 flex items-center gap-1.5">
-            <span>You · {fullTime}</span>
+        <div className="max-w-[85%] bg-emerald-900/30 border border-emerald-900/50 rounded px-3 py-2 space-y-2">
+          <div className="text-[10px] uppercase tracking-wider text-emerald-400/70 flex items-center gap-1.5">
+            <span>You{isOutboundCall ? " · outbound call" : ""} · {fullTime}</span>
           </div>
-          <div className="text-sm text-zinc-100 whitespace-pre-wrap break-words">
-            {ev.message || "(empty)"}
-          </div>
+          {isOutboundCall ? (
+            <>
+              {ev.message && (
+                <div className="text-sm text-zinc-100 whitespace-pre-wrap break-words">
+                  {ev.message}
+                </div>
+              )}
+              {ev.recording_url && (
+                <audio
+                  controls
+                  src={`/api/leads/recording-proxy?url=${encodeURIComponent(ev.recording_url)}`}
+                  className="w-full"
+                  preload="metadata"
+                />
+              )}
+              {!ev.message && !ev.recording_url && (
+                <div className="text-sm text-zinc-300 italic">Outbound call · awaiting recording</div>
+              )}
+            </>
+          ) : (
+            <div className="text-sm text-zinc-100 whitespace-pre-wrap break-words">
+              {ev.message || "(empty)"}
+            </div>
+          )}
         </div>
       </div>
     )

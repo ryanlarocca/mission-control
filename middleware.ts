@@ -9,6 +9,10 @@ const PUBLIC_PATHS = [
   "/api/auth",
   "/api/leads/voice",
   "/api/leads/sms",
+  // Twilio fetches these for outbound call relay (initiated from /api/leads/call,
+  // which itself stays auth-gated).
+  "/api/leads/call/bridge",
+  "/api/leads/call/recording",
 ]
 
 export function middleware(request: NextRequest) {

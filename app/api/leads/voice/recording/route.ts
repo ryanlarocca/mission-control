@@ -1,15 +1,10 @@
 import { NextResponse } from "next/server"
 import { waitUntil } from "@vercel/functions"
 import {
-  fetchTwilioAudio,
   getCampaignSource,
   getLeadsClient,
   parseTwilioBody,
-  sendTelegramAlert,
-  sendTelegramVoice,
-  transcribeAudio,
-  triageLeadFromTranscript,
-  type TriageResult,
+  processRecordingBackground,
 } from "@/lib/leads"
 
 // Recording handler — fires for both voicemails (<Record action="...">) and
@@ -142,92 +137,8 @@ export async function POST(request: Request) {
     callerPhone,
     source,
     leadId,
+    direction: "inbound",
   }))
 
   return twimlResponse()
-}
-
-async function processRecordingBackground(args: {
-  fullUrl: string
-  callerPhone: string
-  source: string
-  leadId: string | null
-}): Promise<void> {
-  const { fullUrl, callerPhone, source, leadId } = args
-  try {
-    // Download the audio once — used for both Whisper and Telegram voice.
-    const audio = await fetchTwilioAudio(fullUrl)
-
-    let transcription: string | null = null
-    if (audio) {
-      transcription = await transcribeAudio(audio)
-      if (transcription && leadId) {
-        // Store transcription in the existing `message` column rather than
-        // adding a `transcription` column. For voicemail/call rows, `message`
-        // is otherwise null — see lib/leads.ts conventions comment.
-        try {
-          const sb = getLeadsClient()
-          const { error } = await sb
-            .from("leads")
-            .update({ message: transcription })
-            .eq("id", leadId)
-          if (error) console.error("[recording-bg] Transcription save failed:", error)
-          else console.log(`[recording-bg] Saved transcription for lead ${leadId}`)
-        } catch (e) {
-          console.error("[recording-bg] Transcription save threw:", e)
-        }
-      }
-    }
-
-    // ── AI auto-triage — only if status is still "new" so manual triage
-    //    decisions Ryan made before the callback arrived aren't clobbered.
-    let triage: TriageResult | null = null
-    if (transcription && leadId) {
-      try {
-        const sb = getLeadsClient()
-        const { data: currentLead } = await sb
-          .from("leads")
-          .select("status")
-          .eq("id", leadId)
-          .single()
-
-        if (currentLead?.status === "new") {
-          triage = await triageLeadFromTranscript(transcription)
-          if (triage) {
-            const { error } = await sb
-              .from("leads")
-              .update({ status: triage.status, ai_notes: triage.summary })
-              .eq("id", leadId)
-            if (error) console.error("[triage] Update failed:", error)
-            else console.log(`[triage] Lead ${leadId} → ${triage.status}: ${triage.summary}`)
-          }
-        } else {
-          console.log(`[triage] Skipping — lead ${leadId} is no longer "new" (${currentLead?.status})`)
-        }
-      } catch (e) {
-        console.error("[triage] Threw:", e)
-      }
-    }
-
-    // Build Telegram caption — include transcription + AI verdict if we have them.
-    const captionLines = [`🎙️ New recording — <b>${source}</b> — ${callerPhone}`]
-    if (transcription) {
-      captionLines.push("", `📝 ${transcription}`)
-    } else {
-      captionLines.push("", `🔗 ${fullUrl}`)
-    }
-    if (triage) {
-      captionLines.push("", `🤖 AI: <b>${triage.status.toUpperCase()}</b> — ${triage.summary}`)
-    }
-    const caption = captionLines.join("\n")
-
-    if (audio) {
-      await sendTelegramVoice(audio, caption)
-    } else {
-      // No audio — fall back to text-only with the URL
-      await sendTelegramAlert(caption)
-    }
-  } catch (e) {
-    console.error("[recording-bg] Threw:", e)
-  }
 }
