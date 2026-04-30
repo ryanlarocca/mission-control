@@ -233,6 +233,27 @@ export async function processRecordingBackground(args: {
       }
     }
 
+    // Outbound calls get a short summary saved to `ai_notes` (Ryan made
+    // the call and already knows the classification, so no triage — just
+    // a "what was discussed / next steps" line for the timeline).
+    let outboundSummary: string | null = null
+    if (direction === "outbound" && transcription && leadId) {
+      outboundSummary = await summarizeOutboundCall(transcription)
+      if (outboundSummary) {
+        try {
+          const sb = getLeadsClient()
+          const { error } = await sb
+            .from("leads")
+            .update({ ai_notes: outboundSummary })
+            .eq("id", leadId)
+          if (error) console.error("[summarize] Update failed:", error)
+          else console.log(`[summarize] Saved outbound summary for lead ${leadId}: ${outboundSummary}`)
+        } catch (e) {
+          console.error("[summarize] Save threw:", e)
+        }
+      }
+    }
+
     // AI auto-triage is only meaningful for inbound recordings — for
     // outbound calls Ryan already knows what the conversation was about
     // and the row was inserted with status="contacted", not "new".
@@ -276,6 +297,9 @@ export async function processRecordingBackground(args: {
     if (triage) {
       captionLines.push("", `🤖 AI: <b>${triage.status.toUpperCase()}</b> — ${triage.summary}`)
     }
+    if (outboundSummary) {
+      captionLines.push("", `🤖 Summary: ${outboundSummary}`)
+    }
     const caption = captionLines.join("\n")
 
     if (audio) {
@@ -285,6 +309,55 @@ export async function processRecordingBackground(args: {
     }
   } catch (e) {
     console.error("[recording-bg] Threw:", e)
+  }
+}
+
+// Brief summary of an outbound call. The inbound flow uses
+// `triageLeadFromTranscript` which classifies AND summarizes — but for
+// outbound, Ryan made the call and already knows the classification, so
+// we only need a short "what was discussed / next steps" line for the
+// timeline + ai_notes.
+export async function summarizeOutboundCall(
+  transcription: string
+): Promise<string | null> {
+  const apiKey = process.env.OPENROUTER_API_KEY
+  if (!apiKey) {
+    console.warn("[summarize] OPENROUTER_API_KEY not set; skipping outbound summary")
+    return null
+  }
+
+  const prompt = `You are summarizing a phone call between Ryan (a real estate investor) and a lead. Based on the transcript below, write a brief 1-2 sentence summary of what was discussed and any next steps. No labels, no markdown, no quotes — just the summary text. Maximum 2 sentences.
+
+TRANSCRIPT:
+"${transcription}"`
+
+  try {
+    const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        model: "anthropic/claude-haiku-4-5",
+        messages: [{ role: "user", content: prompt }],
+        max_tokens: 120,
+      }),
+    })
+
+    if (!res.ok) {
+      console.error(`[summarize] OpenRouter failed ${res.status}: ${(await res.text()).slice(0, 300)}`)
+      return null
+    }
+
+    const json = await res.json() as { choices?: { message?: { content?: string } }[] }
+    const content = json.choices?.[0]?.message?.content?.trim()
+    if (!content) return null
+    // Strip surrounding quote marks if the model wrapped its response.
+    return content.replace(/^["'`]+|["'`]+$/g, "").trim() || null
+  } catch (e) {
+    console.error("[summarize] Threw:", e)
+    return null
   }
 }
 

@@ -532,7 +532,7 @@ function LeadCard(p: LeadCardProps) {
 
           {group.aiNotes && (
             <div className="bg-zinc-900/50 border border-zinc-800 rounded px-3 py-2">
-              <div className="text-xs text-zinc-500 mb-1">🤖 AI Triage</div>
+              <div className="text-xs text-zinc-500 mb-1">🤖 AI Notes</div>
               <div className="text-sm text-zinc-200">{group.aiNotes}</div>
             </div>
           )}
