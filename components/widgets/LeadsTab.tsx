@@ -156,17 +156,24 @@ function relativeTime(iso: string): string {
 function groupLeads(leads: Lead[]): LeadGroup[] {
   const byKey = new Map<string, Lead[]>()
   for (const l of leads) {
-    // Prefer phone for grouping (calls, voicemails, sms, plus email leads
-    // where Haiku pulled a number from the body). Email-only leads with no
-    // phone fall back to grouping by sender email so they still surface.
-    // Anything missing both still gets its own row keyed by id rather than
-    // being silently dropped.
-    const phone = l.caller_phone || ""
-    const key = phone
-      ? phone
-      : l.email
-        ? `email:${l.email.toLowerCase()}`
-        : `id:${l.id}`
+    // Email leads with a Gmail thread always group by thread — a Gmail
+    // conversation is one card, regardless of how the caller_phone field
+    // shifts across messages (e.g. customer initially writes one number,
+    // then "sorry my real number is X" in a follow-up). Without thread
+    // priority each correction would split into a new card.
+    //
+    // Twilio leads (call/sms/voicemail) and email leads without a thread
+    // fall back to the original phone → email → id chain.
+    let key: string
+    if (l.lead_type === "email" && l.gmail_thread_id) {
+      key = `thread:${l.gmail_thread_id}`
+    } else if (l.caller_phone) {
+      key = l.caller_phone
+    } else if (l.email) {
+      key = `email:${l.email.toLowerCase()}`
+    } else {
+      key = `id:${l.id}`
+    }
     const list = byKey.get(key) || []
     list.push(l)
     byKey.set(key, list)
@@ -195,7 +202,13 @@ function groupLeads(leads: Lead[]): LeadGroup[] {
     // Suggested reply travels with the email row that produced it. Take the
     // newest non-null one so a follow-up email's draft replaces a stale one.
     const suggestedReply = newestFirst.map(e => e.suggested_reply).find(v => v && v.trim()) || null
-    const contactPhone = ascending.map(e => e.caller_phone).find(v => v && v.trim()) || null
+    // Pick the LATEST inbound non-null phone so corrections in a Gmail
+    // thread ("sorry my real number is X") override earlier guesses. Falls
+    // back to the oldest non-null phone (any direction) for safety.
+    const contactPhone =
+      newestFirst.filter(e => !isOutbound(e)).map(e => e.caller_phone).find(v => v && v.trim()) ||
+      ascending.map(e => e.caller_phone).find(v => v && v.trim()) ||
+      null
     groups.push({
       phone: key,
       contactPhone,
