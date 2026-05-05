@@ -162,7 +162,7 @@ async function handleAppsScript(payload: AppsScriptPayload): Promise<NextRespons
     .eq("lead_type", "email")
     .eq("email", senderEmail)
     .gte("created_at", oneHourAgo)
-    .limit(5)
+    .limit(50)
   if (existing && existing.some((r) => (r.message || "").slice(0, 200) === messageText.slice(0, 200))) {
     console.log(`[email] Skipping duplicate from ${senderEmail}`)
     return NextResponse.json({ ok: true, deduplicated: true })
@@ -296,6 +296,9 @@ async function processSingleMessage(args: {
   // Idempotency: Pub/Sub redeliveries can repeat the same gmail messageId.
   // We dedupe by checking for an existing email-lead row from this sender
   // with matching message text within the last hour. If one exists, skip.
+  // Limit 50 — high enough to absorb a busy thread (the 5 previously here
+  // would silently miss matches when more than 5 emails from one sender
+  // landed in the same hour during burst testing).
   const sb = getLeadsClient()
   const oneHourAgo = new Date(Date.now() - 60 * 60 * 1000).toISOString()
   const { data: existing } = await sb
@@ -304,7 +307,7 @@ async function processSingleMessage(args: {
     .eq("lead_type", "email")
     .eq("email", senderEmail)
     .gte("created_at", oneHourAgo)
-    .limit(5)
+    .limit(50)
   const messageText = `${subject}\n\n${bodyText}`.slice(0, 2000)
   if (existing && existing.some((r) => (r.message || "").slice(0, 200) === messageText.slice(0, 200))) {
     console.log(`[email] Skipping duplicate of ${messageId} from ${senderEmail}`)

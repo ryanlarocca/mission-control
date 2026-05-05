@@ -79,3 +79,44 @@ export async function PATCH(request: NextRequest) {
     return NextResponse.json({ error: msg }, { status: 500 })
   }
 }
+
+// Delete one or more lead rows by id. Used by the Leads-tab card's Delete
+// button so Ryan can clean up test rows (or junk leads) without dropping
+// to the Supabase dashboard. Auth-gated by middleware.
+//
+// Body: { ids: string[] } — accepts a list because deleting a single
+// "lead card" usually means deleting every Supabase row tied to that
+// group (multiple inbound emails in one Gmail thread, a call + the
+// follow-up SMS, etc.). The UI builds the id list from group.events.
+export async function DELETE(request: NextRequest) {
+  let body: { ids?: unknown }
+  try {
+    body = await request.json()
+  } catch {
+    return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 })
+  }
+  const ids = Array.isArray(body?.ids)
+    ? (body.ids as unknown[]).filter((x): x is string => typeof x === "string" && x.length > 0)
+    : []
+  if (ids.length === 0) {
+    return NextResponse.json({ error: "ids (string[]) is required" }, { status: 400 })
+  }
+
+  try {
+    const sb = getLeadsClient()
+    const { data, error } = await sb
+      .from("leads")
+      .delete()
+      .in("id", ids)
+      .select("id")
+    if (error) {
+      console.error("[leads:DELETE] Delete failed:", error)
+      return NextResponse.json({ error: error.message }, { status: 500 })
+    }
+    return NextResponse.json({ deleted: (data ?? []).length, ids: (data ?? []).map((r) => r.id) })
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e)
+    console.error("[leads:DELETE] Threw:", msg)
+    return NextResponse.json({ error: msg }, { status: 500 })
+  }
+}

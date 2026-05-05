@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useState, useCallback } from "react"
 import {
   Phone, PhoneOutgoing, Voicemail, MessageSquare, ClipboardList, ChevronDown, ChevronRight,
-  Loader2, RefreshCw, Send, Check, Mail,
+  Loader2, RefreshCw, Send, Check, Mail, Trash2,
 } from "lucide-react"
 
 type LeadType = "call" | "voicemail" | "sms" | "form" | "email"
@@ -261,6 +261,9 @@ export function LeadsTab() {
   const [sendingEmailFor, setSendingEmailFor] = useState<string | null>(null)
   const [emailSendSuccess, setEmailSendSuccess] = useState<string | null>(null)
   const [emailSendError, setEmailSendError] = useState<string | null>(null)
+  const [deleteArmedFor, setDeleteArmedFor] = useState<string | null>(null)
+  const [deletingFor, setDeletingFor] = useState<string | null>(null)
+  const [deleteError, setDeleteError] = useState<string | null>(null)
   // Synthetic timeline rows merged in from chat.db (sync-imessage) and
   // Gmail threads (sync-email) when Ryan expands a card. Keyed by group.phone.
   // Kept separate from the leads state so they don't perturb status/grouping.
@@ -525,6 +528,43 @@ export function LeadsTab() {
     }
   }
 
+  // Two-step confirm to avoid accidental hard-deletes. First click arms the
+  // button (relabels to "Confirm delete"); second click within ~4s fires
+  // the DELETE. Auto-disarms after the timeout if Ryan walks away.
+  function armDelete(group: LeadGroup) {
+    setDeleteArmedFor(group.phone)
+    setDeleteError(null)
+    setTimeout(() => {
+      setDeleteArmedFor(prev => (prev === group.phone ? null : prev))
+    }, 4000)
+  }
+
+  async function deleteLead(group: LeadGroup) {
+    const ids = group.events.map(e => e.id)
+    if (ids.length === 0) return
+    setDeletingFor(group.phone)
+    setDeleteError(null)
+    try {
+      const res = await fetch("/api/leads", {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ids }),
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`)
+      // Optimistic: drop those rows from local state immediately so the
+      // card disappears without waiting for the next fetch.
+      const idSet = new Set(ids)
+      setLeads(prev => prev.filter(l => !idSet.has(l.id)))
+      setExpandedPhone(null)
+      setDeleteArmedFor(null)
+    } catch (e) {
+      setDeleteError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setDeletingFor(null)
+    }
+  }
+
   async function sendEmailReply(group: LeadGroup) {
     const text = (emailDraft[group.phone] ?? group.suggestedReply ?? "").trim()
     if (!text) return
@@ -699,6 +739,11 @@ export function LeadsTab() {
               sendingEmail={sendingEmailFor === group.phone}
               emailSendSuccess={emailSendSuccess === group.phone}
               emailSendError={sendingEmailFor === null && emailSendError && expandedPhone === group.phone ? emailSendError : null}
+              onArmDelete={() => armDelete(group)}
+              onConfirmDelete={() => deleteLead(group)}
+              deleteArmed={deleteArmedFor === group.phone}
+              deleting={deletingFor === group.phone}
+              deleteError={deletingFor === null && deleteError && expandedPhone === group.phone ? deleteError : null}
             />
           ))}
         </div>
@@ -739,6 +784,11 @@ interface LeadCardProps {
   sendingEmail: boolean
   emailSendSuccess: boolean
   emailSendError: string | null
+  onArmDelete: () => void
+  onConfirmDelete: () => void
+  deleteArmed: boolean
+  deleting: boolean
+  deleteError: string | null
 }
 
 function LeadCard(p: LeadCardProps) {
@@ -1010,20 +1060,78 @@ function LeadCard(p: LeadCardProps) {
               )
             })}
           </div>
+
+          {/* Delete lead — destructive, two-step confirm. First click arms;
+              second click within ~4s commits. Drops every event row in the
+              group (deletes the whole conversation, not just one message). */}
+          <div className="pt-2 border-t border-zinc-800/60 flex items-center justify-between gap-2">
+            <div className="text-xs text-zinc-500 flex-1 min-w-0 truncate">
+              {p.deleteError && <span className="text-red-300">{p.deleteError}</span>}
+              {p.deleteArmed && !p.deleteError && (
+                <span className="text-red-300">Click Confirm to delete {group.events.length} event{group.events.length === 1 ? "" : "s"}.</span>
+              )}
+            </div>
+            {!p.deleteArmed ? (
+              <button
+                onClick={p.onArmDelete}
+                disabled={p.deleting}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 min-h-[36px] rounded bg-zinc-900 border border-zinc-800 hover:border-red-900 hover:text-red-300 text-zinc-500 text-xs transition-colors"
+                title="Delete this lead and all its events"
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+                Delete lead
+              </button>
+            ) : (
+              <button
+                onClick={p.onConfirmDelete}
+                disabled={p.deleting}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 min-h-[36px] rounded bg-red-700 hover:bg-red-600 disabled:bg-zinc-800 disabled:text-zinc-600 text-white text-xs font-medium transition-colors"
+              >
+                {p.deleting ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Trash2 className="w-3.5 h-3.5" />}
+                {p.deleting ? "Deleting…" : "Confirm delete"}
+              </button>
+            )}
+          </div>
         </div>
       )}
     </div>
   )
 }
 
+// Strip a leading "<subject>\n\n" prefix off an event's message. Inbound
+// email rows store "<subject>\n\n<body>" but outbound replies (from
+// /api/leads/email-reply) store just the body. Synthetic events from
+// /sync-email always wrap subject + body. Comparing body-only across the
+// two sources keeps dedupe consistent regardless of who stored what.
+function eventBodyOnly(m: string | null | undefined): string {
+  const s = (m || "").trim()
+  const sep = s.indexOf("\n\n")
+  return sep > 0 ? s.slice(sep + 2) : s
+}
+
+function eventSig(l: Lead): string {
+  return `${isOutbound(l) ? "out" : "in"}|${eventBodyOnly(l.message).slice(0, 200)}`
+}
+
 // Combine the group's authoritative events (from Supabase) with synthetic
 // events merged in from chat.db / Gmail thread sync. Sorted oldest → newest
 // so the existing Timeline renderer's chronological assumption holds.
+//
+// Render-time dedupe is critical here: the syncOnExpand path also dedupes
+// synthetic events against the events it sees AT EXPAND TIME, but if Ryan
+// replies via /api/leads/email-reply AFTER expanding, the new authoritative
+// outbound row arrives in the next 30s `fetchLeads(true)` tick — the
+// pre-existing synthetic version stays in `extraEvents` and renders
+// alongside it as a duplicate bubble. Comparing body-only signatures here
+// catches that case, plus the auth-vs-synthetic prefix-format mismatch
+// (auth outbound is just-body; synthetic always wraps subject+body).
 function mergeForTimeline(authoritative: Lead[], synthetic: Lead[]): Lead[] {
   if (synthetic.length === 0) return authoritative
-  const all = [...authoritative, ...synthetic]
-  all.sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime())
-  return all
+  const authSigs = new Set(authoritative.map(eventSig))
+  const filtered = synthetic.filter(s => !authSigs.has(eventSig(s)))
+  return [...authoritative, ...filtered].sort(
+    (a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
+  )
 }
 
 function Timeline({ events }: { events: Lead[] }) {
