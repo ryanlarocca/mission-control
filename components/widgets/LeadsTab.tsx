@@ -447,6 +447,13 @@ export function LeadsTab() {
       // group re-derives with contactPhone set and the Call button activates.
       setLeads(prev => prev.map(l => l.id === group.mostRecentId ? { ...l, caller_phone: normalized } : l))
       setPhoneDraft(prev => ({ ...prev, [group.phone]: "" }))
+      // Silent refresh — the group key was `email:<addr>` (since it had no
+      // phone before) and groupLeads will now key it by the phone number.
+      // Without a fresh fetch the syncedGroups Set still holds the old
+      // email-key, so the synthetic timeline events render under a
+      // dead key and disappear until the next 30s tick. The fetch
+      // re-keys cleanly.
+      void fetchLeads(true)
     } catch (e) {
       setPhoneError(e instanceof Error ? e.message : String(e))
     } finally {

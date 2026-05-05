@@ -9,6 +9,7 @@ import {
   getEmailCampaign,
   getGmailClient,
   getLeadsClient,
+  normalizePhone,
   sendTelegramAlert,
   triageEmailLead,
 } from "@/lib/leads"
@@ -125,11 +126,14 @@ async function handleAppsScript(payload: AppsScriptPayload): Promise<NextRespons
   const subject = payload.subject || "(no subject)"
   const bodyText = stripQuoted(payload.body || "")
 
-  const { name, email: senderEmail } = parseFromHeader(fromRaw)
+  const { name: headerName, email: senderEmail } = parseFromHeader(fromRaw)
   if (!senderEmail) {
     console.warn(`[email] Apps Script payload missing sender email: ${fromRaw}`)
     return NextResponse.json({ ok: true })
   }
+  // Prefer the From header's display name; if the sender used a bare email,
+  // try a quick scan of the body ("my name is X", "I'm X", "this is X").
+  const name = headerName || extractNameFromBody(bodyText)
 
   // Don't ingest mail from the mailbox owner
   if (senderEmail === mailbox) {
@@ -137,7 +141,16 @@ async function handleAppsScript(payload: AppsScriptPayload): Promise<NextRespons
     return NextResponse.json({ ok: true })
   }
 
-  const phone = extractPhoneFromText(bodyText)
+  // Extracted as 10 raw digits; normalize to E.164 so the `caller_phone`
+  // column matches the format we use everywhere else (call relay, dedup,
+  // PATCH path) and the Call button activates without a manual fix-up.
+  const rawPhone = extractPhoneFromText(bodyText)
+  const phone = rawPhone
+    ? (() => {
+        const n = normalizePhone(rawPhone)
+        return /^\+\d{10,15}$/.test(n) ? n : null
+      })()
+    : null
   const messageText = `${subject}\n\n${bodyText}`.slice(0, 2000)
 
   // Dedup: check for same sender + similar message in the last hour
@@ -254,7 +267,7 @@ async function processSingleMessage(args: {
   const headers = message.payload?.headers
   const fromHeader = getHeader(headers, "From")
   const subject = getHeader(headers, "Subject") || "(no subject)"
-  const { name, email: senderEmail } = parseFromHeader(fromHeader)
+  const { name: headerName, email: senderEmail } = parseFromHeader(fromHeader)
   if (!senderEmail) {
     console.warn(`[email] ${messageId} missing usable From header: ${fromHeader}`)
     return
@@ -266,7 +279,19 @@ async function processSingleMessage(args: {
   }
 
   const bodyText = extractPlainBody(message.payload)
-  const phone = extractPhoneFromText(bodyText)
+  // Prefer the From header's display name; fall back to a body scan when the
+  // sender used a bare email (e.g. "pat@gmail.com" with no display name).
+  const name = headerName || extractNameFromBody(bodyText)
+  // Extracted as 10 raw digits; normalize to E.164 so the `caller_phone`
+  // column matches the format we use everywhere else (call relay, dedup,
+  // PATCH path) and the Call button activates without a manual fix-up.
+  const rawPhone = extractPhoneFromText(bodyText)
+  const phone = rawPhone
+    ? (() => {
+        const n = normalizePhone(rawPhone)
+        return /^\+\d{10,15}$/.test(n) ? n : null
+      })()
+    : null
 
   // Idempotency: Pub/Sub redeliveries can repeat the same gmail messageId.
   // We dedupe by checking for an existing email-lead row from this sender
@@ -372,6 +397,26 @@ function getHeader(
   return ""
 }
 
+// Best-effort: pull a name out of the email body when the From header has
+// no display name (bare email like "pat@gmail.com" → null). Tries a few
+// natural-language patterns customers actually use ("my name is X",
+// "I'm X", "this is X"). Strict title-case + 1–3 words to avoid grabbing
+// random fragments. Returns null if nothing fits — caller falls back to
+// whatever parseFromHeader produced (which may also be null).
+function extractNameFromBody(text: string): string | null {
+  if (!text) return null
+  const patterns = [
+    /\bmy name is ([A-Z][a-z]+(?: [A-Z][a-z]+){0,2})/,
+    /\bI(?:'m| am) ([A-Z][a-z]+(?: [A-Z][a-z]+){0,2})/,
+    /\bthis is ([A-Z][a-z]+(?: [A-Z][a-z]+){0,2})/i,
+  ]
+  for (const re of patterns) {
+    const m = re.exec(text)
+    if (m && m[1]) return m[1].trim()
+  }
+  return null
+}
+
 function parseFromHeader(value: string): { name: string | null; email: string | null } {
   if (!value) return { name: null, email: null }
   const m = value.match(/^\s*"?([^"<]*?)"?\s*<([^>]+)>\s*$/)
@@ -458,9 +503,14 @@ function extractPhoneFromText(text: string): string | null {
   return `${m[1]}${m[2]}${m[3]}`
 }
 
-function formatPhoneForAlert(digits: string): string {
-  if (digits.length !== 10) return digits
-  return `(${digits.slice(0, 3)}) ${digits.slice(3, 6)}-${digits.slice(6)}`
+function formatPhoneForAlert(input: string): string {
+  // Accepts either bare 10 digits or E.164 (+1XXXXXXXXXX). Strip non-digits
+  // and take the last 10 to render as "(XXX) XXX-XXXX". Returns input as-is
+  // if we can't get a clean 10-digit US number.
+  const digits = input.replace(/\D/g, "")
+  const last10 = digits.length > 10 ? digits.slice(-10) : digits
+  if (last10.length !== 10) return input
+  return `(${last10.slice(0, 3)}) ${last10.slice(3, 6)}-${last10.slice(6)}`
 }
 
 function escapeHtml(s: string): string {
