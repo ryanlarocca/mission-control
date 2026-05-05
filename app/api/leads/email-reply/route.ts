@@ -72,18 +72,57 @@ export async function POST(request: NextRequest) {
     ? (/^re:\s/i.test(originalSubject) ? originalSubject : `Re: ${originalSubject}`)
     : "Re: Your inquiry"
 
+  // Send via Gmail API impersonating the mailbox owner. To make the reply
+  // thread correctly in the recipient's email client (not just internally
+  // in our Gmail thread), we need the real RFC 2822 `Message-Id` of the
+  // original message — Gmail's thread-id is an internal identifier, not a
+  // Message-Id, and putting `<threadId@mail.gmail.com>` in `In-Reply-To`
+  // doesn't match anything in the recipient's store, so most clients open
+  // the reply in a fresh thread.
+  //
+  // We do one extra Gmail API call up front: pull the thread's headers
+  // (metadata-only — small payload), collect every Message-Id, use the
+  // most recent for `In-Reply-To` and chain all of them in `References`.
+  // ~200-500ms cost; properly threads in Gmail, Outlook, Apple Mail, etc.
+  const gmail = getGmailClient(mailbox)
+  let inReplyTo: string | null = null
+  let referencesChain: string[] = []
+  if (lead.gmail_thread_id) {
+    try {
+      const { data: thread } = await gmail.users.threads.get({
+        userId: "me",
+        id: lead.gmail_thread_id,
+        format: "metadata",
+        metadataHeaders: ["Message-Id"],
+      })
+      const msgIds: string[] = []
+      for (const m of thread.messages || []) {
+        const headers = m.payload?.headers || []
+        const idHdr = headers.find((h) => (h.name || "").toLowerCase() === "message-id")
+        if (idHdr?.value) msgIds.push(idHdr.value.trim())
+      }
+      if (msgIds.length > 0) {
+        inReplyTo = msgIds[msgIds.length - 1]
+        referencesChain = msgIds
+      }
+    } catch (e) {
+      // Thread fetch is best-effort. If it fails the reply still goes out;
+      // it just won't have proper RFC threading headers.
+      console.warn("[email-reply] thread metadata fetch failed:", e instanceof Error ? e.message : String(e))
+    }
+  }
+
   const raw = buildRawEmail({
     to: lead.email,
     from: mailbox,
     subject: replySubject,
     body: text,
-    threadId: lead.gmail_thread_id,
+    inReplyTo,
+    references: referencesChain,
   })
 
-  // Send via Gmail API impersonating the mailbox owner.
   let sentMessageId: string | null = null
   try {
-    const gmail = getGmailClient(mailbox)
     const requestBody: { raw: string; threadId?: string } = { raw }
     if (lead.gmail_thread_id) requestBody.threadId = lead.gmail_thread_id
     const { data } = await gmail.users.messages.send({
@@ -135,7 +174,8 @@ interface BuildRawArgs {
   from: string
   subject: string
   body: string
-  threadId?: string | null
+  inReplyTo?: string | null
+  references?: string[]
 }
 
 // Construct an RFC 2822 message and encode as base64url for Gmail API send.
@@ -143,21 +183,24 @@ interface BuildRawArgs {
 // envelope sender to whatever the impersonated mailbox is, so the From header
 // here is informational (it has to match the Workspace mailbox or Gmail
 // rejects with 403 — we always pass the mailbox we're impersonating).
-function buildRawEmail({ to, from, subject, body, threadId }: BuildRawArgs): string {
+//
+// `inReplyTo` should be the bracketed Message-Id of the message we're
+// replying to (e.g. "<CAEa1234@mail.gmail.com>"), and `references` should
+// be the full chain of Message-Ids in the thread (oldest → newest), so that
+// every email client clusters this reply under the original conversation.
+function buildRawEmail({ to, from, subject, body, inReplyTo, references }: BuildRawArgs): string {
   const lines = [
     `To: ${to}`,
     `From: ${from}`,
     `Subject: ${subject}`,
   ]
-  if (threadId) {
-    // Bracketed angle-form is what most non-Gmail clients expect for
-    // Message-ID-shaped headers; faking the gmail.com domain isn't strictly
-    // correct (it's not actually a Message-Id) but it gives non-Gmail
-    // clients a stable token to thread on. Gmail itself uses the threadId
-    // param above for the canonical thread association.
-    const tag = `<${threadId}@mail.gmail.com>`
-    lines.push(`In-Reply-To: ${tag}`)
-    lines.push(`References: ${tag}`)
+  if (inReplyTo) {
+    lines.push(`In-Reply-To: ${inReplyTo}`)
+  }
+  if (references && references.length > 0) {
+    lines.push(`References: ${references.join(" ")}`)
+  } else if (inReplyTo) {
+    lines.push(`References: ${inReplyTo}`)
   }
   lines.push(`MIME-Version: 1.0`)
   lines.push(`Content-Type: text/plain; charset=UTF-8`)
