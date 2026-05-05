@@ -298,6 +298,11 @@ async function processSingleMessage(args: {
       ai_notes: triage?.summary ?? null,
       suggested_reply: triage?.suggestedReply ?? null,
       status: triage?.status ?? "new",
+      // Persist the Gmail threadId so the Leads-tab card can pull the full
+      // back-and-forth via /api/leads/sync-email when Ryan expands it. Falls
+      // back to null when the message has no thread (rare — Gmail always
+      // assigns one for inbound mail).
+      gmail_thread_id: message.threadId || null,
     })
     .select("id")
     .single()

@@ -31,6 +31,30 @@ interface Lead {
   email: string | null
   property_address: string | null
   suggested_reply: string | null
+  // Set on email leads at insertion (route.ts) so /api/leads/sync-email can
+  // look up the full Gmail thread on card expand. Null on call/sms/form rows.
+  gmail_thread_id?: string | null
+}
+
+// chat.db stores timestamps in Apple epoch (seconds since 2001-01-01); the
+// sidecar returns them in Apple-epoch milliseconds. Convert to Unix epoch ms
+// so JS Date() renders correctly.
+const APPLE_EPOCH_OFFSET_MS = 978307200000
+
+interface SyntheticIMessage {
+  timestamp: number   // Apple-epoch ms (sidecar returns this)
+  is_from_me: boolean
+  text: string
+}
+
+interface SyntheticGmail {
+  messageId: string | null
+  from: string
+  to: string
+  subject: string
+  body: string
+  timestamp: number   // Unix epoch ms
+  is_from_ryan: boolean
 }
 
 function isOutbound(l: Lead): boolean {
@@ -220,6 +244,11 @@ export function LeadsTab() {
   const [phoneDraft, setPhoneDraft]     = useState<Record<string, string>>({})
   const [savingPhoneFor, setSavingPhoneFor] = useState<string | null>(null)
   const [phoneError, setPhoneError]     = useState<string | null>(null)
+  // Synthetic timeline rows merged in from chat.db (sync-imessage) and
+  // Gmail threads (sync-email) when Ryan expands a card. Keyed by group.phone.
+  // Kept separate from the leads state so they don't perturb status/grouping.
+  const [extraEvents, setExtraEvents]   = useState<Record<string, Lead[]>>({})
+  const [syncedGroups, setSyncedGroups] = useState<Set<string>>(new Set())
 
   const fetchLeads = useCallback(async (silent = false) => {
     if (!silent) setRefreshing(true)
@@ -267,6 +296,131 @@ export function LeadsTab() {
       void fetchLeads(true)
     }
   }
+
+  // Build a synthetic Lead-shaped row for a chat.db iMessage so it slots
+  // into the existing TimelineEvent renderer without changing its contract.
+  // Status is a placeholder ("new") and is never read for synthetic rows.
+  function syntheticFromIMessage(group: LeadGroup, m: SyntheticIMessage, idx: number): Lead {
+    return {
+      id: `imsg-${m.timestamp}-${idx}`,
+      created_at: new Date(m.timestamp + APPLE_EPOCH_OFFSET_MS).toISOString(),
+      source: group.source,
+      source_type: group.sourceType,
+      twilio_number: m.is_from_me ? null : "imessage",
+      caller_phone: group.contactPhone,
+      lead_type: "sms",
+      message: m.text || null,
+      recording_url: null,
+      status: "new",
+      notes: null,
+      ai_notes: null,
+      name: group.name,
+      email: group.email,
+      property_address: group.propertyAddress,
+      suggested_reply: null,
+    }
+  }
+
+  function syntheticFromGmail(group: LeadGroup, m: SyntheticGmail, idx: number): Lead {
+    const subjectAndBody = `${m.subject || "(no subject)"}\n\n${m.body || ""}`.trim()
+    return {
+      id: `gmsg-${m.messageId || `${m.timestamp}-${idx}`}`,
+      created_at: new Date(m.timestamp).toISOString(),
+      source: group.source,
+      source_type: group.sourceType,
+      twilio_number: m.is_from_ryan ? null : "gmail",
+      caller_phone: null,
+      lead_type: "email",
+      message: subjectAndBody,
+      recording_url: null,
+      status: "new",
+      notes: null,
+      ai_notes: null,
+      name: m.is_from_ryan ? null : group.name,
+      email: group.email,
+      property_address: null,
+      suggested_reply: null,
+    }
+  }
+
+  // Merge synthetic events into extraEvents[groupKey], deduping against
+  // both real lead rows and previously-synced synthetic rows by exact
+  // message-text match (within direction). Fires opportunistically on
+  // card expand; failures are silent so a sidecar hiccup doesn't hide the
+  // card.
+  const syncOnExpand = useCallback(async (group: LeadGroup) => {
+    if (syncedGroups.has(group.phone)) return
+    setSyncedGroups(prev => {
+      const next = new Set(prev); next.add(group.phone); return next
+    })
+
+    const knownTexts = new Set(
+      group.events.map(e => `${isOutbound(e) ? "out" : "in"}|${(e.message || "").trim()}`)
+    )
+
+    const tasks: Promise<Lead[]>[] = []
+
+    // iMessage sync — only meaningful when we have a phone for the group.
+    if (group.contactPhone) {
+      tasks.push(
+        fetch("/api/leads/sync-imessage", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ phone: group.contactPhone }),
+        })
+          .then(r => r.ok ? r.json() : { messages: [] })
+          .then((data) => {
+            const msgs: SyntheticIMessage[] = data.messages || []
+            return msgs
+              .filter(m => {
+                const k = `${m.is_from_me ? "out" : "in"}|${(m.text || "").trim()}`
+                if (knownTexts.has(k)) return false
+                knownTexts.add(k)
+                return true
+              })
+              .map((m, i) => syntheticFromIMessage(group, m, i))
+          })
+          .catch(() => [])
+      )
+    }
+
+    // Gmail sync — only when one of the group's existing rows carries a
+    // gmail_thread_id (always set on email leads inserted post-Phase-7.4-pt2).
+    const emailLead = group.events.find(e => e.lead_type === "email" && e.gmail_thread_id)
+    if (emailLead) {
+      tasks.push(
+        fetch("/api/leads/sync-email", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ leadId: emailLead.id }),
+        })
+          .then(r => r.ok ? r.json() : { messages: [] })
+          .then((data) => {
+            const msgs: SyntheticGmail[] = data.messages || []
+            // Dedupe email synthetics against the original row by first 200 chars
+            // (route.ts already wrote `subject\n\nbody` truncated). Comparing the
+            // exact same prefix avoids surfacing the original lead twice.
+            return msgs
+              .filter(m => {
+                const subjectAndBody = `${m.subject || "(no subject)"}\n\n${m.body || ""}`.trim()
+                const k = `${m.is_from_ryan ? "out" : "in"}|${subjectAndBody.slice(0, 200)}`
+                const collide = group.events.some(
+                  e => `${isOutbound(e) ? "out" : "in"}|${(e.message || "").slice(0, 200)}` === k
+                )
+                return !collide
+              })
+              .map((m, i) => syntheticFromGmail(group, m, i))
+          })
+          .catch(() => [])
+      )
+    }
+
+    if (tasks.length === 0) return
+    const results = await Promise.all(tasks)
+    const merged = results.flat()
+    if (merged.length === 0) return
+    setExtraEvents(prev => ({ ...prev, [group.phone]: [...(prev[group.phone] || []), ...merged] }))
+  }, [syncedGroups])
 
   async function addPhone(group: LeadGroup, raw: string) {
     const trimmed = raw.trim()
@@ -455,8 +609,13 @@ export function LeadsTab() {
             <LeadCard
               key={group.phone}
               group={group}
+              extraEvents={extraEvents[group.phone] || []}
               expanded={expandedPhone === group.phone}
-              onToggle={() => setExpandedPhone(expandedPhone === group.phone ? null : group.phone)}
+              onToggle={() => {
+                const willExpand = expandedPhone !== group.phone
+                setExpandedPhone(willExpand ? group.phone : null)
+                if (willExpand) void syncOnExpand(group)
+              }}
               onSetStatus={(s) => setGroupStatus(group, s)}
               pendingStatus={pendingStatus}
               draftNote={draftNotes[group.phone]}
@@ -488,6 +647,7 @@ export function LeadsTab() {
 
 interface LeadCardProps {
   group: LeadGroup
+  extraEvents: Lead[]
   expanded: boolean
   onToggle: () => void
   onSetStatus: (s: LeadStatus) => void
@@ -633,7 +793,7 @@ function LeadCard(p: LeadCardProps) {
             </div>
           )}
 
-          <Timeline events={group.events} />
+          <Timeline events={mergeForTimeline(group.events, p.extraEvents)} />
 
           {group.aiNotes && (
             <div className="bg-zinc-900/50 border border-zinc-800 rounded px-3 py-2">
@@ -723,6 +883,16 @@ function LeadCard(p: LeadCardProps) {
   )
 }
 
+// Combine the group's authoritative events (from Supabase) with synthetic
+// events merged in from chat.db / Gmail thread sync. Sorted oldest → newest
+// so the existing Timeline renderer's chronological assumption holds.
+function mergeForTimeline(authoritative: Lead[], synthetic: Lead[]): Lead[] {
+  if (synthetic.length === 0) return authoritative
+  const all = [...authoritative, ...synthetic]
+  all.sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime())
+  return all
+}
+
 function Timeline({ events }: { events: Lead[] }) {
   return (
     <div className="space-y-2">
@@ -741,10 +911,20 @@ function TimelineEvent({ ev }: { ev: Lead }) {
     month: "short", day: "numeric", hour: "numeric", minute: "2-digit",
   })
 
+  // Skip rendering for content-less events that aren't a call (which has its
+  // own "Inbound/Outbound call · awaiting recording" placeholder) and aren't
+  // a form (which renders a static "Website form submission" line). This
+  // catches stale outbound rows whose message column never got populated and
+  // would otherwise render as a useless "(empty)" bubble.
+  const hasContent = !!(ev.message || ev.recording_url)
+  if (!hasContent && ev.lead_type !== "call" && ev.lead_type !== "form") {
+    return null
+  }
+
   if (outbound) {
     // Right-aligned bubble, emerald accent — Ryan's outbound message or call.
     // For outbound calls: show recording + transcription if attached, else
-    // a placeholder so a fresh "ringing" call isn't rendered as "(empty)".
+    // a placeholder so a fresh "ringing" call isn't rendered as missing.
     const isOutboundCall = ev.lead_type === "call"
     return (
       <div className="flex justify-end">
@@ -772,8 +952,9 @@ function TimelineEvent({ ev }: { ev: Lead }) {
               )}
             </>
           ) : (
+            // Guarded above — message is non-null here.
             <div className="text-sm text-zinc-100 whitespace-pre-wrap break-words">
-              {ev.message || "(empty)"}
+              {ev.message}
             </div>
           )}
         </div>
@@ -841,12 +1022,13 @@ function TimelineEvent({ ev }: { ev: Lead }) {
             Website form submission
           </div>
         )}
-        {ev.lead_type === "email" && (
+        {ev.lead_type === "email" && ev.message && (
           // `message` for email rows is "<subject>\n\n<body>" — we show
           // the whole block as plain text. No audio player; the email body
-          // replaces it.
+          // replaces it. Empty-message email rows are filtered out by the
+          // hasContent guard at the top of TimelineEvent.
           <div className="text-sm text-zinc-200 bg-zinc-900 rounded px-3 py-2 whitespace-pre-wrap break-words">
-            {ev.message || "(empty email)"}
+            {ev.message}
           </div>
         )}
       </div>

@@ -36,6 +36,18 @@ export function getEmailCampaignSource(emailAddress: string | null | undefined):
   return getEmailCampaign(emailAddress).source
 }
 
+// Reverse lookup: source label → owning mailbox email. Used by the
+// /api/leads/sync-email proxy to know which mailbox the gog CLI should
+// impersonate when pulling a Gmail thread (the thread record only exists
+// in the inbox where the email landed).
+export function getMailboxForSource(source: string | null | undefined): string | null {
+  if (!source) return null
+  for (const [mailbox, campaign] of Object.entries(EMAIL_CAMPAIGN_MAP)) {
+    if (campaign.source === source) return mailbox
+  }
+  return null
+}
+
 // Normalize a free-form phone string to E.164. Inputs like "(555) 123-4567",
 // "555.123.4567", "5551234567", "+1 555-123-4567", and "1 555 123 4567" all
 // produce "+15551234567". 11-digit non-1 country codes pass through with a
