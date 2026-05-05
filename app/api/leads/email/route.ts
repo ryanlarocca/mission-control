@@ -6,7 +6,7 @@ import { google, gmail_v1 } from "googleapis"
 export const maxDuration = 30
 import {
   EMAIL_CAMPAIGN_MAP,
-  getEmailCampaignSource,
+  getEmailCampaign,
   getLeadsClient,
   sendTelegramAlert,
   triageEmailLead,
@@ -99,10 +99,10 @@ export async function POST(request: Request) {
     return NextResponse.json({ ok: true })
   }
 
-  const source = getEmailCampaignSource(emailAddress)
-  console.log(`[email] Pub/Sub notification — ${emailAddress} (${source}) historyId:${historyId}`)
+  const campaign = getEmailCampaign(emailAddress)
+  console.log(`[email] Pub/Sub notification — ${emailAddress} (${campaign.source}) historyId:${historyId}`)
 
-  await processEmailNotification({ emailAddress, historyId: String(historyId), source })
+  await processEmailNotification({ emailAddress, historyId: String(historyId), campaign })
   return NextResponse.json({ ok: true })
 }
 
@@ -119,7 +119,7 @@ async function handleAppsScript(payload: AppsScriptPayload): Promise<NextRespons
     return NextResponse.json({ ok: true })
   }
 
-  const source = getEmailCampaignSource(mailbox)
+  const campaign = getEmailCampaign(mailbox)
   const fromRaw = payload.from || ""
   const subject = payload.subject || "(no subject)"
   const bodyText = stripQuoted(payload.body || "")
@@ -161,8 +161,8 @@ async function handleAppsScript(payload: AppsScriptPayload): Promise<NextRespons
     .from("leads")
     .insert({
       lead_type: "email",
-      source_type: "direct_mail",
-      source,
+      source_type: campaign.source_type,
+      source: campaign.source,
       twilio_number: null,
       caller_phone: phone,
       name,
@@ -180,12 +180,11 @@ async function handleAppsScript(payload: AppsScriptPayload): Promise<NextRespons
     return NextResponse.json({ ok: false, error: "insert_failed" }, { status: 500 })
   }
 
-  console.log(`[email] Inserted email lead ${inserted?.id} from ${senderEmail} (${source})`)
+  console.log(`[email] Inserted email lead ${inserted?.id} from ${senderEmail} (${campaign.source})`)
 
-  const campaignLabel = source === "SVG-A" ? "Campaign A" : source === "SVJ-B" ? "Campaign B" : source
   const lines = [
     "📧 New email lead",
-    `[${campaignLabel}]`,
+    `[${formatCampaignLabel(campaign.source)}]`,
     `👤 ${name || "(no name)"}`,
     `📧 ${senderEmail}`,
   ]
@@ -201,9 +200,9 @@ async function handleAppsScript(payload: AppsScriptPayload): Promise<NextRespons
 async function processEmailNotification(args: {
   emailAddress: string
   historyId: string
-  source: string
+  campaign: { source: string; source_type: string }
 }): Promise<void> {
-  const { emailAddress, historyId, source } = args
+  const { emailAddress, historyId, campaign } = args
   try {
     const gmail = getGmailClient(emailAddress)
     const messageIds = await fetchRecentInboxMessageIds(gmail)
@@ -214,7 +213,7 @@ async function processEmailNotification(args: {
     console.log(`[email] Scanning ${messageIds.length} recent message(s) for ${emailAddress}`)
     for (const messageId of messageIds) {
       try {
-        await processSingleMessage({ gmail, messageId, emailAddress, source })
+        await processSingleMessage({ gmail, messageId, emailAddress, campaign })
       } catch (e) {
         console.error(`[email] Failed to process message ${messageId}:`, e)
       }
@@ -228,9 +227,9 @@ async function processSingleMessage(args: {
   gmail: gmail_v1.Gmail
   messageId: string
   emailAddress: string
-  source: string
+  campaign: { source: string; source_type: string }
 }): Promise<void> {
-  const { gmail, messageId, emailAddress, source } = args
+  const { gmail, messageId, emailAddress, campaign } = args
 
   // Fetch the full message payload so we have headers + body.
   const { data: message } = await gmail.users.messages.get({
@@ -289,8 +288,8 @@ async function processSingleMessage(args: {
     .from("leads")
     .insert({
       lead_type: "email",
-      source_type: "direct_mail",
-      source,
+      source_type: campaign.source_type,
+      source: campaign.source,
       twilio_number: null,
       caller_phone: phone,
       name,
@@ -306,12 +305,11 @@ async function processSingleMessage(args: {
     console.error(`[email] Insert failed for ${messageId}:`, insertErr)
     return
   }
-  console.log(`[email] Inserted email lead ${inserted?.id} from ${senderEmail} (${source})`)
+  console.log(`[email] Inserted email lead ${inserted?.id} from ${senderEmail} (${campaign.source})`)
 
-  const campaignLabel = source === "SVG-A" ? "Campaign A" : source === "SVJ-B" ? "Campaign B" : source
   const lines = [
     "📧 New email lead",
-    `[${campaignLabel}]`,
+    `[${formatCampaignLabel(campaign.source)}]`,
     `👤 ${name || "(no name)"}`,
     `📧 ${senderEmail}`,
   ]
@@ -472,4 +470,12 @@ function formatPhoneForAlert(digits: string): string {
 
 function escapeHtml(s: string): string {
   return s.replace(/[<>&]/g, (c) => (c === "<" ? "&lt;" : c === ">" ? "&gt;" : "&amp;"))
+}
+
+// Telegram alert label — pretty up the bare campaign code so the message
+// reads "[Campaign A]" rather than "[MFM-A]".
+function formatCampaignLabel(source: string): string {
+  if (source === "MFM-A") return "Campaign A"
+  if (source === "MFM-B") return "Campaign B"
+  return source
 }

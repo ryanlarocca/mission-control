@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server"
-import { getLeadsClient, type LeadStatus } from "@/lib/leads"
+import { getLeadsClient, normalizePhone, type LeadStatus } from "@/lib/leads"
 
 const VALID_STATUSES: LeadStatus[] = ["new", "hot", "qualified", "warm", "junk", "contacted"]
 
@@ -29,13 +29,13 @@ export async function GET(request: NextRequest) {
 }
 
 export async function PATCH(request: NextRequest) {
-  let body: { id?: string; status?: string; notes?: string } = {}
+  let body: { id?: string; status?: string; notes?: string; caller_phone?: string } = {}
   try {
     body = await request.json()
   } catch {
     return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 })
   }
-  const { id, status, notes } = body
+  const { id, status, notes, caller_phone } = body
   if (!id || typeof id !== "string") {
     return NextResponse.json({ error: "id is required" }, { status: 400 })
   }
@@ -45,6 +45,22 @@ export async function PATCH(request: NextRequest) {
   const update: Record<string, unknown> = {}
   if (status !== undefined) update.status = status
   if (notes !== undefined) update.notes = notes
+  if (caller_phone !== undefined) {
+    // Empty/null clears the field (e.g. fixing a typo). Otherwise normalize
+    // to E.164 so calls/sms group cleanly with future inbound events.
+    if (caller_phone === null || caller_phone === "") {
+      update.caller_phone = null
+    } else {
+      const normalized = normalizePhone(caller_phone)
+      if (!/^\+\d{10,15}$/.test(normalized)) {
+        return NextResponse.json(
+          { error: `Invalid phone format: "${caller_phone}"` },
+          { status: 400 }
+        )
+      }
+      update.caller_phone = normalized
+    }
+  }
   if (Object.keys(update).length === 0) {
     return NextResponse.json({ error: "Nothing to update" }, { status: 400 })
   }

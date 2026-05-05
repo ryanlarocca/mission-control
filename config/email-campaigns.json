@@ -1,4 +1,10 @@
 {
-  "ryansvg@lrghomes.com": "SVG-A",
-  "ryansvj@lrghomes.com": "SVJ-B"
+  "ryansvg@lrghomes.com": {
+    "source": "MFM-A",
+    "source_type": "direct_mail"
+  },
+  "ryansvj@lrghomes.com": {
+    "source": "MFM-B",
+    "source_type": "direct_mail"
+  }
 }

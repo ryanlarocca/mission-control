@@ -135,13 +135,14 @@ function groupLeads(leads: Lead[]): LeadGroup[] {
     // Prefer phone for grouping (calls, voicemails, sms, plus email leads
     // where Haiku pulled a number from the body). Email-only leads with no
     // phone fall back to grouping by sender email so they still surface.
+    // Anything missing both still gets its own row keyed by id rather than
+    // being silently dropped.
     const phone = l.caller_phone || ""
     const key = phone
       ? phone
       : l.email
         ? `email:${l.email.toLowerCase()}`
-        : ""
-    if (!key) continue
+        : `id:${l.id}`
     const list = byKey.get(key) || []
     list.push(l)
     byKey.set(key, list)
@@ -216,6 +217,9 @@ export function LeadsTab() {
   const [callingFor, setCallingFor]     = useState<string | null>(null)
   const [callError, setCallError]       = useState<string | null>(null)
   const [callSuccess, setCallSuccess]   = useState<string | null>(null)
+  const [phoneDraft, setPhoneDraft]     = useState<Record<string, string>>({})
+  const [savingPhoneFor, setSavingPhoneFor] = useState<string | null>(null)
+  const [phoneError, setPhoneError]     = useState<string | null>(null)
 
   const fetchLeads = useCallback(async (silent = false) => {
     if (!silent) setRefreshing(true)
@@ -261,6 +265,34 @@ export function LeadsTab() {
     } catch (e) {
       console.error("Update failed; refetching:", e)
       void fetchLeads(true)
+    }
+  }
+
+  async function addPhone(group: LeadGroup, raw: string) {
+    const trimmed = raw.trim()
+    if (!trimmed) return
+    setPhoneError(null)
+    setSavingPhoneFor(group.phone)
+    try {
+      const res = await fetch("/api/leads", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: group.mostRecentId, caller_phone: trimmed }),
+      })
+      const body = await res.json().catch(() => ({}))
+      if (!res.ok) {
+        throw new Error(body.error || `HTTP ${res.status}`)
+      }
+      const updated: Lead | undefined = body.lead
+      const normalized = updated?.caller_phone ?? trimmed
+      // Optimistic: stamp the normalized phone onto the lead row so the
+      // group re-derives with contactPhone set and the Call button activates.
+      setLeads(prev => prev.map(l => l.id === group.mostRecentId ? { ...l, caller_phone: normalized } : l))
+      setPhoneDraft(prev => ({ ...prev, [group.phone]: "" }))
+    } catch (e) {
+      setPhoneError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setSavingPhoneFor(null)
     }
   }
 
@@ -441,6 +473,11 @@ export function LeadsTab() {
               calling={callingFor === group.phone}
               callError={callingFor === null && callError && expandedPhone === group.phone ? callError : null}
               callSuccess={callSuccess === group.phone}
+              phoneDraft={phoneDraft[group.phone] ?? ""}
+              onEditPhoneDraft={(v) => setPhoneDraft(prev => ({ ...prev, [group.phone]: v }))}
+              onSavePhone={() => addPhone(group, phoneDraft[group.phone] ?? "")}
+              savingPhone={savingPhoneFor === group.phone}
+              phoneError={savingPhoneFor === null && phoneError && expandedPhone === group.phone ? phoneError : null}
             />
           ))}
         </div>
@@ -469,6 +506,11 @@ interface LeadCardProps {
   calling: boolean
   callError: string | null
   callSuccess: boolean
+  phoneDraft: string
+  onEditPhoneDraft: (v: string) => void
+  onSavePhone: () => void
+  savingPhone: boolean
+  phoneError: string | null
 }
 
 function LeadCard(p: LeadCardProps) {
@@ -549,7 +591,36 @@ function LeadCard(p: LeadCardProps) {
                 )}
               </>
             ) : (
-              <span className="text-xs text-zinc-500 italic">No phone on file</span>
+              <div className="flex items-center gap-2 flex-wrap w-full">
+                <input
+                  type="tel"
+                  inputMode="tel"
+                  autoComplete="off"
+                  value={p.phoneDraft}
+                  onChange={e => p.onEditPhoneDraft(e.target.value)}
+                  onKeyDown={e => {
+                    if (e.key === "Enter" && p.phoneDraft.trim() && !p.savingPhone) {
+                      p.onSavePhone()
+                    }
+                  }}
+                  placeholder="Add phone number"
+                  disabled={p.savingPhone}
+                  className="flex-1 min-w-[160px] bg-zinc-900 border border-zinc-800 rounded px-3 py-1.5 text-sm text-zinc-100 placeholder-zinc-600 focus:outline-none focus:border-zinc-700 disabled:opacity-50"
+                  style={{ fontSize: 16 }}
+                />
+                <button
+                  onClick={p.onSavePhone}
+                  disabled={p.savingPhone || !p.phoneDraft.trim()}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 min-h-[36px] rounded bg-emerald-600 hover:bg-emerald-500 disabled:bg-zinc-800 disabled:text-zinc-600 text-white text-xs font-medium transition-colors"
+                  title="Attach this phone number to the lead — activates the Call button"
+                >
+                  {p.savingPhone ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Check className="w-3.5 h-3.5" />}
+                  {p.savingPhone ? "Saving…" : "Save"}
+                </button>
+                {p.phoneError && (
+                  <span className="text-red-300 text-xs basis-full">{p.phoneError}</span>
+                )}
+              </div>
             )}
             {group.email && (
               <span className="ml-auto text-zinc-400 text-xs">📧 {group.email}</span>

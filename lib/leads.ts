@@ -12,11 +12,42 @@ export const CAMPAIGN_MAP: Record<string, string> = {
 // config/email-campaigns.json; both the watch-setup and watch-renewal
 // scripts read the same file. To add a mailbox, run:
 //   node scripts/add-email-mailbox.mjs <email> <campaign-label>
-export const EMAIL_CAMPAIGN_MAP: Record<string, string> = emailCampaigns as Record<string, string>
+//
+// Email mailboxes share campaign labels with their phone-number siblings
+// (e.g. ryansvg@lrghomes.com → MFM-A, same bucket as +16504364279) so a
+// customer who calls *and* emails surfaces under one unified campaign in
+// reporting.
+export interface EmailCampaign {
+  source: string
+  source_type: string
+}
+
+const UNKNOWN_EMAIL_CAMPAIGN: EmailCampaign = { source: "Unknown", source_type: "direct_mail" }
+
+export const EMAIL_CAMPAIGN_MAP: Record<string, EmailCampaign> =
+  emailCampaigns as Record<string, EmailCampaign>
+
+export function getEmailCampaign(emailAddress: string | null | undefined): EmailCampaign {
+  if (!emailAddress) return UNKNOWN_EMAIL_CAMPAIGN
+  return EMAIL_CAMPAIGN_MAP[emailAddress.toLowerCase()] || UNKNOWN_EMAIL_CAMPAIGN
+}
 
 export function getEmailCampaignSource(emailAddress: string | null | undefined): string {
-  if (!emailAddress) return "Unknown"
-  return EMAIL_CAMPAIGN_MAP[emailAddress.toLowerCase()] || "Unknown"
+  return getEmailCampaign(emailAddress).source
+}
+
+// Normalize a free-form phone string to E.164. Inputs like "(555) 123-4567",
+// "555.123.4567", "5551234567", "+1 555-123-4567", and "1 555 123 4567" all
+// produce "+15551234567". 11-digit non-1 country codes pass through with a
+// "+" prefix. Anything we can't normalize is returned trimmed so the caller
+// can log/raise rather than silently overwriting with junk.
+export function normalizePhone(raw: string | null | undefined): string {
+  if (!raw) return ""
+  const digits = String(raw).replace(/\D/g, "")
+  if (digits.length === 10) return `+1${digits}`
+  if (digits.length === 11 && digits.startsWith("1")) return `+${digits}`
+  if (digits.length >= 10 && digits.length <= 15) return `+${digits}`
+  return String(raw).trim()
 }
 
 export const FORWARD_TO = "+14085006293"

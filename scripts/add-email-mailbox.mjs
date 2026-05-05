@@ -79,17 +79,20 @@ async function main() {
   const projectId = credentials.project_id
   if (!projectId) die("Service-account key has no project_id")
 
-  // 1. Update JSON config
+  // 1. Update JSON config. Map values are { source, source_type }.
   const config = JSON.parse(fs.readFileSync(CAMPAIGNS_PATH, "utf-8"))
-  const existingLabel = config[email]
-  if (existingLabel === label) {
+  const existing = config[email]
+  const desired = { source: label, source_type: "direct_mail" }
+  const same = existing && existing.source === desired.source && existing.source_type === desired.source_type
+  if (same) {
     console.log(`• ${email} already mapped to ${label} in ${path.relative(REPO_ROOT, CAMPAIGNS_PATH)} (no change)`)
-  } else if (existingLabel) {
-    console.log(`• ${email} was mapped to ${existingLabel}, updating to ${label}`)
-    config[email] = label
+  } else if (existing) {
+    const prev = typeof existing === "string" ? existing : existing.source
+    console.log(`• ${email} was mapped to ${prev}, updating to ${label}`)
+    config[email] = desired
   } else {
     console.log(`• adding ${email} → ${label} to ${path.relative(REPO_ROOT, CAMPAIGNS_PATH)}`)
-    config[email] = label
+    config[email] = desired
   }
   // Sort keys so the JSON diff stays clean across adds.
   const sorted = Object.fromEntries(Object.entries(config).sort(([a], [b]) => a.localeCompare(b)))
