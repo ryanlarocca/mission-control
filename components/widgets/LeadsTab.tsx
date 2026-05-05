@@ -3,10 +3,10 @@
 import { useEffect, useMemo, useState, useCallback } from "react"
 import {
   Phone, PhoneOutgoing, Voicemail, MessageSquare, ClipboardList, ChevronDown, ChevronRight,
-  Loader2, RefreshCw, Send, Check,
+  Loader2, RefreshCw, Send, Check, Mail,
 } from "lucide-react"
 
-type LeadType = "call" | "voicemail" | "sms" | "form"
+type LeadType = "call" | "voicemail" | "sms" | "form" | "email"
 type LeadStatus = "new" | "hot" | "qualified" | "warm" | "junk" | "contacted"
 type SourceType = "direct_mail" | "google_ads"
 
@@ -30,6 +30,7 @@ interface Lead {
   name: string | null
   email: string | null
   property_address: string | null
+  suggested_reply: string | null
 }
 
 function isOutbound(l: Lead): boolean {
@@ -37,12 +38,14 @@ function isOutbound(l: Lead): boolean {
 }
 
 interface LeadGroup {
-  phone: string
+  phone: string                     // grouping key — phone if present, else "email:<addr>"
+  contactPhone: string | null       // actual phone (null for email-only leads)
   source: string | null
   sourceType: string | null
   status: LeadStatus
   notes: string | null
   aiNotes: string | null
+  suggestedReply: string | null
   name: string | null
   email: string | null
   propertyAddress: string | null
@@ -81,6 +84,10 @@ const STATUS_BADGE: Record<LeadStatus, string> = {
 const SOURCE_BADGE: Record<string, string> = {
   "MFM-A":      "bg-sky-900/60 text-sky-200",
   "MFM-B":      "bg-purple-900/60 text-purple-200",
+  // Email-campaign mailers share buckets with their phone-number siblings,
+  // so SVG-A matches MFM-A's color and SVJ-B matches MFM-B's.
+  "SVG-A":      "bg-sky-900/60 text-sky-200",
+  "SVJ-B":      "bg-purple-900/60 text-purple-200",
   "Google Ads": "bg-green-900/60 text-green-200",
   Unknown:      "bg-zinc-800 text-zinc-400",
 }
@@ -100,6 +107,7 @@ const TYPE_ICON: Record<LeadType, typeof Phone> = {
   voicemail: Voicemail,
   sms:       MessageSquare,
   form:      ClipboardList,
+  email:     Mail,
 }
 
 function formatPhone(p: string | null | undefined): string {
@@ -122,17 +130,25 @@ function relativeTime(iso: string): string {
 }
 
 function groupLeads(leads: Lead[]): LeadGroup[] {
-  const byPhone = new Map<string, Lead[]>()
+  const byKey = new Map<string, Lead[]>()
   for (const l of leads) {
+    // Prefer phone for grouping (calls, voicemails, sms, plus email leads
+    // where Haiku pulled a number from the body). Email-only leads with no
+    // phone fall back to grouping by sender email so they still surface.
     const phone = l.caller_phone || ""
-    if (!phone) continue
-    const list = byPhone.get(phone) || []
+    const key = phone
+      ? phone
+      : l.email
+        ? `email:${l.email.toLowerCase()}`
+        : ""
+    if (!key) continue
+    const list = byKey.get(key) || []
     list.push(l)
-    byPhone.set(phone, list)
+    byKey.set(key, list)
   }
 
   const groups: LeadGroup[] = []
-  for (const [phone, evs] of Array.from(byPhone.entries())) {
+  for (const [key, evs] of Array.from(byKey.entries())) {
     // Sort oldest → newest for timeline display
     const ascending = [...evs].sort(
       (a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
@@ -151,13 +167,19 @@ function groupLeads(leads: Lead[]): LeadGroup[] {
     const email = ascending.map(e => e.email).find(v => v && v.trim()) || null
     const propertyAddress = ascending.map(e => e.property_address).find(v => v && v.trim()) || null
     const aiNotes = newestFirst.map(e => e.ai_notes).find(v => v && v.trim()) || null
+    // Suggested reply travels with the email row that produced it. Take the
+    // newest non-null one so a follow-up email's draft replaces a stale one.
+    const suggestedReply = newestFirst.map(e => e.suggested_reply).find(v => v && v.trim()) || null
+    const contactPhone = ascending.map(e => e.caller_phone).find(v => v && v.trim()) || null
     groups.push({
-      phone,
+      phone: key,
+      contactPhone,
       source: (mostRecentInbound?.source) || mostRecent.source,
       sourceType: (mostRecentInbound?.source_type) || mostRecent.source_type,
       status: statusSource.status,
       notes: statusSource.notes,
       aiNotes,
+      suggestedReply,
       name,
       email,
       propertyAddress,
@@ -266,6 +288,7 @@ export function LeadsTab() {
   }
 
   async function callLead(group: LeadGroup) {
+    if (!group.contactPhone) return
     setCallingFor(group.phone)
     setCallError(null)
     try {
@@ -273,7 +296,7 @@ export function LeadsTab() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          phone: group.phone,
+          phone: group.contactPhone,
           source: group.source,
         }),
       })
@@ -293,8 +316,9 @@ export function LeadsTab() {
   }
 
   async function sendOutbound(group: LeadGroup) {
-    const text = (draftMessage[group.phone] || "").trim()
+    const text = (draftMessage[group.phone] ?? group.suggestedReply ?? "").trim()
     if (!text) return
+    if (!group.contactPhone) return
     setSendingFor(group.phone)
     setSendError(null)
     try {
@@ -302,7 +326,7 @@ export function LeadsTab() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          phone: group.phone,
+          phone: group.contactPhone,
           message: text,
           source: group.source,
         }),
@@ -407,7 +431,7 @@ export function LeadsTab() {
               onEditNote={(v) => setDraftNotes(prev => ({ ...prev, [group.phone]: v }))}
               onFocusNote={() => startEditingNotes(group)}
               onCommitNote={() => commitNotes(group)}
-              draftMessage={draftMessage[group.phone] ?? ""}
+              draftMessage={draftMessage[group.phone] ?? group.suggestedReply ?? ""}
               onEditMessage={(v) => setDraftMessage(prev => ({ ...prev, [group.phone]: v }))}
               onSend={() => sendOutbound(group)}
               sending={sendingFor === group.phone}
@@ -452,6 +476,8 @@ function LeadCard(p: LeadCardProps) {
   const Icon = TYPE_ICON[group.mostRecentEvent.lead_type ?? "call"] || Phone
   const sourceClass = SOURCE_BADGE[group.source || "Unknown"] || SOURCE_BADGE.Unknown
   const sourceTypeClass = group.sourceType ? SOURCE_TYPE_BADGE[group.sourceType] : null
+  const phoneDisplay = group.contactPhone ? formatPhone(group.contactPhone) : null
+  const isEmailLead = group.mostRecentEvent.lead_type === "email"
 
   return (
     <div className="rounded-md border border-zinc-800 bg-zinc-950 overflow-hidden">
@@ -472,10 +498,12 @@ function LeadCard(p: LeadCardProps) {
         <Icon className="w-4 h-4 text-zinc-400 shrink-0" />
         <div className="flex-1 min-w-0">
           <div className="text-sm text-zinc-100 font-medium truncate">
-            {group.name || formatPhone(group.phone)}
+            {group.name || phoneDisplay || group.email || "(unknown)"}
           </div>
           {group.name && (
-            <div className="text-xs text-zinc-500 truncate">{formatPhone(group.phone)}</div>
+            <div className="text-xs text-zinc-500 truncate">
+              {phoneDisplay || group.email || ""}
+            </div>
           )}
           <div className="text-xs text-zinc-500 truncate">
             {relativeTime(group.mostRecentEvent.created_at)}
@@ -493,29 +521,35 @@ function LeadCard(p: LeadCardProps) {
       {expanded && (
         <div className="border-t border-zinc-800 px-3 py-3 space-y-3">
           <div className="text-sm flex items-center gap-3 flex-wrap">
-            <a
-              href={`tel:${group.phone}`}
-              className="inline-flex items-center gap-1.5 text-emerald-400 hover:text-emerald-300 underline-offset-2 hover:underline"
-            >
-              <Phone className="w-3.5 h-3.5" />
-              {formatPhone(group.phone)}
-            </a>
-            <button
-              onClick={p.onCall}
-              disabled={p.calling}
-              className="inline-flex items-center gap-1.5 px-3 py-1.5 min-h-[36px] rounded bg-emerald-600 hover:bg-emerald-500 disabled:bg-zinc-800 disabled:text-zinc-600 text-white text-xs font-medium transition-colors"
-              title="Ring my cell, then bridge to this lead with recording"
-            >
-              {p.calling ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <PhoneOutgoing className="w-3.5 h-3.5" />}
-              {p.calling ? "Dialing…" : "Call"}
-            </button>
-            {p.callSuccess && (
-              <span className="text-emerald-400 text-xs inline-flex items-center gap-1">
-                <Check className="w-3 h-3" /> Ringing your cell
-              </span>
-            )}
-            {p.callError && (
-              <span className="text-red-300 text-xs">{p.callError}</span>
+            {group.contactPhone ? (
+              <>
+                <a
+                  href={`tel:${group.contactPhone}`}
+                  className="inline-flex items-center gap-1.5 text-emerald-400 hover:text-emerald-300 underline-offset-2 hover:underline"
+                >
+                  <Phone className="w-3.5 h-3.5" />
+                  {phoneDisplay}
+                </a>
+                <button
+                  onClick={p.onCall}
+                  disabled={p.calling}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 min-h-[36px] rounded bg-emerald-600 hover:bg-emerald-500 disabled:bg-zinc-800 disabled:text-zinc-600 text-white text-xs font-medium transition-colors"
+                  title="Ring my cell, then bridge to this lead with recording"
+                >
+                  {p.calling ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <PhoneOutgoing className="w-3.5 h-3.5" />}
+                  {p.calling ? "Dialing…" : "Call"}
+                </button>
+                {p.callSuccess && (
+                  <span className="text-emerald-400 text-xs inline-flex items-center gap-1">
+                    <Check className="w-3 h-3" /> Ringing your cell
+                  </span>
+                )}
+                {p.callError && (
+                  <span className="text-red-300 text-xs">{p.callError}</span>
+                )}
+              </>
+            ) : (
+              <span className="text-xs text-zinc-500 italic">No phone on file</span>
             )}
             {group.email && (
               <span className="ml-auto text-zinc-400 text-xs">📧 {group.email}</span>
@@ -552,15 +586,25 @@ function LeadCard(p: LeadCardProps) {
           </div>
 
           <div>
-            <div className="text-xs text-zinc-500 mb-1.5">Send a message</div>
+            {/* For email leads with an AI-drafted reply, label the composer
+                "💡 Suggested Reply" and pre-fill it (handled by draftMessage
+                fallback in LeadsTab). Send still goes through the iMessage
+                sidecar via /api/leads/send, so we gate on contactPhone. */}
+            <div className="text-xs text-zinc-500 mb-1.5">
+              {isEmailLead && group.suggestedReply ? "💡 Suggested Reply" : "Send a message"}
+            </div>
             <textarea
               value={p.draftMessage}
               onChange={e => p.onEditMessage(e.target.value)}
-              placeholder="Send a message…"
+              placeholder={
+                group.contactPhone
+                  ? "Send a message…"
+                  : "Add a phone number above to send an iMessage reply."
+              }
               rows={3}
               className="w-full bg-zinc-900 border border-zinc-800 rounded px-3 py-2 text-sm text-zinc-100 placeholder-zinc-600 focus:outline-none focus:border-zinc-700 resize-none"
               style={{ fontSize: 16 }}
-              disabled={p.sending}
+              disabled={p.sending || !group.contactPhone}
             />
             <div className="mt-2 flex items-center justify-between gap-2">
               <div className="text-xs text-zinc-500 flex-1 min-w-0 truncate">
@@ -573,7 +617,7 @@ function LeadCard(p: LeadCardProps) {
               </div>
               <button
                 onClick={p.onSend}
-                disabled={p.sending || !p.draftMessage.trim()}
+                disabled={p.sending || !p.draftMessage.trim() || !group.contactPhone}
                 className="inline-flex items-center gap-1.5 px-4 py-2 min-h-[44px] rounded bg-emerald-600 hover:bg-emerald-500 disabled:bg-zinc-800 disabled:text-zinc-600 text-white text-sm font-medium transition-colors"
               >
                 {p.sending ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
@@ -724,6 +768,14 @@ function TimelineEvent({ ev }: { ev: Lead }) {
         {ev.lead_type === "form" && (
           <div className="text-sm text-zinc-300 bg-zinc-900 rounded px-3 py-2">
             Website form submission
+          </div>
+        )}
+        {ev.lead_type === "email" && (
+          // `message` for email rows is "<subject>\n\n<body>" — we show
+          // the whole block as plain text. No audio player; the email body
+          // replaces it.
+          <div className="text-sm text-zinc-200 bg-zinc-900 rounded px-3 py-2 whitespace-pre-wrap break-words">
+            {ev.message || "(empty email)"}
           </div>
         )}
       </div>

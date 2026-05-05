@@ -5,8 +5,9 @@ import { FORWARD_TO, getLeadsClient, getTwilioNumber } from "@/lib/leads"
 //   1. Insert an outbound `lead_type=call` row (twilio_number=null per the
 //      outbound convention; status="contacted") so the timeline shows it
 //      immediately.
-//   2. POST to Twilio's REST API to dial Ryan's cell with `+16506803671`
-//      (MFM-B) as the from-number.
+//   2. POST to Twilio's REST API to dial Ryan's cell with the
+//      `TWILIO_NUMBER` env (see lib/leads.ts getTwilioNumber()) as the
+//      from-number.
 //   3. When Ryan answers, Twilio fetches the bridge URL (TwiML) which
 //      `<Dial>`s the lead's number with record-from-answer. Recording is
 //      delivered back to /api/leads/call/recording?leadId=… which attaches

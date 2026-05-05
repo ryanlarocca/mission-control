@@ -13,6 +13,10 @@ const PUBLIC_PATHS = [
   // which itself stays auth-gated).
   "/api/leads/call/bridge",
   "/api/leads/call/recording",
+  // Google Cloud Pub/Sub pushes Gmail-watch notifications here without
+  // a session cookie. Auth on this path is enforced by Pub/Sub itself
+  // (subscription origin) — see scripts/setup-gmail-watch.js.
+  "/api/leads/email",
 ]
 
 export function middleware(request: NextRequest) {

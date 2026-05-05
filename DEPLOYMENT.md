@@ -22,6 +22,11 @@ Phone → Vercel (UI + Next.js API)
 | `OPENROUTER_API_KEY` | For `/api/crms/generate` |
 | `MC_PASSWORD` | Login password |
 | `MC_SESSION_SECRET` | Session cookie secret |
+| `TWILIO_ACCOUNT_SID` / `TWILIO_AUTH_TOKEN` | Twilio REST credentials for outbound click-to-call |
+| `TWILIO_NUMBER` | Outbound caller ID for click-to-call. Currently `+16502043247` (swapped 2026-04-30 from `+16506803671`). Read by `getTwilioNumber()` in `lib/leads.ts` and used as `From` on REST calls (`/api/leads/call`) and as `callerId` in the bridge TwiML (`/api/leads/call/bridge`). Inbound routing is unaffected — `CAMPAIGN_MAP` in `lib/leads.ts` still maps `+16506803671` → MFM-B. |
+| `LRG_SUPABASE_URL` / `LRG_SUPABASE_SERVICE_KEY` | Lead pipeline Supabase project |
+| `TELEGRAM_BOT_TOKEN` / `TELEGRAM_CHAT_ID` | Lead alerts |
+| `OPENAI_API_KEY` | Whisper transcription |
 
 ## Sheet requirements (BoB)
 

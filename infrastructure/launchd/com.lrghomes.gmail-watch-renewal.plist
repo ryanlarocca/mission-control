@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Daily Gmail watch renewal. Gmail watches expire 7 days after registration,
+  so we re-register every day. The renew script is idempotent and reads the
+  mailbox list from config/email-campaigns.json, so adding a new mailbox
+  via scripts/add-email-mailbox.mjs requires zero changes here.
+
+  Install (Mac mini):
+    cp infrastructure/launchd/com.lrghomes.gmail-watch-renewal.plist \
+       ~/Library/LaunchAgents/
+    launchctl load ~/Library/LaunchAgents/com.lrghomes.gmail-watch-renewal.plist
+
+  Trigger once manually:
+    launchctl start com.lrghomes.gmail-watch-renewal
+
+  Logs:
+    /tmp/lrg-gmail-watch-renewal.log
+    /tmp/lrg-gmail-watch-renewal-err.log
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.lrghomes.gmail-watch-renewal</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/opt/homebrew/bin/node</string>
+    <string>scripts/renew-gmail-watch.js</string>
+  </array>
+  <key>WorkingDirectory</key>
+  <string>/Users/ryanlarocca/.openclaw/workspace/PROJECTS/mission-control</string>
+  <key>StartCalendarInterval</key>
+  <dict>
+    <key>Hour</key>
+    <integer>9</integer>
+    <key>Minute</key>
+    <integer>0</integer>
+  </dict>
+  <key>StandardOutPath</key>
+  <string>/tmp/lrg-gmail-watch-renewal.log</string>
+  <key>StandardErrorPath</key>
+  <string>/tmp/lrg-gmail-watch-renewal-err.log</string>
+  <key>RunAtLoad</key>
+  <false/>
+</dict>
+</plist>

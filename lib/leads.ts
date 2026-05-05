@@ -1,8 +1,22 @@
 import { createClient, type SupabaseClient } from "@supabase/supabase-js"
+import emailCampaigns from "@/config/email-campaigns.json"
 
 export const CAMPAIGN_MAP: Record<string, string> = {
   "+16504364279": "MFM-A",
   "+16506803671": "MFM-B",
+}
+
+// Mailers also list one email address per campaign that route through
+// Gmail Push → Pub/Sub → /api/leads/email and land in the same `leads`
+// table as their phone-number siblings. Source of truth lives in
+// config/email-campaigns.json; both the watch-setup and watch-renewal
+// scripts read the same file. To add a mailbox, run:
+//   node scripts/add-email-mailbox.mjs <email> <campaign-label>
+export const EMAIL_CAMPAIGN_MAP: Record<string, string> = emailCampaigns as Record<string, string>
+
+export function getEmailCampaignSource(emailAddress: string | null | undefined): string {
+  if (!emailAddress) return "Unknown"
+  return EMAIL_CAMPAIGN_MAP[emailAddress.toLowerCase()] || "Unknown"
 }
 
 export const FORWARD_TO = "+14085006293"
@@ -18,7 +32,7 @@ export function getTwilioNumber(): string {
   return n
 }
 
-export type LeadType = "call" | "voicemail" | "sms" | "form"
+export type LeadType = "call" | "voicemail" | "sms" | "form" | "email"
 export type LeadStatus = "new" | "hot" | "qualified" | "warm" | "junk" | "contacted"
 
 // Conventions (no extra columns — keeps schema simple):
@@ -46,6 +60,7 @@ export interface Lead {
   name: string | null
   email: string | null
   property_address: string | null
+  suggested_reply: string | null
 }
 
 export function isOutbound(lead: Pick<Lead, "twilio_number">): boolean {
@@ -418,6 +433,88 @@ Respond in this exact JSON format (no markdown, no explanation):
     return { status: parsed.status as LeadStatus, summary: parsed.summary.trim() }
   } catch (e) {
     console.error("[triage] Threw:", e)
+    return null
+  }
+}
+
+// Email-lead triage — same Haiku model as the call/voicemail path, but the
+// prompt is tuned for written replies and also asks the model to draft a
+// short text-message-style reply that Ryan can edit and send from the
+// lead card. Returns null on any failure (non-fatal).
+export interface EmailTriageResult {
+  status: LeadStatus
+  summary: string
+  suggestedReply: string
+}
+
+export async function triageEmailLead(
+  subject: string,
+  body: string
+): Promise<EmailTriageResult | null> {
+  const apiKey = process.env.OPENROUTER_API_KEY
+  if (!apiKey) {
+    console.warn("[triage-email] OPENROUTER_API_KEY not set; skipping triage")
+    return null
+  }
+
+  const prompt = `You are triaging an email response to a real estate direct mail campaign. The sender received a mailer about selling their home.
+
+Subject: ${subject}
+Body: ${body}
+
+Respond in JSON only:
+{
+  "status": "hot" | "qualified" | "warm" | "junk",
+  "summary": "one sentence summary",
+  "suggestedReply": "a short, natural text-message-style reply Ryan can send. Warm, direct, no fluff. 1-2 sentences max."
+}
+
+hot = wants to sell now or requesting immediate callback
+qualified = interested, has a property, wants info
+warm = curious, not ready yet
+junk = spam, wrong number, unsubscribe`
+
+  try {
+    const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        model: "anthropic/claude-haiku-4-5",
+        messages: [{ role: "user", content: prompt }],
+        max_tokens: 200,
+      }),
+    })
+
+    if (!res.ok) {
+      console.error(`[triage-email] OpenRouter failed ${res.status}: ${(await res.text()).slice(0, 300)}`)
+      return null
+    }
+
+    const json = await res.json() as { choices?: { message?: { content?: string } }[] }
+    const content = json.choices?.[0]?.message?.content?.trim()
+    if (!content) return null
+
+    const cleaned = content.replace(/^```(?:json)?\s*/i, "").replace(/```\s*$/i, "").trim()
+    const parsed = JSON.parse(cleaned) as {
+      status?: string
+      summary?: string
+      suggestedReply?: string
+    }
+    const validStatuses = ["hot", "qualified", "warm", "junk"]
+    if (!parsed.status || !validStatuses.includes(parsed.status)) return null
+    if (!parsed.summary || typeof parsed.summary !== "string") return null
+    if (!parsed.suggestedReply || typeof parsed.suggestedReply !== "string") return null
+
+    return {
+      status: parsed.status as LeadStatus,
+      summary: parsed.summary.trim(),
+      suggestedReply: parsed.suggestedReply.trim(),
+    }
+  } catch (e) {
+    console.error("[triage-email] Threw:", e)
     return null
   }
 }
