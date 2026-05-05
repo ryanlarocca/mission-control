@@ -14,11 +14,13 @@ import { getGmailClient, getLeadsClient } from "@/lib/leads"
 // the "email:" prefix gives us the mailbox to send the reply from. The Gmail
 // API's `subject:` JWT impersonation handles the rest.
 //
-// Threading: we set `threadId` on the Gmail send so the message lands in the
-// same Gmail conversation. We also set `In-Reply-To:` and `References:`
-// headers using the Gmail thread ID — Gmail recipients thread correctly via
-// the threadId param; non-Gmail clients use the headers (which aren't
-// strictly RFC-2822 Message-IDs but most clients still cluster on them).
+// Threading: we set `threadId` on the Gmail send so the message lands in
+// the same Gmail conversation. To make recipient clients (Outlook, Apple
+// Mail, non-Gmail consumers) cluster the reply under the original, we also
+// set `In-Reply-To:` and `References:` headers — using the *real* RFC 2822
+// Message-Ids fetched from the existing thread (not the gmail thread-id,
+// which isn't a Message-Id and doesn't match anything in the recipient's
+// store). Costs one extra metadata-only `threads.get` call before send.
 
 interface EmailReplyBody {
   leadId?: string
