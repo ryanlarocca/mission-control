@@ -244,6 +244,10 @@ export function LeadsTab() {
   const [phoneDraft, setPhoneDraft]     = useState<Record<string, string>>({})
   const [savingPhoneFor, setSavingPhoneFor] = useState<string | null>(null)
   const [phoneError, setPhoneError]     = useState<string | null>(null)
+  const [emailDraft, setEmailDraft]     = useState<Record<string, string>>({})
+  const [sendingEmailFor, setSendingEmailFor] = useState<string | null>(null)
+  const [emailSendSuccess, setEmailSendSuccess] = useState<string | null>(null)
+  const [emailSendError, setEmailSendError] = useState<string | null>(null)
   // Synthetic timeline rows merged in from chat.db (sync-imessage) and
   // Gmail threads (sync-email) when Ryan expands a card. Keyed by group.phone.
   // Kept separate from the leads state so they don't perturb status/grouping.
@@ -501,6 +505,38 @@ export function LeadsTab() {
     }
   }
 
+  async function sendEmailReply(group: LeadGroup) {
+    const text = (emailDraft[group.phone] ?? group.suggestedReply ?? "").trim()
+    if (!text) return
+    // The backend looks up the lead row by id and reads its twilio_number to
+    // know which mailbox to send from, so we need an inbound email row from
+    // this group (not an outbound reply we already sent).
+    const emailLead = group.events.find(e => e.lead_type === "email" && !isOutbound(e))
+    if (!emailLead) return
+    setSendingEmailFor(group.phone)
+    setEmailSendError(null)
+    try {
+      const res = await fetch("/api/leads/email-reply", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ leadId: emailLead.id, message: text }),
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok || !data.ok) {
+        throw new Error(data.error || `HTTP ${res.status}`)
+      }
+      setEmailDraft(prev => ({ ...prev, [group.phone]: "" }))
+      setEmailSendSuccess(group.phone)
+      setTimeout(() => setEmailSendSuccess(null), 2500)
+      // Refetch to pick up the outbound email row that the route just inserted.
+      void fetchLeads(true)
+    } catch (e) {
+      setEmailSendError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setSendingEmailFor(null)
+    }
+  }
+
   async function sendOutbound(group: LeadGroup) {
     const text = (draftMessage[group.phone] ?? group.suggestedReply ?? "").trim()
     if (!text) return
@@ -637,6 +673,12 @@ export function LeadsTab() {
               onSavePhone={() => addPhone(group, phoneDraft[group.phone] ?? "")}
               savingPhone={savingPhoneFor === group.phone}
               phoneError={savingPhoneFor === null && phoneError && expandedPhone === group.phone ? phoneError : null}
+              emailDraft={emailDraft[group.phone] ?? group.suggestedReply ?? ""}
+              onEditEmailDraft={(v) => setEmailDraft(prev => ({ ...prev, [group.phone]: v }))}
+              onSendEmail={() => sendEmailReply(group)}
+              sendingEmail={sendingEmailFor === group.phone}
+              emailSendSuccess={emailSendSuccess === group.phone}
+              emailSendError={sendingEmailFor === null && emailSendError && expandedPhone === group.phone ? emailSendError : null}
             />
           ))}
         </div>
@@ -671,6 +713,12 @@ interface LeadCardProps {
   onSavePhone: () => void
   savingPhone: boolean
   phoneError: string | null
+  emailDraft: string
+  onEditEmailDraft: (v: string) => void
+  onSendEmail: () => void
+  sendingEmail: boolean
+  emailSendSuccess: boolean
+  emailSendError: string | null
 }
 
 function LeadCard(p: LeadCardProps) {
@@ -816,46 +864,111 @@ function LeadCard(p: LeadCardProps) {
             />
           </div>
 
-          <div>
-            {/* For email leads with an AI-drafted reply, label the composer
-                "💡 Suggested Reply" and pre-fill it (handled by draftMessage
-                fallback in LeadsTab). Send still goes through the iMessage
-                sidecar via /api/leads/send, so we gate on contactPhone. */}
-            <div className="text-xs text-zinc-500 mb-1.5">
-              {isEmailLead && group.suggestedReply ? "💡 Suggested Reply" : "Send a message"}
-            </div>
-            <textarea
-              value={p.draftMessage}
-              onChange={e => p.onEditMessage(e.target.value)}
-              placeholder={
-                group.contactPhone
-                  ? "Send a message…"
-                  : "Add a phone number above to send an iMessage reply."
-              }
-              rows={3}
-              className="w-full bg-zinc-900 border border-zinc-800 rounded px-3 py-2 text-sm text-zinc-100 placeholder-zinc-600 focus:outline-none focus:border-zinc-700 resize-none"
-              style={{ fontSize: 16 }}
-              disabled={p.sending || !group.contactPhone}
-            />
-            <div className="mt-2 flex items-center justify-between gap-2">
-              <div className="text-xs text-zinc-500 flex-1 min-w-0 truncate">
-                {p.sendError && <span className="text-red-300">{p.sendError}</span>}
-                {p.sendSuccess && (
-                  <span className="text-emerald-400 inline-flex items-center gap-1">
-                    <Check className="w-3 h-3" /> Sent
-                  </span>
-                )}
+          {isEmailLead ? (
+            // Email-lead composer: reply via Gmail API (blue Send Email).
+            // If the lead also has a phone, an iMessage sub-composer renders
+            // below — Ryan can pick the channel that fits the lead's reply.
+            <div>
+              <div className="text-xs text-zinc-500 mb-1.5">
+                {group.suggestedReply ? "💡 Suggested Reply" : "Email Reply"}
               </div>
-              <button
-                onClick={p.onSend}
-                disabled={p.sending || !p.draftMessage.trim() || !group.contactPhone}
-                className="inline-flex items-center gap-1.5 px-4 py-2 min-h-[44px] rounded bg-emerald-600 hover:bg-emerald-500 disabled:bg-zinc-800 disabled:text-zinc-600 text-white text-sm font-medium transition-colors"
-              >
-                {p.sending ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
-                Send
-              </button>
+              <textarea
+                value={p.emailDraft}
+                onChange={e => p.onEditEmailDraft(e.target.value)}
+                placeholder="Write an email reply…"
+                rows={3}
+                className="w-full bg-zinc-900 border border-zinc-800 rounded px-3 py-2 text-sm text-zinc-100 placeholder-zinc-600 focus:outline-none focus:border-zinc-700 resize-none"
+                style={{ fontSize: 16 }}
+                disabled={p.sendingEmail}
+              />
+              <div className="mt-2 flex items-center justify-between gap-2">
+                <div className="text-xs text-zinc-500 flex-1 min-w-0 truncate">
+                  {p.emailSendError && <span className="text-red-300">{p.emailSendError}</span>}
+                  {p.emailSendSuccess && (
+                    <span className="text-emerald-400 inline-flex items-center gap-1">
+                      <Check className="w-3 h-3" /> Email sent
+                    </span>
+                  )}
+                </div>
+                <button
+                  onClick={p.onSendEmail}
+                  disabled={p.sendingEmail || !p.emailDraft.trim()}
+                  className="inline-flex items-center gap-1.5 px-4 py-2 min-h-[44px] rounded bg-blue-600 hover:bg-blue-500 disabled:bg-zinc-800 disabled:text-zinc-600 text-white text-sm font-medium transition-colors"
+                >
+                  {p.sendingEmail ? <Loader2 className="w-4 h-4 animate-spin" /> : <Mail className="w-4 h-4" />}
+                  Send Email
+                </button>
+              </div>
+              {group.contactPhone && (
+                <div className="mt-3 pt-3 border-t border-zinc-800">
+                  <div className="text-xs text-zinc-500 mb-1.5">Or send iMessage</div>
+                  <textarea
+                    value={p.draftMessage}
+                    onChange={e => p.onEditMessage(e.target.value)}
+                    placeholder="Send a message…"
+                    rows={2}
+                    className="w-full bg-zinc-900 border border-zinc-800 rounded px-3 py-2 text-sm text-zinc-100 placeholder-zinc-600 focus:outline-none focus:border-zinc-700 resize-none"
+                    style={{ fontSize: 16 }}
+                    disabled={p.sending}
+                  />
+                  <div className="mt-2 flex items-center justify-between gap-2">
+                    <div className="text-xs text-zinc-500 flex-1 min-w-0 truncate">
+                      {p.sendError && <span className="text-red-300">{p.sendError}</span>}
+                      {p.sendSuccess && (
+                        <span className="text-emerald-400 inline-flex items-center gap-1">
+                          <Check className="w-3 h-3" /> Sent
+                        </span>
+                      )}
+                    </div>
+                    <button
+                      onClick={p.onSend}
+                      disabled={p.sending || !p.draftMessage.trim()}
+                      className="inline-flex items-center gap-1.5 px-4 py-2 min-h-[44px] rounded bg-emerald-600 hover:bg-emerald-500 disabled:bg-zinc-800 disabled:text-zinc-600 text-white text-sm font-medium transition-colors"
+                    >
+                      {p.sending ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
+                      iMessage
+                    </button>
+                  </div>
+                </div>
+              )}
             </div>
-          </div>
+          ) : (
+            // Phone-only lead: existing iMessage composer, unchanged.
+            <div>
+              <div className="text-xs text-zinc-500 mb-1.5">Send a message</div>
+              <textarea
+                value={p.draftMessage}
+                onChange={e => p.onEditMessage(e.target.value)}
+                placeholder={
+                  group.contactPhone
+                    ? "Send a message…"
+                    : "Add a phone number above to send an iMessage reply."
+                }
+                rows={3}
+                className="w-full bg-zinc-900 border border-zinc-800 rounded px-3 py-2 text-sm text-zinc-100 placeholder-zinc-600 focus:outline-none focus:border-zinc-700 resize-none"
+                style={{ fontSize: 16 }}
+                disabled={p.sending || !group.contactPhone}
+              />
+              <div className="mt-2 flex items-center justify-between gap-2">
+                <div className="text-xs text-zinc-500 flex-1 min-w-0 truncate">
+                  {p.sendError && <span className="text-red-300">{p.sendError}</span>}
+                  {p.sendSuccess && (
+                    <span className="text-emerald-400 inline-flex items-center gap-1">
+                      <Check className="w-3 h-3" /> Sent
+                    </span>
+                  )}
+                </div>
+                <button
+                  onClick={p.onSend}
+                  disabled={p.sending || !p.draftMessage.trim() || !group.contactPhone}
+                  className="inline-flex items-center gap-1.5 px-4 py-2 min-h-[44px] rounded bg-emerald-600 hover:bg-emerald-500 disabled:bg-zinc-800 disabled:text-zinc-600 text-white text-sm font-medium transition-colors"
+                >
+                  {p.sending ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
+                  Send
+                </button>
+              </div>
+            </div>
+          )}
 
           <div className="flex flex-wrap gap-1.5">
             {(["hot", "qualified", "warm", "contacted", "junk"] as LeadStatus[]).map(s => {

@@ -1,4 +1,5 @@
 import { createClient, type SupabaseClient } from "@supabase/supabase-js"
+import { google, gmail_v1 } from "googleapis"
 import emailCampaigns from "@/config/email-campaigns.json"
 
 export const CAMPAIGN_MAP: Record<string, string> = {
@@ -48,6 +49,26 @@ export function getMailboxForSource(source: string | null | undefined): string |
   return null
 }
 
+// Build a Gmail API client that impersonates the given mailbox owner via
+// Google Workspace domain-wide delegation. DWD on the lrghomes.com tenant is
+// authorized for gmail.modify only — gmail.readonly returns 401
+// `unauthorized_client`, gmail.send is also unauthorized. gmail.modify
+// includes the read AND send perms we need (see Phase 7.4 in the CRMS memo).
+// Used by both /api/leads/email (for inbound thread fetch) and
+// /api/leads/email-reply (for outbound send).
+export function getGmailClient(userEmail: string): gmail_v1.Gmail {
+  const key = process.env.GOOGLE_SERVICE_ACCOUNT_KEY
+  if (!key) throw new Error("GOOGLE_SERVICE_ACCOUNT_KEY not set")
+  const credentials = JSON.parse(key)
+  const auth = new google.auth.JWT({
+    email: credentials.client_email,
+    key: credentials.private_key,
+    scopes: ["https://www.googleapis.com/auth/gmail.modify"],
+    subject: userEmail,
+  })
+  return google.gmail({ version: "v1", auth })
+}
+
 // Normalize a free-form phone string to E.164. Inputs like "(555) 123-4567",
 // "555.123.4567", "5551234567", "+1 555-123-4567", and "1 555 123 4567" all
 // produce "+15551234567". 11-digit non-1 country codes pass through with a
@@ -83,8 +104,12 @@ export type LeadStatus = "new" | "hot" | "qualified" | "warm" | "junk" | "contac
 //       SMS rows       → the SMS body (inbound or outbound)
 //       voicemail rows → the Whisper transcription (also live-call recordings)
 //       call rows      → null until the recording callback attaches transcript
-//   - `twilio_number IS NULL` means the row is outbound (sent via the
-//     iMessage sidecar, not Twilio). All inbound rows have twilio_number set.
+//   - `twilio_number IS NULL` means the row is outbound. All inbound rows
+//     have twilio_number set: a real Twilio number for SMS/voice/voicemail,
+//     or `"email:<receiving-mailbox>"` for inbound email leads (e.g.
+//     `"email:ryansvg@lrghomes.com"`). The "email:" prefix is non-null so
+//     isOutbound() returns false, AND it tells /api/leads/email-reply
+//     which mailbox to send the reply from without an extra lookup.
 //   - `source_type` is the high-level bucket ('direct_mail' | 'google_ads')
 //     while `source` is the specific campaign ('MFM-A', 'MFM-B', 'Google Ads').
 export interface Lead {

@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server"
-import { google, gmail_v1 } from "googleapis"
+import { gmail_v1 } from "googleapis"
 
 // Pub/Sub push ack timeout is 10s by default; Gmail history.list + message.get
 // + Haiku triage + Supabase insert can blow past Vercel's 10s default. Bump it.
@@ -7,6 +7,7 @@ export const maxDuration = 30
 import {
   EMAIL_CAMPAIGN_MAP,
   getEmailCampaign,
+  getGmailClient,
   getLeadsClient,
   sendTelegramAlert,
   triageEmailLead,
@@ -163,7 +164,12 @@ async function handleAppsScript(payload: AppsScriptPayload): Promise<NextRespons
       lead_type: "email",
       source_type: campaign.source_type,
       source: campaign.source,
-      twilio_number: null,
+      // `email:<receiving-mailbox>` (NOT null) — `isOutbound()` keys off
+      // null === outbound. Email leads from a sender are inbound, so we
+      // need a non-null value. Encoding the receiving mailbox lets the
+      // /api/leads/email-reply route know which mailbox to send replies
+      // from without an extra lookup.
+      twilio_number: `email:${mailbox}`,
       caller_phone: phone,
       name,
       email: senderEmail,
@@ -290,7 +296,10 @@ async function processSingleMessage(args: {
       lead_type: "email",
       source_type: campaign.source_type,
       source: campaign.source,
-      twilio_number: null,
+      // See twilio_number explanation in handleAppsScript above — non-null
+      // string with the receiving mailbox so isOutbound() returns false and
+      // the email-reply route knows which mailbox to send from.
+      twilio_number: `email:${emailAddress}`,
       caller_phone: phone,
       name,
       email: senderEmail,
@@ -325,27 +334,8 @@ async function processSingleMessage(args: {
   await sendTelegramAlert(lines.join("\n"))
 }
 
-// ─── Gmail helpers (inline; lib/leads.ts owns lead-shape helpers) ──────────
-
-function getGmailClient(userEmail: string): gmail_v1.Gmail {
-  const key = process.env.GOOGLE_SERVICE_ACCOUNT_KEY
-  if (!key) throw new Error("GOOGLE_SERVICE_ACCOUNT_KEY not set")
-  const credentials = JSON.parse(key)
-  // JWT with `subject` impersonates the mailbox owner via Google Workspace
-  // domain-wide delegation. Without DWD configured on the lrghomes.com
-  // tenant, Google rejects the token exchange — see scripts/setup-gmail-watch.js
-  // for the manual setup steps.
-  const auth = new google.auth.JWT({
-    email: credentials.client_email,
-    key: credentials.private_key,
-    // DWD on the lrghomes.com tenant is authorized for gmail.modify only.
-    // gmail.readonly returns 401 unauthorized_client. gmail.modify includes
-    // the read perms we need.
-    scopes: ["https://www.googleapis.com/auth/gmail.modify"],
-    subject: userEmail,
-  })
-  return google.gmail({ version: "v1", auth })
-}
+// ─── Gmail helpers (lib/leads.ts owns the JWT client; helpers here stay
+// local because they're only used by the inbound-message processing path)
 
 // List inbox messages received within the last hour, newest first. We can't
 // use Gmail's `history.list` keyed by the Pub/Sub-supplied historyId — that

@@ -22,8 +22,13 @@ const PUBLIC_PATHS = [
 export function middleware(request: NextRequest) {
   const { pathname } = request.nextUrl
 
-  // Allow login page and auth API through
-  if (PUBLIC_PATHS.some(p => pathname.startsWith(p))) {
+  // Allow login page and webhook callbacks through. We match the path
+  // exactly OR with a trailing-slash sub-path (e.g. /api/leads/voice plus
+  // /api/leads/voice/recording). Plain `startsWith` would let
+  // /api/leads/email-reply slip past as if it were /api/leads/email,
+  // accidentally making an auth-required mail-sending endpoint public.
+  const isPublic = PUBLIC_PATHS.some(p => pathname === p || pathname.startsWith(p + "/"))
+  if (isPublic) {
     return NextResponse.next()
   }
 
