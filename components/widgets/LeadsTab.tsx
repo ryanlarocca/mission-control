@@ -3,12 +3,29 @@
 import { useEffect, useMemo, useState, useCallback } from "react"
 import {
   Phone, PhoneOutgoing, Voicemail, MessageSquare, ClipboardList, ChevronDown, ChevronRight,
-  Loader2, RefreshCw, Send, Check, Mail, Trash2,
+  Loader2, RefreshCw, Send, Check, Mail, Trash2, Bot, Clock, X,
 } from "lucide-react"
+import { getCampaign, getNextTouch } from "@/lib/drip-campaigns"
 
-type LeadType = "call" | "voicemail" | "sms" | "form" | "email"
-type LeadStatus = "new" | "hot" | "qualified" | "warm" | "junk" | "contacted"
+type LeadType =
+  | "call" | "voicemail" | "sms" | "form" | "email"
+  | "drip_imessage" | "drip_email"
+type LeadStatus =
+  | "new" | "hot" | "qualified" | "warm" | "junk" | "contacted"
+  | "active" | "unqualified" | "do_not_contact"
 type SourceType = "direct_mail" | "google_ads"
+
+interface DripQueueItem {
+  id: string
+  lead_id: string
+  touch_number: number
+  campaign_type: string
+  channel: "imessage" | "email"
+  message: string
+  subject: string | null
+  status: "pending" | "approved" | "skipped" | "sent" | "failed"
+  created_at: string
+}
 
 // See lib/leads.ts for the schema conventions:
 //   `message` holds SMS body for sms rows, transcription for voicemail/call rows
@@ -34,6 +51,9 @@ interface Lead {
   // Set on email leads at insertion (route.ts) so /api/leads/sync-email can
   // look up the full Gmail thread on card expand. Null on call/sms/form rows.
   gmail_thread_id?: string | null
+  drip_campaign_type?: string | null
+  drip_touch_number?: number | null
+  last_drip_sent_at?: string | null
 }
 
 // chat.db stores timestamps in Apple epoch (seconds since 2001-01-01); the
@@ -81,13 +101,16 @@ interface LeadGroup {
 }
 
 const STATUS_FILTERS: ({ key: "all" | LeadStatus; label: string })[] = [
-  { key: "all",        label: "All" },
-  { key: "new",        label: "New" },
-  { key: "hot",        label: "Hot" },
-  { key: "qualified",  label: "Qualified" },
-  { key: "warm",       label: "Warm" },
-  { key: "junk",       label: "Junk" },
-  { key: "contacted",  label: "Contacted" },
+  { key: "all",            label: "All" },
+  { key: "new",            label: "New" },
+  { key: "hot",            label: "Hot" },
+  { key: "qualified",      label: "Qualified" },
+  { key: "warm",           label: "Warm" },
+  { key: "active",         label: "Active" },
+  { key: "contacted",      label: "Contacted" },
+  { key: "unqualified",    label: "Unqualified" },
+  { key: "junk",           label: "Junk" },
+  { key: "do_not_contact", label: "DNC" },
 ]
 
 const SOURCE_TYPE_FILTERS: ({ key: "all" | SourceType; label: string })[] = [
@@ -97,12 +120,15 @@ const SOURCE_TYPE_FILTERS: ({ key: "all" | SourceType; label: string })[] = [
 ]
 
 const STATUS_BADGE: Record<LeadStatus, string> = {
-  new:        "bg-zinc-700 text-zinc-200",
-  hot:        "bg-red-900/60 text-red-200",
-  qualified:  "bg-emerald-900/60 text-emerald-200",
-  warm:       "bg-amber-900/60 text-amber-200",
-  junk:       "bg-zinc-800 text-zinc-500",
-  contacted:  "bg-blue-900/60 text-blue-200",
+  new:            "bg-zinc-700 text-zinc-200",
+  hot:            "bg-red-900/60 text-red-200",
+  qualified:      "bg-emerald-900/60 text-emerald-200",
+  warm:           "bg-amber-900/60 text-amber-200",
+  junk:           "bg-zinc-800 text-zinc-500",
+  contacted:      "bg-blue-900/60 text-blue-200",
+  active:         "bg-sky-900/60 text-sky-200",
+  unqualified:    "bg-zinc-700/80 text-zinc-300",
+  do_not_contact: "bg-red-950 text-red-300 border border-red-900",
 }
 
 const SOURCE_BADGE: Record<string, string> = {
@@ -127,11 +153,25 @@ const SOURCE_TYPE_LABEL: Record<string, string> = {
 }
 
 const TYPE_ICON: Record<LeadType, typeof Phone> = {
-  call:      Phone,
-  voicemail: Voicemail,
-  sms:       MessageSquare,
-  form:      ClipboardList,
-  email:     Mail,
+  call:          Phone,
+  voicemail:     Voicemail,
+  sms:           MessageSquare,
+  form:          ClipboardList,
+  email:         Mail,
+  drip_imessage: Bot,
+  drip_email:    Bot,
+}
+
+const STATUS_LABEL: Record<LeadStatus, string> = {
+  new:            "New",
+  hot:            "Hot",
+  qualified:      "Qualified",
+  warm:           "Warm",
+  junk:           "Junk",
+  contacted:      "Contacted",
+  active:         "Active",
+  unqualified:    "Unqualified",
+  do_not_contact: "DNC",
 }
 
 function formatPhone(p: string | null | undefined): string {
@@ -140,6 +180,34 @@ function formatPhone(p: string | null | undefined): string {
   const last10 = digits.length > 10 ? digits.slice(-10) : digits
   if (last10.length !== 10) return p
   return `(${last10.slice(0,3)}) ${last10.slice(3,6)}-${last10.slice(6)}`
+}
+
+// Predict when the drip engine will fire the next touch on a group.
+// Returns null when the lead has no campaign assigned, has no remaining
+// touches, or sits in a stop-status (active/junk/do_not_contact). The
+// engine itself enforces all the same rules; this is a UI-only hint.
+function nextDripETA(group: LeadGroup): string | null {
+  const stopStatuses: LeadStatus[] = ["active", "junk", "do_not_contact"]
+  if (stopStatuses.includes(group.status)) return null
+  // Drip metadata lives on the original intake row (stamped on insert).
+  const intake = group.events.find(e => e.drip_campaign_type) || group.events[0]
+  if (!intake?.drip_campaign_type) return null
+  const campaign = getCampaign(intake.drip_campaign_type)
+  if (!campaign) return null
+  const next = getNextTouch(campaign, intake.drip_touch_number ?? 0)
+  if (!next) return null
+  const lastSent = intake.last_drip_sent_at
+    ? new Date(intake.last_drip_sent_at).getTime()
+    : new Date(intake.created_at).getTime()
+  const dueAt = lastSent + next.delayHours * 3600 * 1000
+  const ms = dueAt - Date.now()
+  const channel = next.channel === "email" ? "email" : "iMessage"
+  if (ms <= 0) return `due now (touch #${next.touchNumber} ${channel})`
+  const hours = Math.floor(ms / 3600000)
+  if (hours < 24) return `in ${hours}h (touch #${next.touchNumber} ${channel})`
+  const days = Math.floor(hours / 24)
+  const rem = hours - days * 24
+  return `in ${days}d ${rem}h (touch #${next.touchNumber} ${channel})`
 }
 
 function relativeTime(iso: string): string {
@@ -691,6 +759,8 @@ export function LeadsTab() {
         </div>
       )}
 
+      <DripQueueSection leads={leads} onAfterAction={() => fetchLeads(true)} />
+
       {loading ? (
         <div className="flex items-center gap-2 text-sm text-zinc-500">
           <Loader2 className="w-4 h-4 animate-spin" /> Loading leads…
@@ -797,7 +867,12 @@ function LeadCard(p: LeadCardProps) {
   const sourceClass = SOURCE_BADGE[group.source || "Unknown"] || SOURCE_BADGE.Unknown
   const sourceTypeClass = group.sourceType ? SOURCE_TYPE_BADGE[group.sourceType] : null
   const phoneDisplay = group.contactPhone ? formatPhone(group.contactPhone) : null
-  const isEmailLead = group.mostRecentEvent.lead_type === "email"
+  // The reply composer should reflect the lead's primary inbound channel —
+  // the original email — not whatever the latest event happens to be (which
+  // may be a drip-sent row). Email leads have at least one inbound email
+  // event in the group; that's the only condition we need.
+  const isEmailLead = group.events.some(e => e.lead_type === "email" && !isOutbound(e))
+  const nextDripLabel = nextDripETA(group)
 
   return (
     <div className="rounded-md border border-zinc-800 bg-zinc-950 overflow-hidden">
@@ -908,6 +983,13 @@ function LeadCard(p: LeadCardProps) {
           {group.propertyAddress && (
             <div className="text-xs text-zinc-400">
               <span className="text-zinc-500">🏠 </span>{group.propertyAddress}
+            </div>
+          )}
+
+          {nextDripLabel && (
+            <div className="text-xs text-zinc-500 inline-flex items-center gap-1.5">
+              <Clock className="w-3 h-3" />
+              <span>Next drip {nextDripLabel}</span>
             </div>
           )}
 
@@ -1041,7 +1123,7 @@ function LeadCard(p: LeadCardProps) {
           )}
 
           <div className="flex flex-wrap gap-1.5">
-            {(["hot", "qualified", "warm", "contacted", "junk"] as LeadStatus[]).map(s => {
+            {(["hot", "qualified", "warm", "active", "contacted", "unqualified", "junk", "do_not_contact"] as LeadStatus[]).map(s => {
               const isCurrent = group.status === s
               const isPending = p.pendingStatus === group.phone + ":" + s
               return (
@@ -1055,7 +1137,7 @@ function LeadCard(p: LeadCardProps) {
                       : "bg-zinc-900 text-zinc-300 border-zinc-800 hover:text-zinc-100 hover:border-zinc-700"
                   } disabled:opacity-60`}
                 >
-                  {isPending ? <Loader2 className="w-3 h-3 animate-spin inline" /> : s.charAt(0).toUpperCase() + s.slice(1)}
+                  {isPending ? <Loader2 className="w-3 h-3 animate-spin inline" /> : STATUS_LABEL[s]}
                 </button>
               )
             })}
@@ -1166,12 +1248,21 @@ function TimelineEvent({ ev }: { ev: Lead }) {
     // Right-aligned bubble, emerald accent — Ryan's outbound message or call.
     // For outbound calls: show recording + transcription if attached, else
     // a placeholder so a fresh "ringing" call isn't rendered as missing.
+    // Drip-engine-sent rows (lead_type prefixed `drip_`) get a 🤖 Auto label
+    // so Ryan can tell at a glance whether he or the engine sent it.
     const isOutboundCall = ev.lead_type === "call"
+    const isDrip = ev.lead_type === "drip_imessage" || ev.lead_type === "drip_email"
+    const senderLabel = isDrip ? "🤖 Auto" : "You"
+    const channelSuffix = isOutboundCall
+      ? " · outbound call"
+      : isDrip
+        ? ev.lead_type === "drip_email" ? " · drip email" : " · drip iMessage"
+        : ""
     return (
       <div className="flex justify-end">
         <div className="max-w-[85%] bg-emerald-900/30 border border-emerald-900/50 rounded px-3 py-2 space-y-2">
           <div className="text-[10px] uppercase tracking-wider text-emerald-400/70 flex items-center gap-1.5">
-            <span>You{isOutboundCall ? " · outbound call" : ""} · {fullTime}</span>
+            <span>{senderLabel}{channelSuffix} · {fullTime}</span>
           </div>
           {isOutboundCall ? (
             <>
@@ -1272,6 +1363,120 @@ function TimelineEvent({ ev }: { ev: Lead }) {
             {ev.message}
           </div>
         )}
+      </div>
+    </div>
+  )
+}
+
+// Drip-queue approval section. Pending touches generated by the drip
+// engine sit here until Ryan taps Approve or Skip. Approved items get
+// drained on the engine's next hourly pass; skipped items just stay
+// recorded for audit (the engine already advanced the lead's counters
+// when it queued the touch).
+function DripQueueSection({ leads, onAfterAction }: { leads: Lead[]; onAfterAction: () => void }) {
+  const [items, setItems] = useState<DripQueueItem[]>([])
+  const [loading, setLoading] = useState(false)
+  const [actingOn, setActingOn] = useState<string | null>(null)
+  const [err, setErr] = useState<string | null>(null)
+
+  const fetchQueue = useCallback(async () => {
+    setLoading(true)
+    try {
+      const res = await fetch("/api/leads/drip-queue?status=pending", { cache: "no-store" })
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
+      const data = await res.json()
+      setItems(data.items ?? [])
+      setErr(null)
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e))
+    } finally {
+      setLoading(false)
+    }
+  }, [])
+
+  useEffect(() => {
+    void fetchQueue()
+    const id = setInterval(() => void fetchQueue(), 30000)
+    return () => clearInterval(id)
+  }, [fetchQueue])
+
+  async function decide(id: string, action: "approve" | "skip") {
+    setActingOn(id)
+    setErr(null)
+    try {
+      const res = await fetch("/api/leads/drip-queue", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id, action }),
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(data?.error || `HTTP ${res.status}`)
+      setItems(prev => prev.filter(q => q.id !== id))
+      onAfterAction()
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e))
+    } finally {
+      setActingOn(null)
+    }
+  }
+
+  if (!loading && items.length === 0 && !err) return null
+
+  // Map lead_id → lead so we can render a recipient label.
+  const leadById = new Map(leads.map(l => [l.id, l]))
+
+  return (
+    <div className="mb-4 rounded-md border border-zinc-800 bg-zinc-950 overflow-hidden">
+      <div className="px-3 py-2 border-b border-zinc-800 flex items-center gap-2 text-sm">
+        <Bot className="w-4 h-4 text-zinc-400" />
+        <span className="text-zinc-200 font-medium">Drip queue</span>
+        <span className="text-xs text-zinc-500">{items.length} pending</span>
+      </div>
+      {err && (
+        <div className="px-3 py-2 text-xs text-red-300 bg-red-900/20">{err}</div>
+      )}
+      <div className="divide-y divide-zinc-900">
+        {items.map(it => {
+          const lead = leadById.get(it.lead_id)
+          const recipient = lead?.name || (lead?.caller_phone ? formatPhone(lead.caller_phone) : null) || lead?.email || it.lead_id
+          const channel = it.channel === "imessage" ? "iMessage" : "Email"
+          const acting = actingOn === it.id
+          return (
+            <div key={it.id} className="px-3 py-3 space-y-2">
+              <div className="flex items-center gap-2 text-xs text-zinc-500">
+                <span className="text-zinc-300 font-medium">{recipient}</span>
+                <span>·</span>
+                <span>#{it.touch_number} {channel}</span>
+                <span>·</span>
+                <span>{relativeTime(it.created_at)}</span>
+              </div>
+              {it.subject && (
+                <div className="text-xs text-zinc-400">Subject: {it.subject}</div>
+              )}
+              <div className="text-sm text-zinc-200 bg-zinc-900 rounded px-3 py-2 whitespace-pre-wrap break-words">
+                {it.message}
+              </div>
+              <div className="flex items-center gap-2 justify-end">
+                <button
+                  onClick={() => decide(it.id, "skip")}
+                  disabled={acting}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 min-h-[36px] rounded bg-zinc-900 border border-zinc-800 hover:border-zinc-700 text-zinc-400 text-xs font-medium transition-colors disabled:opacity-60"
+                >
+                  {acting ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <X className="w-3.5 h-3.5" />}
+                  Skip
+                </button>
+                <button
+                  onClick={() => decide(it.id, "approve")}
+                  disabled={acting}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 min-h-[36px] rounded bg-emerald-600 hover:bg-emerald-500 disabled:bg-zinc-800 disabled:text-zinc-600 text-white text-xs font-medium transition-colors"
+                >
+                  {acting ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Check className="w-3.5 h-3.5" />}
+                  Approve
+                </button>
+              </div>
+            </div>
+          )
+        })}
       </div>
     </div>
   )

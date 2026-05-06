@@ -1,7 +1,18 @@
 import { NextRequest, NextResponse } from "next/server"
 import { getLeadsClient, normalizePhone, type LeadStatus } from "@/lib/leads"
 
-const VALID_STATUSES: LeadStatus[] = ["new", "hot", "qualified", "warm", "junk", "contacted"]
+const VALID_STATUSES: LeadStatus[] = [
+  "new",
+  "hot",
+  "qualified",
+  "warm",
+  "junk",
+  "contacted",
+  // Phase 7B drip statuses
+  "active",
+  "unqualified",
+  "do_not_contact",
+]
 
 export async function GET(request: NextRequest) {
   const url = request.nextUrl

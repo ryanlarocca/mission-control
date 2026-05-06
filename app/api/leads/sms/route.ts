@@ -42,6 +42,10 @@ export async function POST(request: Request) {
         lead_type: "sms",
         message: bodyText,
         status: "new",
+        // Phase 7B: stamp drip campaign on intake (48h entry delay).
+        drip_campaign_type: "direct_mail_sms",
+        drip_touch_number: 0,
+        last_drip_sent_at: new Date().toISOString(),
       })
       if (error) console.error("[sms] Supabase insert failed:", error)
     } catch (e) {

@@ -96,8 +96,32 @@ export function getTwilioNumber(): string {
   return n
 }
 
-export type LeadType = "call" | "voicemail" | "sms" | "form" | "email"
-export type LeadStatus = "new" | "hot" | "qualified" | "warm" | "junk" | "contacted"
+export type LeadType =
+  | "call"
+  | "voicemail"
+  | "sms"
+  | "form"
+  | "email"
+  // Phase 7B: drip-engine-generated outbound rows. The lead_type prefix
+  // makes them easy to filter out of activity checks ("did Ryan reply
+  // since the last drip?") and to badge separately in the timeline.
+  | "drip_imessage"
+  | "drip_email"
+
+export type LeadStatus =
+  | "new"
+  | "hot"
+  | "qualified"
+  | "warm"
+  | "junk"
+  | "contacted"
+  // Phase 7B drip statuses:
+  //   active          — Ryan personally working it; drip permanently off
+  //   unqualified     — soft mismatch; clarifying question fires once, then pause
+  //   do_not_contact  — terminal hard stop (auto-set by junk filter or manual)
+  | "active"
+  | "unqualified"
+  | "do_not_contact"
 
 // Conventions (no extra columns — keeps schema simple):
 //   - `message` holds the text content of the event regardless of type:
@@ -129,6 +153,12 @@ export interface Lead {
   email: string | null
   property_address: string | null
   suggested_reply: string | null
+  // Phase 7B: drip-tracking columns. Null on legacy rows that pre-date the
+  // drip engine; the engine's eligible-lead query filters those out via
+  // `drip_campaign_type IS NOT NULL`.
+  drip_campaign_type?: string | null
+  drip_touch_number?: number | null
+  last_drip_sent_at?: string | null
 }
 
 export function isOutbound(lead: Pick<Lead, "twilio_number">): boolean {

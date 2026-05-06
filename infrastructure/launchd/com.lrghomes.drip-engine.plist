@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Phase 7B drip engine — runs hourly, scans eligible leads, generates +
+  queues touches (or auto-sends when DRIP_AUTO_SEND=true).
+
+  The engine reads .env.local relative to its working directory, so the
+  WorkingDirectory must point at the mission-control repo. It needs the
+  sidecar reachable on SIDECAR_URL (default localhost:5799) for both
+  the chat.db activity check and outbound iMessage sends.
+
+  Install (Mac mini):
+    cp infrastructure/launchd/com.lrghomes.drip-engine.plist \
+       ~/Library/LaunchAgents/
+    launchctl load ~/Library/LaunchAgents/com.lrghomes.drip-engine.plist
+
+  Trigger once manually:
+    launchctl start com.lrghomes.drip-engine
+
+  Tail logs:
+    tail -f /tmp/lrg-drip-engine.log /tmp/lrg-drip-engine-err.log
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.lrghomes.drip-engine</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/opt/homebrew/bin/node</string>
+    <string>scripts/drip-engine.js</string>
+  </array>
+  <key>WorkingDirectory</key>
+  <string>/Users/ryanlarocca/.openclaw/workspace/PROJECTS/mission-control</string>
+  <key>StartInterval</key>
+  <integer>3600</integer>
+  <key>StandardOutPath</key>
+  <string>/tmp/lrg-drip-engine.log</string>
+  <key>StandardErrorPath</key>
+  <string>/tmp/lrg-drip-engine-err.log</string>
+  <key>RunAtLoad</key>
+  <false/>
+</dict>
+</plist>

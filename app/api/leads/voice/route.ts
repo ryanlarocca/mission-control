@@ -60,6 +60,13 @@ export async function POST(request: Request) {
         caller_phone: callerPhone,
         lead_type: "call",
         status: "new",
+        // Phase 7B: stamp drip campaign on intake. The engine's hourly
+        // scan will pick up touch 0 (15-min missed-call message) when no
+        // recording arrives within the buffer, and touch 1 onward at
+        // each cadence step.
+        drip_campaign_type: "direct_mail_call",
+        drip_touch_number: 0,
+        last_drip_sent_at: new Date().toISOString(),
       })
       if (error) console.error("[voice] Supabase insert failed:", error)
     } catch (e) {

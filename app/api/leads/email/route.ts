@@ -171,6 +171,12 @@ async function handleAppsScript(payload: AppsScriptPayload): Promise<NextRespons
   // Haiku triage — non-fatal
   const triage = await triageEmailLead(subject, bodyText)
 
+  // Phase 7B: pick the drip campaign by source bucket. google_ads_email_only
+  // upgrades to google_ads_form when caller_phone arrives; direct_mail_email
+  // alternates channels mid-cycle once a phone is on the lead.
+  const dripCampaignType = campaign.source_type === "google_ads"
+    ? "google_ads_email_only"
+    : "direct_mail_email"
   const { data: inserted, error: insertErr } = await sb
     .from("leads")
     .insert({
@@ -190,6 +196,9 @@ async function handleAppsScript(payload: AppsScriptPayload): Promise<NextRespons
       ai_notes: triage?.summary ?? null,
       suggested_reply: triage?.suggestedReply ?? null,
       status: triage?.status ?? "new",
+      drip_campaign_type: dripCampaignType,
+      drip_touch_number: 0,
+      last_drip_sent_at: new Date().toISOString(),
     })
     .select("id")
     .single()
@@ -318,6 +327,10 @@ async function processSingleMessage(args: {
   // sees it untouched.
   const triage = await triageEmailLead(subject, bodyText)
 
+  // Phase 7B: same drip-campaign mapping as handleAppsScript above.
+  const dripCampaignType = campaign.source_type === "google_ads"
+    ? "google_ads_email_only"
+    : "direct_mail_email"
   const { data: inserted, error: insertErr } = await sb
     .from("leads")
     .insert({
@@ -340,6 +353,9 @@ async function processSingleMessage(args: {
       // back to null when the message has no thread (rare — Gmail always
       // assigns one for inbound mail).
       gmail_thread_id: message.threadId || null,
+      drip_campaign_type: dripCampaignType,
+      drip_touch_number: 0,
+      last_drip_sent_at: new Date().toISOString(),
     })
     .select("id")
     .single()
