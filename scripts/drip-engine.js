@@ -467,11 +467,21 @@ function buildRawEmail({ to, from, subject, body, inReplyTo, references }) {
 
 async function sendDripEmail({ lead, body, subject }) {
   if (!lead.email) throw new Error("lead has no email address")
-  // Send from the receiving mailbox if we have one; fall back to the
-  // configured default. twilio_number is "email:<mailbox>" on inbound rows.
+  // Send-from rule:
+  //   1. If the lead came in via email (twilio_number = "email:<mailbox>"),
+  //      reply from the same mailbox so the Gmail thread stays consistent.
+  //   2. Else if source_type === "google_ads", send from info@lrghomes.com —
+  //      that's the same address lrghomes-landing/api/submit-lead.js uses
+  //      for the touch-0 confirmation email, so the form lead sees one
+  //      continuous thread instead of two senders.
+  //   3. Else (direct mail without an inbox, e.g. call/sms upgrades), fall
+  //      back to DRIP_DEFAULT_MAILBOX or ryan@lrghomes.com.
   const fromMailbox = (() => {
     if (lead.twilio_number && String(lead.twilio_number).startsWith("email:")) {
       return String(lead.twilio_number).slice("email:".length)
+    }
+    if (lead.source_type === "google_ads") {
+      return "info@lrghomes.com"
     }
     return process.env.DRIP_DEFAULT_MAILBOX || "ryan@lrghomes.com"
   })()
