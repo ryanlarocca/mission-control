@@ -4,15 +4,17 @@ import { useEffect, useMemo, useState, useCallback } from "react"
 import {
   Phone, PhoneOutgoing, Voicemail, MessageSquare, ClipboardList, ChevronDown, ChevronRight,
   Loader2, RefreshCw, Send, Check, Mail, Trash2, Bot, Clock, X,
+  Sparkles, PhoneOff, Ban, ShieldOff, Zap, Wand2, Calendar,
 } from "lucide-react"
 import { getCampaign, getNextTouch } from "@/lib/drip-campaigns"
 
 type LeadType =
   | "call" | "voicemail" | "sms" | "form" | "email"
   | "drip_imessage" | "drip_email"
+// Phase 7C lifecycle. Old statuses (qualified/junk/unqualified/do_not_contact)
+// were remapped at migration time and are no longer accepted.
 type LeadStatus =
-  | "new" | "hot" | "qualified" | "warm" | "junk" | "contacted"
-  | "active" | "unqualified" | "do_not_contact"
+  | "new" | "contacted" | "active" | "hot" | "warm" | "nurture" | "dead"
 type SourceType = "direct_mail" | "google_ads"
 
 interface DripQueueItem {
@@ -54,6 +56,18 @@ interface Lead {
   drip_campaign_type?: string | null
   drip_touch_number?: number | null
   last_drip_sent_at?: string | null
+  // Phase 7C
+  is_dnc?: boolean | null
+  is_junk?: boolean | null
+  is_bad_number?: boolean | null
+  ai_summary?: string | null
+  ai_summary_generated_at?: string | null
+  recommended_followup_date?: string | null
+  followup_reason?: string | null
+  followup_generated_at?: string | null
+  suggested_status?: LeadStatus | null
+  suggested_status_reason?: string | null
+  campaign_label?: string | null
 }
 
 // chat.db stores timestamps in Apple epoch (seconds since 2001-01-01); the
@@ -98,19 +112,36 @@ interface LeadGroup {
   mostRecentInbound: Lead | null   // most recent INBOUND event (for source/contact info)
   events: Lead[]                    // all events, oldest → newest
   inboundCount: number
+  // Phase 7C derived/copied fields. Flags + intelligence fields live on the
+  // status-driving row (the lead's "primary" row). Drip metadata lives on
+  // the original intake row (kept on the existing nextDripETA path).
+  isDnc: boolean
+  isJunk: boolean
+  isBadNumber: boolean
+  campaignLabel: string | null
+  aiSummary: string | null
+  aiSummaryAt: string | null
+  recommendedFollowupDate: string | null
+  followupReason: string | null
+  suggestedStatus: LeadStatus | null
+  suggestedStatusReason: string | null
 }
 
-const STATUS_FILTERS: ({ key: "all" | LeadStatus; label: string })[] = [
-  { key: "all",            label: "All" },
-  { key: "new",            label: "New" },
-  { key: "hot",            label: "Hot" },
-  { key: "qualified",      label: "Qualified" },
-  { key: "warm",           label: "Warm" },
-  { key: "active",         label: "Active" },
-  { key: "contacted",      label: "Contacted" },
-  { key: "unqualified",    label: "Unqualified" },
-  { key: "junk",           label: "Junk" },
-  { key: "do_not_contact", label: "DNC" },
+// Lifecycle filters. DNC / Junk are flag-based filters, prefixed with
+// "flag:" so they collide-free with lifecycle keys.
+type FilterKey = "all" | LeadStatus | "flag:dnc" | "flag:junk" | "flag:bad_number"
+const STATUS_FILTERS: { key: FilterKey; label: string }[] = [
+  { key: "all",             label: "All" },
+  { key: "new",             label: "New" },
+  { key: "contacted",       label: "Contacted" },
+  { key: "active",          label: "Active" },
+  { key: "hot",             label: "Hot" },
+  { key: "warm",            label: "Warm" },
+  { key: "nurture",         label: "Nurture" },
+  { key: "dead",            label: "Dead" },
+  { key: "flag:dnc",        label: "DNC" },
+  { key: "flag:junk",       label: "Junk" },
+  { key: "flag:bad_number", label: "Bad #" },
 ]
 
 const SOURCE_TYPE_FILTERS: ({ key: "all" | SourceType; label: string })[] = [
@@ -120,15 +151,13 @@ const SOURCE_TYPE_FILTERS: ({ key: "all" | SourceType; label: string })[] = [
 ]
 
 const STATUS_BADGE: Record<LeadStatus, string> = {
-  new:            "bg-zinc-700 text-zinc-200",
-  hot:            "bg-red-900/60 text-red-200",
-  qualified:      "bg-emerald-900/60 text-emerald-200",
-  warm:           "bg-amber-900/60 text-amber-200",
-  junk:           "bg-zinc-800 text-zinc-500",
-  contacted:      "bg-blue-900/60 text-blue-200",
-  active:         "bg-sky-900/60 text-sky-200",
-  unqualified:    "bg-zinc-700/80 text-zinc-300",
-  do_not_contact: "bg-red-950 text-red-300 border border-red-900",
+  new:        "bg-zinc-700 text-zinc-200",
+  contacted:  "bg-blue-900/60 text-blue-200",
+  active:     "bg-sky-900/60 text-sky-200",
+  hot:        "bg-red-900/60 text-red-200",
+  warm:       "bg-amber-900/60 text-amber-200",
+  nurture:    "bg-emerald-900/60 text-emerald-200",
+  dead:       "bg-zinc-800 text-zinc-500",
 }
 
 const SOURCE_BADGE: Record<string, string> = {
@@ -139,6 +168,8 @@ const SOURCE_BADGE: Record<string, string> = {
   "SVG-A":      "bg-sky-900/60 text-sky-200",
   "SVJ-B":      "bg-purple-900/60 text-purple-200",
   "Google Ads": "bg-green-900/60 text-green-200",
+  "DM-Legacy":  "bg-zinc-700 text-zinc-300",
+  "Website":    "bg-violet-900/60 text-violet-200",
   Unknown:      "bg-zinc-800 text-zinc-400",
 }
 
@@ -163,15 +194,13 @@ const TYPE_ICON: Record<LeadType, typeof Phone> = {
 }
 
 const STATUS_LABEL: Record<LeadStatus, string> = {
-  new:            "New",
-  hot:            "Hot",
-  qualified:      "Qualified",
-  warm:           "Warm",
-  junk:           "Junk",
-  contacted:      "Contacted",
-  active:         "Active",
-  unqualified:    "Unqualified",
-  do_not_contact: "DNC",
+  new:        "New",
+  contacted:  "Contacted",
+  active:     "Active",
+  hot:        "Hot",
+  warm:       "Warm",
+  nurture:    "Nurture",
+  dead:       "Dead",
 }
 
 function formatPhone(p: string | null | undefined): string {
@@ -184,11 +213,13 @@ function formatPhone(p: string | null | undefined): string {
 
 // Predict when the drip engine will fire the next touch on a group.
 // Returns null when the lead has no campaign assigned, has no remaining
-// touches, or sits in a stop-status (active/junk/do_not_contact). The
-// engine itself enforces all the same rules; this is a UI-only hint.
+// touches, sits in a stop-status (active/dead), or carries a hard-stop
+// flag (DNC/Junk). The engine itself enforces all the same rules; this
+// is a UI-only hint.
 function nextDripETA(group: LeadGroup): string | null {
-  const stopStatuses: LeadStatus[] = ["active", "junk", "do_not_contact"]
+  const stopStatuses: LeadStatus[] = ["active", "dead"]
   if (stopStatuses.includes(group.status)) return null
+  if (group.isDnc || group.isJunk) return null
   // Drip metadata lives on the original intake row (stamped on insert).
   const intake = group.events.find(e => e.drip_campaign_type) || group.events[0]
   if (!intake?.drip_campaign_type) return null
@@ -277,6 +308,23 @@ function groupLeads(leads: Lead[]): LeadGroup[] {
       newestFirst.filter(e => !isOutbound(e)).map(e => e.caller_phone).find(v => v && v.trim()) ||
       ascending.map(e => e.caller_phone).find(v => v && v.trim()) ||
       null
+    // Phase 7C — derive flags + intelligence fields. Flags live on the
+    // status-driving row (manual updates target that row's id). AI summary
+    // and follow-up come from whichever row in the group has them; if
+    // multiple rows somehow have summaries, take the freshest.
+    const isDnc = !!statusSource.is_dnc
+    const isJunk = !!statusSource.is_junk
+    const isBadNumber = !!statusSource.is_bad_number
+    const campaignLabel =
+      ascending.map(e => e.campaign_label).find(v => v && v.trim()) || null
+    const aiSummaryRow = newestFirst
+      .filter(e => e.ai_summary && e.ai_summary_generated_at)
+      .sort((a, b) =>
+        new Date(b.ai_summary_generated_at || 0).getTime() -
+        new Date(a.ai_summary_generated_at || 0).getTime()
+      )[0]
+    const followupRow = newestFirst.find(e => e.recommended_followup_date)
+    const suggestedRow = newestFirst.find(e => e.suggested_status)
     groups.push({
       phone: key,
       contactPhone,
@@ -294,6 +342,16 @@ function groupLeads(leads: Lead[]): LeadGroup[] {
       mostRecentInbound,
       events: ascending,
       inboundCount,
+      isDnc,
+      isJunk,
+      isBadNumber,
+      campaignLabel,
+      aiSummary: aiSummaryRow?.ai_summary || null,
+      aiSummaryAt: aiSummaryRow?.ai_summary_generated_at || null,
+      recommendedFollowupDate: followupRow?.recommended_followup_date || null,
+      followupReason: followupRow?.followup_reason || null,
+      suggestedStatus: (suggestedRow?.suggested_status as LeadStatus | null) || null,
+      suggestedStatusReason: suggestedRow?.suggested_status_reason || null,
     })
   }
   // Sort groups by newest event first
@@ -310,7 +368,10 @@ export function LeadsTab() {
   const [loading, setLoading]           = useState(true)
   const [refreshing, setRefreshing]     = useState(false)
   const [error, setError]               = useState<string | null>(null)
-  const [filter, setFilter]             = useState<"all" | LeadStatus>("all")
+  const [filter, setFilter]             = useState<FilterKey>("all")
+  const [selectedIds, setSelectedIds]   = useState<Set<string>>(new Set())
+  const [bulkApplying, setBulkApplying] = useState(false)
+  const [bulkResult, setBulkResult]     = useState<string | null>(null)
   const [sourceFilter, setSourceFilter] = useState<"all" | SourceType>("all")
   const [expandedPhone, setExpandedPhone] = useState<string | null>(null)
   const [pendingStatus, setPendingStatus] = useState<string | null>(null)
@@ -337,6 +398,14 @@ export function LeadsTab() {
   // Kept separate from the leads state so they don't perturb status/grouping.
   const [extraEvents, setExtraEvents]   = useState<Record<string, Lead[]>>({})
   const [syncedGroups, setSyncedGroups] = useState<Set<string>>(new Set())
+  // Phase 7C — Part 3: per-group AI summary state. Keyed by group.phone so
+  // collapsing/re-expanding doesn't refetch unless cache is invalidated.
+  const [summaries, setSummaries] = useState<Record<string, { text: string; loading: boolean; error: string | null }>>({})
+  // Phase 7C — Part 7: per-card "drafting" loading state. Keyed
+  // `${group.phone}:${channel}` so iMessage and email drafts spin
+  // independently if Ryan triggers both in quick succession.
+  const [draftingFor, setDraftingFor] = useState<string | null>(null)
+  const [draftError, setDraftError]   = useState<string | null>(null)
 
   const fetchLeads = useCallback(async (silent = false) => {
     if (!silent) setRefreshing(true)
@@ -361,12 +430,27 @@ export function LeadsTab() {
   }, [fetchLeads])
 
   const groups = useMemo(() => groupLeads(leads), [leads])
+  // Phase 7C — Part 8: keep the currently-expanded card visible regardless of
+  // active filter. Without this, placing a call flips a cold lead's status
+  // from "new" → "contacted" (auto-advance on first outbound), which then
+  // filters the card out from under Ryan mid-call. Pin it instead.
   const filteredGroups = useMemo(() => {
     let result = groups
-    if (filter !== "all") result = result.filter(g => g.status === filter)
+    if (filter === "flag:dnc") result = result.filter(g => g.isDnc)
+    else if (filter === "flag:junk") result = result.filter(g => g.isJunk)
+    else if (filter === "flag:bad_number") result = result.filter(g => g.isBadNumber)
+    else if (filter !== "all") {
+      // Hide DNC/Junk leads from all lifecycle filters by default — they
+      // have their own dedicated filter chips.
+      result = result.filter(g => g.status === filter && !g.isDnc && !g.isJunk)
+    }
     if (sourceFilter !== "all") result = result.filter(g => g.sourceType === sourceFilter)
+    if (expandedPhone && !result.some(g => g.phone === expandedPhone)) {
+      const pinned = groups.find(g => g.phone === expandedPhone)
+      if (pinned) result = [pinned, ...result]
+    }
     return result
-  }, [groups, filter, sourceFilter])
+  }, [groups, filter, sourceFilter, expandedPhone])
 
   async function patchLead(id: string, update: { status?: LeadStatus; notes?: string }) {
     try {
@@ -510,6 +594,61 @@ export function LeadsTab() {
     setExtraEvents(prev => ({ ...prev, [group.phone]: [...(prev[group.phone] || []), ...merged] }))
   }, [syncedGroups])
 
+  // Phase 7C — Part 3: fetch (or refresh) the cached AI summary for a
+  // group. If the group already carries a summary in its derived state
+  // (loaded from the leads table) we still call the endpoint — the
+  // endpoint short-circuits to the cached row when nothing's changed,
+  // and ensures the user sees a freshly-regenerated summary if a new
+  // event landed since the last fetch.
+  // Phase 7C — Part 7: on-demand draft generation. Fills the existing
+  // composer textarea so Ryan can edit before sending.
+  const generateDraft = useCallback(async (group: LeadGroup, channel: "imessage" | "email") => {
+    const key = `${group.phone}:${channel}`
+    setDraftingFor(key)
+    setDraftError(null)
+    try {
+      const res = await fetch(`/api/leads/${group.mostRecentId}/draft-message`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ channel }),
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`)
+      if (channel === "imessage") {
+        setDraftMessage(prev => ({ ...prev, [group.phone]: data.message || "" }))
+      } else {
+        setEmailDraft(prev => ({ ...prev, [group.phone]: data.message || "" }))
+      }
+    } catch (e) {
+      setDraftError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setDraftingFor(null)
+    }
+  }, [])
+
+  const fetchSummary = useCallback(async (group: LeadGroup) => {
+    const key = group.phone
+    setSummaries(prev => ({ ...prev, [key]: { text: prev[key]?.text || group.aiSummary || "", loading: true, error: null } }))
+    try {
+      const res = await fetch(`/api/leads/${group.mostRecentId}/summary`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: "{}",
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`)
+      setSummaries(prev => ({ ...prev, [key]: { text: data.summary || "", loading: false, error: null } }))
+      // Stamp onto the underlying lead so groupLeads picks it up after refetch.
+      setLeads(prev => prev.map(l =>
+        l.id === group.mostRecentId
+          ? { ...l, ai_summary: data.summary, ai_summary_generated_at: data.generated_at }
+          : l
+      ))
+    } catch (e) {
+      setSummaries(prev => ({ ...prev, [key]: { text: prev[key]?.text || "", loading: false, error: e instanceof Error ? e.message : String(e) } }))
+    }
+  }, [])
+
   async function addPhone(group: LeadGroup, raw: string) {
     const trimmed = raw.trim()
     if (!trimmed) return
@@ -587,6 +726,20 @@ export function LeadsTab() {
       }
       setCallSuccess(group.phone)
       setTimeout(() => setCallSuccess(null), 4000)
+      // Phase 7C — Part 5: clear any pending follow-up recommendation
+      // since Ryan just acted on it. analyze-call will regenerate a new
+      // recommendation from the recording's transcript when it lands.
+      if (group.recommendedFollowupDate) {
+        void fetch("/api/leads", {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            id: group.mostRecentId,
+            recommended_followup_date: null,
+            followup_reason: null,
+          }),
+        }).catch(() => {})
+      }
       // Refetch to surface the new outbound call row in the timeline.
       void fetchLeads(true)
     } catch (e) {
@@ -697,6 +850,150 @@ export function LeadsTab() {
     }
   }
 
+  // Phase 7C — Part 6 actions. Each one optimistic-patches local state
+  // (so the UI moves immediately) and refetches in the background to
+  // catch any server-side derivations (DNC list write, drip auto-route).
+  async function patchFlagOnGroup(group: LeadGroup, patch: Partial<Lead>) {
+    setLeads(prev => prev.map(l => l.id === group.mostRecentId ? { ...l, ...patch } : l))
+    try {
+      const res = await fetch("/api/leads", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: group.mostRecentId, ...patch }),
+      })
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}))
+        throw new Error(err.error || `HTTP ${res.status}`)
+      }
+    } catch (e) {
+      console.error("flag patch failed:", e)
+      void fetchLeads(true)
+    }
+  }
+
+  async function applyDripToGroup(group: LeadGroup) {
+    try {
+      const res = await fetch(`/api/leads/${group.mostRecentId}/apply-drip`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: "{}",
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`)
+      void fetchLeads(true)
+    } catch (e) {
+      console.error("apply-drip failed:", e)
+      alert(`Apply Drip failed: ${e instanceof Error ? e.message : String(e)}`)
+    }
+  }
+
+  async function flagDnc(group: LeadGroup) {
+    if (!confirm(`Mark ${group.name || group.contactPhone || group.email || "this lead"} as DNC? This halts ALL outreach and adds them to the suppression list.`)) return
+    setLeads(prev => prev.map(l => l.id === group.mostRecentId ? { ...l, is_dnc: true, status: "dead" } : l))
+    try {
+      const res = await fetch(`/api/leads/${group.mostRecentId}/dnc`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ reason: "manual" }),
+      })
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}))
+        throw new Error(err.error || `HTTP ${res.status}`)
+      }
+      void fetchLeads(true)
+    } catch (e) {
+      console.error("dnc failed:", e)
+      void fetchLeads(true)
+    }
+  }
+
+  async function clearDnc(group: LeadGroup) {
+    setLeads(prev => prev.map(l => l.id === group.mostRecentId ? { ...l, is_dnc: false } : l))
+    try {
+      await fetch(`/api/leads/${group.mostRecentId}/dnc`, { method: "DELETE" })
+      void fetchLeads(true)
+    } catch (e) {
+      console.error("clear dnc failed:", e)
+      void fetchLeads(true)
+    }
+  }
+
+  async function acceptSuggestedStatus(group: LeadGroup) {
+    if (!group.suggestedStatus) return
+    const next = group.suggestedStatus
+    setLeads(prev => prev.map(l =>
+      l.id === group.mostRecentId
+        ? { ...l, status: next, suggested_status: null, suggested_status_reason: null }
+        : l
+    ))
+    await Promise.all([
+      patchLead(group.mostRecentId, { status: next }),
+      fetch("/api/leads", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          id: group.mostRecentId,
+          suggested_status: null,
+          suggested_status_reason: null,
+        }),
+      }).catch(() => {}),
+    ])
+  }
+
+  async function dismissSuggestedStatus(group: LeadGroup) {
+    setLeads(prev => prev.map(l =>
+      l.id === group.mostRecentId
+        ? { ...l, suggested_status: null, suggested_status_reason: null }
+        : l
+    ))
+    try {
+      await fetch("/api/leads", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          id: group.mostRecentId,
+          suggested_status: null,
+          suggested_status_reason: null,
+        }),
+      })
+    } catch (e) {
+      console.error("dismiss suggestion failed:", e)
+    }
+  }
+
+  function toggleSelect(id: string) {
+    setSelectedIds(prev => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  }
+
+  async function bulkApplyDrip() {
+    const ids = Array.from(selectedIds)
+    if (ids.length === 0) return
+    setBulkApplying(true)
+    setBulkResult(null)
+    try {
+      const res = await fetch("/api/leads/bulk-apply-drip", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ leadIds: ids }),
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`)
+      setBulkResult(`${data.succeeded}/${data.total} leads queued`)
+      setSelectedIds(new Set())
+      void fetchLeads(true)
+      setTimeout(() => setBulkResult(null), 4000)
+    } catch (e) {
+      setBulkResult(e instanceof Error ? e.message : String(e))
+    } finally {
+      setBulkApplying(false)
+    }
+  }
+
   return (
     <div>
       <div className="mb-4 flex items-start justify-between">
@@ -706,14 +1003,30 @@ export function LeadsTab() {
             {loading ? "Loading…" : `${groups.length} leads · ${filteredGroups.length} shown`}
           </p>
         </div>
-        <button
-          onClick={() => fetchLeads()}
-          disabled={refreshing}
-          className="p-2 -mr-2 text-zinc-400 hover:text-zinc-100 transition-colors disabled:opacity-50"
-          aria-label="Refresh"
-        >
-          <RefreshCw className={`w-4 h-4 ${refreshing ? "animate-spin" : ""}`} />
-        </button>
+        <div className="flex items-center gap-2">
+          {selectedIds.size > 0 && (
+            <button
+              onClick={bulkApplyDrip}
+              disabled={bulkApplying}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 min-h-[36px] rounded bg-emerald-600 hover:bg-emerald-500 disabled:bg-zinc-800 text-white text-xs font-medium transition-colors"
+              title="Auto-route each selected lead to a drip campaign based on its contact info"
+            >
+              {bulkApplying ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Zap className="w-3.5 h-3.5" />}
+              Apply Drip ({selectedIds.size})
+            </button>
+          )}
+          {bulkResult && (
+            <span className="text-xs text-zinc-400">{bulkResult}</span>
+          )}
+          <button
+            onClick={() => fetchLeads()}
+            disabled={refreshing}
+            className="p-2 -mr-2 text-zinc-400 hover:text-zinc-100 transition-colors disabled:opacity-50"
+            aria-label="Refresh"
+          >
+            <RefreshCw className={`w-4 h-4 ${refreshing ? "animate-spin" : ""}`} />
+          </button>
+        </div>
       </div>
 
       <div className="mb-2 flex flex-wrap gap-1.5">
@@ -759,6 +1072,8 @@ export function LeadsTab() {
         </div>
       )}
 
+      <CampaignMetricsStrip />
+
       <DripQueueSection leads={leads} onAfterAction={() => fetchLeads(true)} />
 
       {loading ? (
@@ -767,7 +1082,9 @@ export function LeadsTab() {
         </div>
       ) : filteredGroups.length === 0 ? (
         <div className="text-sm text-zinc-500 py-12 text-center">
-          {groups.length === 0 ? "No leads yet." : `No ${filter} leads.`}
+          {groups.length === 0
+            ? "No leads yet."
+            : `No ${STATUS_FILTERS.find(f => f.key === filter)?.label.toLowerCase() ?? filter} leads.`}
         </div>
       ) : (
         <div className="space-y-2">
@@ -780,8 +1097,23 @@ export function LeadsTab() {
               onToggle={() => {
                 const willExpand = expandedPhone !== group.phone
                 setExpandedPhone(willExpand ? group.phone : null)
-                if (willExpand) void syncOnExpand(group)
+                if (willExpand) {
+                  void syncOnExpand(group)
+                  // Auto-fetch the AI summary on expand. The endpoint
+                  // short-circuits when the cached value is still fresh,
+                  // so this is cheap on a re-expand.
+                  if (!summaries[group.phone]?.loading) void fetchSummary(group)
+                }
               }}
+              summary={summaries[group.phone]?.text || group.aiSummary || ""}
+              summaryLoading={!!summaries[group.phone]?.loading}
+              summaryError={summaries[group.phone]?.error || null}
+              onRefreshSummary={() => fetchSummary(group)}
+              onDraftText={() => generateDraft(group, "imessage")}
+              onDraftEmail={() => generateDraft(group, "email")}
+              draftingText={draftingFor === `${group.phone}:imessage`}
+              draftingEmail={draftingFor === `${group.phone}:email`}
+              draftError={expandedPhone === group.phone ? draftError : null}
               onSetStatus={(s) => setGroupStatus(group, s)}
               pendingStatus={pendingStatus}
               draftNote={draftNotes[group.phone]}
@@ -814,6 +1146,15 @@ export function LeadsTab() {
               deleteArmed={deleteArmedFor === group.phone}
               deleting={deletingFor === group.phone}
               deleteError={deletingFor === null && deleteError && expandedPhone === group.phone ? deleteError : null}
+              selected={selectedIds.has(group.mostRecentId)}
+              onToggleSelect={() => toggleSelect(group.mostRecentId)}
+              onApplyDrip={() => applyDripToGroup(group)}
+              onMarkBadNumber={() => patchFlagOnGroup(group, { is_bad_number: !group.isBadNumber })}
+              onMarkJunk={() => patchFlagOnGroup(group, { is_junk: !group.isJunk })}
+              onFlagDnc={() => flagDnc(group)}
+              onClearDnc={() => clearDnc(group)}
+              onAcceptSuggestion={() => acceptSuggestedStatus(group)}
+              onDismissSuggestion={() => dismissSuggestedStatus(group)}
             />
           ))}
         </div>
@@ -859,14 +1200,39 @@ interface LeadCardProps {
   deleteArmed: boolean
   deleting: boolean
   deleteError: string | null
+  // Phase 7C
+  selected: boolean
+  onToggleSelect: () => void
+  onApplyDrip: () => void
+  onMarkBadNumber: () => void
+  onMarkJunk: () => void
+  onFlagDnc: () => void
+  onClearDnc: () => void
+  onAcceptSuggestion: () => void
+  onDismissSuggestion: () => void
+  summary: string
+  summaryLoading: boolean
+  summaryError: string | null
+  onRefreshSummary: () => void
+  onDraftText: () => void
+  onDraftEmail: () => void
+  draftingText: boolean
+  draftingEmail: boolean
+  draftError: string | null
 }
 
 function LeadCard(p: LeadCardProps) {
   const { group, expanded } = p
   const Icon = TYPE_ICON[group.mostRecentEvent.lead_type ?? "call"] || Phone
-  const sourceClass = SOURCE_BADGE[group.source || "Unknown"] || SOURCE_BADGE.Unknown
+  // Display the campaign_label (Phase 7C overlay) when set, falling back to
+  // the historical source. Untouched legacy rows that aren't relabeled fall
+  // through to "Unknown".
+  const displayCampaign = group.campaignLabel || group.source || "Unknown"
+  const sourceClass = SOURCE_BADGE[displayCampaign] || SOURCE_BADGE.Unknown
   const sourceTypeClass = group.sourceType ? SOURCE_TYPE_BADGE[group.sourceType] : null
   const phoneDisplay = group.contactPhone ? formatPhone(group.contactPhone) : null
+  const onDrip = !!group.events.find(e => e.drip_campaign_type)?.drip_campaign_type
+  const canApplyDrip = !onDrip && !group.isDnc && !group.isJunk && (group.contactPhone || group.email)
   // The reply composer should reflect the lead's primary inbound channel —
   // the original email — not whatever the latest event happens to be (which
   // may be a drip-sent row). Email leads have at least one inbound email
@@ -875,46 +1241,146 @@ function LeadCard(p: LeadCardProps) {
   const nextDripLabel = nextDripETA(group)
 
   return (
-    <div className="rounded-md border border-zinc-800 bg-zinc-950 overflow-hidden">
-      <button
-        onClick={p.onToggle}
-        className="w-full px-3 py-3 flex items-center gap-3 text-left hover:bg-zinc-900/50 transition-colors"
-      >
-        <div className="flex flex-col gap-0.5 shrink-0">
-          <span className={`px-2 py-0.5 text-[10px] font-semibold rounded uppercase tracking-wider ${sourceClass}`}>
-            {group.source || "?"}
-          </span>
-          {sourceTypeClass && (
-            <span className={`px-2 py-0.5 text-[9px] font-semibold rounded uppercase tracking-wider ${sourceTypeClass}`}>
-              {SOURCE_TYPE_LABEL[group.sourceType!] || group.sourceType}
+    <div className={`rounded-md border bg-zinc-950 overflow-hidden ${
+      group.isDnc
+        ? "border-red-900"
+        : group.isJunk
+        ? "border-zinc-800 opacity-70"
+        : "border-zinc-800"
+    }`}>
+      <div className="flex items-center">
+        {/* Bulk-select checkbox — clicking does NOT expand the card. */}
+        <label
+          className="pl-3 py-3 flex items-center cursor-pointer"
+          onClick={(e) => e.stopPropagation()}
+        >
+          <input
+            type="checkbox"
+            checked={p.selected}
+            onChange={p.onToggleSelect}
+            className="w-4 h-4 accent-emerald-600"
+            aria-label="Select for bulk action"
+          />
+        </label>
+        <button
+          onClick={p.onToggle}
+          className="flex-1 px-3 py-3 flex items-center gap-3 text-left hover:bg-zinc-900/50 transition-colors"
+        >
+          <div className="flex flex-col gap-0.5 shrink-0">
+            <span className={`px-2 py-0.5 text-[10px] font-semibold rounded uppercase tracking-wider ${sourceClass}`}>
+              {displayCampaign}
             </span>
-          )}
-        </div>
-        <Icon className="w-4 h-4 text-zinc-400 shrink-0" />
-        <div className="flex-1 min-w-0">
-          <div className="text-sm text-zinc-100 font-medium truncate">
-            {group.name || phoneDisplay || group.email || "(unknown)"}
+            {sourceTypeClass && (
+              <span className={`px-2 py-0.5 text-[9px] font-semibold rounded uppercase tracking-wider ${sourceTypeClass}`}>
+                {SOURCE_TYPE_LABEL[group.sourceType!] || group.sourceType}
+              </span>
+            )}
           </div>
-          {group.name && (
-            <div className="text-xs text-zinc-500 truncate">
-              {phoneDisplay || group.email || ""}
+          <Icon className="w-4 h-4 text-zinc-400 shrink-0" />
+          <div className="flex-1 min-w-0">
+            <div className="text-sm text-zinc-100 font-medium truncate flex items-center gap-2">
+              <span className="truncate">{group.name || phoneDisplay || group.email || "(unknown)"}</span>
+              {group.isDnc && (
+                <span className="px-1.5 py-0.5 text-[9px] font-semibold rounded uppercase tracking-wider bg-red-950 text-red-300 border border-red-900 shrink-0">
+                  DNC
+                </span>
+              )}
+              {group.isJunk && (
+                <span className="px-1.5 py-0.5 text-[9px] font-semibold rounded uppercase tracking-wider bg-zinc-800 text-zinc-400 shrink-0">
+                  Junk
+                </span>
+              )}
+              {group.isBadNumber && (
+                <span className="px-1.5 py-0.5 text-[9px] font-semibold rounded uppercase tracking-wider bg-amber-950 text-amber-300 border border-amber-900 shrink-0">
+                  Bad #
+                </span>
+              )}
             </div>
-          )}
-          <div className="text-xs text-zinc-500 truncate">
-            {relativeTime(group.mostRecentEvent.created_at)}
-            {group.events.length > 1 && ` · ${group.events.length} events`}
+            {group.name && (
+              <div className={`text-xs text-zinc-500 truncate ${group.isBadNumber ? "line-through" : ""}`}>
+                {phoneDisplay || group.email || ""}
+              </div>
+            )}
+            <div className="text-xs text-zinc-500 truncate">
+              {relativeTime(group.mostRecentEvent.created_at)}
+              {group.events.length > 1 && ` · ${group.events.length} events`}
+              {onDrip && " · 🤖 drip"}
+            </div>
           </div>
-        </div>
-        <span className={`px-2 py-0.5 text-[10px] font-semibold rounded uppercase tracking-wider ${STATUS_BADGE[group.status]}`}>
-          {group.status}
-        </span>
-        {expanded
-          ? <ChevronDown className="w-4 h-4 text-zinc-600 shrink-0" />
-          : <ChevronRight className="w-4 h-4 text-zinc-600 shrink-0" />}
-      </button>
+          <span className={`px-2 py-0.5 text-[10px] font-semibold rounded uppercase tracking-wider ${STATUS_BADGE[group.status]}`}>
+            {group.status}
+          </span>
+          {expanded
+            ? <ChevronDown className="w-4 h-4 text-zinc-600 shrink-0" />
+            : <ChevronRight className="w-4 h-4 text-zinc-600 shrink-0" />}
+        </button>
+      </div>
 
       {expanded && (
         <div className="border-t border-zinc-800 px-3 py-3 space-y-3">
+          {/* Phase 7C — Part 4 banner: AI suggested status + reason. Both
+              actions clear the suggestion fields; Accept also patches
+              status, Dismiss leaves the lifecycle stage alone. */}
+          {group.suggestedStatus && (
+            <div className="rounded-md border border-purple-900/60 bg-purple-950/20 px-3 py-2 flex items-start gap-2">
+              <Sparkles className="w-4 h-4 text-purple-300 shrink-0 mt-0.5" />
+              <div className="flex-1 min-w-0">
+                <div className="text-xs text-purple-300/80 mb-0.5">
+                  AI suggests:{" "}
+                  <span className={`px-1.5 py-0.5 text-[10px] font-semibold rounded uppercase tracking-wider ${STATUS_BADGE[group.suggestedStatus]}`}>
+                    {STATUS_LABEL[group.suggestedStatus]}
+                  </span>
+                </div>
+                {group.suggestedStatusReason && (
+                  <div className="text-xs text-zinc-300">{group.suggestedStatusReason}</div>
+                )}
+              </div>
+              <div className="flex gap-1.5 shrink-0">
+                <button
+                  onClick={p.onAcceptSuggestion}
+                  className="px-2.5 py-1 rounded bg-purple-700 hover:bg-purple-600 text-white text-xs font-medium"
+                >
+                  Accept
+                </button>
+                <button
+                  onClick={p.onDismissSuggestion}
+                  className="px-2.5 py-1 rounded bg-zinc-900 border border-zinc-800 hover:border-zinc-700 text-zinc-400 text-xs"
+                >
+                  Dismiss
+                </button>
+              </div>
+            </div>
+          )}
+
+          {/* Phase 7C — Part 3: AI summary (cached, regenerated only on
+              new activity). Shows a spinner on first fetch, instant on
+              re-expand thanks to the cache + local state. */}
+          <div className="rounded-md border border-zinc-800 bg-zinc-900/40 px-3 py-2">
+            <div className="flex items-center justify-between mb-1">
+              <div className="text-xs text-zinc-500 inline-flex items-center gap-1.5">
+                <Sparkles className="w-3 h-3 text-zinc-400" /> AI summary
+              </div>
+              <button
+                onClick={p.onRefreshSummary}
+                disabled={p.summaryLoading}
+                className="text-[10px] text-zinc-500 hover:text-zinc-300 disabled:opacity-50 inline-flex items-center gap-1"
+                title="Regenerate"
+              >
+                <RefreshCw className={`w-3 h-3 ${p.summaryLoading ? "animate-spin" : ""}`} />
+                {p.summaryLoading ? "Generating…" : "Refresh"}
+              </button>
+            </div>
+            {p.summary ? (
+              <div className="text-sm text-zinc-200 whitespace-pre-wrap">{p.summary}</div>
+            ) : p.summaryLoading ? (
+              <div className="text-sm text-zinc-500 italic">Generating summary…</div>
+            ) : p.summaryError ? (
+              <div className="text-sm text-red-300">{p.summaryError}</div>
+            ) : (
+              <div className="text-sm text-zinc-500 italic">No summary yet.</div>
+            )}
+          </div>
+
           <div className="text-sm flex items-center gap-3 flex-wrap">
             {group.contactPhone ? (
               <>
@@ -993,6 +1459,14 @@ function LeadCard(p: LeadCardProps) {
             </div>
           )}
 
+          {group.recommendedFollowupDate && (
+            <div className="rounded border border-emerald-900/40 bg-emerald-950/20 px-3 py-1.5 text-xs text-emerald-200 inline-flex items-center gap-2 max-w-full">
+              <Calendar className="w-3 h-3 shrink-0" />
+              <span className="font-medium">Follow up {new Date(group.recommendedFollowupDate + "T00:00:00").toLocaleDateString([], { month: "short", day: "numeric" })}</span>
+              {group.followupReason && <span className="text-zinc-300 truncate">— {group.followupReason}</span>}
+            </div>
+          )}
+
           <Timeline events={mergeForTimeline(group.events, p.extraEvents)} />
 
           {group.aiNotes && (
@@ -1021,8 +1495,19 @@ function LeadCard(p: LeadCardProps) {
             // If the lead also has a phone, an iMessage sub-composer renders
             // below — Ryan can pick the channel that fits the lead's reply.
             <div>
-              <div className="text-xs text-zinc-500 mb-1.5">
-                {group.suggestedReply ? "💡 Suggested Reply" : "Email Reply"}
+              <div className="flex items-center justify-between mb-1.5">
+                <div className="text-xs text-zinc-500">
+                  {group.suggestedReply ? "💡 Suggested Reply" : "Email Reply"}
+                </div>
+                <button
+                  onClick={p.onDraftEmail}
+                  disabled={p.draftingEmail}
+                  className="text-[11px] text-purple-300 hover:text-purple-200 inline-flex items-center gap-1 disabled:opacity-50"
+                  title="Have AI draft an email based on the conversation"
+                >
+                  {p.draftingEmail ? <Loader2 className="w-3 h-3 animate-spin" /> : <Wand2 className="w-3 h-3" />}
+                  {p.draftingEmail ? "Drafting…" : "AI draft"}
+                </button>
               </div>
               <textarea
                 value={p.emailDraft}
@@ -1036,6 +1521,7 @@ function LeadCard(p: LeadCardProps) {
               <div className="mt-2 flex items-center justify-between gap-2">
                 <div className="text-xs text-zinc-500 flex-1 min-w-0 truncate">
                   {p.emailSendError && <span className="text-red-300">{p.emailSendError}</span>}
+                  {p.draftError && !p.emailSendError && <span className="text-red-300">{p.draftError}</span>}
                   {p.emailSendSuccess && (
                     <span className="text-emerald-400 inline-flex items-center gap-1">
                       <Check className="w-3 h-3" /> Email sent
@@ -1053,7 +1539,18 @@ function LeadCard(p: LeadCardProps) {
               </div>
               {group.contactPhone && (
                 <div className="mt-3 pt-3 border-t border-zinc-800">
-                  <div className="text-xs text-zinc-500 mb-1.5">Or send iMessage</div>
+                  <div className="flex items-center justify-between mb-1.5">
+                    <div className="text-xs text-zinc-500">Or send iMessage</div>
+                    <button
+                      onClick={p.onDraftText}
+                      disabled={p.draftingText}
+                      className="text-[11px] text-purple-300 hover:text-purple-200 inline-flex items-center gap-1 disabled:opacity-50"
+                      title="Have AI draft a text based on the conversation"
+                    >
+                      {p.draftingText ? <Loader2 className="w-3 h-3 animate-spin" /> : <Wand2 className="w-3 h-3" />}
+                      {p.draftingText ? "Drafting…" : "AI draft"}
+                    </button>
+                  </div>
                   <textarea
                     value={p.draftMessage}
                     onChange={e => p.onEditMessage(e.target.value)}
@@ -1087,7 +1584,20 @@ function LeadCard(p: LeadCardProps) {
           ) : (
             // Phone-only lead: existing iMessage composer, unchanged.
             <div>
-              <div className="text-xs text-zinc-500 mb-1.5">Send a message</div>
+              <div className="flex items-center justify-between mb-1.5">
+                <div className="text-xs text-zinc-500">Send a message</div>
+                {group.contactPhone && (
+                  <button
+                    onClick={p.onDraftText}
+                    disabled={p.draftingText}
+                    className="text-[11px] text-purple-300 hover:text-purple-200 inline-flex items-center gap-1 disabled:opacity-50"
+                    title="Have AI draft a text based on the conversation"
+                  >
+                    {p.draftingText ? <Loader2 className="w-3 h-3 animate-spin" /> : <Wand2 className="w-3 h-3" />}
+                    {p.draftingText ? "Drafting…" : "AI draft"}
+                  </button>
+                )}
+              </div>
               <textarea
                 value={p.draftMessage}
                 onChange={e => p.onEditMessage(e.target.value)}
@@ -1123,7 +1633,7 @@ function LeadCard(p: LeadCardProps) {
           )}
 
           <div className="flex flex-wrap gap-1.5">
-            {(["hot", "qualified", "warm", "active", "contacted", "unqualified", "junk", "do_not_contact"] as LeadStatus[]).map(s => {
+            {(["new", "contacted", "active", "hot", "warm", "nurture", "dead"] as LeadStatus[]).map(s => {
               const isCurrent = group.status === s
               const isPending = p.pendingStatus === group.phone + ":" + s
               return (
@@ -1141,6 +1651,67 @@ function LeadCard(p: LeadCardProps) {
                 </button>
               )
             })}
+          </div>
+
+          {/* Phase 7C — Part 6 action row. Apply Drip / Bad # / Mark Junk /
+              DNC. Hidden once a lead is DNC except the "Remove DNC" reset. */}
+          <div className="flex flex-wrap gap-1.5">
+            {group.isDnc ? (
+              <button
+                onClick={p.onClearDnc}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 min-h-[36px] rounded bg-zinc-900 border border-red-900 text-red-300 hover:bg-red-950/40 text-xs font-medium transition-colors"
+                title="Clear the DNC flag (also removes the dnc_list row)"
+              >
+                <ShieldOff className="w-3.5 h-3.5" />
+                Remove DNC
+              </button>
+            ) : (
+              <>
+                {canApplyDrip && (
+                  <button
+                    onClick={p.onApplyDrip}
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 min-h-[36px] rounded bg-emerald-900/40 border border-emerald-900 text-emerald-200 hover:bg-emerald-900/60 text-xs font-medium transition-colors"
+                    title="Auto-route to drip campaign based on contact info"
+                  >
+                    <Zap className="w-3.5 h-3.5" />
+                    Apply Drip
+                  </button>
+                )}
+                {group.contactPhone && (
+                  <button
+                    onClick={p.onMarkBadNumber}
+                    className={`inline-flex items-center gap-1.5 px-3 py-1.5 min-h-[36px] rounded text-xs font-medium transition-colors ${
+                      group.isBadNumber
+                        ? "bg-amber-900/40 border border-amber-900 text-amber-200"
+                        : "bg-zinc-900 border border-zinc-800 hover:border-amber-900/60 text-zinc-300 hover:text-amber-200"
+                    }`}
+                    title={group.isBadNumber ? "Clear bad-number flag" : "Mark phone bad — drip skips iMessage, sticks to email"}
+                  >
+                    <PhoneOff className="w-3.5 h-3.5" />
+                    {group.isBadNumber ? "Bad # ✓" : "Bad Number"}
+                  </button>
+                )}
+                <button
+                  onClick={p.onMarkJunk}
+                  className={`inline-flex items-center gap-1.5 px-3 py-1.5 min-h-[36px] rounded text-xs font-medium transition-colors ${
+                    group.isJunk
+                      ? "bg-zinc-800 border border-zinc-700 text-zinc-300"
+                      : "bg-zinc-900 border border-zinc-800 hover:border-zinc-700 text-zinc-400"
+                  }`}
+                  title={group.isJunk ? "Unmark junk" : "Mark junk — drip stops, lead stays for analytics"}
+                >
+                  {group.isJunk ? "Junk ✓" : "Mark Junk"}
+                </button>
+                <button
+                  onClick={p.onFlagDnc}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 min-h-[36px] rounded bg-zinc-900 border border-zinc-800 hover:border-red-900 hover:text-red-300 text-zinc-400 text-xs font-medium transition-colors"
+                  title="DNC — halts all outreach, adds to suppression list"
+                >
+                  <Ban className="w-3.5 h-3.5" />
+                  DNC
+                </button>
+              </>
+            )}
           </div>
 
           {/* Delete lead — destructive, two-step confirm. First click arms;
@@ -1364,6 +1935,74 @@ function TimelineEvent({ ev }: { ev: Lead }) {
           </div>
         )}
       </div>
+    </div>
+  )
+}
+
+// Phase 7C — Part 10: per-campaign rollup strip. Pulls precomputed rows
+// from /api/campaign-metrics. Recompute is on-demand for now via
+//   node scripts/compute-campaign-metrics.mjs
+interface CampaignMetricRow {
+  campaign_source: string
+  total_leads: number
+  total_calls: number
+  total_texts: number
+  total_emails: number
+  total_voicemails: number
+  hot_count: number
+  warm_count: number
+  nurture_count: number
+  dead_count: number
+  dnc_count: number
+  junk_count: number
+  last_computed_at: string | null
+}
+
+function CampaignMetricsStrip() {
+  const [rows, setRows] = useState<CampaignMetricRow[]>([])
+  const [open, setOpen] = useState(false)
+  useEffect(() => {
+    let mounted = true
+    fetch("/api/campaign-metrics", { cache: "no-store" })
+      .then(r => r.ok ? r.json() as Promise<{ rows: CampaignMetricRow[] }> : { rows: [] })
+      .then(data => { if (mounted) setRows(data.rows || []) })
+      .catch(() => {})
+    return () => { mounted = false }
+  }, [])
+  if (rows.length === 0) return null
+  return (
+    <div className="mb-4 rounded-md border border-zinc-800 bg-zinc-950 overflow-hidden">
+      <button
+        onClick={() => setOpen(o => !o)}
+        className="w-full px-3 py-2 flex items-center justify-between text-sm hover:bg-zinc-900/50 transition-colors"
+      >
+        <span className="text-zinc-300 font-medium">Campaign analytics</span>
+        <span className="text-xs text-zinc-500">{rows.length} campaign{rows.length === 1 ? "" : "s"}</span>
+      </button>
+      {open && (
+        <div className="border-t border-zinc-800 px-3 py-2 space-y-1.5 text-xs">
+          {rows.map(r => (
+            <div key={r.campaign_source} className="flex items-center gap-2 text-zinc-300 flex-wrap">
+              <span className="font-semibold text-zinc-100 min-w-[80px]">{r.campaign_source}</span>
+              <span>{r.total_leads} leads</span>
+              <span className="text-zinc-500">·</span>
+              <span>{r.total_calls} calls</span>
+              <span>{r.total_texts} texts</span>
+              <span>{r.total_emails} emails</span>
+              <span className="text-zinc-500">·</span>
+              <span className="text-red-300">{r.hot_count} hot</span>
+              <span className="text-amber-300">{r.warm_count} warm</span>
+              <span className="text-emerald-300">{r.nurture_count} nurture</span>
+              <span className="text-zinc-500">{r.dead_count} dead</span>
+              {r.dnc_count > 0 && <span className="text-red-400">{r.dnc_count} dnc</span>}
+              {r.junk_count > 0 && <span className="text-zinc-500">{r.junk_count} junk</span>}
+            </div>
+          ))}
+          <div className="pt-1 text-[10px] text-zinc-600">
+            Recompute: <code className="text-zinc-500">node scripts/compute-campaign-metrics.mjs</code>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

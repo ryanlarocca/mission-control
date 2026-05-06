@@ -111,7 +111,11 @@ const DRIP_CAMPAIGNS = {
   },
 }
 
-const DRIP_STOP_STATUSES = new Set(["active", "junk", "do_not_contact"])
+// Phase 7C: lifecycle-only stop list. Active = Ryan's working it; dead =
+// terminal. The DNC and Junk *flags* (is_dnc / is_junk) are checked
+// separately in fetchEligibleLeads so a lead can be `dead` without being
+// DNC, and `is_dnc` halts everything regardless of status.
+const DRIP_STOP_STATUSES = new Set(["active", "dead"])
 
 // When an email-only campaign acquires a phone, alternate channels by
 // touch parity (odd → iMessage, even → email). Mirrors google_ads_form's
@@ -636,6 +640,11 @@ async function fetchEligibleLeads(sb) {
     .select("*")
     .not("drip_campaign_type", "is", null)
     .not("status", "in", `(${[...DRIP_STOP_STATUSES].join(",")})`)
+    // Phase 7C flag gates. `eq("is_dnc", false)` also includes NULL rows in
+    // PostgREST (NULL ≠ false → filtered out), so the migration's DEFAULT
+    // false on these columns is what keeps legacy rows in scope.
+    .eq("is_dnc", false)
+    .eq("is_junk", false)
     .order("last_drip_sent_at", { ascending: true })
     .limit(500)
   if (LEAD_FILTER_ID) q = q.eq("id", LEAD_FILTER_ID)
@@ -731,26 +740,55 @@ async function processLead(sb, lead) {
   const history = await buildConversationHistory(lead, sb)
   const hardStop = detectHardStop(history)
   if (hardStop) {
-    console.log(`[drip] HARD STOP lead ${lead.id}: matched "${hardStop}" — moving to do_not_contact`)
-    await sb.from("leads").update({ status: "do_not_contact" }).eq("id", lead.id)
+    console.log(`[drip] HARD STOP lead ${lead.id}: matched "${hardStop}" — flagging DNC + dead`)
+    // Phase 7C: hard-stop trigger now sets the is_dnc flag (which halts every
+    // outreach channel) and bumps the lifecycle to "dead". The auto-DNC also
+    // tries to drop a row on dnc_list so the lead's address is suppressed for
+    // future mailings; we pull whatever address fields are populated.
+    await sb.from("leads").update({ status: "dead", is_dnc: true }).eq("id", lead.id)
+    const { error: dncErr } = await sb.from("dnc_list").insert({
+      site_address: lead.property_address || null,
+      owner_name: lead.name || null,
+      source_lead_id: lead.id,
+      reason: "hostile",
+      added_by: "system",
+    })
+    if (dncErr) console.warn(`[drip] dnc_list insert failed:`, dncErr.message)
     await sendTelegram(`🛑 Drip auto-stopped — lead <code>${escapeHtml(lead.id)}</code> hit DNC trigger: <i>${escapeHtml(hardStop)}</i>`)
     return { skipped: "hard_stop" }
   }
   const softReasons = detectSoftSignals(lead, history)
   const clarify = softReasons.length > 0
 
+  // Phase 7C: bad-number rerouting. If the chosen channel is iMessage but
+  // the lead is flagged is_bad_number, walk forward to the first email
+  // touch in the campaign. If the campaign has no email touches left,
+  // halt — there's nothing we can send.
+  let activeTouch = nextTouch
+  let activeChannel = effectiveChannel(campaign, activeTouch.touchNumber, !!lead.caller_phone)
+  if (lead.is_bad_number && activeChannel === "imessage") {
+    const emailTouch = campaign.touches.find(
+      (t) => t.touchNumber > activeTouch.touchNumber && t.channel === "email"
+    )
+    if (!emailTouch) {
+      return { skipped: "bad_number_no_email_remaining" }
+    }
+    activeTouch = emailTouch
+    activeChannel = "email"
+    console.log(`[drip] is_bad_number=true on ${lead.id} — skipping to email touch #${activeTouch.touchNumber}`)
+  }
+
   // Special-case missed-call touch 0 — fixed copy, no Haiku.
   let messageBody
-  if (isMissedCall && nextTouch.touchNumber === 0) {
+  if (isMissedCall && activeTouch.touchNumber === 0) {
     messageBody = missedCallTouch0Body()
   } else {
-    const channel = effectiveChannel(campaign, nextTouch.touchNumber, !!lead.caller_phone)
     const daysSinceCreated = Math.floor((Date.now() - new Date(lead.created_at).getTime()) / 86400000)
     messageBody = await generateMessage({
       lead,
       campaign,
-      touchNumber: nextTouch.touchNumber,
-      channel,
+      touchNumber: activeTouch.touchNumber,
+      channel: activeChannel,
       history,
       clarify,
       daysSinceCreated,
@@ -758,7 +796,7 @@ async function processLead(sb, lead) {
   }
   if (!messageBody) return { skipped: "generation_failed" }
 
-  const channel = effectiveChannel(campaign, nextTouch.touchNumber, !!lead.caller_phone)
+  const channel = activeChannel
   // Channel guards — skip if we can't actually send. e.g. email-only campaign
   // but the lead has no email address (rare but possible if the address was
   // manually cleared from the row).
@@ -768,7 +806,7 @@ async function processLead(sb, lead) {
   const subject = channel === "email" ? dripEmailSubject(lead) : null
 
   if (DRY_RUN) {
-    console.log(`[drip] DRY-RUN lead ${lead.id} touch #${nextTouch.touchNumber} (${channel}):\n${messageBody}\n`)
+    console.log(`[drip] DRY-RUN lead ${lead.id} touch #${activeTouch.touchNumber} (${channel}):\n${messageBody}\n`)
     return { processed: true, dryRun: true }
   }
 
@@ -777,7 +815,7 @@ async function processLead(sb, lead) {
   await sb
     .from("leads")
     .update({
-      drip_touch_number: nextTouch.touchNumber,
+      drip_touch_number: activeTouch.touchNumber,
       last_drip_sent_at: new Date().toISOString(),
     })
     .eq("id", lead.id)
@@ -785,7 +823,7 @@ async function processLead(sb, lead) {
   if (AUTO_SEND) {
     try {
       await sendDripTouch({ lead, channel, message: messageBody, subject, sb })
-      console.log(`[drip] AUTO-SENT lead ${lead.id} touch #${nextTouch.touchNumber} (${channel})`)
+      console.log(`[drip] AUTO-SENT lead ${lead.id} touch #${activeTouch.touchNumber} (${channel})`)
       return { processed: true, autoSent: true }
     } catch (e) {
       console.error(`[drip] auto-send failed for ${lead.id}:`, e.message)
@@ -799,7 +837,7 @@ async function processLead(sb, lead) {
     .from("drip_queue")
     .insert({
       lead_id: lead.id,
-      touch_number: nextTouch.touchNumber,
+      touch_number: activeTouch.touchNumber,
       campaign_type: campaign.type,
       channel,
       message: messageBody,
@@ -817,7 +855,7 @@ async function processLead(sb, lead) {
   const channelLabel = channel === "imessage" ? "iMessage" : "Email"
   const recipient = lead.name || lead.caller_phone || lead.email || lead.id
   const lines = [
-    `🔄 Drip #${nextTouch.touchNumber} — <b>${escapeHtml(campaign.type)}</b>`,
+    `🔄 Drip #${activeTouch.touchNumber} — <b>${escapeHtml(campaign.type)}</b>`,
     `Lead: ${escapeHtml(recipient)}`,
     `Channel: ${channelLabel}${clarify ? " · clarifying" : ""}`,
     "",
@@ -826,7 +864,7 @@ async function processLead(sb, lead) {
     `Approve in Mission Control → /leads`,
   ]
   await sendTelegram(lines.join("\n"))
-  console.log(`[drip] QUEUED lead ${lead.id} touch #${nextTouch.touchNumber} (${channel}) queue=${queued.id}`)
+  console.log(`[drip] QUEUED lead ${lead.id} touch #${activeTouch.touchNumber} (${channel}) queue=${queued.id}`)
   return { processed: true, queued: queued.id }
 }
 

@@ -108,20 +108,20 @@ export type LeadType =
   | "drip_imessage"
   | "drip_email"
 
+// Phase 7C lifecycle. Statuses are mutually exclusive stages in the funnel;
+// DNC / Junk / Bad-Number live as separate boolean flags on the lead row so
+// they can stack on top of any lifecycle stage (e.g. `warm` + `is_bad_number`
+// → drip drops phone touches but keeps emailing). Older 7B statuses
+// (qualified / unqualified / do_not_contact / junk) are remapped at migration
+// time and are no longer accepted by the API.
 export type LeadStatus =
   | "new"
-  | "hot"
-  | "qualified"
-  | "warm"
-  | "junk"
   | "contacted"
-  // Phase 7B drip statuses:
-  //   active          — Ryan personally working it; drip permanently off
-  //   unqualified     — soft mismatch; clarifying question fires once, then pause
-  //   do_not_contact  — terminal hard stop (auto-set by junk filter or manual)
   | "active"
-  | "unqualified"
-  | "do_not_contact"
+  | "hot"
+  | "warm"
+  | "nurture"
+  | "dead"
 
 // Conventions (no extra columns — keeps schema simple):
 //   - `message` holds the text content of the event regardless of type:
@@ -159,6 +159,43 @@ export interface Lead {
   drip_campaign_type?: string | null
   drip_touch_number?: number | null
   last_drip_sent_at?: string | null
+  // Phase 7C flags + intelligence columns.
+  is_dnc?: boolean | null
+  is_junk?: boolean | null
+  is_bad_number?: boolean | null
+  ai_summary?: string | null
+  ai_summary_generated_at?: string | null
+  recommended_followup_date?: string | null
+  followup_reason?: string | null
+  followup_generated_at?: string | null
+  suggested_status?: LeadStatus | null
+  suggested_status_reason?: string | null
+  campaign_label?: string | null
+}
+
+// Lifecycle statuses — must match the lib/leads.ts LeadStatus union.
+export const VALID_LEAD_STATUSES: readonly LeadStatus[] = [
+  "new",
+  "contacted",
+  "active",
+  "hot",
+  "warm",
+  "nurture",
+  "dead",
+] as const
+
+// Boolean flags on a lead. Used by the API PATCH route to whitelist
+// allowed body fields and by the UI to drive badges + button visibility.
+export const LEAD_FLAG_FIELDS = ["is_dnc", "is_junk", "is_bad_number"] as const
+export type LeadFlagField = typeof LEAD_FLAG_FIELDS[number]
+
+// Display label for a lead. Prefers campaign_label (Phase 7C overlay) over
+// the historical source column. Both can be null on imports that didn't
+// match a known mailbox or twilio number.
+export function getLeadDisplayCampaign(
+  lead: Pick<Lead, "campaign_label" | "source">
+): string {
+  return lead.campaign_label || lead.source || "Unknown"
 }
 
 export function isOutbound(lead: Pick<Lead, "twilio_number">): boolean {
@@ -391,7 +428,15 @@ export async function processRecordingBackground(args: {
             else console.log(`[triage] Lead ${leadId} → ${triage.status}: ${triage.summary}`)
           }
         } else {
-          console.log(`[triage] Skipping — lead ${leadId} is no longer "new" (${currentLead?.status})`)
+          // Phase 7C — Part 4: lead has been classified before, so don't
+          // overwrite its status. Run analyze-call which writes to
+          // suggested_status (training wheels) plus follow-up fields. Ryan
+          // confirms via banner in the UI.
+          const analysis = await analyzeCallTranscript(transcription)
+          if (analysis) {
+            await applyAnalyzeCallResult(leadId, analysis)
+            console.log(`[analyze-call] Lead ${leadId} suggested → ${analysis.status}: ${analysis.reason}`)
+          }
         }
       } catch (e) {
         console.error("[triage] Threw:", e)
@@ -489,13 +534,13 @@ TRANSCRIPT:
 "${transcription}"
 
 CLASSIFICATION (pick exactly one):
-- hot: Caller expressed clear intent to sell their property or meet with the investor
-- qualified: Caller is interested but not urgent — wants more info, open to discussion
-- warm: Caller is neutral or curious — returning a call, asking what the mailer was about
-- junk: Wrong number, not interested in selling, spam, or irrelevant
+- hot: Caller expressed clear intent to sell now or within 1-2 months
+- warm: Caller is interested, 3-6 month timeline, open to discussion
+- nurture: Caller is curious but no clear timeline — long-term/maybe someday
+- dead: Wrong number, spam, hostile, or explicit "do not contact"
 
 Respond in this exact JSON format (no markdown, no explanation):
-{"status": "<hot|qualified|warm|junk>", "summary": "<1-2 sentence summary of what the caller said/wanted>"}`
+{"status": "<hot|warm|nurture|dead>", "summary": "<1-2 sentence summary of what the caller said/wanted>"}`
 
   try {
     const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
@@ -524,7 +569,7 @@ Respond in this exact JSON format (no markdown, no explanation):
     const cleaned = content.replace(/^```(?:json)?\s*/i, "").replace(/```\s*$/i, "").trim()
 
     const parsed = JSON.parse(cleaned) as { status?: string; summary?: string }
-    const validStatuses = ["hot", "qualified", "warm", "junk"]
+    const validStatuses = ["hot", "warm", "nurture", "dead"]
     if (!parsed.status || !validStatuses.includes(parsed.status)) return null
     if (!parsed.summary || typeof parsed.summary !== "string") return null
 
@@ -533,6 +578,124 @@ Respond in this exact JSON format (no markdown, no explanation):
     console.error("[triage] Threw:", e)
     return null
   }
+}
+
+// Phase 7C — Part 4 shared helper. Classifies a transcript, stores the
+// result in suggested_status / suggested_status_reason / followup fields
+// (training-wheels mode) or applies it directly when AUTO_STATUS=true,
+// invalidates the AI summary cache so the next view regenerates, and
+// fires a Telegram nudge. Returns true on success, false on failure
+// (caller can log; this is non-fatal background work).
+//
+// Used by both /api/leads/[id]/analyze-call (manual / Ryan-driven) and
+// processRecordingBackground (auto-trigger on subsequent recordings of
+// already-classified leads).
+const ANALYSIS_PROMPT_STATUSES = ["hot", "warm", "nurture", "dead", "contacted"] as const
+type AnalysisPromptStatus = (typeof ANALYSIS_PROMPT_STATUSES)[number]
+
+export interface AnalyzeCallResult {
+  status: AnalysisPromptStatus
+  reason: string
+  recommended_followup_date: string | null
+  followup_reason: string | null
+}
+
+export async function analyzeCallTranscript(
+  transcript: string
+): Promise<AnalyzeCallResult | null> {
+  const apiKey = process.env.OPENROUTER_API_KEY
+  if (!apiKey) {
+    console.warn("[analyze-call] OPENROUTER_API_KEY not set; skipping")
+    return null
+  }
+  const prompt = `You are classifying a real estate seller lead based on a phone call transcript.
+Ryan is a cash home buyer. The caller is a property owner.
+
+Classify into exactly ONE status:
+- hot: Actively wants to sell now or within 1-2 months. Motivated.
+- warm: Open to selling in 3-6 months. Not urgent but interested.
+- nurture: Longer term (6+ months), curious but no timeline. "Maybe someday."
+- dead: Explicitly not interested. "Don't call me." "Not selling." No ambiguity.
+- contacted: Inconclusive call. Brief, couldn't determine interest level.
+
+Also extract:
+- recommended_followup_date: When Ryan should call back (ISO date YYYY-MM-DD, or null if dead)
+- followup_reason: One sentence why that date
+
+Respond as JSON only:
+{ "status": "...", "reason": "...", "recommended_followup_date": "YYYY-MM-DD" | null, "followup_reason": "..." }
+
+TRANSCRIPT:
+"${transcript}"`
+
+  try {
+    const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model: "anthropic/claude-haiku-4-5",
+        max_tokens: 250,
+        messages: [{ role: "user", content: prompt }],
+      }),
+    })
+    if (!res.ok) {
+      console.error(`[analyze-call] OpenRouter ${res.status}: ${(await res.text()).slice(0, 300)}`)
+      return null
+    }
+    const json = await res.json() as { choices?: { message?: { content?: string } }[] }
+    const content = json.choices?.[0]?.message?.content?.trim() || ""
+    if (!content) return null
+    const cleaned = content.replace(/^```(?:json)?\s*/i, "").replace(/```\s*$/i, "").trim()
+    const parsed = JSON.parse(cleaned) as Partial<AnalyzeCallResult>
+    if (!parsed.status || !(ANALYSIS_PROMPT_STATUSES as readonly string[]).includes(parsed.status)) return null
+    if (!parsed.reason || typeof parsed.reason !== "string") return null
+    return {
+      status: parsed.status as AnalysisPromptStatus,
+      reason: parsed.reason.trim(),
+      recommended_followup_date:
+        typeof parsed.recommended_followup_date === "string" &&
+        /^\d{4}-\d{2}-\d{2}$/.test(parsed.recommended_followup_date)
+          ? parsed.recommended_followup_date
+          : null,
+      followup_reason:
+        typeof parsed.followup_reason === "string" && parsed.followup_reason.trim()
+          ? parsed.followup_reason.trim()
+          : null,
+    }
+  } catch (e) {
+    console.error("[analyze-call] threw:", e)
+    return null
+  }
+}
+
+// Persist the analysis result against a lead. Honors AUTO_STATUS env var
+// (when "true", applies the suggestion directly to status; otherwise
+// writes to suggested_status for Ryan to confirm in the UI).
+export async function applyAnalyzeCallResult(
+  leadId: string,
+  result: AnalyzeCallResult
+): Promise<void> {
+  const sb = getLeadsClient()
+  const autoApply = process.env.AUTO_STATUS === "true"
+  const lifecycleStatus =
+    result.status !== "contacted" ? (result.status as LeadStatus) : null
+  const update: Record<string, unknown> = {
+    ai_summary: null,
+    ai_summary_generated_at: null,
+    followup_generated_at: new Date().toISOString(),
+    recommended_followup_date: result.recommended_followup_date,
+    followup_reason: result.followup_reason,
+  }
+  if (autoApply && lifecycleStatus) {
+    update.status = lifecycleStatus
+    update.suggested_status = null
+    update.suggested_status_reason = null
+  } else if (lifecycleStatus) {
+    update.suggested_status = lifecycleStatus
+    update.suggested_status_reason = result.reason
+  }
+  const { error } = await sb.from("leads").update(update).eq("id", leadId)
+  if (error) console.error(`[analyze-call] update failed for ${leadId}:`, error.message)
 }
 
 // Email-lead triage — same Haiku model as the call/voicemail path, but the
@@ -562,15 +725,15 @@ Body: ${body}
 
 Respond in JSON only:
 {
-  "status": "hot" | "qualified" | "warm" | "junk",
+  "status": "hot" | "warm" | "nurture" | "dead",
   "summary": "one sentence summary",
   "suggestedReply": "a short, natural text-message-style reply Ryan can send. Warm, direct, no fluff. 1-2 sentences max."
 }
 
 hot = wants to sell now or requesting immediate callback
-qualified = interested, has a property, wants info
-warm = curious, not ready yet
-junk = spam, wrong number, unsubscribe`
+warm = interested, has a property, wants info, 3-6 month timeline
+nurture = curious, longer term, no urgency
+dead = spam, wrong number, unsubscribe, hostile`
 
   try {
     const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
@@ -601,7 +764,7 @@ junk = spam, wrong number, unsubscribe`
       summary?: string
       suggestedReply?: string
     }
-    const validStatuses = ["hot", "qualified", "warm", "junk"]
+    const validStatuses = ["hot", "warm", "nurture", "dead"]
     if (!parsed.status || !validStatuses.includes(parsed.status)) return null
     if (!parsed.summary || typeof parsed.summary !== "string") return null
     if (!parsed.suggestedReply || typeof parsed.suggestedReply !== "string") return null

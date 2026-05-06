@@ -143,6 +143,8 @@ export function effectiveChannelForTouch(
   return defined?.channel ?? "imessage"
 }
 
-// Statuses that disqualify a lead from drip processing. Active leads are
-// being personally worked by Ryan; junk/do_not_contact are terminal stops.
-export const DRIP_STOP_STATUSES = ["active", "junk", "do_not_contact"] as const
+// Lifecycle statuses that disqualify a lead from drip processing. Active
+// leads are being personally worked by Ryan; dead is terminal. The DNC and
+// Junk *flags* (is_dnc / is_junk on the lead row) are checked separately
+// in the drip engine's WHERE clause.
+export const DRIP_STOP_STATUSES = ["active", "dead"] as const

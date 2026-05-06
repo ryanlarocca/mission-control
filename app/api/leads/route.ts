@@ -1,31 +1,38 @@
 import { NextRequest, NextResponse } from "next/server"
-import { getLeadsClient, normalizePhone, type LeadStatus } from "@/lib/leads"
-
-const VALID_STATUSES: LeadStatus[] = [
-  "new",
-  "hot",
-  "qualified",
-  "warm",
-  "junk",
-  "contacted",
-  // Phase 7B drip statuses
-  "active",
-  "unqualified",
-  "do_not_contact",
-]
+import {
+  getLeadsClient,
+  normalizePhone,
+  VALID_LEAD_STATUSES,
+  LEAD_FLAG_FIELDS,
+  type LeadStatus,
+  type LeadFlagField,
+} from "@/lib/leads"
 
 export async function GET(request: NextRequest) {
   const url = request.nextUrl
   const status = url.searchParams.get("status")
   const source = url.searchParams.get("source")
+  const campaignLabel = url.searchParams.get("campaign_label")
+  const hasFollowup = url.searchParams.get("has_followup")
+  const sort = url.searchParams.get("sort")
   const limitParam = parseInt(url.searchParams.get("limit") || "100", 10)
   const limit = Number.isFinite(limitParam) ? Math.max(1, Math.min(500, limitParam)) : 100
 
   try {
     const sb = getLeadsClient()
-    let q = sb.from("leads").select("*").order("created_at", { ascending: false }).limit(limit)
-    if (status && VALID_STATUSES.includes(status as LeadStatus)) q = q.eq("status", status)
+    let q = sb.from("leads").select("*").limit(limit)
+
+    if (status && VALID_LEAD_STATUSES.includes(status as LeadStatus)) q = q.eq("status", status)
     if (source) q = q.eq("source", source)
+    if (campaignLabel) q = q.eq("campaign_label", campaignLabel)
+    if (hasFollowup === "true") q = q.not("recommended_followup_date", "is", null)
+
+    if (sort === "followup_date_asc") {
+      q = q.order("recommended_followup_date", { ascending: true, nullsFirst: false })
+    } else {
+      q = q.order("created_at", { ascending: false })
+    }
+
     const { data, error } = await q
     if (error) {
       console.error("[leads:GET] Query failed:", error)
@@ -39,39 +46,78 @@ export async function GET(request: NextRequest) {
   }
 }
 
+// Allow-list of patchable columns. Anything else in the body is ignored.
+// Suggested-status fields are patchable so the UI can clear them when Ryan
+// dismisses an AI suggestion; recommended_followup_date is patchable so the
+// Follow-Up tab can snooze / clear from the UI.
+const PATCHABLE_TEXT_FIELDS = [
+  "notes",
+  "campaign_label",
+  "suggested_status",
+  "suggested_status_reason",
+  "followup_reason",
+] as const
+const PATCHABLE_DATE_FIELDS = ["recommended_followup_date"] as const
+
 export async function PATCH(request: NextRequest) {
-  let body: { id?: string; status?: string; notes?: string; caller_phone?: string } = {}
+  let body: Record<string, unknown> = {}
   try {
     body = await request.json()
   } catch {
     return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 })
   }
-  const { id, status, notes, caller_phone } = body
-  if (!id || typeof id !== "string") {
+  const id = typeof body.id === "string" ? body.id : null
+  if (!id) {
     return NextResponse.json({ error: "id is required" }, { status: 400 })
   }
-  if (status !== undefined && !VALID_STATUSES.includes(status as LeadStatus)) {
-    return NextResponse.json({ error: `Invalid status: ${status}` }, { status: 400 })
-  }
+
   const update: Record<string, unknown> = {}
-  if (status !== undefined) update.status = status
-  if (notes !== undefined) update.notes = notes
-  if (caller_phone !== undefined) {
-    // Empty/null clears the field (e.g. fixing a typo). Otherwise normalize
-    // to E.164 so calls/sms group cleanly with future inbound events.
-    if (caller_phone === null || caller_phone === "") {
-      update.caller_phone = null
-    } else {
-      const normalized = normalizePhone(caller_phone)
-      if (!/^\+\d{10,15}$/.test(normalized)) {
-        return NextResponse.json(
-          { error: `Invalid phone format: "${caller_phone}"` },
-          { status: 400 }
-        )
-      }
-      update.caller_phone = normalized
+
+  if (body.status !== undefined) {
+    if (typeof body.status !== "string" || !VALID_LEAD_STATUSES.includes(body.status as LeadStatus)) {
+      return NextResponse.json({ error: `Invalid status: ${body.status}` }, { status: 400 })
+    }
+    update.status = body.status
+  }
+
+  for (const field of PATCHABLE_TEXT_FIELDS) {
+    if (body[field] !== undefined) {
+      const v = body[field]
+      if (v === null || typeof v === "string") update[field] = v
     }
   }
+
+  for (const field of PATCHABLE_DATE_FIELDS) {
+    if (body[field] !== undefined) {
+      const v = body[field]
+      if (v === null || typeof v === "string") update[field] = v
+    }
+  }
+
+  for (const flag of LEAD_FLAG_FIELDS) {
+    if (body[flag] !== undefined) {
+      if (typeof body[flag] !== "boolean") {
+        return NextResponse.json({ error: `${flag} must be boolean` }, { status: 400 })
+      }
+      update[flag as LeadFlagField] = body[flag]
+    }
+  }
+
+  if (body.caller_phone !== undefined) {
+    const cp = body.caller_phone
+    if (cp === null || cp === "") {
+      update.caller_phone = null
+    } else if (typeof cp === "string") {
+      const normalized = normalizePhone(cp)
+      if (!/^\+\d{10,15}$/.test(normalized)) {
+        return NextResponse.json({ error: `Invalid phone format: "${cp}"` }, { status: 400 })
+      }
+      update.caller_phone = normalized
+    } else {
+      return NextResponse.json({ error: "caller_phone must be string or null" }, { status: 400 })
+    }
+  }
+
   if (Object.keys(update).length === 0) {
     return NextResponse.json({ error: "Nothing to update" }, { status: 400 })
   }
