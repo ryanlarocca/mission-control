@@ -623,8 +623,11 @@ export async function analyzeCallTranscript(
     console.warn("[analyze-call] OPENROUTER_API_KEY not set; skipping")
     return null
   }
+  const today = new Date().toISOString().slice(0, 10)
   const prompt = `You are classifying a real estate seller lead based on a phone call transcript.
 Ryan is a cash home buyer. The caller is a property owner.
+
+TODAY IS ${today}. All recommended_followup_date values must be on or after today.
 
 Classify into exactly ONE status:
 - hot: Actively wants to sell now or within 1-2 months. Motivated.
