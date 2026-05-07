@@ -49,13 +49,18 @@ export async function GET(request: NextRequest) {
 // Allow-list of patchable columns. Anything else in the body is ignored.
 // Suggested-status fields are patchable so the UI can clear them when Ryan
 // dismisses an AI suggestion; recommended_followup_date is patchable so the
-// Follow-Up tab can snooze / clear from the UI.
+// Follow-Up tab can snooze / clear from the UI. name/email/property_address
+// are patchable so Ryan can hand-correct misparses on the lead card (e.g.
+// Google Voice voicemails that come in with name="Google Voice").
 const PATCHABLE_TEXT_FIELDS = [
   "notes",
   "campaign_label",
   "suggested_status",
   "suggested_status_reason",
   "followup_reason",
+  "name",
+  "email",
+  "property_address",
 ] as const
 const PATCHABLE_DATE_FIELDS = ["recommended_followup_date"] as const
 

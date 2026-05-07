@@ -4,7 +4,7 @@ import { useEffect, useMemo, useState, useCallback } from "react"
 import {
   Phone, PhoneOutgoing, Voicemail, MessageSquare, ClipboardList, ChevronDown, ChevronRight,
   Loader2, RefreshCw, Send, Check, Mail, Trash2, Bot, Clock, X,
-  Sparkles, PhoneOff, Ban, ShieldOff, Zap, Wand2, Calendar,
+  Sparkles, PhoneOff, Ban, ShieldOff, Zap, Wand2, Calendar, Pencil,
 } from "lucide-react"
 import { getCampaign, getNextTouch } from "@/lib/drip-campaigns"
 
@@ -255,19 +255,23 @@ function relativeTime(iso: string): string {
 function groupLeads(leads: Lead[]): LeadGroup[] {
   const byKey = new Map<string, Lead[]>()
   for (const l of leads) {
-    // Email leads with a Gmail thread always group by thread — a Gmail
-    // conversation is one card, regardless of how the caller_phone field
-    // shifts across messages (e.g. customer initially writes one number,
-    // then "sorry my real number is X" in a follow-up). Without thread
-    // priority each correction would split into a new card.
+    // Phone wins whenever it's set — that's the strongest contact identity
+    // we have. Even for email leads (e.g. Google Voice forwarded voicemails
+    // with the caller's number in the body), a known phone means subsequent
+    // outbound calls/SMS to that number should land in the same card. The
+    // older "thread-id wins for emails" rule was added in Phase 7.4 to keep
+    // multi-email Gmail threads from splitting on phone-number corrections,
+    // but it had the side effect of orphaning email leads from any
+    // phone-channel events on the same caller.
     //
-    // Twilio leads (call/sms/voicemail) and email leads without a thread
-    // fall back to the original phone → email → id chain.
+    // Fallback chain when there's no phone: gmail thread → email → row id.
+    // Email-only Gmail threads (no phone ever attached) still group by
+    // thread, preserving the Phase 7.4 intent for that case.
     let key: string
-    if (l.lead_type === "email" && l.gmail_thread_id) {
-      key = `thread:${l.gmail_thread_id}`
-    } else if (l.caller_phone) {
+    if (l.caller_phone) {
       key = l.caller_phone
+    } else if (l.lead_type === "email" && l.gmail_thread_id) {
+      key = `thread:${l.gmail_thread_id}`
     } else if (l.email) {
       key = `email:${l.email.toLowerCase()}`
     } else {
@@ -1114,6 +1118,7 @@ export function LeadsTab() {
               draftingText={draftingFor === `${group.phone}:imessage`}
               draftingEmail={draftingFor === `${group.phone}:email`}
               draftError={expandedPhone === group.phone ? draftError : null}
+              onPatchField={(field, value) => patchFlagOnGroup(group, { [field]: value || null } as Partial<Lead>)}
               onSetStatus={(s) => setGroupStatus(group, s)}
               pendingStatus={pendingStatus}
               draftNote={draftNotes[group.phone]}
@@ -1219,6 +1224,7 @@ interface LeadCardProps {
   draftingText: boolean
   draftingEmail: boolean
   draftError: string | null
+  onPatchField: (field: "name" | "property_address" | "email", value: string) => void
 }
 
 function LeadCard(p: LeadCardProps) {
@@ -1446,11 +1452,25 @@ function LeadCard(p: LeadCardProps) {
             )}
           </div>
 
-          {group.propertyAddress && (
-            <div className="text-xs text-zinc-400">
-              <span className="text-zinc-500">🏠 </span>{group.propertyAddress}
-            </div>
-          )}
+          {/* Phase 7C+ — editable name + property. Self-identification in
+              voicemail bodies is the most authoritative source, but parsers
+              still miss occasionally (e.g. Google Voice forwards arrive
+              with name="Google Voice" until the body regex catches up).
+              These inline-editable fields let Ryan correct in one tap. */}
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-zinc-400">
+            <EditableInlineField
+              value={group.name}
+              placeholder="Add name"
+              icon="👤"
+              onSave={(v) => p.onPatchField("name", v)}
+            />
+            <EditableInlineField
+              value={group.propertyAddress}
+              placeholder="Add property address"
+              icon="🏠"
+              onSave={(v) => p.onPatchField("property_address", v)}
+            />
+          </div>
 
           {nextDripLabel && (
             <div className="text-xs text-zinc-500 inline-flex items-center gap-1.5">
@@ -1784,6 +1804,65 @@ function mergeForTimeline(authoritative: Lead[], synthetic: Lead[]): Lead[] {
   const filtered = synthetic.filter(s => !authSigs.has(eventSig(s)))
   return [...authoritative, ...filtered].sort(
     (a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
+  )
+}
+
+// Inline editable text field with a small pencil affordance. Used for
+// name + property_address on the expanded LeadCard so Ryan can correct
+// parser misses (e.g. "Google Voice" → "Chris Bola") in one tap. Saves
+// on Enter or blur; Esc cancels.
+function EditableInlineField(props: {
+  value: string | null
+  placeholder: string
+  icon: string
+  onSave: (value: string) => void | Promise<void>
+}) {
+  const [editing, setEditing] = useState(false)
+  const [draft, setDraft] = useState(props.value || "")
+  // External value can change (e.g. silent refetch overwrites a stale row);
+  // sync the draft so we don't render stale text after a successful save.
+  useEffect(() => { setDraft(props.value || "") }, [props.value])
+
+  if (!editing) {
+    return (
+      <button
+        onClick={() => setEditing(true)}
+        className="inline-flex items-center gap-1 group hover:text-zinc-200 transition-colors"
+      >
+        <span className="text-zinc-500">{props.icon}</span>
+        <span className={props.value ? "text-zinc-300" : "text-zinc-600 italic"}>
+          {props.value || props.placeholder}
+        </span>
+        <Pencil className="w-3 h-3 opacity-0 group-hover:opacity-60 transition-opacity" />
+      </button>
+    )
+  }
+
+  const commit = () => {
+    setEditing(false)
+    const trimmed = draft.trim()
+    if (trimmed !== (props.value || "").trim()) {
+      void props.onSave(trimmed)
+    }
+  }
+
+  return (
+    <div className="inline-flex items-center gap-1">
+      <span className="text-zinc-500">{props.icon}</span>
+      <input
+        autoFocus
+        value={draft}
+        onChange={(e) => setDraft(e.target.value)}
+        onBlur={commit}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") { e.preventDefault(); commit() }
+          else if (e.key === "Escape") { setDraft(props.value || ""); setEditing(false) }
+        }}
+        className="bg-zinc-900 border border-zinc-700 rounded px-2 py-0.5 text-xs text-zinc-100 focus:outline-none focus:border-zinc-500 min-w-[160px]"
+        style={{ fontSize: 16 }}
+        placeholder={props.placeholder}
+      />
+    </div>
   )
 }
 

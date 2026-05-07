@@ -386,6 +386,10 @@ export async function processRecordingBackground(args: {
     // Outbound calls get a short summary saved to `ai_notes` (Ryan made
     // the call and already knows the classification, so no triage — just
     // a "what was discussed / next steps" line for the timeline).
+    // We ALSO run analyze-call on the transcript to extract a follow-up
+    // recommendation (date + reason). The status portion of that result
+    // is dropped via applyFollowupOnlyResult — Ryan made the call and
+    // already knows where the lead stands.
     let outboundSummary: string | null = null
     if (direction === "outbound" && transcription && leadId) {
       outboundSummary = await summarizeOutboundCall(transcription)
@@ -401,6 +405,17 @@ export async function processRecordingBackground(args: {
         } catch (e) {
           console.error("[summarize] Save threw:", e)
         }
+      }
+      try {
+        const followup = await analyzeCallTranscript(transcription)
+        if (followup) {
+          await applyFollowupOnlyResult(leadId, followup)
+          if (followup.recommended_followup_date) {
+            console.log(`[followup-only] Lead ${leadId} → ${followup.recommended_followup_date}: ${followup.followup_reason}`)
+          }
+        }
+      } catch (e) {
+        console.error("[followup-only] Threw:", e)
       }
     }
 
@@ -666,6 +681,31 @@ TRANSCRIPT:
     console.error("[analyze-call] threw:", e)
     return null
   }
+}
+
+// Outbound variant: same model + prompt as analyzeCallTranscript, but we
+// only persist the follow-up fields (recommended_followup_date +
+// followup_reason). Ryan made the call himself — he already knows the
+// status, so we don't write to status / suggested_status. The call's
+// summarizeOutboundCall result already lives in ai_notes.
+export async function applyFollowupOnlyResult(
+  leadId: string,
+  result: AnalyzeCallResult
+): Promise<void> {
+  const sb = getLeadsClient()
+  const { error } = await sb
+    .from("leads")
+    .update({
+      recommended_followup_date: result.recommended_followup_date,
+      followup_reason: result.followup_reason,
+      followup_generated_at: new Date().toISOString(),
+      // Invalidate the AI summary cache — a new call's transcript means
+      // any cached summary is now stale.
+      ai_summary: null,
+      ai_summary_generated_at: null,
+    })
+    .eq("id", leadId)
+  if (error) console.error(`[followup-only] update failed for ${leadId}:`, error.message)
 }
 
 // Persist the analysis result against a lead. Honors AUTO_STATUS env var

@@ -131,9 +131,13 @@ async function handleAppsScript(payload: AppsScriptPayload): Promise<NextRespons
     console.warn(`[email] Apps Script payload missing sender email: ${fromRaw}`)
     return NextResponse.json({ ok: true })
   }
-  // Prefer the From header's display name; if the sender used a bare email,
-  // try a quick scan of the body ("my name is X", "I'm X", "this is X").
-  const name = headerName || extractNameFromBody(bodyText)
+  // Self-identification in the body wins over the From-header display name.
+  // The lead's spoken/written name is the most authoritative signal —
+  // covers Google Voice voicemail forwards (header is always "Google Voice")
+  // and any case where the sender's display name is generic/missing/wrong.
+  // Header is the safety net when the body has no recognizable
+  // self-identification phrase.
+  const name = extractNameFromBody(bodyText) || headerName
 
   // Don't ingest mail from the mailbox owner
   if (senderEmail === mailbox) {
@@ -288,9 +292,10 @@ async function processSingleMessage(args: {
   }
 
   const bodyText = extractPlainBody(message.payload)
-  // Prefer the From header's display name; fall back to a body scan when the
-  // sender used a bare email (e.g. "pat@gmail.com" with no display name).
-  const name = headerName || extractNameFromBody(bodyText)
+  // Self-identification in the body wins over the From-header display name
+  // (covers Google Voice forwarded voicemails + any lead whose header name
+  // is generic/missing/wrong). Header is the safety net.
+  const name = extractNameFromBody(bodyText) || headerName
   // Extracted as 10 raw digits; normalize to E.164 so the `caller_phone`
   // column matches the format we use everywhere else (call relay, dedup,
   // PATCH path) and the Call button activates without a manual fix-up.
@@ -424,10 +429,15 @@ function getHeader(
 // whatever parseFromHeader produced (which may also be null).
 function extractNameFromBody(text: string): string | null {
   if (!text) return null
+  // Prefix is case-tolerant ([Mm]y, [Tt]his) so we catch transcripts that
+  // capitalize the start of a sentence; capture is strict title-case so we
+  // don't grab "Chris Bola my number" or "Pat smith and". Trailing
+  // (?=\W|$) anchors to a word boundary, preventing greedy {0,2} from
+  // overrunning into the next clause.
   const patterns = [
-    /\bmy name is ([A-Z][a-z]+(?: [A-Z][a-z]+){0,2})/,
-    /\bI(?:'m| am) ([A-Z][a-z]+(?: [A-Z][a-z]+){0,2})/,
-    /\bthis is ([A-Z][a-z]+(?: [A-Z][a-z]+){0,2})/i,
+    /\b[Mm]y name is ([A-Z][a-z]+(?: [A-Z][a-z]+){0,2})(?=\W|$)/,
+    /\bI(?:'m| am) ([A-Z][a-z]+(?: [A-Z][a-z]+){0,2})(?=\W|$)/,
+    /\b[Tt]his is ([A-Z][a-z]+(?: [A-Z][a-z]+){0,2})(?=\W|$)/,
   ]
   for (const re of patterns) {
     const m = re.exec(text)
