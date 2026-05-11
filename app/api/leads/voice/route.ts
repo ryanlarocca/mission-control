@@ -3,9 +3,12 @@ import {
   FORWARD_TO,
   getCampaignSource,
   getLeadsClient,
+  OUTBOUND_TWILIO_NUMBER,
   parseTwilioBody,
   sendTelegramAlert,
 } from "@/lib/leads"
+
+const OUTBOUND_CALLBACK_DEDUP_DAYS = 30
 
 // TwiML voice webhook for LRG Homes Twilio numbers.
 // Flow: log the lead row, then return Dial TwiML so Ryan's cell rings with
@@ -50,24 +53,52 @@ export async function POST(request: Request) {
 
   if (callerPhone) {
     const source = getCampaignSource(twilioNumber)
+    const isOutboundCallback = twilioNumber === OUTBOUND_TWILIO_NUMBER
     // AWAIT the insert — must complete before the function exits.
     try {
       const sb = getLeadsClient()
-      const { error } = await sb.from("leads").insert({
+
+      // Phase 7C-may8 Bug 1: when a lead dials the outbound caller-ID
+      // number back, they're returning Ryan's outreach against an
+      // existing lead — not a fresh intake. Look up the recent intake
+      // row and skip the drip-campaign stamp so the engine doesn't kick
+      // off a new cycle. The UI groups events by caller_phone, so the
+      // call event still shows up on the existing card.
+      let existingLeadId: string | null = null
+      if (isOutboundCallback) {
+        const since = new Date(
+          Date.now() - OUTBOUND_CALLBACK_DEDUP_DAYS * 86_400_000
+        ).toISOString()
+        const { data: existing } = await sb
+          .from("leads")
+          .select("id")
+          .eq("caller_phone", callerPhone)
+          .not("twilio_number", "is", null)
+          .gte("created_at", since)
+          .order("created_at", { ascending: false })
+          .limit(1)
+        existingLeadId = existing?.[0]?.id ?? null
+      }
+
+      const insertRow: Record<string, unknown> = {
         source,
         source_type: "direct_mail",
         twilio_number: twilioNumber,
         caller_phone: callerPhone,
         lead_type: "call",
         status: "new",
+      }
+      if (!existingLeadId) {
         // Phase 7B: stamp drip campaign on intake. The engine's hourly
         // scan will pick up touch 0 (15-min missed-call message) when no
         // recording arrives within the buffer, and touch 1 onward at
         // each cadence step.
-        drip_campaign_type: "direct_mail_call",
-        drip_touch_number: 0,
-        last_drip_sent_at: new Date().toISOString(),
-      })
+        insertRow.drip_campaign_type = "direct_mail_call"
+        insertRow.drip_touch_number = 0
+        insertRow.last_drip_sent_at = new Date().toISOString()
+      }
+
+      const { error } = await sb.from("leads").insert(insertRow)
       if (error) console.error("[voice] Supabase insert failed:", error)
     } catch (e) {
       console.error("[voice] Supabase insert threw:", e)

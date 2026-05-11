@@ -88,6 +88,26 @@ export async function POST(request: NextRequest) {
     } else {
       loggedId = data?.id ?? null
     }
+
+    // Phase 7C-may8 Bug 2: promote the original intake row (twilio_number
+    // IS NOT NULL — that's the inbound side) from "new" → "contacted" so
+    // the lead card's group status reflects that Ryan reached out, not
+    // just the outbound event row's status.
+    const { data: intake } = await sb
+      .from("leads")
+      .select("id, status")
+      .eq("caller_phone", phone)
+      .not("twilio_number", "is", null)
+      .order("created_at", { ascending: false })
+      .limit(1)
+    const intakeRow = intake?.[0]
+    if (intakeRow && intakeRow.status === "new") {
+      const { error: promoteErr } = await sb
+        .from("leads")
+        .update({ status: "contacted" })
+        .eq("id", intakeRow.id)
+      if (promoteErr) console.error("[leads/send] Status promote failed:", promoteErr)
+    }
   } catch (e) {
     logError = e instanceof Error ? e.message : String(e)
     console.error("[leads/send] Insert threw:", logError)

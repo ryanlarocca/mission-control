@@ -1358,34 +1358,8 @@ function LeadCard(p: LeadCardProps) {
             </div>
           )}
 
-          {/* Phase 7C — Part 3: AI summary (cached, regenerated only on
-              new activity). Shows a spinner on first fetch, instant on
-              re-expand thanks to the cache + local state. */}
-          <div className="rounded-md border border-zinc-800 bg-zinc-900/40 px-3 py-2">
-            <div className="flex items-center justify-between mb-1">
-              <div className="text-xs text-zinc-500 inline-flex items-center gap-1.5">
-                <Sparkles className="w-3 h-3 text-zinc-400" /> AI summary
-              </div>
-              <button
-                onClick={p.onRefreshSummary}
-                disabled={p.summaryLoading}
-                className="text-[10px] text-zinc-500 hover:text-zinc-300 disabled:opacity-50 inline-flex items-center gap-1"
-                title="Regenerate"
-              >
-                <RefreshCw className={`w-3 h-3 ${p.summaryLoading ? "animate-spin" : ""}`} />
-                {p.summaryLoading ? "Generating…" : "Refresh"}
-              </button>
-            </div>
-            {p.summary ? (
-              <div className="text-sm text-zinc-200 whitespace-pre-wrap">{p.summary}</div>
-            ) : p.summaryLoading ? (
-              <div className="text-sm text-zinc-500 italic">Generating summary…</div>
-            ) : p.summaryError ? (
-              <div className="text-sm text-red-300">{p.summaryError}</div>
-            ) : (
-              <div className="text-sm text-zinc-500 italic">No summary yet.</div>
-            )}
-          </div>
+          {/* Phase 7C-may8 Bug 4: AI summary moved into the timeline as a
+              system entry (see <Timeline aiText … />), not a floating card. */}
 
           <div className="text-sm flex items-center gap-3 flex-wrap">
             {group.contactPhone ? (
@@ -1487,14 +1461,13 @@ function LeadCard(p: LeadCardProps) {
             </div>
           )}
 
-          <Timeline events={mergeForTimeline(group.events, p.extraEvents)} />
-
-          {group.aiNotes && (
-            <div className="bg-zinc-900/50 border border-zinc-800 rounded px-3 py-2">
-              <div className="text-xs text-zinc-500 mb-1">🤖 AI Notes</div>
-              <div className="text-sm text-zinc-200">{group.aiNotes}</div>
-            </div>
-          )}
+          <Timeline
+            events={mergeForTimeline(group.events, p.extraEvents)}
+            aiText={p.summary || group.aiNotes}
+            aiLoading={p.summaryLoading}
+            aiError={p.summaryError}
+            onRefreshAi={p.onRefreshSummary}
+          />
 
           <div>
             <div className="text-xs text-zinc-500 mb-1.5">Notes</div>
@@ -1866,13 +1839,69 @@ function EditableInlineField(props: {
   )
 }
 
-function Timeline({ events }: { events: Lead[] }) {
+function Timeline(props: {
+  events: Lead[]
+  aiText: string | null
+  aiLoading: boolean
+  aiError: string | null
+  onRefreshAi: () => void
+}) {
+  const { events, aiText, aiLoading, aiError, onRefreshAi } = props
   return (
     <div className="space-y-2">
       <div className="text-xs text-zinc-500 mb-1.5">Timeline</div>
       {events.map(ev => (
         <TimelineEvent key={ev.id} ev={ev} />
       ))}
+      {(aiText || aiLoading || aiError) && (
+        <TimelineAiEntry
+          text={aiText}
+          loading={aiLoading}
+          error={aiError}
+          onRefresh={onRefreshAi}
+        />
+      )}
+    </div>
+  )
+}
+
+// Phase 7C-may8 Bug 4: AI summary/notes render as the freshest entry at the
+// bottom of the conversation thread instead of as a separate floating card.
+// Centered, dimmer styling so it reads as a system event next to inbound /
+// outbound message bubbles.
+function TimelineAiEntry(props: {
+  text: string | null
+  loading: boolean
+  error: string | null
+  onRefresh: () => void
+}) {
+  return (
+    <div className="flex justify-center">
+      <div className="max-w-[90%] flex items-start gap-2 rounded border border-zinc-800 bg-zinc-900/40 px-3 py-2">
+        <span className="text-zinc-500 text-sm leading-5">🤖</span>
+        <div className="flex-1 min-w-0">
+          <div className="text-[10px] uppercase tracking-wider text-zinc-500 mb-0.5 flex items-center gap-2">
+            <span>AI summary</span>
+            <button
+              onClick={props.onRefresh}
+              disabled={props.loading}
+              className="text-zinc-500 hover:text-zinc-300 disabled:opacity-50 inline-flex items-center gap-1"
+              title="Regenerate"
+            >
+              <RefreshCw className={`w-3 h-3 ${props.loading ? "animate-spin" : ""}`} />
+            </button>
+          </div>
+          {props.text ? (
+            <div className="text-sm text-zinc-300 whitespace-pre-wrap break-words italic">
+              {props.text}
+            </div>
+          ) : props.loading ? (
+            <div className="text-sm text-zinc-500 italic">Generating summary…</div>
+          ) : props.error ? (
+            <div className="text-sm text-red-300">{props.error}</div>
+          ) : null}
+        </div>
+      </div>
     </div>
   )
 }

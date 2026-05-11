@@ -9,6 +9,7 @@ import {
   getEmailCampaign,
   getGmailClient,
   getLeadsClient,
+  isMobileHome,
   normalizePhone,
   sendTelegramAlert,
   triageEmailLead,
@@ -181,6 +182,8 @@ async function handleAppsScript(payload: AppsScriptPayload): Promise<NextRespons
   const dripCampaignType = campaign.source_type === "google_ads"
     ? "google_ads_email_only"
     : "direct_mail_email"
+  // Phase 7C-may8 Bug 5: mobile-home / lot-number flag.
+  const isJunkAddr = isMobileHome(bodyText) || isMobileHome(subject)
   const { data: inserted, error: insertErr } = await sb
     .from("leads")
     .insert({
@@ -200,6 +203,7 @@ async function handleAppsScript(payload: AppsScriptPayload): Promise<NextRespons
       ai_notes: triage?.summary ?? null,
       suggested_reply: triage?.suggestedReply ?? null,
       status: triage?.status ?? "new",
+      is_junk: isJunkAddr || undefined,
       drip_campaign_type: dripCampaignType,
       drip_touch_number: 0,
       last_drip_sent_at: new Date().toISOString(),
@@ -336,6 +340,8 @@ async function processSingleMessage(args: {
   const dripCampaignType = campaign.source_type === "google_ads"
     ? "google_ads_email_only"
     : "direct_mail_email"
+  // Phase 7C-may8 Bug 5: mobile-home / lot-number flag.
+  const isJunkAddr = isMobileHome(bodyText) || isMobileHome(subject)
   const { data: inserted, error: insertErr } = await sb
     .from("leads")
     .insert({
@@ -353,6 +359,7 @@ async function processSingleMessage(args: {
       ai_notes: triage?.summary ?? null,
       suggested_reply: triage?.suggestedReply ?? null,
       status: triage?.status ?? "new",
+      is_junk: isJunkAddr || undefined,
       // Persist the Gmail threadId so the Leads-tab card can pull the full
       // back-and-forth via /api/leads/sync-email when Ryan expands it. Falls
       // back to null when the message has no thread (rare — Gmail always

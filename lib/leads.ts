@@ -5,6 +5,44 @@ import emailCampaigns from "@/config/email-campaigns.json"
 export const CAMPAIGN_MAP: Record<string, string> = {
   "+16504364279": "MFM-A",
   "+16506803671": "MFM-B",
+  // Outbound caller-ID number used by /api/leads/call. Listed here so that
+  // when a lead dials it back (or texts it), the voice/sms webhooks resolve
+  // a campaign label and don't mis-bucket the row as "Unknown". Twilio
+  // console must point this number's Voice + Messaging webhooks at
+  // /api/leads/voice and /api/leads/sms.
+  "+16502043247": "Outbound",
+}
+
+// Inbound calls/SMS to this number are almost always a lead returning Ryan's
+// outreach, not a fresh intake. The voice + sms webhooks dedup against the
+// existing lead group instead of starting a new drip cycle.
+export const OUTBOUND_TWILIO_NUMBER = "+16502043247"
+
+// Phase 7C-may8 Bug 6: explicit STOP keywords flag the lead DNC and kill the
+// drip. Match either an exact keyword (single-word "stop") or a substring
+// for multi-word phrases. Lowercase the input and trim before comparing.
+export const DNC_KEYWORDS = [
+  "stop",
+  "unsubscribe",
+  "do not contact",
+  "remove me",
+  "opt out",
+] as const
+
+export function isDncMessage(text: string | null | undefined): boolean {
+  if (!text) return false
+  const normalized = text.toLowerCase().trim()
+  if (!normalized) return false
+  return DNC_KEYWORDS.some((kw) => normalized === kw || normalized.includes(kw))
+}
+
+// Phase 7C-may8 Bug 5: mobile-home / lot detection. Direct mail and Google
+// Ads pull in addresses like "123 Main St Lot 191" — those are mobile homes
+// in a park, not deals Ryan wants. Match "lot" followed by digits anywhere
+// in the address or message body.
+export function isMobileHome(text: string | null | undefined): boolean {
+  if (!text) return false
+  return /\blot\s+\d+/i.test(text)
 }
 
 // Mailers also list one email address per campaign that route through
@@ -371,9 +409,13 @@ export async function processRecordingBackground(args: {
       if (transcription && leadId) {
         try {
           const sb = getLeadsClient()
+          // Phase 7C-may8 Bug 5: if the caller spoke a mobile-home address
+          // ("123 Main St lot 5"), flag the lead as junk so it filters out.
+          const update: Record<string, unknown> = { message: transcription }
+          if (isMobileHome(transcription)) update.is_junk = true
           const { error } = await sb
             .from("leads")
-            .update({ message: transcription })
+            .update(update)
             .eq("id", leadId)
           if (error) console.error("[recording-bg] Transcription save failed:", error)
           else console.log(`[recording-bg] Saved transcription for lead ${leadId}`)
