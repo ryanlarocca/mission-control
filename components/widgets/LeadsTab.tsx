@@ -1210,7 +1210,17 @@ export function LeadsTab() {
 
       <CampaignMetricsStrip />
 
-      <DripQueueSection leads={leads} onAfterAction={() => fetchLeads(true)} />
+      <DripQueueSection
+        leads={leads}
+        onAfterAction={() => fetchLeads(true)}
+        onOpenLead={(phone) => {
+          setExpandedPhone(phone)
+          requestAnimationFrame(() => {
+            const el = document.querySelector(`[data-lead-phone="${phone}"]`)
+            if (el) (el as HTMLElement).scrollIntoView({ behavior: "smooth", block: "start" })
+          })
+        }}
+      />
 
       {loading ? (
         <div className="flex items-center gap-2 text-sm text-zinc-500">
@@ -1379,13 +1389,16 @@ function LeadCard(p: LeadCardProps) {
   const nextDripLabel = nextDripETA(group)
 
   return (
-    <div className={`rounded-md border bg-zinc-950 overflow-hidden ${
-      group.isDnc
-        ? "border-red-900"
-        : group.isJunk
-        ? "border-zinc-800 opacity-70"
-        : "border-zinc-800"
-    }`}>
+    <div
+      data-lead-phone={group.phone}
+      className={`rounded-md border bg-zinc-950 overflow-hidden ${
+        group.isDnc
+          ? "border-red-900"
+          : group.isJunk
+          ? "border-zinc-800 opacity-70"
+          : "border-zinc-800"
+      }`}
+    >
       <div className="flex items-center">
         {/* Bulk-select checkbox — clicking does NOT expand the card. */}
         <label
@@ -2270,7 +2283,15 @@ function CampaignMetricsStrip() {
 // drained on the engine's next hourly pass; skipped items just stay
 // recorded for audit (the engine already advanced the lead's counters
 // when it queued the touch).
-function DripQueueSection({ leads, onAfterAction }: { leads: Lead[]; onAfterAction: () => void }) {
+function DripQueueSection({
+  leads,
+  onAfterAction,
+  onOpenLead,
+}: {
+  leads: Lead[]
+  onAfterAction: () => void
+  onOpenLead: (phone: string) => void
+}) {
   const [items, setItems] = useState<DripQueueItem[]>([])
   const [loading, setLoading] = useState(false)
   const [actingOn, setActingOn] = useState<string | null>(null)
@@ -2338,10 +2359,21 @@ function DripQueueSection({ leads, onAfterAction }: { leads: Lead[]; onAfterActi
           const recipient = lead?.name || (lead?.caller_phone ? formatPhone(lead.caller_phone) : null) || lead?.email || it.lead_id
           const channel = it.channel === "imessage" ? "iMessage" : "Email"
           const acting = actingOn === it.id
+          const canOpen = !!lead?.caller_phone
           return (
             <div key={it.id} className="px-3 py-3 space-y-2">
               <div className="flex items-center gap-2 text-xs text-zinc-500">
-                <span className="text-zinc-300 font-medium">{recipient}</span>
+                {canOpen ? (
+                  <button
+                    type="button"
+                    onClick={() => onOpenLead(lead!.caller_phone!)}
+                    className="text-zinc-300 font-medium hover:text-emerald-400 hover:underline underline-offset-2 transition-colors text-left"
+                  >
+                    {recipient}
+                  </button>
+                ) : (
+                  <span className="text-zinc-300 font-medium">{recipient}</span>
+                )}
                 <span>·</span>
                 <span>#{it.touch_number} {channel}</span>
                 <span>·</span>
