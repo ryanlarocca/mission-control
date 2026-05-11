@@ -202,7 +202,8 @@ async function handleAppsScript(payload: AppsScriptPayload): Promise<NextRespons
       message: messageText,
       ai_notes: triage?.summary ?? null,
       suggested_reply: triage?.suggestedReply ?? null,
-      status: triage?.status ?? "new",
+      status: triage?.is_dead ? "dead" : "new",
+      temperature: triage?.temperature ?? null,
       is_junk: isJunkAddr || undefined,
       drip_campaign_type: dripCampaignType,
       drip_touch_number: 0,
@@ -226,7 +227,8 @@ async function handleAppsScript(payload: AppsScriptPayload): Promise<NextRespons
   ]
   if (phone) lines.push(`📞 ${formatPhoneForAlert(phone)}`)
   if (triage) {
-    lines.push(`🤖 AI: <b>${triage.status.toUpperCase()}</b> — ${escapeHtml(triage.summary)}`)
+    const tempLabel = triage.is_dead ? "DEAD" : triage.temperature.toUpperCase()
+    lines.push(`🤖 AI: <b>${tempLabel}</b> — ${escapeHtml(triage.summary)}`)
   }
   await sendTelegramAlert(lines.join("\n"))
 
@@ -358,7 +360,8 @@ async function processSingleMessage(args: {
       message: messageText,
       ai_notes: triage?.summary ?? null,
       suggested_reply: triage?.suggestedReply ?? null,
-      status: triage?.status ?? "new",
+      status: triage?.is_dead ? "dead" : "new",
+      temperature: triage?.temperature ?? null,
       is_junk: isJunkAddr || undefined,
       // Persist the Gmail threadId so the Leads-tab card can pull the full
       // back-and-forth via /api/leads/sync-email when Ryan expands it. Falls
@@ -385,7 +388,8 @@ async function processSingleMessage(args: {
   ]
   if (phone) lines.push(`📞 ${formatPhoneForAlert(phone)}`)
   if (triage) {
-    lines.push(`🤖 AI: <b>${triage.status.toUpperCase()}</b> — ${escapeHtml(triage.summary)}`)
+    const tempLabel = triage.is_dead ? "DEAD" : triage.temperature.toUpperCase()
+    lines.push(`🤖 AI: <b>${tempLabel}</b> — ${escapeHtml(triage.summary)}`)
   }
   await sendTelegramAlert(lines.join("\n"))
 }

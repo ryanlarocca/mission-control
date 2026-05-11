@@ -6,16 +6,14 @@ import {
   applyAnalyzeCallResult,
 } from "@/lib/leads"
 
-// Phase 7C — Part 4: classify a lead from a call transcript and store
-// the result in suggested_status / suggested_status_reason +
-// recommended_followup_date. UI surfaces a banner with [Accept]/[Dismiss]
-// (training wheels). When AUTO_STATUS=true, applies the suggestion
-// directly without the banner.
+// Phase 7D — re-run the unified analyzer against a lead's stored transcript
+// (or one POSTed in the body). Writes temperature + ai_summary + name +
+// property_address + recommended_followup_date + followup_reason via the
+// shared applyAnalyzeCallResult helper. Lifecycle status is NEVER touched —
+// Ryan owns the dropdown.
 //
-// This route is for manual / Ryan-driven re-analysis from the lead card.
-// The recording pipeline (lib/leads.ts:processRecordingBackground) calls
-// the same shared helpers automatically when a transcript lands on a
-// non-"new" lead — see that file for the auto-trigger path.
+// Used both manually (re-analyze button on the lead card) and as the path
+// processRecordingBackground takes for every new inbound recording.
 
 export async function POST(
   request: NextRequest,
@@ -61,15 +59,13 @@ export async function POST(
 
     await applyAnalyzeCallResult(id, result)
 
-    const recipient = lead.name || lead.caller_phone || lead.id
-    const verb = process.env.AUTO_STATUS === "true" ? "Auto-applied" : "Suggested"
+    const recipient = lead.name || result.name || lead.caller_phone || lead.id
     await sendTelegramAlert(
-      `📊 ${verb} status for <b>${recipient}</b>: <b>${result.status.toUpperCase()}</b> — ${result.reason}`
+      `🤖 Re-analyzed <b>${recipient}</b>: <b>${result.temperature.toUpperCase()}</b> — ${result.summary.slice(0, 200)}`
     )
 
     return NextResponse.json({
       ok: true,
-      applied: process.env.AUTO_STATUS === "true",
       ...result,
     })
   } catch (e) {

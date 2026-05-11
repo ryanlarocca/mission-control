@@ -4,18 +4,24 @@ import { useEffect, useMemo, useState, useCallback } from "react"
 import {
   Phone, PhoneOutgoing, Voicemail, MessageSquare, ClipboardList, ChevronDown, ChevronRight,
   Loader2, RefreshCw, Send, Check, Mail, Trash2, Bot, Clock, X,
-  Sparkles, PhoneOff, Ban, ShieldOff, Zap, Wand2, Calendar, Pencil,
+  Sparkles, PhoneOff, Ban, ShieldOff, Zap, Wand2, Calendar, Pencil, SlidersHorizontal,
 } from "lucide-react"
 import { getCampaign, getNextTouch } from "@/lib/drip-campaigns"
 
 type LeadType =
   | "call" | "voicemail" | "sms" | "form" | "email"
   | "drip_imessage" | "drip_email"
-// Phase 7C lifecycle. Old statuses (qualified/junk/unqualified/do_not_contact)
-// were remapped at migration time and are no longer accepted.
-type LeadStatus =
-  | "new" | "contacted" | "active" | "hot" | "warm" | "nurture" | "dead"
+// Phase 7D lifecycle (Ryan-controlled, 4 values). Temperature lives in a
+// separate column and is AI-driven.
+type LeadStatus = "new" | "contacted" | "active" | "dead"
+type Temperature = "hot" | "warm" | "cold"
 type SourceType = "direct_mail" | "google_ads"
+
+const TEMPERATURE_BADGE: Record<Temperature, { emoji: string; label: string; badgeClass: string; pillClass: string }> = {
+  hot:  { emoji: "🔥", label: "Hot",  badgeClass: "bg-red-900/40 text-red-200 border-red-900/70",   pillClass: "bg-red-900/30 text-red-200" },
+  warm: { emoji: "☀️", label: "Warm", badgeClass: "bg-amber-900/40 text-amber-200 border-amber-900/70", pillClass: "bg-amber-900/30 text-amber-200" },
+  cold: { emoji: "❄️", label: "Cold", badgeClass: "bg-sky-900/40 text-sky-200 border-sky-900/70",  pillClass: "bg-sky-900/30 text-sky-200" },
+}
 
 interface DripQueueItem {
   id: string
@@ -68,6 +74,8 @@ interface Lead {
   suggested_status?: LeadStatus | null
   suggested_status_reason?: string | null
   campaign_label?: string | null
+  // Phase 7D
+  temperature?: Temperature | null
 }
 
 // chat.db stores timestamps in Apple epoch (seconds since 2001-01-01); the
@@ -125,23 +133,20 @@ interface LeadGroup {
   followupReason: string | null
   suggestedStatus: LeadStatus | null
   suggestedStatusReason: string | null
+  // Phase 7D — AI-driven temperature drives the badge in the lead card
+  // header and the Temp filter in the chip row.
+  temperature: Temperature | null
 }
 
-// Lifecycle filters. DNC / Junk are flag-based filters, prefixed with
-// "flag:" so they collide-free with lifecycle keys.
-type FilterKey = "all" | LeadStatus | "flag:dnc" | "flag:junk" | "flag:bad_number"
-const STATUS_FILTERS: { key: FilterKey; label: string }[] = [
-  { key: "all",             label: "All" },
-  { key: "new",             label: "New" },
-  { key: "contacted",       label: "Contacted" },
-  { key: "active",          label: "Active" },
-  { key: "hot",             label: "Hot" },
-  { key: "warm",            label: "Warm" },
-  { key: "nurture",         label: "Nurture" },
-  { key: "dead",            label: "Dead" },
-  { key: "flag:dnc",        label: "DNC" },
-  { key: "flag:junk",       label: "Junk" },
-  { key: "flag:bad_number", label: "Bad #" },
+// Phase 7D: top-row lifecycle chips only. Source / temperature / flag-hides
+// live in the collapsible filter sheet so the chip row stays clean on mobile.
+type LifecycleFilter = "all" | LeadStatus
+const LIFECYCLE_FILTERS: { key: LifecycleFilter; label: string }[] = [
+  { key: "all",       label: "All" },
+  { key: "new",       label: "New" },
+  { key: "contacted", label: "Contacted" },
+  { key: "active",    label: "Active" },
+  { key: "dead",      label: "Dead" },
 ]
 
 const SOURCE_TYPE_FILTERS: ({ key: "all" | SourceType; label: string })[] = [
@@ -150,13 +155,17 @@ const SOURCE_TYPE_FILTERS: ({ key: "all" | SourceType; label: string })[] = [
   { key: "google_ads",   label: "Google Ads" },
 ]
 
+const TEMPERATURE_FILTERS: ({ key: "all" | Temperature; label: string })[] = [
+  { key: "all",  label: "All" },
+  { key: "hot",  label: "🔥 Hot" },
+  { key: "warm", label: "☀️ Warm" },
+  { key: "cold", label: "❄️ Cold" },
+]
+
 const STATUS_BADGE: Record<LeadStatus, string> = {
   new:        "bg-zinc-700 text-zinc-200",
   contacted:  "bg-blue-900/60 text-blue-200",
   active:     "bg-sky-900/60 text-sky-200",
-  hot:        "bg-red-900/60 text-red-200",
-  warm:       "bg-amber-900/60 text-amber-200",
-  nurture:    "bg-emerald-900/60 text-emerald-200",
   dead:       "bg-zinc-800 text-zinc-500",
 }
 
@@ -197,9 +206,6 @@ const STATUS_LABEL: Record<LeadStatus, string> = {
   new:        "New",
   contacted:  "Contacted",
   active:     "Active",
-  hot:        "Hot",
-  warm:       "Warm",
-  nurture:    "Nurture",
   dead:       "Dead",
 }
 
@@ -329,6 +335,11 @@ function groupLeads(leads: Lead[]): LeadGroup[] {
       )[0]
     const followupRow = newestFirst.find(e => e.recommended_followup_date)
     const suggestedRow = newestFirst.find(e => e.suggested_status)
+    // Phase 7D — temperature can live on any row in the group; take the
+    // newest. Falls back to the status-source row when no event has it set.
+    const temperatureRow = newestFirst.find(e => e.temperature)
+    const temperature: Temperature | null =
+      (temperatureRow?.temperature as Temperature | null) ?? null
     groups.push({
       phone: key,
       contactPhone,
@@ -356,6 +367,7 @@ function groupLeads(leads: Lead[]): LeadGroup[] {
       followupReason: followupRow?.followup_reason || null,
       suggestedStatus: (suggestedRow?.suggested_status as LeadStatus | null) || null,
       suggestedStatusReason: suggestedRow?.suggested_status_reason || null,
+      temperature,
     })
   }
   // Sort groups by newest event first
@@ -372,11 +384,19 @@ export function LeadsTab() {
   const [loading, setLoading]           = useState(true)
   const [refreshing, setRefreshing]     = useState(false)
   const [error, setError]               = useState<string | null>(null)
-  const [filter, setFilter]             = useState<FilterKey>("all")
+  const [filter, setFilter]             = useState<LifecycleFilter>("all")
   const [selectedIds, setSelectedIds]   = useState<Set<string>>(new Set())
   const [bulkApplying, setBulkApplying] = useState(false)
   const [bulkResult, setBulkResult]     = useState<string | null>(null)
   const [sourceFilter, setSourceFilter] = useState<"all" | SourceType>("all")
+  // Phase 7D — secondary filters live in a collapsible sheet so the chip row
+  // stays clean on mobile. Defaults to all-pass; active values render as
+  // removable pills next to the chip row.
+  const [tempFilter, setTempFilter]     = useState<"all" | Temperature>("all")
+  const [hideDnc, setHideDnc]           = useState(false)
+  const [hideJunk, setHideJunk]         = useState(false)
+  const [hideBadNumber, setHideBadNumber] = useState(false)
+  const [filterSheetOpen, setFilterSheetOpen] = useState(false)
   const [expandedPhone, setExpandedPhone] = useState<string | null>(null)
   const [pendingStatus, setPendingStatus] = useState<string | null>(null)
   const [draftNotes, setDraftNotes]     = useState<Record<string, string>>({})
@@ -440,21 +460,21 @@ export function LeadsTab() {
   // filters the card out from under Ryan mid-call. Pin it instead.
   const filteredGroups = useMemo(() => {
     let result = groups
-    if (filter === "flag:dnc") result = result.filter(g => g.isDnc)
-    else if (filter === "flag:junk") result = result.filter(g => g.isJunk)
-    else if (filter === "flag:bad_number") result = result.filter(g => g.isBadNumber)
-    else if (filter !== "all") {
-      // Hide DNC/Junk leads from all lifecycle filters by default — they
-      // have their own dedicated filter chips.
-      result = result.filter(g => g.status === filter && !g.isDnc && !g.isJunk)
-    }
+    if (filter !== "all") result = result.filter(g => g.status === filter)
     if (sourceFilter !== "all") result = result.filter(g => g.sourceType === sourceFilter)
+    if (tempFilter !== "all") result = result.filter(g => g.temperature === tempFilter)
+    if (hideDnc) result = result.filter(g => !g.isDnc)
+    if (hideJunk) result = result.filter(g => !g.isJunk)
+    if (hideBadNumber) result = result.filter(g => !g.isBadNumber)
     if (expandedPhone && !result.some(g => g.phone === expandedPhone)) {
       const pinned = groups.find(g => g.phone === expandedPhone)
       if (pinned) result = [pinned, ...result]
     }
     return result
-  }, [groups, filter, sourceFilter, expandedPhone])
+  }, [groups, filter, sourceFilter, tempFilter, hideDnc, hideJunk, hideBadNumber, expandedPhone])
+
+  const hasActiveSecondary =
+    sourceFilter !== "all" || tempFilter !== "all" || hideDnc || hideJunk || hideBadNumber
 
   async function patchLead(id: string, update: { status?: LeadStatus; notes?: string }) {
     try {
@@ -1033,8 +1053,11 @@ export function LeadsTab() {
         </div>
       </div>
 
-      <div className="mb-2 flex flex-wrap gap-1.5">
-        {STATUS_FILTERS.map(({ key, label }) => {
+      {/* Phase 7D Gmail-style filter bar: lifecycle chips always visible,
+          secondary filters tucked behind a Filter button, active secondary
+          filters render as removable pills inline. */}
+      <div className="mb-2 flex flex-wrap items-center gap-1.5">
+        {LIFECYCLE_FILTERS.map(({ key, label }) => {
           const active = filter === key
           return (
             <button
@@ -1050,25 +1073,134 @@ export function LeadsTab() {
             </button>
           )
         })}
+
+        {sourceFilter !== "all" && (
+          <button
+            onClick={() => setSourceFilter("all")}
+            className="inline-flex items-center gap-1 px-3 py-1.5 text-xs rounded-full bg-zinc-800 text-zinc-200 border border-zinc-700 hover:border-zinc-600"
+            title="Remove source filter"
+          >
+            {SOURCE_TYPE_FILTERS.find(f => f.key === sourceFilter)?.label}
+            <X className="w-3 h-3" />
+          </button>
+        )}
+        {tempFilter !== "all" && (
+          <button
+            onClick={() => setTempFilter("all")}
+            className={`inline-flex items-center gap-1 px-3 py-1.5 text-xs rounded-full border hover:border-zinc-600 ${TEMPERATURE_BADGE[tempFilter].pillClass} border-transparent`}
+            title="Remove temperature filter"
+          >
+            {TEMPERATURE_BADGE[tempFilter].emoji} {TEMPERATURE_BADGE[tempFilter].label}
+            <X className="w-3 h-3" />
+          </button>
+        )}
+        {hideDnc && (
+          <button
+            onClick={() => setHideDnc(false)}
+            className="inline-flex items-center gap-1 px-3 py-1.5 text-xs rounded-full bg-zinc-800 text-zinc-200 border border-zinc-700 hover:border-zinc-600"
+            title="Stop hiding DNC"
+          >
+            Hide DNC <X className="w-3 h-3" />
+          </button>
+        )}
+        {hideJunk && (
+          <button
+            onClick={() => setHideJunk(false)}
+            className="inline-flex items-center gap-1 px-3 py-1.5 text-xs rounded-full bg-zinc-800 text-zinc-200 border border-zinc-700 hover:border-zinc-600"
+            title="Stop hiding Junk"
+          >
+            Hide Junk <X className="w-3 h-3" />
+          </button>
+        )}
+        {hideBadNumber && (
+          <button
+            onClick={() => setHideBadNumber(false)}
+            className="inline-flex items-center gap-1 px-3 py-1.5 text-xs rounded-full bg-zinc-800 text-zinc-200 border border-zinc-700 hover:border-zinc-600"
+            title="Stop hiding Bad #"
+          >
+            Hide Bad # <X className="w-3 h-3" />
+          </button>
+        )}
+
+        <button
+          onClick={() => setFilterSheetOpen(v => !v)}
+          className={`ml-auto inline-flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-full border transition-colors ${
+            filterSheetOpen || hasActiveSecondary
+              ? "bg-zinc-800 text-zinc-100 border-zinc-700"
+              : "bg-zinc-900 text-zinc-400 border-zinc-800 hover:text-zinc-100 hover:border-zinc-700"
+          }`}
+        >
+          <SlidersHorizontal className="w-3 h-3" />
+          Filter
+          {hasActiveSecondary && !filterSheetOpen && (
+            <span className="ml-0.5 w-1.5 h-1.5 rounded-full bg-emerald-400" />
+          )}
+        </button>
       </div>
-      <div className="mb-4 flex flex-wrap gap-1.5">
-        {SOURCE_TYPE_FILTERS.map(({ key, label }) => {
-          const active = sourceFilter === key
-          return (
-            <button
-              key={key}
-              onClick={() => setSourceFilter(key)}
-              className={`px-3 py-1.5 text-xs rounded-full border transition-colors ${
-                active
-                  ? "bg-zinc-100 text-zinc-900 border-zinc-100"
-                  : "bg-zinc-900 text-zinc-400 border-zinc-800 hover:text-zinc-100 hover:border-zinc-700"
-              }`}
-            >
-              {label}
-            </button>
-          )
-        })}
-      </div>
+
+      {filterSheetOpen && (
+        <div className="mb-4 rounded-lg border border-zinc-800 bg-zinc-950/60 p-3 space-y-3">
+          <div className="space-y-1.5">
+            <div className="text-[10px] uppercase tracking-wider text-zinc-500">Source</div>
+            <div className="flex flex-wrap gap-1.5">
+              {SOURCE_TYPE_FILTERS.map(({ key, label }) => {
+                const active = sourceFilter === key
+                return (
+                  <button
+                    key={key}
+                    onClick={() => setSourceFilter(key)}
+                    className={`px-3 py-1.5 text-xs rounded-full border transition-colors ${
+                      active
+                        ? "bg-zinc-100 text-zinc-900 border-zinc-100"
+                        : "bg-zinc-900 text-zinc-400 border-zinc-800 hover:text-zinc-100 hover:border-zinc-700"
+                    }`}
+                  >
+                    {label}
+                  </button>
+                )
+              })}
+            </div>
+          </div>
+          <div className="space-y-1.5">
+            <div className="text-[10px] uppercase tracking-wider text-zinc-500">Temperature</div>
+            <div className="flex flex-wrap gap-1.5">
+              {TEMPERATURE_FILTERS.map(({ key, label }) => {
+                const active = tempFilter === key
+                return (
+                  <button
+                    key={key}
+                    onClick={() => setTempFilter(key)}
+                    className={`px-3 py-1.5 text-xs rounded-full border transition-colors ${
+                      active
+                        ? "bg-zinc-100 text-zinc-900 border-zinc-100"
+                        : "bg-zinc-900 text-zinc-400 border-zinc-800 hover:text-zinc-100 hover:border-zinc-700"
+                    }`}
+                  >
+                    {label}
+                  </button>
+                )
+              })}
+            </div>
+          </div>
+          <div className="space-y-1.5">
+            <div className="text-[10px] uppercase tracking-wider text-zinc-500">Hide</div>
+            <div className="flex flex-wrap gap-3 text-xs text-zinc-300">
+              <label className="inline-flex items-center gap-1.5 cursor-pointer">
+                <input type="checkbox" checked={hideDnc} onChange={e => setHideDnc(e.target.checked)} className="accent-zinc-200" />
+                DNC
+              </label>
+              <label className="inline-flex items-center gap-1.5 cursor-pointer">
+                <input type="checkbox" checked={hideJunk} onChange={e => setHideJunk(e.target.checked)} className="accent-zinc-200" />
+                Junk
+              </label>
+              <label className="inline-flex items-center gap-1.5 cursor-pointer">
+                <input type="checkbox" checked={hideBadNumber} onChange={e => setHideBadNumber(e.target.checked)} className="accent-zinc-200" />
+                Bad #
+              </label>
+            </div>
+          </div>
+        </div>
+      )}
 
       {error && (
         <div className="mb-3 px-3 py-2 rounded-md bg-red-900/30 border border-red-900/50 text-sm text-red-200">
@@ -1088,7 +1220,7 @@ export function LeadsTab() {
         <div className="text-sm text-zinc-500 py-12 text-center">
           {groups.length === 0
             ? "No leads yet."
-            : `No ${STATUS_FILTERS.find(f => f.key === filter)?.label.toLowerCase() ?? filter} leads.`}
+            : `No ${LIFECYCLE_FILTERS.find(f => f.key === filter)?.label.toLowerCase() ?? filter} leads.`}
         </div>
       ) : (
         <div className="space-y-2">
@@ -1286,6 +1418,14 @@ function LeadCard(p: LeadCardProps) {
           <div className="flex-1 min-w-0">
             <div className="text-sm text-zinc-100 font-medium truncate flex items-center gap-2">
               <span className="truncate">{group.name || phoneDisplay || group.email || "(unknown)"}</span>
+              {group.temperature && (
+                <span
+                  className={`px-1.5 py-0.5 text-[10px] font-semibold rounded border shrink-0 ${TEMPERATURE_BADGE[group.temperature].badgeClass}`}
+                  title={`AI temperature: ${TEMPERATURE_BADGE[group.temperature].label}`}
+                >
+                  {TEMPERATURE_BADGE[group.temperature].emoji} {TEMPERATURE_BADGE[group.temperature].label}
+                </span>
+              )}
               {group.isDnc && (
                 <span className="px-1.5 py-0.5 text-[9px] font-semibold rounded uppercase tracking-wider bg-red-950 text-red-300 border border-red-900 shrink-0">
                   DNC
@@ -1466,6 +1606,7 @@ function LeadCard(p: LeadCardProps) {
             aiText={p.summary || group.aiNotes}
             aiLoading={p.summaryLoading}
             aiError={p.summaryError}
+            temperature={group.temperature}
             onRefreshAi={p.onRefreshSummary}
           />
 
@@ -1626,7 +1767,7 @@ function LeadCard(p: LeadCardProps) {
           )}
 
           <div className="flex flex-wrap gap-1.5">
-            {(["new", "contacted", "active", "hot", "warm", "nurture", "dead"] as LeadStatus[]).map(s => {
+            {(["new", "contacted", "active", "dead"] as LeadStatus[]).map(s => {
               const isCurrent = group.status === s
               const isPending = p.pendingStatus === group.phone + ":" + s
               return (
@@ -1844,9 +1985,10 @@ function Timeline(props: {
   aiText: string | null
   aiLoading: boolean
   aiError: string | null
+  temperature: Temperature | null
   onRefreshAi: () => void
 }) {
-  const { events, aiText, aiLoading, aiError, onRefreshAi } = props
+  const { events, aiText, aiLoading, aiError, temperature, onRefreshAi } = props
   return (
     <div className="space-y-2">
       <div className="text-xs text-zinc-500 mb-1.5">Timeline</div>
@@ -1858,6 +2000,7 @@ function Timeline(props: {
           text={aiText}
           loading={aiLoading}
           error={aiError}
+          temperature={temperature}
           onRefresh={onRefreshAi}
         />
       )}
@@ -1865,34 +2008,41 @@ function Timeline(props: {
   )
 }
 
-// Phase 7C-may8 Bug 4: AI summary/notes render as the freshest entry at the
-// bottom of the conversation thread instead of as a separate floating card.
-// Centered, dimmer styling so it reads as a system event next to inbound /
-// outbound message bubbles.
+// Phase 7D: temperature badge on line 1 (🔥 Hot / ☀️ Warm / ❄️ Cold) followed
+// by the short paragraph summary written by analyzeCallTranscript. Replaces
+// the older "AI summary" label + verbose markdown bullets.
 function TimelineAiEntry(props: {
   text: string | null
   loading: boolean
   error: string | null
+  temperature: Temperature | null
   onRefresh: () => void
 }) {
+  const badge = props.temperature ? TEMPERATURE_BADGE[props.temperature] : null
   return (
     <div className="flex justify-center">
-      <div className="max-w-[90%] flex items-start gap-2 rounded border border-zinc-800 bg-zinc-900/40 px-3 py-2">
+      <div className="max-w-[90%] flex items-start gap-2 rounded border border-zinc-800 bg-zinc-900/40 px-3 py-2 w-full">
         <span className="text-zinc-500 text-sm leading-5">🤖</span>
         <div className="flex-1 min-w-0">
-          <div className="text-[10px] uppercase tracking-wider text-zinc-500 mb-0.5 flex items-center gap-2">
-            <span>AI summary</span>
+          <div className="mb-1 flex items-center gap-2">
+            {badge ? (
+              <span className={`px-1.5 py-0.5 text-[11px] font-semibold rounded border ${badge.badgeClass}`}>
+                {badge.emoji} {badge.label}
+              </span>
+            ) : (
+              <span className="text-[10px] uppercase tracking-wider text-zinc-500">AI summary</span>
+            )}
             <button
               onClick={props.onRefresh}
               disabled={props.loading}
-              className="text-zinc-500 hover:text-zinc-300 disabled:opacity-50 inline-flex items-center gap-1"
+              className="ml-auto text-zinc-500 hover:text-zinc-300 disabled:opacity-50 inline-flex items-center"
               title="Regenerate"
             >
               <RefreshCw className={`w-3 h-3 ${props.loading ? "animate-spin" : ""}`} />
             </button>
           </div>
           {props.text ? (
-            <div className="text-sm text-zinc-300 whitespace-pre-wrap break-words italic">
+            <div className="text-sm text-zinc-300 whitespace-pre-wrap break-words">
               {props.text}
             </div>
           ) : props.loading ? (
@@ -2098,9 +2248,9 @@ function CampaignMetricsStrip() {
               <span>{r.total_texts} texts</span>
               <span>{r.total_emails} emails</span>
               <span className="text-zinc-500">·</span>
-              <span className="text-red-300">{r.hot_count} hot</span>
-              <span className="text-amber-300">{r.warm_count} warm</span>
-              <span className="text-emerald-300">{r.nurture_count} nurture</span>
+              <span className="text-red-300">{r.hot_count} 🔥</span>
+              <span className="text-amber-300">{r.warm_count} ☀️</span>
+              <span className="text-sky-300">{r.nurture_count} ❄️</span>
               <span className="text-zinc-500">{r.dead_count} dead</span>
               {r.dnc_count > 0 && <span className="text-red-400">{r.dnc_count} dnc</span>}
               {r.junk_count > 0 && <span className="text-zinc-500">{r.junk_count} junk</span>}

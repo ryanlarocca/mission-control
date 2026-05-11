@@ -1,18 +1,22 @@
 import { NextRequest, NextResponse } from "next/server"
-import { getLeadsClient } from "@/lib/leads"
+import {
+  getLeadsClient,
+  VALID_TEMPERATURES,
+  type Temperature,
+} from "@/lib/leads"
 
-// Phase 7C — Part 3: cached AI lead summary.
+// Phase 7D — cached lead summary, multi-event variant.
 //
 // On card expand, the UI POSTs this. Behavior:
 //   * If ai_summary is set AND ai_summary_generated_at is newer than the
 //     most recent lead-event timestamp on this contact → return cached.
-//   * Otherwise: gather all events for the contact (matching by phone
-//     OR email), call Haiku with a fixed prompt, store + return.
+//   * Otherwise: gather all events for the contact (phone OR email),
+//     call Haiku, store ai_summary + temperature + ai_summary_generated_at,
+//     return the summary.
 //
-// The freshness check uses the union of caller_phone and email since
-// LeadGroup events span both keys (a phone/email pair shares a card).
-// Cache invalidation is implicit: a new event row updates the contact's
-// most-recent timestamp, and the next summary call regenerates.
+// Output format matches the single-call analyzer (analyzeCallTranscript):
+// short plain paragraph (2-6 sentences) + temperature (hot/warm/cold).
+// The UI prepends a temperature badge from the lead row.
 
 const HAIKU_MODEL = "anthropic/claude-haiku-4-5"
 
@@ -106,14 +110,26 @@ export async function POST(
       .map(r => `[${r.created_at}] ${r.lead_type || "?"} (${dirLabel(r)}): ${(r.message || "").slice(0, 400)}`)
       .join("\n") || "(no recorded events)"
 
-    const prompt = `You are summarizing a real estate lead for a cash home buyer named Ryan.
-Produce a 3-5 bullet summary covering:
-- Who they are (name, property if known)
-- How they came in (source, date)
-- Where things stand (last contact, sentiment, any key quotes)
-- What's next (pending drip touch, recommended action)
+    const today = new Date().toISOString().slice(0, 10)
+    const prompt = `You are summarizing a real estate lead for Ryan, a cash home buyer. The lead's contact history is below.
 
-Be concise. No fluff. Use fragments not full sentences.
+TODAY IS ${today}.
+
+Produce a JSON object:
+
+- temperature: one of "hot" | "warm" | "cold"
+    hot  = motivated, wants to sell now or within 1-2 months
+    warm = interested, 3-6 month timeline, open to exploring
+    cold = curious, no timeline, "maybe someday", or unclear
+
+- summary: a plain prose paragraph, 2 to 6 sentences. No headers, no
+    bullets, no bold. Cover who the lead is, what their inquiry is about,
+    where things stand based on the conversation history, and any obvious
+    next-step or urgency cue. Emojis allowed where natural.
+
+Respond with ONLY the JSON — no markdown fences, no explanation.
+
+{ "temperature": "...", "summary": "..." }
 
 LEAD DATA:
 - Name: ${anchor.name || "(unknown)"}
@@ -131,7 +147,7 @@ ${transcript}`
       headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
       body: JSON.stringify({
         model: HAIKU_MODEL,
-        max_tokens: 250,
+        max_tokens: 400,
         messages: [{ role: "user", content: prompt }],
       }),
     })
@@ -142,18 +158,43 @@ ${transcript}`
       )
     }
     const json = await res.json() as { choices?: { message?: { content?: string } }[] }
-    const summary = json.choices?.[0]?.message?.content?.trim() || null
-    if (!summary) {
+    const content = json.choices?.[0]?.message?.content?.trim() || ""
+    if (!content) {
       return NextResponse.json({ error: "empty model response" }, { status: 502 })
+    }
+    const cleaned = content.replace(/^```(?:json)?\s*/i, "").replace(/```\s*$/i, "").trim()
+
+    let summary: string | null = null
+    let temperature: Temperature | null = null
+    try {
+      const parsed = JSON.parse(cleaned) as { temperature?: string; summary?: string }
+      if (parsed.summary && typeof parsed.summary === "string") {
+        summary = parsed.summary.trim()
+      }
+      if (
+        parsed.temperature &&
+        (VALID_TEMPERATURES as readonly string[]).includes(parsed.temperature)
+      ) {
+        temperature = parsed.temperature as Temperature
+      }
+    } catch {
+      // Fall back: treat the whole cleaned response as the paragraph if it's
+      // free text rather than JSON. Better to show a summary than nothing.
+      summary = cleaned
+    }
+    if (!summary) {
+      return NextResponse.json({ error: "no summary in model response" }, { status: 502 })
     }
 
     const generated_at = new Date().toISOString()
-    await sb
-      .from("leads")
-      .update({ ai_summary: summary, ai_summary_generated_at: generated_at })
-      .eq("id", id)
+    const update: Record<string, unknown> = {
+      ai_summary: summary,
+      ai_summary_generated_at: generated_at,
+    }
+    if (temperature) update.temperature = temperature
+    await sb.from("leads").update(update).eq("id", id)
 
-    return NextResponse.json({ summary, generated_at, cached: false })
+    return NextResponse.json({ summary, temperature, generated_at, cached: false })
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e)
     return NextResponse.json({ error: msg }, { status: 500 })

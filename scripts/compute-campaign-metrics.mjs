@@ -106,14 +106,17 @@ agg AS (
   GROUP BY campaign_source
 ),
 status_agg AS (
+  -- Phase 7D: hot/warm/nurture moved off `status` into a separate
+  -- `temperature` column (hot/warm/cold). The campaign_metrics column
+  -- names stay for backwards compat; nurture_count now holds cold.
   SELECT
     campaign_source,
-    COUNT(*) FILTER (WHERE status = 'hot')::int AS hot_count,
-    COUNT(*) FILTER (WHERE status = 'warm')::int AS warm_count,
-    COUNT(*) FILTER (WHERE status = 'nurture')::int AS nurture_count,
-    COUNT(*) FILTER (WHERE status = 'dead')::int AS dead_count,
-    COUNT(*) FILTER (WHERE is_dnc = true)::int AS dnc_count,
-    COUNT(*) FILTER (WHERE is_junk = true)::int AS junk_count
+    COUNT(*) FILTER (WHERE temperature = 'hot')::int  AS hot_count,
+    COUNT(*) FILTER (WHERE temperature = 'warm')::int AS warm_count,
+    COUNT(*) FILTER (WHERE temperature = 'cold')::int AS nurture_count,
+    COUNT(*) FILTER (WHERE status = 'dead')::int      AS dead_count,
+    COUNT(*) FILTER (WHERE is_dnc = true)::int        AS dnc_count,
+    COUNT(*) FILTER (WHERE is_junk = true)::int       AS junk_count
   FROM contact_status
   GROUP BY campaign_source
 )
