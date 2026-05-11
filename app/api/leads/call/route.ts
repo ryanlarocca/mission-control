@@ -150,5 +150,34 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: msg }, { status: 502 })
   }
 
+  // 2026-05-11 — mirror the send route's behavior: after a successful
+  // outbound contact (Twilio accepted the call), promote the original
+  // intake row from "new" → "contacted" so the group status the UI
+  // derives reflects that Ryan reached out. Without this, the most
+  // recent inbound row stayed "new" and groupLeads' statusSource
+  // (`mostRecentInbound || mostRecent`) pinned the group to "new",
+  // which made the New filter show leads Ryan had already called.
+  try {
+    const sb = getLeadsClient()
+    const { data: intake } = await sb
+      .from("leads")
+      .select("id, status")
+      .eq("caller_phone", leadPhone)
+      .not("twilio_number", "is", null)
+      .order("created_at", { ascending: false })
+      .limit(1)
+    const intakeRow = intake?.[0]
+    if (intakeRow && intakeRow.status === "new") {
+      const { error: promoteErr } = await sb
+        .from("leads")
+        .update({ status: "contacted" })
+        .eq("id", intakeRow.id)
+      if (promoteErr) console.error("[leads/call] Status promote failed:", promoteErr)
+    }
+  } catch (e) {
+    // Best-effort — never fail the call response on a promote glitch.
+    console.error("[leads/call] Status promote threw:", e)
+  }
+
   return NextResponse.json({ success: true, callSid, leadId })
 }
