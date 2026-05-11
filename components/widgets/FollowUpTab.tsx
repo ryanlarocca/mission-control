@@ -1,6 +1,7 @@
 "use client"
 
 import { useCallback, useEffect, useMemo, useState } from "react"
+import { useRouter } from "next/navigation"
 import {
   PhoneOutgoing, Loader2, RefreshCw, Check, ChevronDown, Calendar, Clock,
 } from "lucide-react"
@@ -16,6 +17,21 @@ import {
 // which the drip engine treats as an activity → 14-day cool-off naturally
 // kicks in. The Done button is for the case where Ryan handled the
 // follow-up some other way (text, email) and just wants to clear it.
+//
+// 2026-05-11 batch:
+//   - "Anonymous" is filtered (Twilio's literal payload for blocked callers)
+//     so it falls through to phone-number display.
+//   - Cross-row name lookup: the follow-up row often has name=null but
+//     another row for the same phone carries the real name. We POST a
+//     batch query to /api/leads/names-by-phone and stitch the result in
+//     for display only.
+//   - Name/phone is now a click target → routes to /leads?phone=... so
+//     Ryan can jump straight into the lead card.
+//   - "Done" is hybrid: if a click-to-call fired in the last 60 min, we
+//     trust the upcoming analyzeCallTranscript pass and clear silently.
+//     Otherwise we open an inline interval picker (1w / 1mo / 3mo / 6mo /
+//     None) — Ryan picks one and we PATCH the new date + reason. "None"
+//     is the only path that clears recommended_followup_date to null.
 
 interface Lead {
   id: string
@@ -41,6 +57,17 @@ const BUCKET_LABEL: Record<Bucket, string> = {
   today: "Today",
   week: "This week",
   later: "Later",
+}
+
+// Twilio sends literal "Anonymous" for blocked callers. Treat it as
+// missing so we fall through to phone-number display + so the cross-row
+// name lookup runs for these rows.
+function isUsableName(name: string | null | undefined): boolean {
+  if (!name) return false
+  const trimmed = name.trim()
+  if (!trimmed) return false
+  if (trimmed === "Anonymous") return false
+  return true
 }
 
 function bucketFor(dateStr: string): Bucket {
@@ -77,13 +104,59 @@ function addDays(dateStr: string, days: number): string {
   return d.toISOString().slice(0, 10)
 }
 
+// Interval picker options for the hybrid Done button. Done = "I handled
+// this and want to set the next follow-up cadence" — the picker forces
+// Ryan to pick a real interval rather than silently nulling the date.
+// "No follow-up" is the only option that clears the field.
+type IntervalKey = "1w" | "1mo" | "3mo" | "6mo" | "none"
+interface IntervalOption {
+  key: IntervalKey
+  label: string
+  addDays?: number
+  addMonths?: number
+}
+const INTERVAL_OPTIONS: IntervalOption[] = [
+  { key: "1w",   label: "1 week",   addDays: 7 },
+  { key: "1mo",  label: "1 month",  addMonths: 1 },
+  { key: "3mo",  label: "3 months", addMonths: 3 },
+  { key: "6mo",  label: "6 months", addMonths: 6 },
+  { key: "none", label: "No follow-up" },
+]
+
+// Local-timezone date math so the resulting YYYY-MM-DD lines up with
+// what the rest of the tab renders (formatDate uses T00:00:00 local).
+function todayLocal(): Date {
+  const d = new Date()
+  d.setHours(0, 0, 0, 0)
+  return d
+}
+
+function dateFromInterval(opt: IntervalOption): string | null {
+  if (opt.key === "none") return null
+  const d = todayLocal()
+  if (opt.addDays) d.setDate(d.getDate() + opt.addDays)
+  if (opt.addMonths) d.setMonth(d.getMonth() + opt.addMonths)
+  const y = d.getFullYear()
+  const m = String(d.getMonth() + 1).padStart(2, "0")
+  const day = String(d.getDate()).padStart(2, "0")
+  return `${y}-${m}-${day}`
+}
+
+const RECENT_CALL_WINDOW_MIN = 60
+
 export function FollowUpTab() {
+  const router = useRouter()
   const [leads, setLeads] = useState<Lead[]>([])
   const [loading, setLoading] = useState(true)
   const [refreshing, setRefreshing] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [actingOn, setActingOn] = useState<string | null>(null)
   const [snoozeOpenFor, setSnoozeOpenFor] = useState<string | null>(null)
+  const [intervalOpenFor, setIntervalOpenFor] = useState<string | null>(null)
+  const [toast, setToast] = useState<string | null>(null)
+  // Cross-row name stitch: phone → name pulled from any lead row that has
+  // a usable name. Display-only — never written back.
+  const [nameMap, setNameMap] = useState<Record<string, string>>({})
 
   const fetchFollowups = useCallback(async (silent = false) => {
     if (!silent) setRefreshing(true)
@@ -106,10 +179,32 @@ export function FollowUpTab() {
           byKey.set(key, l)
         }
       }
-      setLeads(Array.from(byKey.values()).sort((a, b) =>
+      const merged = Array.from(byKey.values()).sort((a, b) =>
         (a.recommended_followup_date || "").localeCompare(b.recommended_followup_date || "")
-      ))
+      )
+      setLeads(merged)
       setError(null)
+
+      // Cross-row name lookup. Collect every phone for follow-up rows
+      // whose name is missing/Anonymous and POST one batch query. Skip
+      // email-only rows (no phone → nothing to stitch).
+      const phonesNeedingName = Array.from(new Set(
+        merged
+          .filter(l => l.caller_phone && !isUsableName(l.name))
+          .map(l => l.caller_phone as string)
+      ))
+      if (phonesNeedingName.length > 0) {
+        fetch("/api/leads/names-by-phone", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ phones: phonesNeedingName }),
+        })
+          .then(r => r.ok ? r.json() : { names: {} })
+          .then((data: { names?: Record<string, string> }) => {
+            if (data.names) setNameMap(prev => ({ ...prev, ...data.names }))
+          })
+          .catch(() => { /* silent — display name fallback handles it */ })
+      }
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
     } finally {
@@ -123,6 +218,15 @@ export function FollowUpTab() {
     const id = setInterval(() => void fetchFollowups(true), 60000)
     return () => clearInterval(id)
   }, [fetchFollowups])
+
+  // Resolve the display name for a lead: prefer the row's own name (if
+  // usable), then the cross-row stitched value, then null (which lets
+  // the row fall through to phone/email display).
+  function displayName(lead: Lead): string | null {
+    if (isUsableName(lead.name)) return lead.name
+    if (lead.caller_phone && nameMap[lead.caller_phone]) return nameMap[lead.caller_phone]
+    return null
+  }
 
   const grouped = useMemo(() => {
     const groups: Record<Bucket, Lead[]> = { overdue: [], today: [], week: [], later: [] }
@@ -156,8 +260,49 @@ export function FollowUpTab() {
     }
   }
 
-  async function clearFollowup(lead: Lead) {
+  // Hybrid Done: if the lead has a real recent call (within 60 min) we
+  // trust the upcoming analyzeCallTranscript pass to set the next date —
+  // clear the current recommendation and toast. Otherwise open the inline
+  // interval picker so Ryan can pick the next cadence. NEVER null the
+  // date without (a) a detected recent call OR (b) explicit "No follow-up".
+  async function handleDone(lead: Lead) {
+    if (!lead.caller_phone) {
+      // Email-only row: no recent-call detection possible, go straight
+      // to the interval picker.
+      setIntervalOpenFor(prev => prev === lead.id ? null : lead.id)
+      return
+    }
     setActingOn(lead.id)
+    try {
+      const res = await fetch("/api/leads/recent-call-check", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          phone: lead.caller_phone,
+          windowMinutes: RECENT_CALL_WINDOW_MIN,
+        }),
+      })
+      const data = await res.json().catch(() => ({ hasRecent: false })) as { hasRecent?: boolean }
+      if (data.hasRecent) {
+        await clearFollowupOnly(lead)
+        showToast("Logged — AI will set your next follow-up")
+        return
+      }
+      // No recent call → open the interval picker (don't touch DB yet).
+      setIntervalOpenFor(prev => prev === lead.id ? null : lead.id)
+    } finally {
+      setActingOn(null)
+    }
+  }
+
+  function showToast(text: string) {
+    setToast(text)
+    window.setTimeout(() => setToast(prev => prev === text ? null : prev), 3500)
+  }
+
+  // Clear the recommendation (date + reason both null). Used by the
+  // recent-call branch of Done and by the "No follow-up" interval pick.
+  async function clearFollowupOnly(lead: Lead) {
     setLeads(prev => prev.filter(l => l.id !== lead.id))
     try {
       const res = await fetch("/api/leads", {
@@ -175,6 +320,45 @@ export function FollowUpTab() {
       }
     } catch (e) {
       console.error("clear followup failed:", e)
+      void fetchFollowups(true)
+    }
+  }
+
+  // Apply an interval picker selection. "none" clears the date; everything
+  // else PATCHes a new recommended_followup_date + a "Manual — <label>"
+  // reason so the follow-up banner has something to render.
+  async function applyInterval(lead: Lead, opt: IntervalOption) {
+    setIntervalOpenFor(null)
+    if (opt.key === "none") {
+      await clearFollowupOnly(lead)
+      return
+    }
+    const newDate = dateFromInterval(opt)
+    if (!newDate) return
+    const reason = `Manual — ${opt.label}`
+    setActingOn(lead.id)
+    // Optimistic: drop the lead from the visible list since the new date
+    // is in the future (we'd otherwise wait for the next 60s refetch to
+    // re-bucket it).
+    setLeads(prev => prev.filter(l => l.id !== lead.id))
+    try {
+      const res = await fetch("/api/leads", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          id: lead.id,
+          recommended_followup_date: newDate,
+          followup_reason: reason,
+        }),
+      })
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}))
+        throw new Error(err.error || `HTTP ${res.status}`)
+      }
+      // Pull the lead back if it now belongs in a later bucket.
+      void fetchFollowups(true)
+    } catch (e) {
+      console.error("interval pick failed:", e)
       void fetchFollowups(true)
     } finally {
       setActingOn(null)
@@ -201,6 +385,14 @@ export function FollowUpTab() {
     } finally {
       setActingOn(null)
     }
+  }
+
+  // Tap name/phone → jump into the Leads tab with the matching card
+  // pre-expanded. Email-only rows (no phone) get rendered non-clickable
+  // since the Leads tab doesn't currently support ?email= as a deeplink.
+  function openInLeadsTab(lead: Lead) {
+    if (!lead.caller_phone) return
+    router.push(`/leads?phone=${encodeURIComponent(lead.caller_phone)}`)
   }
 
   if (loading) {
@@ -238,6 +430,12 @@ export function FollowUpTab() {
         </div>
       )}
 
+      {toast && (
+        <div className="mb-3 px-3 py-2 rounded-md bg-emerald-900/30 border border-emerald-900/50 text-sm text-emerald-200">
+          {toast}
+        </div>
+      )}
+
       {leads.length === 0 ? (
         <div className="text-sm text-zinc-500 py-12 text-center">
           No follow-ups recommended. AI will surface these as it analyzes call transcripts.
@@ -261,12 +459,16 @@ export function FollowUpTab() {
                     <FollowUpRow
                       key={lead.id}
                       lead={lead}
+                      displayName={displayName(lead)}
                       acting={actingOn === lead.id}
                       snoozeOpen={snoozeOpenFor === lead.id}
+                      intervalOpen={intervalOpenFor === lead.id}
                       onToggleSnooze={() => setSnoozeOpenFor(prev => prev === lead.id ? null : lead.id)}
                       onCall={() => callLead(lead)}
-                      onDone={() => clearFollowup(lead)}
+                      onDone={() => handleDone(lead)}
                       onSnooze={(d) => snooze(lead, d)}
+                      onPickInterval={(opt) => applyInterval(lead, opt)}
+                      onOpenInLeads={() => openInLeadsTab(lead)}
                     />
                   ))}
                 </div>
@@ -281,15 +483,24 @@ export function FollowUpTab() {
 
 function FollowUpRow(props: {
   lead: Lead
+  displayName: string | null
   acting: boolean
   snoozeOpen: boolean
+  intervalOpen: boolean
   onToggleSnooze: () => void
   onCall: () => void
   onDone: () => void
   onSnooze: (days: number) => void
+  onPickInterval: (opt: IntervalOption) => void
+  onOpenInLeads: () => void
 }) {
-  const { lead, acting, snoozeOpen } = props
+  const { lead, displayName, acting, snoozeOpen, intervalOpen } = props
   const phoneDisplay = lead.caller_phone ? formatPhone(lead.caller_phone) : null
+  const headline = displayName || phoneDisplay || lead.email || "(unknown)"
+  // Sub line shows phone OR email only when the headline already took
+  // the name slot (otherwise the headline IS the phone/email).
+  const subLine = displayName ? (phoneDisplay || lead.email || null) : null
+  const canOpenInLeads = !!lead.caller_phone
 
   return (
     <div className="rounded-md border border-zinc-800 bg-zinc-950 px-3 py-3">
@@ -299,13 +510,26 @@ function FollowUpRow(props: {
           {formatDate(lead.recommended_followup_date!)}
         </div>
         <div className="flex-1 min-w-0">
-          <div className="text-sm text-zinc-100 font-medium truncate">
-            {lead.name || phoneDisplay || lead.email || "(unknown)"}
-          </div>
-          {(phoneDisplay || lead.email) && (
-            <div className="text-xs text-zinc-500 truncate">
-              {phoneDisplay || lead.email}
-            </div>
+          {canOpenInLeads ? (
+            <button
+              type="button"
+              onClick={props.onOpenInLeads}
+              className="block w-full text-left group focus:outline-none"
+            >
+              <div className="text-sm text-zinc-100 font-medium truncate group-hover:underline">
+                {headline}
+              </div>
+              {subLine && (
+                <div className="text-xs text-zinc-500 truncate group-hover:text-zinc-400">
+                  {subLine}
+                </div>
+              )}
+            </button>
+          ) : (
+            <>
+              <div className="text-sm text-zinc-100 font-medium truncate">{headline}</div>
+              {subLine && <div className="text-xs text-zinc-500 truncate">{subLine}</div>}
+            </>
           )}
           {lead.property_address && (
             <div className="text-xs text-zinc-400 truncate">🏠 {lead.property_address}</div>
@@ -358,6 +582,29 @@ function FollowUpRow(props: {
           )}
         </div>
       </div>
+      {intervalOpen && (
+        <div className="mt-3 pt-3 border-t border-zinc-800">
+          <div className="text-[10px] uppercase tracking-wider text-zinc-500 mb-2">
+            Set next follow-up
+          </div>
+          <div className="flex items-center gap-1.5 flex-wrap">
+            {INTERVAL_OPTIONS.map(opt => (
+              <button
+                key={opt.key}
+                onClick={() => props.onPickInterval(opt)}
+                disabled={acting}
+                className={`inline-flex items-center px-3 py-1.5 min-h-[32px] rounded-full text-xs font-medium transition-colors ${
+                  opt.key === "none"
+                    ? "bg-zinc-900 border border-zinc-800 text-zinc-400 hover:border-zinc-700 hover:text-zinc-200"
+                    : "bg-emerald-900/40 border border-emerald-900/60 text-emerald-200 hover:bg-emerald-900/60"
+                } disabled:opacity-50`}
+              >
+                {opt.label}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
     </div>
   )
 }

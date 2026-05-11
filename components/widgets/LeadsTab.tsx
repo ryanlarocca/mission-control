@@ -1,6 +1,7 @@
 "use client"
 
 import { useEffect, useMemo, useState, useCallback } from "react"
+import { useSearchParams } from "next/navigation"
 import {
   Phone, PhoneOutgoing, Voicemail, MessageSquare, ClipboardList, ChevronDown, ChevronRight,
   Loader2, RefreshCw, Send, Check, Mail, Trash2, Bot, Clock, X,
@@ -453,6 +454,29 @@ export function LeadsTab() {
     return () => clearInterval(id)
   }, [fetchLeads])
 
+  // Deep-link: /leads?phone=+15551234567 pre-expands the matching card and
+  // scrolls it into view. Used by the Follow-Up tab so tapping a follow-up
+  // row lands directly on the lead card. The scroll fires once after the
+  // matching card actually renders (groups become non-empty), keyed off
+  // expandedPhone changing.
+  const searchParams = useSearchParams()
+  const deeplinkPhone = searchParams.get("phone")
+  useEffect(() => {
+    if (!deeplinkPhone) return
+    if (expandedPhone === deeplinkPhone) return
+    setExpandedPhone(deeplinkPhone)
+  }, [deeplinkPhone, expandedPhone])
+  useEffect(() => {
+    if (!deeplinkPhone || expandedPhone !== deeplinkPhone) return
+    if (leads.length === 0) return
+    // Wait one paint so the card is in the DOM before scrolling.
+    const t = window.setTimeout(() => {
+      const el = document.querySelector(`[data-lead-phone="${deeplinkPhone}"]`)
+      if (el) (el as HTMLElement).scrollIntoView({ behavior: "smooth", block: "center" })
+    }, 50)
+    return () => window.clearTimeout(t)
+  }, [deeplinkPhone, expandedPhone, leads.length])
+
   const groups = useMemo(() => groupLeads(leads), [leads])
   // Phase 7C — Part 8: keep the currently-expanded card visible regardless of
   // active filter. Without this, placing a call flips a cold lead's status
@@ -729,6 +753,20 @@ export function LeadsTab() {
     // Optimistic
     setLeads(prev => prev.map(l => l.id === group.mostRecentId ? { ...l, notes: val } : l))
     void patchLead(group.mostRecentId, { notes: val })
+    // Extract a follow-up date from the note text if a timeframe is mentioned.
+    void fetch(`/api/leads/${group.mostRecentId}/extract-followup`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ notes: val }),
+    }).then(r => r.json()).then((data: { date?: string | null; reason?: string | null }) => {
+      if (data.date) {
+        setLeads(prev => prev.map(l =>
+          l.id === group.mostRecentId
+            ? { ...l, recommended_followup_date: data.date ?? undefined, followup_reason: data.reason ?? undefined }
+            : l
+        ))
+      }
+    }).catch(() => {})
   }
 
   async function callLead(group: LeadGroup) {
@@ -1264,6 +1302,10 @@ export function LeadsTab() {
               onSetStatus={(s) => setGroupStatus(group, s)}
               pendingStatus={pendingStatus}
               draftNote={draftNotes[group.phone]}
+              notesDirty={
+                draftNotes[group.phone] !== undefined &&
+                (draftNotes[group.phone] || "") !== (group.notes ?? "")
+              }
               onEditNote={(v) => setDraftNotes(prev => ({ ...prev, [group.phone]: v }))}
               onFocusNote={() => startEditingNotes(group)}
               onCommitNote={() => commitNotes(group)}
@@ -1318,6 +1360,7 @@ interface LeadCardProps {
   onSetStatus: (s: LeadStatus) => void
   pendingStatus: string | null
   draftNote: string | undefined
+  notesDirty: boolean
   onEditNote: (v: string) => void
   onFocusNote: () => void
   onCommitNote: () => void
@@ -1624,7 +1667,17 @@ function LeadCard(p: LeadCardProps) {
           />
 
           <div>
-            <div className="text-xs text-zinc-500 mb-1.5">Notes</div>
+            <div className="flex items-center justify-between mb-1.5">
+              <div className="text-xs text-zinc-500">Notes</div>
+              {p.notesDirty && (
+                <button
+                  onMouseDown={e => { e.preventDefault(); p.onCommitNote() }}
+                  className="text-[11px] font-medium text-emerald-400 hover:text-emerald-300 px-2 py-0.5 rounded border border-emerald-800/60 bg-emerald-950/30"
+                >
+                  Save
+                </button>
+              )}
+            </div>
             <textarea
               value={p.draftNote ?? group.notes ?? ""}
               onFocus={p.onFocusNote}

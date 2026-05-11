@@ -1,13 +1,24 @@
 "use client"
 
-import { useState } from "react"
+import { Suspense, useEffect, useState } from "react"
+import { useSearchParams } from "next/navigation"
 import { LeadsTab } from "@/components/widgets/LeadsTab"
 import { FollowUpTab } from "@/components/widgets/FollowUpTab"
 
 type View = "leads" | "followups"
 
-export default function LeadsPage() {
+function LeadsPageBody() {
+  const searchParams = useSearchParams()
+  // When the Follow-Up tab routes here with ?phone=..., force the Leads
+  // sub-view so the card the user wants to see actually renders. Without
+  // this, the wrapper's view state stays on "followups" after the
+  // router.push and the user lands back on the to-do list.
+  const phoneParam = searchParams.get("phone")
   const [view, setView] = useState<View>("leads")
+
+  useEffect(() => {
+    if (phoneParam) setView("leads")
+  }, [phoneParam])
 
   return (
     <div className="max-w-3xl">
@@ -37,5 +48,15 @@ export default function LeadsPage() {
 
       {view === "leads" ? <LeadsTab /> : <FollowUpTab />}
     </div>
+  )
+}
+
+export default function LeadsPage() {
+  // useSearchParams needs a Suspense boundary in app-router client pages
+  // so the page can statically render before query params resolve.
+  return (
+    <Suspense fallback={<div className="max-w-3xl" />}>
+      <LeadsPageBody />
+    </Suspense>
   )
 }

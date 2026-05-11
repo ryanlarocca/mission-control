@@ -67,25 +67,38 @@ export async function POST(request: Request) {
       // row and skip the drip-campaign stamp so the engine doesn't kick
       // off a new cycle. The UI groups events by caller_phone, so the
       // call event still shows up on the existing card.
+      //
+      // 2026-05-11 Bug 1 follow-up: the new callback event row must
+      // inherit source / source_type / drip_campaign_type from the
+      // existing lead — not the CAMPAIGN_MAP default. Otherwise the
+      // group's "most recent inbound" event flips to source="Outbound"
+      // and the lead drops out of its original campaign bucket in the UI.
       let existingLeadId: string | null = null
+      let existingLead: {
+        source: string | null
+        source_type: string | null
+        drip_campaign_type: string | null
+      } | null = null
       if (isOutboundCallback) {
         const since = new Date(
           Date.now() - OUTBOUND_CALLBACK_DEDUP_DAYS * 86_400_000
         ).toISOString()
         const { data: existing } = await sb
           .from("leads")
-          .select("id")
+          .select("id, source, source_type, drip_campaign_type")
           .eq("caller_phone", callerPhone)
           .not("twilio_number", "is", null)
           .gte("created_at", since)
           .order("created_at", { ascending: false })
           .limit(1)
         existingLeadId = existing?.[0]?.id ?? null
+        existingLead = existing?.[0] ?? null
       }
 
       const insertRow: Record<string, unknown> = {
-        source,
-        source_type: isGoogleAds ? "google_ads" : "direct_mail",
+        source: existingLead?.source || source,
+        source_type:
+          existingLead?.source_type || (isGoogleAds ? "google_ads" : "direct_mail"),
         twilio_number: twilioNumber,
         caller_phone: callerPhone,
         lead_type: "call",
@@ -101,6 +114,12 @@ export async function POST(request: Request) {
         insertRow.drip_campaign_type = isGoogleAds ? "google_ads_form" : "direct_mail_call"
         insertRow.drip_touch_number = 0
         insertRow.last_drip_sent_at = new Date().toISOString()
+      } else if (existingLead?.drip_campaign_type) {
+        // Carry the existing lead's drip campaign forward so the group's
+        // drip metadata stays consistent across events. We deliberately
+        // do NOT copy drip_touch_number / last_drip_sent_at — the original
+        // intake row owns the drip clock; this row is event history only.
+        insertRow.drip_campaign_type = existingLead.drip_campaign_type
       }
 
       const { error } = await sb.from("leads").insert(insertRow)
