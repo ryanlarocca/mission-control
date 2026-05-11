@@ -798,10 +798,23 @@ function defaultFollowupDate(): string {
   return d.toISOString().slice(0, 10)
 }
 
-// Outbound variant: persist only the follow-up fields. Ryan made the call
-// himself — he already knows the status and the conversation context, so
-// we don't write to status or overwrite the outbound row's ai_notes
-// (which already holds summarizeOutboundCall's brief outbound summary).
+// Outbound variant: persist follow-up fields + opportunistically fill
+// name/property_address from the transcript when missing. Ryan made the
+// call himself — he already knows the lifecycle status, the temperature,
+// and the conversation tone, so we deliberately don't write status /
+// temperature / ai_summary here (those would clobber his judgment). But
+// name and property_address are factual identity info that the analyzer
+// can extract from the same transcript Ryan just heard. Auto-filling them
+// matches the inbound path and saves the "click into the inline field and
+// type her name" step. EditableInlineField in the UI lets Ryan correct a
+// mishearing whenever the model gets one wrong.
+//
+// 2026-05-11: the hands-off rule mirrors applyAnalyzeCallResult — only
+// write when the SAME ROW's value is null/empty. Cluster-wide preexisting
+// names (e.g. from an earlier inbound row Ryan hand-corrected) are still
+// preferred by the UI's groupLeads "first non-null wins" derivation, so
+// the worst case is the outbound row carries a slightly off model guess
+// while the lead card still shows the correct name from the older row.
 export async function applyFollowupOnlyResult(
   leadId: string,
   result: AnalyzeCallResult
@@ -809,14 +822,24 @@ export async function applyFollowupOnlyResult(
   const sb = getLeadsClient()
   const followupDate = result.recommended_followup_date ?? defaultFollowupDate()
   const followupReason = result.followup_reason ?? DEFAULT_FOLLOWUP_REASON
-  const { error } = await sb
+
+  const { data: existing } = await sb
     .from("leads")
-    .update({
-      recommended_followup_date: followupDate,
-      followup_reason: followupReason,
-      followup_generated_at: new Date().toISOString(),
-    })
+    .select("name, property_address")
     .eq("id", leadId)
+    .maybeSingle()
+
+  const update: Record<string, unknown> = {
+    recommended_followup_date: followupDate,
+    followup_reason: followupReason,
+    followup_generated_at: new Date().toISOString(),
+  }
+  if (result.name && !existing?.name) update.name = result.name
+  if (result.property_address && !existing?.property_address) {
+    update.property_address = result.property_address
+  }
+
+  const { error } = await sb.from("leads").update(update).eq("id", leadId)
   if (error) console.error(`[followup-only] update failed for ${leadId}:`, error.message)
 }
 
