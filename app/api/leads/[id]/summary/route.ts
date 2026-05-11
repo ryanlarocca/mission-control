@@ -110,10 +110,16 @@ export async function POST(
       ? new Date(anchor.ai_summary_generated_at).getTime()
       : 0
     if (!force && anchor.ai_summary && cachedTs > latestEventTs) {
+      // Include current name + property_address in the cache-hit payload too
+      // so the UI can sync local state even when the model didn't run this
+      // pass (a card opened with stale local state otherwise never picks
+      // up a name that landed via a prior write).
       return NextResponse.json({
         summary: anchor.ai_summary,
         generated_at: anchor.ai_summary_generated_at,
         cached: true,
+        name: anchor.name ?? null,
+        property_address: anchor.property_address ?? null,
       })
     }
 
@@ -243,13 +249,17 @@ ${transcript}`
     }
     await sb.from("leads").update(update).eq("id", id)
 
+    // Return the row's CURRENT effective values (post-update) so the UI
+    // can sync local state even when this pass didn't write new identity
+    // info. Otherwise a card opened with stale local state but whose DB
+    // already has the name from a prior write never picks it up on refresh.
     return NextResponse.json({
       summary,
       temperature,
       generated_at,
       cached: false,
-      name: update.name ?? null,
-      property_address: update.property_address ?? null,
+      name: (update.name as string | undefined) ?? anchor.name ?? null,
+      property_address: (update.property_address as string | undefined) ?? anchor.property_address ?? null,
     })
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e)

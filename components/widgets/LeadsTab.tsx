@@ -687,12 +687,26 @@ export function LeadsTab() {
       const data = await res.json().catch(() => ({}))
       if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`)
       setSummaries(prev => ({ ...prev, [key]: { text: data.summary || "", loading: false, error: null } }))
-      // Stamp onto the underlying lead so groupLeads picks it up after refetch.
-      setLeads(prev => prev.map(l =>
-        l.id === group.mostRecentId
-          ? { ...l, ai_summary: data.summary, ai_summary_generated_at: data.generated_at }
-          : l
-      ))
+      // Stamp the model's full output back onto the underlying lead row so
+      // groupLeads re-derives the card with the new values immediately —
+      // without this we'd wait up to 30s for the autorefetch and the user
+      // would see the new summary but a stale "Add name" placeholder.
+      // Only stamp non-null fields so we never clobber an existing
+      // hand-corrected name/address with null when the model didn't return
+      // one (summary endpoint returns null for these when the anchor row
+      // already had a value, per its hands-off rule).
+      setLeads(prev => prev.map(l => {
+        if (l.id !== group.mostRecentId) return l
+        const next: Lead = {
+          ...l,
+          ai_summary: data.summary,
+          ai_summary_generated_at: data.generated_at,
+        }
+        if (data.temperature) next.temperature = data.temperature as Temperature
+        if (data.name) next.name = data.name
+        if (data.property_address) next.property_address = data.property_address
+        return next
+      }))
     } catch (e) {
       setSummaries(prev => ({ ...prev, [key]: { text: prev[key]?.text || "", loading: false, error: e instanceof Error ? e.message : String(e) } }))
     }
