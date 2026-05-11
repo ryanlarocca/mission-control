@@ -50,12 +50,15 @@ export async function POST(request: Request) {
 
   if (callerPhone) {
     const source = getCampaignSource(twilioNumber)
+    // Landing-page Google Ads number gets its own source_type + drip path.
+    // Everything else (MFM-A/B) stays on the direct-mail bucket.
+    const isGoogleAds = twilioNumber === "+16506703914"
     // AWAIT the insert — must complete before the function exits.
     try {
       const sb = getLeadsClient()
       const { error } = await sb.from("leads").insert({
         source,
-        source_type: "direct_mail",
+        source_type: isGoogleAds ? "google_ads" : "direct_mail",
         twilio_number: twilioNumber,
         caller_phone: callerPhone,
         lead_type: "call",
@@ -63,8 +66,10 @@ export async function POST(request: Request) {
         // Phase 7B: stamp drip campaign on intake. The engine's hourly
         // scan will pick up touch 0 (15-min missed-call message) when no
         // recording arrives within the buffer, and touch 1 onward at
-        // each cadence step.
-        drip_campaign_type: "direct_mail_call",
+        // each cadence step. Google Ads landing-page calls skip the
+        // missed-call template and run the AI-drafted google_ads_form
+        // cadence from touch 1.
+        drip_campaign_type: isGoogleAds ? "google_ads_form" : "direct_mail_call",
         drip_touch_number: 0,
         last_drip_sent_at: new Date().toISOString(),
       })

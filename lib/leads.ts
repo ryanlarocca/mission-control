@@ -5,6 +5,7 @@ import emailCampaigns from "@/config/email-campaigns.json"
 export const CAMPAIGN_MAP: Record<string, string> = {
   "+16504364279": "MFM-A",
   "+16506803671": "MFM-B",
+  "+16506703914": "Google",
 }
 
 // Mailers also list one email address per campaign that route through

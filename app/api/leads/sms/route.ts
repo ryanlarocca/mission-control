@@ -27,6 +27,9 @@ export async function POST(request: Request) {
   }
 
   const source = getCampaignSource(to)
+  // Landing-page Google Ads number gets google_ads source_type + the
+  // google_ads_form drip path; MFM-A/B stay on direct-mail.
+  const isGoogleAds = to === "+16506703914"
 
   if (from) {
     // AWAIT the insert — see comment in /api/leads/voice/route.ts on why
@@ -36,14 +39,14 @@ export async function POST(request: Request) {
       const sb = getLeadsClient()
       const { error } = await sb.from("leads").insert({
         source,
-        source_type: "direct_mail",
+        source_type: isGoogleAds ? "google_ads" : "direct_mail",
         twilio_number: to || null,
         caller_phone: from,
         lead_type: "sms",
         message: bodyText,
         status: "new",
         // Phase 7B: stamp drip campaign on intake (48h entry delay).
-        drip_campaign_type: "direct_mail_sms",
+        drip_campaign_type: isGoogleAds ? "google_ads_form" : "direct_mail_sms",
         drip_touch_number: 0,
         last_drip_sent_at: new Date().toISOString(),
       })
