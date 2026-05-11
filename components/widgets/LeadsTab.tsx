@@ -2342,6 +2342,16 @@ function DripQueueSection({
 
   // Map lead_id → lead so we can render a recipient label.
   const leadById = new Map(leads.map(l => [l.id, l]))
+  // Drip-queue rows often point at an outbound SMS row (which has name=null)
+  // rather than the original inbound row that carries the lead's name.
+  // Build a per-phone name lookup from the full leads array so the widget
+  // can show "Joyce Jones" even when the specific row referenced is nameless.
+  const nameByPhone = new Map<string, string>()
+  for (const l of leads) {
+    if (l.caller_phone && l.name && !nameByPhone.has(l.caller_phone)) {
+      nameByPhone.set(l.caller_phone, l.name)
+    }
+  }
 
   return (
     <div className="mb-4 rounded-md border border-zinc-800 bg-zinc-950 overflow-hidden">
@@ -2356,7 +2366,8 @@ function DripQueueSection({
       <div className="divide-y divide-zinc-900">
         {items.map(it => {
           const lead = leadById.get(it.lead_id)
-          const recipient = lead?.name || (lead?.caller_phone ? formatPhone(lead.caller_phone) : null) || lead?.email || it.lead_id
+          const clusterName = lead?.caller_phone ? nameByPhone.get(lead.caller_phone) : undefined
+          const recipient = lead?.name || clusterName || (lead?.caller_phone ? formatPhone(lead.caller_phone) : null) || lead?.email || it.lead_id
           const channel = it.channel === "imessage" ? "iMessage" : "Email"
           const acting = actingOn === it.id
           const canOpen = !!lead?.caller_phone

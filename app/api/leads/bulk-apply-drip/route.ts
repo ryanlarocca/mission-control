@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server"
 import { getLeadsClient } from "@/lib/leads"
+import { pickCampaignType } from "@/lib/drip-campaigns"
 
 // Phase 7C — Part 6: bulk-assign drip campaigns to many leads at once.
 //
@@ -24,7 +25,7 @@ export async function POST(request: NextRequest) {
     const sb = getLeadsClient()
     const { data: leads, error } = await sb
       .from("leads")
-      .select("id, caller_phone, email, drip_campaign_type, is_dnc, is_junk")
+      .select("id, caller_phone, email, drip_campaign_type, is_dnc, is_junk, source")
       .in("id", ids)
     if (error) {
       return NextResponse.json({ error: error.message }, { status: 500 })
@@ -40,12 +41,7 @@ export async function POST(request: NextRequest) {
         results.push({ id: lead.id, ok: false, reason: "already_on_campaign" })
         continue
       }
-      const campaignType =
-        lead.caller_phone
-          ? "direct_mail_call"
-          : lead.email
-          ? "direct_mail_email"
-          : null
+      const campaignType = pickCampaignType(lead)
       if (!campaignType) {
         results.push({ id: lead.id, ok: false, reason: "no_phone_or_email" })
         continue

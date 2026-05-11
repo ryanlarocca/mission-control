@@ -148,3 +148,24 @@ export function effectiveChannelForTouch(
 // Junk *flags* (is_dnc / is_junk on the lead row) are checked separately
 // in the drip engine's WHERE clause.
 export const DRIP_STOP_STATUSES = ["active", "dead"] as const
+
+// Source-aware campaign selection for Apply Drip. Google Ads form leads
+// get the AI-drafted google_ads_* campaigns; legacy direct-mail leads stay
+// on direct_mail_*. Falling all the way through to direct_mail_call for an
+// unknown-source phone lead is the legacy behavior — kept so we don't
+// regress on outbound number callbacks or unmapped sources.
+export function pickCampaignType(lead: {
+  caller_phone: string | null
+  email: string | null
+  source: string | null
+}): DripCampaignType | null {
+  const src = (lead.source || "").toLowerCase()
+  if (src === "google ads") {
+    if (lead.caller_phone) return "google_ads_form"
+    if (lead.email) return "google_ads_email_only"
+    return null
+  }
+  if (lead.caller_phone) return "direct_mail_call"
+  if (lead.email) return "direct_mail_email"
+  return null
+}

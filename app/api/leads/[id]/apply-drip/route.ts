@@ -1,15 +1,13 @@
 import { NextRequest, NextResponse } from "next/server"
 import { getLeadsClient } from "@/lib/leads"
+import { pickCampaignType } from "@/lib/drip-campaigns"
 
 // Phase 7C — Part 6: assign a drip campaign to a single lead.
 //
-// The server picks the campaign type from available contact info:
-//   has phone               → direct_mail_call (phone-led, alternates email)
-//   has email but no phone  → direct_mail_email (email-only)
-//   has neither             → 400, nothing to drip
-//
-// DNC / Junk leads are rejected (the buttons are hidden in UI, but the
-// endpoint guards too).
+// Campaign selection is source-aware: Google Ads form leads route to the
+// google_ads_* campaigns (touch #1+ AI-drafted, no "missed call" opener);
+// direct mail intake stays on direct_mail_*; anything else falls through
+// the legacy phone-led default.
 export async function POST(
   _request: NextRequest,
   ctx: { params: Promise<{ id: string }> }
@@ -21,7 +19,7 @@ export async function POST(
     const sb = getLeadsClient()
     const { data: lead, error: fetchErr } = await sb
       .from("leads")
-      .select("id, caller_phone, email, drip_campaign_type, is_dnc, is_junk, source_type")
+      .select("id, caller_phone, email, drip_campaign_type, is_dnc, is_junk, source_type, source")
       .eq("id", id)
       .maybeSingle()
     if (fetchErr) {
@@ -43,12 +41,7 @@ export async function POST(
       )
     }
 
-    const campaignType =
-      lead.caller_phone
-        ? "direct_mail_call"
-        : lead.email
-        ? "direct_mail_email"
-        : null
+    const campaignType = pickCampaignType(lead)
 
     if (!campaignType) {
       return NextResponse.json(

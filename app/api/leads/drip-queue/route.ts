@@ -70,6 +70,58 @@ export async function PATCH(request: NextRequest) {
 
   try {
     const sb = getLeadsClient()
+
+    // Approve-time staleness check: if there's been any non-drip human
+    // contact (inbound or outbound) on this lead since the queue row was
+    // created, the drafted message is out of date. Auto-skip and surface
+    // a 409 so the engine regenerates with current context on the next pass.
+    if (action === "approve") {
+      const { data: queueRow, error: qErr } = await sb
+        .from("drip_queue")
+        .select("id, lead_id, created_at, status")
+        .eq("id", id)
+        .maybeSingle()
+      if (qErr) {
+        console.error("[drip-queue:PATCH] queue lookup failed:", qErr)
+        return NextResponse.json({ error: qErr.message }, { status: 500 })
+      }
+      if (!queueRow || queueRow.status !== "pending") {
+        return NextResponse.json({ error: "queue row is not pending" }, { status: 409 })
+      }
+
+      const { data: leadRow } = await sb
+        .from("leads")
+        .select("caller_phone, email")
+        .eq("id", queueRow.lead_id)
+        .maybeSingle()
+
+      if (leadRow?.caller_phone || leadRow?.email) {
+        let q = sb
+          .from("leads")
+          .select("id, lead_type, created_at")
+          .gt("created_at", queueRow.created_at)
+          .limit(1)
+        if (leadRow.caller_phone) q = q.eq("caller_phone", leadRow.caller_phone)
+        else q = q.eq("email", leadRow.email!)
+
+        const { data: newer } = await q
+        const stale = (newer || []).some(
+          (r) => r.lead_type && !r.lead_type.startsWith("drip_")
+        )
+        if (stale) {
+          await sb
+            .from("drip_queue")
+            .update({ status: "skipped", error: "stale_after_human_reply" })
+            .eq("id", id)
+            .eq("status", "pending")
+          return NextResponse.json(
+            { error: "Stale draft — human contact happened since this was queued. Auto-skipped; the engine will regenerate next pass." },
+            { status: 409 }
+          )
+        }
+      }
+    }
+
     const update: Record<string, unknown> =
       action === "approve"
         ? { status: "approved", approved_at: new Date().toISOString() }
