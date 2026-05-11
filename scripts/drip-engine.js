@@ -240,7 +240,7 @@ async function buildConversationHistory(lead, sb) {
     const dir = isOut
       ? (row.lead_type && row.lead_type.startsWith("drip_") ? "ryan(drip)" : "ryan")
       : "lead"
-    const txt = (row.message || "").trim().slice(0, 300)
+    const txt = (row.message || "").trim().slice(0, 600)
     if (!txt) continue
     lines.push(`[${row.created_at}] ${dir}: ${txt}`)
   }
@@ -251,7 +251,7 @@ async function buildConversationHistory(lead, sb) {
     for (const m of msgs.slice(-20)) {
       const dir = m.is_from_me ? "ryan" : "lead"
       const ts = new Date(Number(m.timestamp) + APPLE_EPOCH_OFFSET_MS).toISOString()
-      const txt = (m.text || "").trim().slice(0, 300)
+      const txt = (m.text || "").trim().slice(0, 600)
       if (!txt) continue
       lines.push(`[${ts}] ${dir}(imsg): ${txt}`)
     }
@@ -263,16 +263,23 @@ async function buildConversationHistory(lead, sb) {
 
 const HARD_STOP_PATTERNS = [
   /\btake me off\b/i,
+  /\btake (?:my (?:name|number) )?off (?:your|the) list\b/i,
   /\bstop texting\b/i,
   /\bstop messaging\b/i,
   /\bstop emailing\b/i,
+  /\bstop calling\b/i,
+  /\bstop calling me\b/i,
+  /\bdo not call\b/i,
+  /\bdon'?t call\b/i,
   /\bdon'?t contact\b/i,
+  /\bquit calling\b/i,
   /\bremove me\b/i,
   /\bnot interested\b/i,
   /\bwrong number\b/i,
   /\bfuck off\b/i,
   /\bleave me alone\b/i,
   /\bunsubscribe\b/i,
+  /\bcease (?:and desist|contact)\b/i,
 ]
 
 function detectHardStop(history) {
@@ -432,7 +439,7 @@ function missedCallTouch0Body() {
 // ─── senders ────────────────────────────────────────────────────────────────
 
 async function sendIMessage(phone, message) {
-  const res = await fetch(`${SIDECAR_URL}/api/crms/send`, {
+  const res = await fetch(`${SIDECAR_URL}/send`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ phone, message }),
@@ -663,10 +670,33 @@ async function hasPendingQueueRow(sb, leadId) {
     .from("drip_queue")
     .select("id")
     .eq("lead_id", leadId)
-    .eq("status", "pending")
+    .in("status", ["pending", "approved"])
     .limit(1)
   if (error) return false
   return (data || []).length > 0
+}
+
+// Returns true if this lead has had any real (non-drip) interaction.
+// Drip rows have lead_type prefixed with "drip_". Anything else means
+// we've already engaged — "I missed your call" is the wrong opener.
+async function hasPriorNonDripEvent(sb, lead) {
+  let q = sb.from("leads").select("id, lead_type").limit(50)
+  if (lead.caller_phone)    q = q.eq("caller_phone", lead.caller_phone)
+  else if (lead.email)      q = q.eq("email", lead.email)
+  else                      q = q.eq("id", lead.id)
+  const { data, error } = await q
+  if (error) {
+    console.warn(`[drip] prior-contact query failed for ${lead.id}:`, error.message)
+    return false
+  }
+  for (const row of data || []) {
+    if (!row.lead_type) continue
+    if (row.lead_type.startsWith("drip_")) continue
+    // Seed row for a true missed call is fine — let that through.
+    if (row.lead_type === "missed_call") continue
+    return true
+  }
+  return false
 }
 
 // Apply the campaign-upgrade rule: when a phone arrives on an email-only
@@ -692,11 +722,21 @@ async function processLead(sb, lead) {
   if (!campaign) return { skipped: "unknown_campaign" }
 
   // Direct mail call: special touch 0 (15-min missed-call message) only when
-  // recording_url is null AND drip_touch_number = 0. Voicemail leads carry
-  // recording_url and skip touch 0 — engine starts at touch 1 with 48h delay.
-  const isMissedCall = campaign.type === "direct_mail_call"
-    && (lead.drip_touch_number ?? 0) === 0
+  // recording_url is null AND drip_touch_number is NULL (truly fresh).
+  // NULL check is critical: once touch #0 fires we write drip_touch_number=0,
+  // and 0 must NOT be treated as "fresh" on the next pass — that was the loop bug.
+  let isMissedCall = campaign.type === "direct_mail_call"
+    && lead.drip_touch_number == null
     && !lead.recording_url
+
+  // If we'd send touch #0, confirm there's no prior real contact first.
+  if (isMissedCall) {
+    const hasPriorContact = await hasPriorNonDripEvent(sb, lead)
+    if (hasPriorContact) {
+      console.log(`[drip] lead ${lead.id} has prior non-drip activity — skipping touch #0`)
+      isMissedCall = false
+    }
+  }
 
   let nextTouch
   if (isMissedCall) {
@@ -704,10 +744,7 @@ async function processLead(sb, lead) {
     if (ageMs < 15 * 60 * 1000) return { skipped: "missed_call_buffer" }
     nextTouch = campaign.touches.find((t) => t.touchNumber === 0)
   } else {
-    // Voicemail leads (recording present) skip touch 0.
-    const startedFrom = (lead.drip_touch_number ?? 0) === 0 && campaign.type === "direct_mail_call"
-      ? 0 // they've now passed touch 0 implicitly
-      : (lead.drip_touch_number ?? -1)
+    const startedFrom = lead.drip_touch_number ?? -1
     const baseTouch = startedFrom < 0 ? 0 : startedFrom
     nextTouch = campaign.touches.find((t) => t.touchNumber > baseTouch)
   }
