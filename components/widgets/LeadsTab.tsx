@@ -1340,7 +1340,18 @@ export function LeadsTab() {
               onToggleSelect={() => toggleSelect(group.mostRecentId)}
               onApplyDrip={() => applyDripToGroup(group)}
               onMarkBadNumber={() => patchFlagOnGroup(group, { is_bad_number: !group.isBadNumber })}
-              onMarkJunk={() => patchFlagOnGroup(group, { is_junk: !group.isJunk })}
+              onMarkJunk={() => {
+                // 2026-05-11 — flipping junk ON also moves the lead to
+                // status=dead so it leaves the New/Contacted/Active filters
+                // automatically (matches DNC's behavior). Without this,
+                // "marked as junk but still in New" was confusing. Toggling
+                // junk OFF intentionally does NOT auto-revive status —
+                // Ryan can re-set the lifecycle manually if needed.
+                const willMark = !group.isJunk
+                const update: Partial<Lead> = { is_junk: willMark }
+                if (willMark) update.status = "dead"
+                patchFlagOnGroup(group, update)
+              }}
               onFlagDnc={() => flagDnc(group)}
               onClearDnc={() => clearDnc(group)}
               onAcceptSuggestion={() => acceptSuggestedStatus(group)}

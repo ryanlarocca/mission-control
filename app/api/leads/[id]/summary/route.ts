@@ -146,9 +146,16 @@ Produce a JSON object:
     where things stand based on the conversation history, and any obvious
     next-step or urgency cue. Emojis allowed where natural.
 
+- name: the lead's stated name from anywhere in the conversation
+    history. Best-effort: pick the most confident mention, not a partial
+    guess. Null if no name appears in the transcript.
+
+- property_address: any property address the lead mentioned (best-effort,
+    even partial — Ryan can clean it up). Null if no address is mentioned.
+
 Respond with ONLY the JSON — no markdown fences, no explanation.
 
-{ "temperature": "...", "summary": "..." }
+{ "temperature": "...", "summary": "...", "name": "..." | null, "property_address": "..." | null }
 
 LEAD DATA:
 - Name: ${anchor.name || "(unknown)"}
@@ -185,8 +192,15 @@ ${transcript}`
 
     let summary: string | null = null
     let temperature: Temperature | null = null
+    let extractedName: string | null = null
+    let extractedAddress: string | null = null
     try {
-      const parsed = JSON.parse(cleaned) as { temperature?: string; summary?: string }
+      const parsed = JSON.parse(cleaned) as {
+        temperature?: string
+        summary?: string
+        name?: unknown
+        property_address?: unknown
+      }
       if (parsed.summary && typeof parsed.summary === "string") {
         summary = parsed.summary.trim()
       }
@@ -195,6 +209,12 @@ ${transcript}`
         (VALID_TEMPERATURES as readonly string[]).includes(parsed.temperature)
       ) {
         temperature = parsed.temperature as Temperature
+      }
+      if (typeof parsed.name === "string" && parsed.name.trim()) {
+        extractedName = parsed.name.trim()
+      }
+      if (typeof parsed.property_address === "string" && parsed.property_address.trim()) {
+        extractedAddress = parsed.property_address.trim()
       }
     } catch {
       // Fall back: treat the whole cleaned response as the paragraph if it's
@@ -211,9 +231,26 @@ ${transcript}`
       ai_summary_generated_at: generated_at,
     }
     if (temperature) update.temperature = temperature
+    // 2026-05-11 — opportunistic identity write-back. The model just read the
+    // full cluster transcript; if it spotted a name or address the anchor row
+    // doesn't yet have, fill it. EditableInlineField stays as Ryan's
+    // correction mechanism for mishearings. This is what makes the workflow
+    // fluid: opening a card auto-backfills the name without needing to call
+    // anyone back to "trigger" extraction.
+    if (extractedName && !anchor.name) update.name = extractedName
+    if (extractedAddress && !anchor.property_address) {
+      update.property_address = extractedAddress
+    }
     await sb.from("leads").update(update).eq("id", id)
 
-    return NextResponse.json({ summary, temperature, generated_at, cached: false })
+    return NextResponse.json({
+      summary,
+      temperature,
+      generated_at,
+      cached: false,
+      name: update.name ?? null,
+      property_address: update.property_address ?? null,
+    })
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e)
     return NextResponse.json({ error: msg }, { status: 500 })
