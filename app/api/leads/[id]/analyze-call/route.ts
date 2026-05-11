@@ -4,6 +4,7 @@ import {
   sendTelegramAlert,
   analyzeCallTranscript,
   applyAnalyzeCallResult,
+  fetchClusterHistory,
 } from "@/lib/leads"
 
 // Phase 7D — re-run the unified analyzer against a lead's stored transcript
@@ -33,7 +34,7 @@ export async function POST(
     const sb = getLeadsClient()
     const { data: lead, error } = await sb
       .from("leads")
-      .select("id, name, message, ai_notes, caller_phone")
+      .select("id, name, message, ai_notes, caller_phone, email")
       .eq("id", id)
       .maybeSingle()
     if (error) return NextResponse.json({ error: error.message }, { status: 500 })
@@ -52,7 +53,16 @@ export async function POST(
       )
     }
 
-    const result = await analyzeCallTranscript(transcript)
+    // 2026-05-11 Fix 2 — feed cluster history into the analyzer so name /
+    // property / follow-up reflect the FULL conversation, not just this
+    // row's message. The manual re-analyze path benefits the same as the
+    // auto path in processRecordingBackground.
+    const clusterHistory = await fetchClusterHistory(sb, {
+      callerPhone: lead.caller_phone,
+      email: lead.email,
+      excludeId: id,
+    })
+    const result = await analyzeCallTranscript(transcript, { clusterHistory })
     if (!result) {
       return NextResponse.json({ error: "AI classification failed" }, { status: 502 })
     }

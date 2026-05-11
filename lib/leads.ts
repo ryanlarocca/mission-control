@@ -461,7 +461,15 @@ export async function processRecordingBackground(args: {
         }
       }
       try {
-        const followup = await analyzeCallTranscript(transcription)
+        // 2026-05-11 Fix 2 — pull prior conversation history so the
+        // analyzer can extract name / property / follow-up context from
+        // the FULL cluster, not just this single outbound recording.
+        const sb = getLeadsClient()
+        const clusterHistory = await fetchClusterHistory(sb, {
+          callerPhone,
+          excludeId: leadId,
+        })
+        const followup = await analyzeCallTranscript(transcription, { clusterHistory })
         if (followup) {
           await applyFollowupOnlyResult(leadId, followup)
           if (followup.recommended_followup_date) {
@@ -480,7 +488,16 @@ export async function processRecordingBackground(args: {
     let analysis: AnalyzeCallResult | null = null
     if (direction === "inbound" && transcription && leadId) {
       try {
-        analysis = await analyzeCallTranscript(transcription)
+        // 2026-05-11 Fix 2 — same cluster-history wiring as the outbound
+        // path. Especially important for follow-up voicemails ("I'm busy,
+        // call me back") that don't restate the lead's name / property
+        // from earlier rows in the cluster.
+        const sb = getLeadsClient()
+        const clusterHistory = await fetchClusterHistory(sb, {
+          callerPhone,
+          excludeId: leadId,
+        })
+        analysis = await analyzeCallTranscript(transcription, { clusterHistory })
         if (analysis) {
           await applyAnalyzeCallResult(leadId, analysis)
           console.log(`[analyze-call] Lead ${leadId} → ${analysis.temperature}: ${analysis.summary.slice(0, 100)}`)
@@ -594,8 +611,57 @@ export interface AnalyzeCallResult {
   followup_reason: string | null
 }
 
+// Build a short prose timeline of every prior event in the contact's cluster
+// (same caller_phone OR same email). Used by analyzeCallTranscript so the
+// model can extract name / property / temperature / follow-up from the FULL
+// conversation history rather than just the freshest recording — needed for
+// follow-up voicemails like "I'm busy, call me back" that don't restate the
+// earlier context. Returns null when there's nothing usable.
+//
+// `excludeId` lets the caller drop the row holding the fresh transcript from
+// the history block so the prompt isn't duplicating it.
+export async function fetchClusterHistory(
+  sb: SupabaseClient,
+  opts: {
+    callerPhone?: string | null
+    email?: string | null
+    excludeId?: string | null
+  }
+): Promise<string | null> {
+  let q = sb
+    .from("leads")
+    .select("id, created_at, lead_type, twilio_number, message")
+    .order("created_at", { ascending: true })
+    .limit(40)
+  if (opts.callerPhone) {
+    q = q.eq("caller_phone", opts.callerPhone)
+  } else if (opts.email) {
+    q = q.eq("email", opts.email)
+  } else {
+    return null
+  }
+  const { data, error } = await q
+  if (error || !data) return null
+  const rows = data.filter(
+    (r) =>
+      (r.message || "").trim().length > 0 &&
+      (!opts.excludeId || r.id !== opts.excludeId)
+  )
+  if (rows.length === 0) return null
+  return rows
+    .slice(-20)
+    .map((r) => {
+      const dir = r.twilio_number ? "lead" : "ryan"
+      const kind = r.lead_type || "?"
+      const text = (r.message || "").slice(0, 400)
+      return `[${r.created_at}] ${kind} (${dir}): ${text}`
+    })
+    .join("\n")
+}
+
 export async function analyzeCallTranscript(
-  transcript: string
+  transcript: string,
+  context?: { clusterHistory?: string | null }
 ): Promise<AnalyzeCallResult | null> {
   const apiKey = process.env.OPENROUTER_API_KEY
   if (!apiKey) {
@@ -603,9 +669,16 @@ export async function analyzeCallTranscript(
     return null
   }
   const today = new Date().toISOString().slice(0, 10)
+  const history = context?.clusterHistory?.trim() || null
+  // The history block is optional context, the fresh transcript is the
+  // primary signal. We instruct the model accordingly so a brief follow-up
+  // voicemail doesn't lose Cross-call info (name, property, prior promises).
+  const historyBlock = history
+    ? `\nPRIOR CONVERSATION (oldest → newest, context only — DO NOT treat as the current call):\n"""\n${history}\n"""\n`
+    : ""
   const prompt = `You are analyzing a phone call transcript between Ryan (a cash home buyer) and a real estate seller lead.
 
-TODAY IS ${today}. All recommended_followup_date values must be on or after today.
+TODAY IS ${today}. All recommended_followup_date values must be on or after today.${historyBlock ? "\n\nExtract NAME and PROPERTY_ADDRESS from the full conversation (prior + fresh). Other fields (temperature, summary, follow-up) should reflect the FRESH transcript primarily, using prior context for continuity.\n" : ""}
 
 Produce a JSON object with these fields:
 
@@ -647,7 +720,7 @@ Respond with ONLY the JSON object — no markdown fences, no explanation.
   "followup_reason": "..." | null
 }
 
-TRANSCRIPT:
+${historyBlock}FRESH TRANSCRIPT (this is the current call):
 "${transcript}"`
 
   try {
@@ -765,9 +838,11 @@ export async function applyAnalyzeCallResult(
   // Look up existing name/property so we never clobber a hand-corrected
   // value with a worse AI guess. EditableInlineField in the UI lets Ryan
   // fix mis-parses; once he has, the AI re-runs shouldn't overwrite.
+  // Also pull caller_phone + email so we can invalidate the summary cache
+  // across the full contact cluster (Fix 1 below).
   const { data: existing } = await sb
     .from("leads")
-    .select("name, property_address")
+    .select("name, property_address, caller_phone, email")
     .eq("id", leadId)
     .maybeSingle()
 
@@ -788,6 +863,40 @@ export async function applyAnalyzeCallResult(
 
   const { error } = await sb.from("leads").update(update).eq("id", leadId)
   if (error) console.error(`[analyze-call] update failed for ${leadId}:`, error.message)
+
+  // 2026-05-11 Fix 1 — cluster-wide cache invalidation. The summary endpoint
+  // builds its paragraph from the FULL conversation cluster while this
+  // analyzer only sees the fresh recording. If a card was expanded BEFORE
+  // the recording landed, the summary endpoint already wrote
+  // ai_summary_generated_at=<recent> onto an anchor row whose own
+  // created_at never updates when the transcript arrives — so the cache
+  // check (cachedTs > latestEventTs) keeps serving the stale "no recorded
+  // contact events" paragraph forever. Nulling ai_summary_generated_at on
+  // every row in this contact's cluster forces the next /summary call to
+  // miss cache and regenerate against the full transcript.
+  //
+  // Done as the LAST step so it can't race against the analysis write
+  // above. Scoped by caller_phone when present, else by email, so call /
+  // SMS clusters and email-only clusters both invalidate correctly.
+  try {
+    let invQ = sb.from("leads").update({ ai_summary_generated_at: null })
+    let scoped = false
+    if (existing?.caller_phone) {
+      invQ = invQ.eq("caller_phone", existing.caller_phone)
+      scoped = true
+    } else if (existing?.email) {
+      invQ = invQ.eq("email", existing.email)
+      scoped = true
+    }
+    if (scoped) {
+      const { error: invErr } = await invQ
+      if (invErr) {
+        console.error(`[analyze-call] cluster cache invalidate failed for ${leadId}:`, invErr.message)
+      }
+    }
+  } catch (e) {
+    console.error(`[analyze-call] cluster cache invalidate threw for ${leadId}:`, e)
+  }
 }
 
 // Email-lead triage — same Haiku model as the call/voicemail path, but the
