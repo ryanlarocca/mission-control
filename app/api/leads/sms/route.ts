@@ -42,6 +42,9 @@ export async function POST(request: Request) {
   const source = getCampaignSource(to)
   const isDnc = isDncMessage(bodyText)
   const isOutboundCallback = to === OUTBOUND_TWILIO_NUMBER
+  // Landing-page Google Ads number gets google_ads source_type + the
+  // google_ads_form drip path; MFM-A/B + outbound callback stay on direct-mail.
+  const isGoogleAds = to === "+16506703914"
 
   if (from) {
     try {
@@ -116,7 +119,7 @@ export async function POST(request: Request) {
 
       const insertRow: Record<string, unknown> = {
         source,
-        source_type: "direct_mail",
+        source_type: isGoogleAds ? "google_ads" : "direct_mail",
         twilio_number: to || null,
         caller_phone: from,
         lead_type: "sms",
@@ -127,7 +130,9 @@ export async function POST(request: Request) {
 
       if (!existingLeadId) {
         // Fresh intake — stamp drip campaign for the engine to pick up.
-        insertRow.drip_campaign_type = "direct_mail_sms"
+        // Google Ads landing number runs the AI-drafted google_ads_form
+        // cadence; MFM-A/B inbound SMS stays on direct_mail_sms.
+        insertRow.drip_campaign_type = isGoogleAds ? "google_ads_form" : "direct_mail_sms"
         insertRow.drip_touch_number = 0
         insertRow.last_drip_sent_at = new Date().toISOString()
       }
