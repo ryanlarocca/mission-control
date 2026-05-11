@@ -117,11 +117,16 @@ export async function POST(
       })
     }
 
-    // Build the conversation transcript for the prompt.
+    // Build the conversation transcript for the prompt. Per-message limit
+    // bumped from 400 → 4000 chars (2026-05-11) — a single call transcript
+    // can run 3-8k chars, and truncating to 400 made the model hedge
+    // with phrases like "the call log ends here" because it was literally
+    // seeing the opening sentence and nothing else. 30 rows × 4000 chars
+    // ≈ 30k tokens worst case, well inside Haiku's 200k context.
     const transcript = rows
       .filter(r => (r.message || "").trim().length > 0)
       .slice(-30)
-      .map(r => `[${r.created_at}] ${r.lead_type || "?"} (${dirLabel(r)}): ${(r.message || "").slice(0, 400)}`)
+      .map(r => `[${r.created_at}] ${r.lead_type || "?"} (${dirLabel(r)}): ${(r.message || "").slice(0, 4000)}`)
       .join("\n") || "(no recorded events)"
 
     const today = new Date().toISOString().slice(0, 10)

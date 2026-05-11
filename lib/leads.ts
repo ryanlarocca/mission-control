@@ -648,12 +648,17 @@ export async function fetchClusterHistory(
       (!opts.excludeId || r.id !== opts.excludeId)
   )
   if (rows.length === 0) return null
+  // Per-message limit 4000 chars (bumped from 400 on 2026-05-11) — a full
+  // call transcript can run 3-8k chars and the older 400-char cap was
+  // truncating mid-conversation, making the analyzer treat clearly-rich
+  // calls as "just getting started." 20 rows × 4000 chars ≈ 20k tokens
+  // worst case, well inside Haiku's context.
   return rows
     .slice(-20)
     .map((r) => {
       const dir = r.twilio_number ? "lead" : "ryan"
       const kind = r.lead_type || "?"
-      const text = (r.message || "").slice(0, 400)
+      const text = (r.message || "").slice(0, 4000)
       return `[${r.created_at}] ${kind} (${dir}): ${text}`
     })
     .join("\n")
