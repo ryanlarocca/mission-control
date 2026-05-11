@@ -128,24 +128,38 @@ if (filterHints.length) {
 }
 
 // ── Section 3: AI fields ────────────────────────────────────────────────────
+// Two parallel analyzer paths populate different column sets:
+//   • voicemail/call → analyzeCallTranscript() → ai_summary, temperature,
+//     recommended_followup_date, followup_reason
+//   • email/sms      → triageEmailLead() → ai_notes, suggested_reply,
+//     suggested_status, suggested_status_reason
+// Empty fields outside a row's "lane" are EXPECTED, not bugs.
 console.log("")
 console.log(hr); console.log("AI / TRIAGE FIELDS (most recent row only)"); console.log(hr)
 const top = rows[0]
+const isVoiceRow = top.lead_type === "voicemail" || top.lead_type === "call"
+const isEmailRow = top.lead_type === "email" || top.lead_type === "sms" || top.lead_type === "form"
 const aiFields = [
-  ["ai_summary",              top.ai_summary],
-  ["ai_summary_generated_at", top.ai_summary_generated_at],
-  ["ai_notes",                top.ai_notes],
-  ["suggested_reply",         top.suggested_reply],
-  ["suggested_status",        top.suggested_status],
-  ["suggested_status_reason", top.suggested_status_reason],
-  ["recommended_followup_date", top.recommended_followup_date],
-  ["followup_reason",         top.followup_reason],
-  ["temperature",             top.temperature],
+  ["ai_summary",                top.ai_summary,                isVoiceRow],
+  ["ai_summary_generated_at",   top.ai_summary_generated_at,   isVoiceRow],
+  ["recommended_followup_date", top.recommended_followup_date, isVoiceRow],
+  ["followup_reason",           top.followup_reason,           isVoiceRow],
+  ["temperature",               top.temperature,               true],
+  ["ai_notes",                  top.ai_notes,                  isEmailRow],
+  ["suggested_reply",           top.suggested_reply,           isEmailRow],
+  ["suggested_status",          top.suggested_status,          isEmailRow],
+  ["suggested_status_reason",   top.suggested_status_reason,   isEmailRow],
 ]
-for (const [k, v] of aiFields) {
-  const mark = v ? "✓" : "○"
-  const display = v ? (typeof v === "string" && v.length > 80 ? v.slice(0, 80) + "…" : v) : "(empty)"
-  console.log(`  ${mark} ${k.padEnd(28)} ${display}`)
+for (const [k, v, expected] of aiFields) {
+  let mark, tail
+  if (v) {
+    mark = "✓"
+    tail = typeof v === "string" && v.length > 80 ? v.slice(0, 80) + "…" : v
+  } else {
+    mark = expected ? "✗" : "·"
+    tail = expected ? "(empty — expected populated)" : "(empty — N/A for this lead_type)"
+  }
+  console.log(`  ${mark} ${k.padEnd(28)} ${tail}`)
 }
 
 // ── Section 4: drip queue ───────────────────────────────────────────────────
@@ -226,9 +240,9 @@ const gaps = []
 const hasRecording = rows.some(r => r.recording_url)
 if (hasRecording && !top.ai_summary) gaps.push("recording present but ai_summary is null — Whisper/AI may have failed")
 if (top.lead_type === "voicemail" && !top.ai_summary) gaps.push("voicemail without ai_summary — analyzer may not have run")
-if (top.lead_type === "voicemail" && !top.suggested_reply) gaps.push("voicemail without suggested_reply — reply drafter may not run on voicemail intake")
-if (top.lead_type === "voicemail" && !top.ai_notes) gaps.push("voicemail without ai_notes — short-summary field empty (used for some card previews)")
-if (top.lead_type === "call" && !hasRecording && !top.recording_url) gaps.push("call without recording_url — Twilio recordingStatusCallback may not have fired")
+if (top.lead_type === "call" && !top.recording_url) gaps.push("call without recording_url — Twilio recordingStatusCallback may not have fired")
+if (isEmailRow && top.lead_type === "email" && !top.ai_notes) gaps.push("email without ai_notes — triage may have failed")
+if (isEmailRow && top.lead_type === "email" && !top.suggested_reply) gaps.push("email without suggested_reply — drafter may have failed")
 if (eligible && eligible.drip_campaign_type === "direct_mail_call" && top.source === "Google") {
   gaps.push("source=Google but drip_campaign_type=direct_mail_call — drip routing mismatch (run Apply Drip again)")
 }
