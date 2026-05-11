@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useMemo, useState, useCallback } from "react"
+import { useEffect, useMemo, useRef, useState, useCallback } from "react"
 import { useSearchParams } from "next/navigation"
 import {
   Phone, PhoneOutgoing, Voicemail, MessageSquare, ClipboardList, ChevronDown, ChevronRight,
@@ -456,19 +456,31 @@ export function LeadsTab() {
 
   // Deep-link: /leads?phone=+15551234567 pre-expands the matching card and
   // scrolls it into view. Used by the Follow-Up tab so tapping a follow-up
-  // row lands directly on the lead card. The scroll fires once after the
-  // matching card actually renders (groups become non-empty), keyed off
-  // expandedPhone changing.
+  // row lands directly on the lead card.
+  //
+  // 2026-05-11 bugfix: previous version had `expandedPhone` in the deps
+  // array of the expand effect, which meant any time the user clicked a
+  // DIFFERENT card (changing expandedPhone) the effect re-fired and snapped
+  // expandedPhone back to the deeplinked phone — trapping the user on the
+  // deeplinked card. We now track "have we already handled this deeplink
+  // value?" in a ref so the effect only fires once per distinct phone
+  // param. Same pattern for the scroll effect so it doesn't re-scroll on
+  // every 30s autorefetch.
   const searchParams = useSearchParams()
   const deeplinkPhone = searchParams.get("phone")
+  const lastHandledDeeplinkRef = useRef<string | null>(null)
+  const scrolledForDeeplinkRef = useRef<string | null>(null)
   useEffect(() => {
     if (!deeplinkPhone) return
-    if (expandedPhone === deeplinkPhone) return
+    if (lastHandledDeeplinkRef.current === deeplinkPhone) return
+    lastHandledDeeplinkRef.current = deeplinkPhone
     setExpandedPhone(deeplinkPhone)
-  }, [deeplinkPhone, expandedPhone])
+  }, [deeplinkPhone])
   useEffect(() => {
     if (!deeplinkPhone || expandedPhone !== deeplinkPhone) return
     if (leads.length === 0) return
+    if (scrolledForDeeplinkRef.current === deeplinkPhone) return
+    scrolledForDeeplinkRef.current = deeplinkPhone
     // Wait one paint so the card is in the DOM before scrolling.
     const t = window.setTimeout(() => {
       const el = document.querySelector(`[data-lead-phone="${deeplinkPhone}"]`)
