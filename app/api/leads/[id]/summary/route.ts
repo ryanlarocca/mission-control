@@ -46,11 +46,24 @@ function dirLabel(r: EventRow): string {
 }
 
 export async function POST(
-  _request: NextRequest,
+  request: NextRequest,
   ctx: { params: Promise<{ id: string }> }
 ) {
   const { id } = await ctx.params
   if (!id) return NextResponse.json({ error: "id required" }, { status: 400 })
+
+  // 2026-05-11 — body { force: true } bypasses the cache check. Used by
+  // the refresh icon in the lead card so a click always produces a fresh
+  // cluster-aware paragraph, even when a stale ai_summary_generated_at
+  // (from a card that was expanded before the recording arrived) still
+  // looks newer than every event in the cluster.
+  let force = false
+  try {
+    const body = await request.json().catch(() => ({})) as { force?: unknown }
+    force = body?.force === true
+  } catch {
+    /* empty body is fine */
+  }
 
   const apiKey = process.env.OPENROUTER_API_KEY
   if (!apiKey) {
@@ -89,13 +102,14 @@ export async function POST(
     const rows = events || []
 
     // Cache check: latest event timestamp vs ai_summary_generated_at.
+    // Skipped entirely on force=true so the refresh icon always regenerates.
     const latestEventTs = rows.length > 0
       ? new Date(rows[rows.length - 1].created_at).getTime()
       : 0
     const cachedTs = anchor.ai_summary_generated_at
       ? new Date(anchor.ai_summary_generated_at).getTime()
       : 0
-    if (anchor.ai_summary && cachedTs > latestEventTs) {
+    if (!force && anchor.ai_summary && cachedTs > latestEventTs) {
       return NextResponse.json({
         summary: anchor.ai_summary,
         generated_at: anchor.ai_summary_generated_at,

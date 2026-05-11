@@ -674,14 +674,15 @@ export function LeadsTab() {
     }
   }, [])
 
-  const fetchSummary = useCallback(async (group: LeadGroup) => {
+  const fetchSummary = useCallback(async (group: LeadGroup, opts?: { force?: boolean }) => {
     const key = group.phone
+    const force = opts?.force === true
     setSummaries(prev => ({ ...prev, [key]: { text: prev[key]?.text || group.aiSummary || "", loading: true, error: null } }))
     try {
       const res = await fetch(`/api/leads/${group.mostRecentId}/summary`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: "{}",
+        body: JSON.stringify({ force }),
       })
       const data = await res.json().catch(() => ({}))
       if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`)
@@ -1292,7 +1293,7 @@ export function LeadsTab() {
               summary={summaries[group.phone]?.text || group.aiSummary || ""}
               summaryLoading={!!summaries[group.phone]?.loading}
               summaryError={summaries[group.phone]?.error || null}
-              onRefreshSummary={() => fetchSummary(group)}
+              onRefreshSummary={() => fetchSummary(group, { force: true })}
               onDraftText={() => generateDraft(group, "imessage")}
               onDraftEmail={() => generateDraft(group, "email")}
               draftingText={draftingFor === `${group.phone}:imessage`}
