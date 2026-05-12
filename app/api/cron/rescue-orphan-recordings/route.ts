@@ -103,13 +103,17 @@ export async function GET(request: Request) {
     }
   }))
 
-  // ── 4. Match orphans to recordings ────────────────────────────────────────
+  // ── 4. Match orphans to recordings (greedy 1:1 assignment) ────────────────
+  // Two orphans must not claim the same recording — especially relevant for
+  // Anonymous voicemails where multiple rows share caller_phone="Anonymous".
   interface Plan { orphan: typeof orphans[number]; recording: TwilioRecording; deltaSec: number }
+  const claimed = new Set<string>()
   const plan: Plan[] = []
   for (const o of orphans) {
     const orphanTs = new Date(o.created_at).getTime()
     let best: { recording: TwilioRecording; deltaSec: number } | null = null
     for (const rec of recordings) {
+      if (claimed.has(rec.sid)) continue
       const call = callBySid.get(rec.call_sid)
       if (!call) continue
       if (call.from !== o.caller_phone) continue
@@ -120,7 +124,10 @@ export async function GET(request: Request) {
         best = { recording: rec, deltaSec }
       }
     }
-    if (best) plan.push({ orphan: o, ...best })
+    if (best) {
+      claimed.add(best.recording.sid)
+      plan.push({ orphan: o, ...best })
+    }
   }
 
   // ── 5. Replay webhook for each match ──────────────────────────────────────

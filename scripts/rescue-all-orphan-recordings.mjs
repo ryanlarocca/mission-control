@@ -79,25 +79,33 @@ for (const callSid of uniqueCallSids) {
 console.log(`  → cached ${callsFetched} call(s).`)
 
 // ── Step 4: match orphans to recordings ─────────────────────────────────────
+// Greedy 1:1 assignment so two orphans (especially Anonymous voicemails
+// with identical caller_phone="Anonymous") can't both claim the same
+// recording. Process orphans newest-first; each orphan picks the closest
+// still-unclaimed recording within ±1h, then that recording is removed
+// from the candidate pool for subsequent orphans.
+const claimed = new Set()
 const plan = []
 const unmatched = []
 for (const o of orphans) {
   const orphanTs = new Date(o.created_at).getTime()
   const candidates = []
   for (const rec of allRecordings) {
+    if (claimed.has(rec.sid)) continue
     const call = callBySid.get(rec.call_sid)
     if (!call) continue
     const fromMatch = call.from === o.caller_phone
     const toMatch = o.twilio_number ? call.to === o.twilio_number : true
     if (!fromMatch || !toMatch) continue
     const deltaSec = Math.round((new Date(rec.date_created).getTime() - orphanTs) / 1000)
-    // Reasonable proximity: call recording must be within ±1h of the lead row.
     if (Math.abs(deltaSec) > 3600) continue
     candidates.push({ rec, deltaSec })
   }
   if (candidates.length === 0) { unmatched.push(o); continue }
   candidates.sort((a, b) => Math.abs(a.deltaSec) - Math.abs(b.deltaSec))
-  plan.push({ orphan: o, recording: candidates[0].rec, deltaSec: candidates[0].deltaSec })
+  const winner = candidates[0]
+  claimed.add(winner.rec.sid)
+  plan.push({ orphan: o, recording: winner.rec, deltaSec: winner.deltaSec })
 }
 
 console.log("")
