@@ -70,15 +70,23 @@ export async function POST(request: Request) {
   try {
     const sb = getLeadsClient()
 
-    // Idempotency: if this RecordingSid is already attached, do nothing.
+    // Idempotency for Twilio retries: if this RecordingUrl is already
+    // attached AND the attached row is the same as the one we're about to
+    // target, skip. We deliberately do NOT skip on the rescue path where
+    // a recording got attached to a fallback row earlier (we want to
+    // re-attach to the explicit LeadId); a follow-up cleanup deletes the
+    // stale fallback row.
     const { data: existing } = await sb
       .from("leads")
       .select("id")
       .eq("recording_url", fullUrl)
       .limit(1)
     if (existing && existing.length > 0) {
-      console.log(`[recording] ${recordingSid} already processed; skipping`)
-      return twimlResponse()
+      if (!explicitLeadId || existing[0].id === explicitLeadId) {
+        console.log(`[recording] ${recordingSid} already processed; skipping`)
+        return twimlResponse()
+      }
+      console.log(`[recording] ${recordingSid} attached elsewhere (lead ${existing[0].id}); rescue path re-attaching to ${explicitLeadId}`)
     }
 
     let id: string | null = null
