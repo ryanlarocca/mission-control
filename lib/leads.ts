@@ -712,10 +712,35 @@ Produce a JSON object with these fields:
     even partial — Ryan can clean it up). Null only if no address was
     mentioned.
 
-- recommended_followup_date: ISO date YYYY-MM-DD ≥ today, or null if the
-    caller said "don't call me".
+- recommended_followup_date: ISO date YYYY-MM-DD ≥ today, or null.
 
-- followup_reason: one short sentence on why that date.
+    Translate the SELLER's explicitly stated timeline into a date offset
+    from today using this mapping. If the seller did not state any
+    timeline, return null — do NOT invent a date.
+
+      Seller said                                  → Offset from today
+      "now" / "ASAP" / "urgent" / "this week"      → 3-7 days
+      "next week" / "in a week or two"             → 7-14 days
+      "couple weeks" / "next few weeks"            → 14-30 days
+      "next month" / "in a month or so"            → 30-45 days
+      "1-2 months" / "couple months"               → 45-75 days
+      "3-6 months"                                 → 90-180 days
+      "later this year" / "before year end"        → near Dec 1 of this year
+      "next year" / "a year from now" / "in a year"→ 365 days
+      "year or two" / "couple years" / "1-2 years" → 365-730 days
+      "few years out" / "3+ years"                 → 730+ days
+      "maybe someday" / "no rush" / "no timeline"  → null (do NOT pick a date)
+      "don't call me" / opt-out                    → null
+
+- followup_reason: ONE short sentence that does BOTH:
+    (1) Quotes the EXACT phrase from the transcript that justified the
+        date — wrap the quote in double quotes.
+    (2) States the resulting follow-up timing in plain words.
+    If recommended_followup_date is null, briefly state why instead.
+    Examples:
+      "Seller said 'maybe in a year or two' — follow up ~1 year out."
+      "Caller asked Ryan to 'call me back next week' — follow up in 7 days."
+      "Seller said 'just looking, no rush' — no clear timeline, no auto-followup."
 
 Respond with ONLY the JSON object — no markdown fences, no explanation.
 
@@ -786,19 +811,30 @@ ${historyBlock}FRESH TRANSCRIPT (this is the current call):
   }
 }
 
-// Phase 7D — default follow-up window when the AI didn't return a date.
-// Brian's Phase 7D root cause: the analyzer ran but didn't always produce a
-// date, and the Follow-Up tab queries WHERE recommended_followup_date IS NOT
-// NULL, so the lead never surfaced. Defaulting to T+24h guarantees every
-// inbound-call lead shows up in the to-do bucket — Ryan can snooze/clear if
-// the AI's pick was off.
-const DEFAULT_FOLLOWUP_DAYS = 1
-const DEFAULT_FOLLOWUP_REASON = "Initial follow-up after inbound call."
-
-function defaultFollowupDate(): string {
-  const d = new Date()
-  d.setUTCDate(d.getUTCDate() + DEFAULT_FOLLOWUP_DAYS)
-  return d.toISOString().slice(0, 10)
+// Validation guard for AI-returned follow-up dates. When the AI's stated
+// reason cites a long-horizon phrase ("year(s)", "long-term") but the date
+// is within ~6 months, the AI hallucinated the date — clear it rather than
+// surface a misleading near-term to-do. The prompt's explicit
+// timeline-to-date mapping should make this rare, but the guard catches
+// the obvious failures before they reach Ryan's Follow-Up tab.
+function validateFollowupAgainstReason(
+  date: string | null,
+  reason: string | null
+): { date: string | null; reason: string | null } {
+  if (!date || !reason) return { date, reason }
+  const r = reason.toLowerCase()
+  const daysOut = Math.round(
+    (new Date(date + "T00:00:00Z").getTime() - Date.now()) / 86_400_000
+  )
+  // "year(s)" / "long-term" in reason but date < 180 days → clear.
+  const mentionsLongHorizon = /\byears?\b|\blong[- ]term\b|\bcouple years?\b/.test(r)
+  if (mentionsLongHorizon && daysOut < 180) {
+    console.warn(
+      `[analyze-call] guard: reason mentions long horizon but date is ${daysOut}d out — clearing date+reason. reason="${reason}", date=${date}`
+    )
+    return { date: null, reason: null }
+  }
+  return { date, reason }
 }
 
 // Outbound variant: persist follow-up fields + opportunistically fill
@@ -823,8 +859,13 @@ export async function applyFollowupOnlyResult(
   result: AnalyzeCallResult
 ): Promise<void> {
   const sb = getLeadsClient()
-  const followupDate = result.recommended_followup_date ?? defaultFollowupDate()
-  const followupReason = result.followup_reason ?? DEFAULT_FOLLOWUP_REASON
+  // Respect the AI's null — if no timeline was extracted from the transcript,
+  // don't invent one. The Follow-Up tab will skip rows with null dates, which
+  // is the desired behavior: Ryan only sees follow-ups the AI could justify.
+  const { date: followupDate, reason: followupReason } = validateFollowupAgainstReason(
+    result.recommended_followup_date ?? null,
+    result.followup_reason ?? null
+  )
 
   const { data: existing } = await sb
     .from("leads")
@@ -853,8 +894,9 @@ export async function applyFollowupOnlyResult(
 //   - name + property_address (best-effort; only fills if the AI returned
 //     a value AND the column is currently empty — never overwrites a
 //     hand-corrected value)
-//   - recommended_followup_date + followup_reason (defaulted to T+24h /
-//     "Initial follow-up after inbound call." when AI didn't return them)
+//   - recommended_followup_date + followup_reason (null when the AI couldn't
+//     justify a date from the transcript — Follow-Up tab filters rows with
+//     null dates out, so Ryan only sees follow-ups with explicit reasoning)
 //   - followup_generated_at
 //
 // Status (lifecycle) is NEVER touched by this function — Ryan owns it.
@@ -877,12 +919,19 @@ export async function applyAnalyzeCallResult(
     .eq("id", leadId)
     .maybeSingle()
 
+  // Respect the AI's null (no clear timeline in transcript → no auto-followup)
+  // and run the guard against "reason mentions year but date is near-term."
+  const { date: followupDate, reason: followupReason } = validateFollowupAgainstReason(
+    result.recommended_followup_date ?? null,
+    result.followup_reason ?? null
+  )
+
   const update: Record<string, unknown> = {
     temperature: result.temperature,
     ai_summary: result.summary,
     ai_summary_generated_at: new Date().toISOString(),
-    recommended_followup_date: result.recommended_followup_date ?? defaultFollowupDate(),
-    followup_reason: result.followup_reason ?? DEFAULT_FOLLOWUP_REASON,
+    recommended_followup_date: followupDate,
+    followup_reason: followupReason,
     followup_generated_at: new Date().toISOString(),
     suggested_status: null,
     suggested_status_reason: null,

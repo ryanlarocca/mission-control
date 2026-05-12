@@ -95,7 +95,30 @@ function formatPhone(p: string | null | undefined): string {
 
 function formatDate(dateStr: string): string {
   const d = new Date(dateStr + "T00:00:00")
-  return d.toLocaleDateString([], { month: "short", day: "numeric", weekday: "short" })
+  const today = new Date()
+  today.setHours(0, 0, 0, 0)
+  const daysOut = Math.round((d.getTime() - today.getTime()) / 86_400_000)
+  // Year is hidden by default (noise for near-term dates); we surface it
+  // any time the date is in a different calendar year than today so a
+  // 1-year-out follow-up doesn't look like a 1-day-out follow-up.
+  const sameYear = d.getFullYear() === today.getFullYear()
+  const absolute = d.toLocaleDateString([], sameYear
+    ? { month: "short", day: "numeric", weekday: "short" }
+    : { month: "short", day: "numeric", year: "numeric" }
+  )
+  return `${absolute} · ${formatRelative(daysOut)}`
+}
+
+function formatRelative(daysOut: number): string {
+  if (daysOut < -1) return `${-daysOut}d ago`
+  if (daysOut === -1) return "yesterday"
+  if (daysOut === 0) return "today"
+  if (daysOut === 1) return "tomorrow"
+  if (daysOut < 14) return `in ${daysOut}d`
+  if (daysOut < 60) return `in ${Math.round(daysOut / 7)}w`
+  if (daysOut < 365) return `in ${Math.round(daysOut / 30)}mo`
+  const years = daysOut / 365
+  return years < 1.75 ? `in 1y` : `in ${Math.round(years)}y`
 }
 
 function addDays(dateStr: string, days: number): string {
