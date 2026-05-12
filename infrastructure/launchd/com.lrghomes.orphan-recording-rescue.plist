@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Orphan-recording rescue — runs every 15 min, sweeps for call/voicemail
+  rows in the last 24h with recording_url IS NULL, finds the matching
+  Twilio Recording (From/To match within ±60 min), and replays the
+  recordingStatusCallback against /api/leads/voice/recording so the
+  existing Whisper + AI + Telegram pipeline runs end-to-end.
+
+  Why this lives here: Vercel Hobby caps cron schedules at one/day, which
+  is too slow for a recovery mechanism. The Mac mini already runs the
+  drip engine, gmail-watch renewal, and the Cloudflare tunnel on launchd
+  timers, so adding one more is the path of least friction.
+
+  Reads .env.local from mission-control's working directory (Supabase +
+  Twilio creds). Logs go to /tmp/lrg-orphan-rescue.log{,-err}.
+
+  Install (Mac mini):
+    cp infrastructure/launchd/com.lrghomes.orphan-recording-rescue.plist \
+       ~/Library/LaunchAgents/
+    launchctl load ~/Library/LaunchAgents/com.lrghomes.orphan-recording-rescue.plist
+
+  Trigger once manually:
+    launchctl start com.lrghomes.orphan-recording-rescue
+
+  Tail logs:
+    tail -f /tmp/lrg-orphan-rescue.log /tmp/lrg-orphan-rescue-err.log
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.lrghomes.orphan-recording-rescue</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/opt/homebrew/bin/node</string>
+    <string>scripts/rescue-all-orphan-recordings.mjs</string>
+    <string>--execute</string>
+    <string>--hours=24</string>
+  </array>
+  <key>WorkingDirectory</key>
+  <string>/Users/ryanlarocca/.openclaw/workspace/PROJECTS/mission-control</string>
+  <key>StartInterval</key>
+  <integer>900</integer>
+  <key>StandardOutPath</key>
+  <string>/tmp/lrg-orphan-rescue.log</string>
+  <key>StandardErrorPath</key>
+  <string>/tmp/lrg-orphan-rescue-err.log</string>
+  <key>RunAtLoad</key>
+  <false/>
+</dict>
+</plist>

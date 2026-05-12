@@ -40,6 +40,7 @@ export async function POST(request: Request) {
   let callerPhone = ""
   let twilioNumber = ""
   let recordingSid = ""
+  let explicitLeadId = ""
   try {
     const body = await request.text()
     const params = parseTwilioBody(body)
@@ -47,6 +48,9 @@ export async function POST(request: Request) {
     callerPhone = params.get("From") || params.get("Caller") || ""
     twilioNumber = params.get("To") || params.get("Called") || ""
     recordingSid = params.get("RecordingSid") || ""
+    // Non-Twilio rescue scripts can pass LeadId to bypass the time-windowed
+    // lookup and attach to a specific row. Twilio never sends this param.
+    explicitLeadId = params.get("LeadId") || ""
   } catch (e) {
     console.error("[recording] Failed to parse Twilio body:", e)
     return twimlResponse()
@@ -59,7 +63,7 @@ export async function POST(request: Request) {
 
   const fullUrl = `${recordingUrl}.mp3`
   const source = getCampaignSource(twilioNumber)
-  console.log(`[recording] Processing ${recordingSid} for ${callerPhone} (${source})`)
+  console.log(`[recording] Processing ${recordingSid} for ${callerPhone} (${source})${explicitLeadId ? ` [rescue → ${explicitLeadId}]` : ""}`)
 
   // ── Step 1: synchronously attach recording_url to the lead row ──
   let leadId: string | null = null
@@ -77,23 +81,32 @@ export async function POST(request: Request) {
       return twimlResponse()
     }
 
-    // Filter by twilio_number too — without it, a caller who hits both
-    // numbers within the window would have the second call's recording
-    // overwrite the first call's row. 60 min covers long live calls.
-    const sixtyMinAgo = new Date(Date.now() - 60 * 60 * 1000).toISOString()
-    let lookup = sb
-      .from("leads")
-      .select("id")
-      .eq("caller_phone", callerPhone)
-      .in("lead_type", ["voicemail", "call"])
-      .gte("created_at", sixtyMinAgo)
-      .order("created_at", { ascending: false })
-      .limit(1)
-    if (twilioNumber) lookup = lookup.eq("twilio_number", twilioNumber)
-    const { data, error } = await lookup
-    if (error) console.error("[recording] Lookup failed:", error)
+    let id: string | null = null
+    if (explicitLeadId) {
+      // Rescue path: caller (cron / batch script) already identified the
+      // specific orphan row to attach to. Skip the time-window lookup
+      // entirely so we don't fall back to inserting a new voicemail row
+      // when the orphan is older than the 60-min window.
+      id = explicitLeadId
+    } else {
+      // Filter by twilio_number too — without it, a caller who hits both
+      // numbers within the window would have the second call's recording
+      // overwrite the first call's row. 60 min covers long live calls.
+      const sixtyMinAgo = new Date(Date.now() - 60 * 60 * 1000).toISOString()
+      let lookup = sb
+        .from("leads")
+        .select("id")
+        .eq("caller_phone", callerPhone)
+        .in("lead_type", ["voicemail", "call"])
+        .gte("created_at", sixtyMinAgo)
+        .order("created_at", { ascending: false })
+        .limit(1)
+      if (twilioNumber) lookup = lookup.eq("twilio_number", twilioNumber)
+      const { data, error } = await lookup
+      if (error) console.error("[recording] Lookup failed:", error)
+      id = data?.[0]?.id ?? null
+    }
 
-    const id = data?.[0]?.id
     if (id) {
       // Only attach recording_url — leave lead_type alone. /voice already set
       // it to "call"; /no-answer already promoted it to "voicemail" if the

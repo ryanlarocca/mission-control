@@ -128,7 +128,6 @@ export async function GET(request: Request) {
   let rescued = 0
   const errors: string[] = []
   for (const p of plan) {
-    await sb.from("leads").update({ recording_url: null }).eq("id", p.orphan.id)
     const recordingBaseUrl = `${TWILIO_API}/Accounts/${twSid}/Recordings/${p.recording.sid}`
     const form = new URLSearchParams({
       RecordingUrl: recordingBaseUrl,
@@ -137,6 +136,9 @@ export async function GET(request: Request) {
       From: p.orphan.caller_phone || "",
       To: p.orphan.twilio_number || "",
       CallSid: p.recording.call_sid,
+      // Tells the webhook to skip its time-windowed lookup and attach to
+      // this specific orphan row instead of inserting a fallback voicemail.
+      LeadId: p.orphan.id,
     })
     try {
       const wr = await fetch(`${PROD_BASE}/api/leads/voice/recording`, {

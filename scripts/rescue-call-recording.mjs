@@ -98,6 +98,10 @@ const form = new URLSearchParams({
   From: lead.caller_phone,
   To: lead.twilio_number || "",
   CallSid: winner.recording.call_sid,
+  // Tells the webhook to skip its time-windowed lookup and attach to this
+  // specific orphan row (otherwise old orphans match no row and Twilio's
+  // fallback insert creates a spurious voicemail).
+  LeadId: lead.id,
 })
 console.log(`POSTing to ${webhookUrl} ...`)
 const wr = await fetch(webhookUrl, {

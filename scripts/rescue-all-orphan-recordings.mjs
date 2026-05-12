@@ -120,7 +120,6 @@ console.log("\nExecuting rescues...")
 let ok = 0, fail = 0
 for (const p of plan) {
   // Clear any prior bad URL so the route's idempotency check doesn't skip.
-  await sb.from("leads").update({ recording_url: null }).eq("id", p.orphan.id)
   const recordingBaseUrl = `https://api.twilio.com/2010-04-01/Accounts/${tw.sid}/Recordings/${p.recording.sid}`
   const form = new URLSearchParams({
     RecordingUrl: recordingBaseUrl,
@@ -129,6 +128,9 @@ for (const p of plan) {
     From: p.orphan.caller_phone,
     To: p.orphan.twilio_number || "",
     CallSid: p.recording.call_sid,
+    // Tells the webhook to skip its time-windowed lookup and attach to
+    // this exact orphan row instead of creating a fallback voicemail row.
+    LeadId: p.orphan.id,
   })
   try {
     const wr = await fetch(`${prodBase}/api/leads/voice/recording`, {
