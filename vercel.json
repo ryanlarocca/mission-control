@@ -1,8 +1,0 @@
-{
-  "crons": [
-    {
-      "path": "/api/cron/rescue-orphan-recordings",
-      "schedule": "*/15 * * * *"
-    }
-  ]
-}

@@ -14,8 +14,10 @@ import { getLeadsClient, sendTelegramAlert } from "@/lib/leads"
 // (attach → Whisper → AI → Telegram) runs end-to-end. Bounded to ~24h so
 // repeated runs converge.
 //
-// Scheduled by vercel.json: */15 * * * * (every 15 minutes).
-// Authenticated by Vercel Cron's standard Authorization: Bearer <CRON_SECRET>.
+// Scheduling: the Mac mini drives this on a launchd timer
+// (com.lrghomes.orphan-recording-rescue, 15-min interval). We hit this
+// endpoint with Authorization: Bearer <CRON_SECRET>; the Vercel-native
+// cron schedule was removed because Hobby accounts cap at one cron/day.
 
 const TWILIO_API = "https://api.twilio.com/2010-04-01"
 const PROD_BASE = "https://mission-control-three-chi.vercel.app"
