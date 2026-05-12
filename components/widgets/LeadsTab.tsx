@@ -15,6 +15,17 @@ type LeadType =
   | "drip_imessage" | "drip_email"
 type Temperature = "hot" | "warm" | "cold"
 type SourceType = "direct_mail" | "google_ads"
+// Mirror of the CRMS contact types. Kept here so the Leads-tab card can
+// render the picker without depending on the CRMS module.
+type RelationshipCategory = "Agent" | "Vendor" | "Personal" | "PM" | "Investor" | "Seller"
+const RELATIONSHIP_CATEGORIES: { key: RelationshipCategory; label: string }[] = [
+  { key: "Agent",    label: "Agent" },
+  { key: "Vendor",   label: "Vendor" },
+  { key: "Investor", label: "Investor" },
+  { key: "PM",       label: "Property Mgr" },
+  { key: "Personal", label: "Personal" },
+  { key: "Seller",   label: "Seller" },
+]
 
 const TEMPERATURE_BADGE: Record<Temperature, { emoji: string; label: string; badgeClass: string; pillClass: string }> = {
   hot:  { emoji: "🔥", label: "Hot",  badgeClass: "bg-red-900/40 text-red-200 border-red-900/70",   pillClass: "bg-red-900/30 text-red-200" },
@@ -420,6 +431,12 @@ export function LeadsTab() {
   const [deleteArmedFor, setDeleteArmedFor] = useState<string | null>(null)
   const [deletingFor, setDeletingFor] = useState<string | null>(null)
   const [deleteError, setDeleteError] = useState<string | null>(null)
+  // Promote → Relationships state. Per-card-open picker so two cards can't
+  // both display the picker at once; in-flight + success/error per phone.
+  const [promoteOpenFor, setPromoteOpenFor] = useState<string | null>(null)
+  const [promotingFor, setPromotingFor] = useState<string | null>(null)
+  const [promoteError, setPromoteError] = useState<string | null>(null)
+  const [promoteSuccessFor, setPromoteSuccessFor] = useState<string | null>(null)
   // Synthetic timeline rows merged in from chat.db (sync-imessage) and
   // Gmail threads (sync-email) when Ryan expands a card. Keyed by group.phone.
   // Kept separate from the leads state so they don't perturb status/grouping.
@@ -1028,6 +1045,39 @@ export function LeadsTab() {
     }
   }
 
+  // Promote a lead to the Relationships (BoB) sheet. Used when the caller
+  // turns out to be a referral source — agent, vendor, etc. — not a seller.
+  // Sets status=dead on the lead so it leaves the active queue; the
+  // appended sheet row carries the lead's name/phone/AI summary forward.
+  async function promoteToRelationship(group: LeadGroup, category: RelationshipCategory) {
+    setPromoteError(null)
+    setPromotingFor(group.phone)
+    try {
+      const res = await fetch(`/api/leads/${group.mostRecentId}/promote-to-relationship`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ category }),
+      })
+      const body = await res.json().catch(() => ({}))
+      if (!res.ok || !body.ok) {
+        throw new Error(body.error || `HTTP ${res.status}`)
+      }
+      setPromoteSuccessFor(group.phone)
+      setPromoteOpenFor(null)
+      // Optimistic: mark dead in local state so the card moves out of New/
+      // Contacted/Active without waiting for refetch.
+      setLeads(prev => prev.map(l =>
+        l.id === group.mostRecentId ? { ...l, status: "dead" } : l
+      ))
+      window.setTimeout(() => setPromoteSuccessFor(prev => prev === group.phone ? null : prev), 4000)
+      void fetchLeads(true)
+    } catch (e) {
+      setPromoteError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setPromotingFor(null)
+    }
+  }
+
   async function acceptSuggestedStatus(group: LeadGroup) {
     if (!group.suggestedStatus) return
     const next = group.suggestedStatus
@@ -1428,6 +1478,12 @@ export function LeadsTab() {
               onClearDnc={() => clearDnc(group)}
               onAcceptSuggestion={() => acceptSuggestedStatus(group)}
               onDismissSuggestion={() => dismissSuggestedStatus(group)}
+              promoteOpen={promoteOpenFor === group.phone}
+              onTogglePromote={() => setPromoteOpenFor(prev => prev === group.phone ? null : group.phone)}
+              onPromoteToRelationship={(cat) => promoteToRelationship(group, cat)}
+              promoting={promotingFor === group.phone}
+              promoteError={promotingFor === null && promoteError && expandedPhone === group.phone ? promoteError : null}
+              promoteSuccess={promoteSuccessFor === group.phone}
             />
           ))}
         </div>
@@ -1484,6 +1540,13 @@ interface LeadCardProps {
   onClearDnc: () => void
   onAcceptSuggestion: () => void
   onDismissSuggestion: () => void
+  // Promote → Relationships (Google Sheet / BoB)
+  promoteOpen: boolean
+  onTogglePromote: () => void
+  onPromoteToRelationship: (category: RelationshipCategory) => void
+  promoting: boolean
+  promoteError: string | null
+  promoteSuccess: boolean
   summary: string
   summaryLoading: boolean
   summaryError: string | null
@@ -1994,9 +2057,70 @@ function LeadCard(p: LeadCardProps) {
                   <Ban className="w-3.5 h-3.5" />
                   DNC
                 </button>
+                {/* Promote → Relationships. Hidden if already promoted (notes
+                    starts with the [PROMOTED → ...] marker the server writes). */}
+                {(group.notes || "").startsWith("[PROMOTED → Relationships:") ? (
+                  <span
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 min-h-[36px] rounded bg-violet-900/30 border border-violet-900/60 text-violet-200 text-xs font-medium"
+                    title="This lead was moved to the Relationships sheet"
+                  >
+                    <Sparkles className="w-3.5 h-3.5" />
+                    In Relationships
+                  </span>
+                ) : (
+                  <button
+                    onClick={p.onTogglePromote}
+                    disabled={p.promoting}
+                    className={`inline-flex items-center gap-1.5 px-3 py-1.5 min-h-[36px] rounded text-xs font-medium transition-colors ${
+                      p.promoteOpen
+                        ? "bg-violet-900/40 border border-violet-900 text-violet-200"
+                        : "bg-zinc-900 border border-zinc-800 hover:border-violet-900/60 hover:text-violet-200 text-zinc-400"
+                    }`}
+                    title="Move this caller to the Relationships sheet (agents, vendors, etc.)"
+                  >
+                    {p.promoting ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Sparkles className="w-3.5 h-3.5" />}
+                    Promote
+                  </button>
+                )}
               </>
             )}
           </div>
+
+          {/* Inline category picker for Promote → Relationships. */}
+          {p.promoteOpen && (
+            <div className="rounded-md border border-violet-900/60 bg-violet-950/20 px-3 py-2.5">
+              <div className="text-[10px] uppercase tracking-wider text-violet-300/80 mb-1.5">
+                Move to Relationships as…
+              </div>
+              <div className="flex flex-wrap gap-1.5">
+                {RELATIONSHIP_CATEGORIES.map(({ key, label }) => (
+                  <button
+                    key={key}
+                    onClick={() => p.onPromoteToRelationship(key)}
+                    disabled={p.promoting}
+                    className="inline-flex items-center px-3 py-1.5 min-h-[32px] rounded-full text-xs font-medium bg-violet-900/30 border border-violet-900/60 text-violet-100 hover:bg-violet-900/60 transition-colors disabled:opacity-50"
+                  >
+                    {label}
+                  </button>
+                ))}
+                <button
+                  onClick={p.onTogglePromote}
+                  disabled={p.promoting}
+                  className="inline-flex items-center gap-1 px-3 py-1.5 min-h-[32px] rounded-full text-xs text-zinc-400 hover:text-zinc-200"
+                >
+                  <X className="w-3 h-3" /> Cancel
+                </button>
+              </div>
+              {p.promoteError && (
+                <div className="mt-2 text-xs text-red-300">{p.promoteError}</div>
+              )}
+            </div>
+          )}
+          {p.promoteSuccess && !p.promoteOpen && (
+            <div className="text-xs text-violet-300 inline-flex items-center gap-1">
+              <Check className="w-3 h-3" /> Moved to Relationships
+            </div>
+          )}
 
           {/* Delete lead — destructive, two-step confirm. First click arms;
               second click within ~4s commits. Drops every event row in the
