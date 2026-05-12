@@ -1,0 +1,50 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Outbound-SMS sync — runs every 5 min, pulls Twilio's recent outbound
+  messages, and inserts rows for any that aren't already logged. Catches
+  off-platform sends — most importantly the lrghomes-landing auto-replies
+  that fire after a Google Ads form submit and never come back through
+  mission-control's drip engine or Send button.
+
+  Match rules: same caller_phone + first 200 chars of body + within ±60
+  min of Twilio date_sent. Cluster identity (source, drip_campaign_type,
+  status) inherits from the existing cluster's most recent row.
+
+  Reads .env.local from mission-control's working directory.
+  Logs to /tmp/lrg-outbound-sms-sync.log{,-err}.
+
+  Install (Mac mini):
+    cp infrastructure/launchd/com.lrghomes.outbound-sms-sync.plist \
+       ~/Library/LaunchAgents/
+    launchctl load ~/Library/LaunchAgents/com.lrghomes.outbound-sms-sync.plist
+
+  Trigger once manually:
+    launchctl start com.lrghomes.outbound-sms-sync
+
+  Tail logs:
+    tail -f /tmp/lrg-outbound-sms-sync.log /tmp/lrg-outbound-sms-sync-err.log
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.lrghomes.outbound-sms-sync</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/opt/homebrew/bin/node</string>
+    <string>scripts/sync-outbound-sms.mjs</string>
+    <string>--execute</string>
+    <string>--hours=4</string>
+  </array>
+  <key>WorkingDirectory</key>
+  <string>/Users/ryanlarocca/.openclaw/workspace/PROJECTS/mission-control</string>
+  <key>StartInterval</key>
+  <integer>300</integer>
+  <key>StandardOutPath</key>
+  <string>/tmp/lrg-outbound-sms-sync.log</string>
+  <key>StandardErrorPath</key>
+  <string>/tmp/lrg-outbound-sms-sync-err.log</string>
+  <key>RunAtLoad</key>
+  <false/>
+</dict>
+</plist>
