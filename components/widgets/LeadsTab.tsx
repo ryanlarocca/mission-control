@@ -9,23 +9,17 @@ import {
 } from "lucide-react"
 import { getCampaign, getNextTouch } from "@/lib/drip-campaigns"
 import type { LeadStatus } from "@/lib/leads"
+import {
+  type RelationshipCategory,
+  RELATIONSHIP_CATEGORY_LABELS,
+  RELATIONSHIP_CATEGORY_PICKER_ORDER,
+} from "@/lib/crms"
 
 type LeadType =
   | "call" | "voicemail" | "sms" | "form" | "email"
   | "drip_imessage" | "drip_email"
 type Temperature = "hot" | "warm" | "cold"
 type SourceType = "direct_mail" | "google_ads"
-// Mirror of the CRMS contact types. Kept here so the Leads-tab card can
-// render the picker without depending on the CRMS module.
-type RelationshipCategory = "Agent" | "Vendor" | "Personal" | "PM" | "Investor" | "Seller"
-const RELATIONSHIP_CATEGORIES: { key: RelationshipCategory; label: string }[] = [
-  { key: "Agent",    label: "Agent" },
-  { key: "Vendor",   label: "Vendor" },
-  { key: "Investor", label: "Investor" },
-  { key: "PM",       label: "Property Mgr" },
-  { key: "Personal", label: "Personal" },
-  { key: "Seller",   label: "Seller" },
-]
 
 const TEMPERATURE_BADGE: Record<Temperature, { emoji: string; label: string; badgeClass: string; pillClass: string }> = {
   hot:  { emoji: "🔥", label: "Hot",  badgeClass: "bg-red-900/40 text-red-200 border-red-900/70",   pillClass: "bg-red-900/30 text-red-200" },
@@ -2093,14 +2087,14 @@ function LeadCard(p: LeadCardProps) {
                 Move to Relationships as…
               </div>
               <div className="flex flex-wrap gap-1.5">
-                {RELATIONSHIP_CATEGORIES.map(({ key, label }) => (
+                {RELATIONSHIP_CATEGORY_PICKER_ORDER.map(key => (
                   <button
                     key={key}
                     onClick={() => p.onPromoteToRelationship(key)}
                     disabled={p.promoting}
                     className="inline-flex items-center px-3 py-1.5 min-h-[32px] rounded-full text-xs font-medium bg-violet-900/30 border border-violet-900/60 text-violet-100 hover:bg-violet-900/60 transition-colors disabled:opacity-50"
                   >
-                    {label}
+                    {RELATIONSHIP_CATEGORY_LABELS[key]}
                   </button>
                 ))}
                 <button

@@ -1,12 +1,15 @@
 import { NextResponse } from "next/server"
 import { getSheetsClient, SHEET_ID } from "@/lib/sheets"
+import {
+  type RelationshipCategory as ContactType,
+  RELATIONSHIP_CATEGORIES,
+  normalizeCategory,
+} from "@/lib/crms"
 
 export const dynamic = "force-dynamic"
 export const revalidate = 0
 
 const CADENCE: Record<string, number> = { A: 30, B: 45, C: 60, D: 365 }
-
-type ContactType = "Agent" | "Personal" | "Vendor" | "PM" | "Investor" | "Seller"
 
 const DAILY_TARGETS: Record<ContactType, number> = {
   Agent:    10,
@@ -17,15 +20,7 @@ const DAILY_TARGETS: Record<ContactType, number> = {
   Seller:   0,
 }
 
-const ALL_TYPES: ContactType[] = ["Agent", "Vendor", "Personal", "PM", "Investor", "Seller"]
-
-function normalizeType(raw: string): ContactType {
-  const s = (raw || "").trim()
-  if (s === "Property Manager") return "PM"
-  if (s === "Personal Contact") return "Personal"
-  if (ALL_TYPES.includes(s as ContactType)) return s as ContactType
-  return "Agent"
-}
+const ALL_TYPES: readonly ContactType[] = RELATIONSHIP_CATEGORIES
 
 function isBadName(name: string): boolean {
   const n = name.trim()
@@ -142,7 +137,7 @@ export async function GET() {
       const isDue         = daysSinceLast >= cadenceDays
       if (!isDue) continue
 
-      const type = normalizeType(row[4] || "Agent")
+      const type = normalizeCategory(row[4] || "Agent")
       const { hasNotes, notesStale, cleanNote } = parseNote(noteRaw)
 
       buckets[type].push({

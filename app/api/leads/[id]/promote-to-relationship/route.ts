@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server"
 import { getLeadsClient } from "@/lib/leads"
+import { isValidCategory, RELATIONSHIP_CATEGORIES } from "@/lib/crms"
 import { getSheetsClient, SHEET_ID } from "@/lib/sheets"
 
 // Promote a lead into the Relationships (BoB) Google Sheet. Used when a
@@ -18,7 +19,6 @@ import { getSheetsClient, SHEET_ID } from "@/lib/sheets"
 //   H=tier  I=notes (with optional "[enriched: YYYY-MM-DD]" prefix)
 //   J=snooze_until
 
-const VALID_CATEGORIES = new Set(["Agent", "Vendor", "Personal", "PM", "Investor", "Seller"])
 const VALID_TIERS = new Set(["A", "B", "C", "D"])
 const DEFAULT_TIER = "C"
 
@@ -43,9 +43,9 @@ export async function POST(
   }
 
   const category = String(body.category || "").trim()
-  if (!VALID_CATEGORIES.has(category)) {
+  if (!isValidCategory(category)) {
     return NextResponse.json(
-      { error: `category must be one of: ${Array.from(VALID_CATEGORIES).join(", ")}` },
+      { error: `category must be one of: ${RELATIONSHIP_CATEGORIES.join(", ")}` },
       { status: 400 }
     )
   }

@@ -1,9 +1,8 @@
 import { NextResponse } from "next/server"
 import { getSheetsClient, SHEET_ID } from "@/lib/sheets"
+import { isValidCategory, RELATIONSHIP_CATEGORIES } from "@/lib/crms"
 
 export const dynamic = "force-dynamic"
-
-const VALID_CATEGORIES = new Set(["Agent", "Vendor", "Personal", "PM", "Investor", "Seller"])
 
 export async function POST(request: Request) {
   try {
@@ -13,9 +12,9 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "sheetRow required" }, { status: 400 })
     }
     const c = String(category || "").trim()
-    if (!VALID_CATEGORIES.has(c)) {
+    if (!isValidCategory(c)) {
       return NextResponse.json(
-        { error: "category must be Agent, Vendor, Personal, PM, Investor, or Seller" },
+        { error: `category must be one of: ${RELATIONSHIP_CATEGORIES.join(", ")}` },
         { status: 400 }
       )
     }

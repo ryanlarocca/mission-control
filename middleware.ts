@@ -17,9 +17,6 @@ const PUBLIC_PATHS = [
   // a session cookie. Auth on this path is enforced by Pub/Sub itself
   // (subscription origin) — see scripts/setup-gmail-watch.js.
   "/api/leads/email",
-  // Vercel Cron invokes these without a session cookie. Each cron route
-  // does its own `Authorization: Bearer <CRON_SECRET>` check.
-  "/api/cron",
 ]
 
 export function middleware(request: NextRequest) {
