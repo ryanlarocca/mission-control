@@ -5,7 +5,7 @@ import { useSearchParams } from "next/navigation"
 import {
   Phone, PhoneOutgoing, Voicemail, MessageSquare, ClipboardList, ChevronDown, ChevronRight,
   Loader2, RefreshCw, Send, Check, Mail, Trash2, Bot, Clock, X,
-  Sparkles, PhoneOff, Ban, ShieldOff, Zap, Wand2, Calendar, Pencil, SlidersHorizontal,
+  Sparkles, PhoneOff, Ban, ShieldOff, Zap, Wand2, Calendar, Pencil, Search, SlidersHorizontal,
 } from "lucide-react"
 import { getCampaign, getNextTouch } from "@/lib/drip-campaigns"
 import type { LeadStatus } from "@/lib/leads"
@@ -387,6 +387,7 @@ export function LeadsTab() {
   const [refreshing, setRefreshing]     = useState(false)
   const [error, setError]               = useState<string | null>(null)
   const [filter, setFilter]             = useState<LifecycleFilter>("all")
+  const [search, setSearch]             = useState("")
   const [selectedIds, setSelectedIds]   = useState<Set<string>>(new Set())
   const [bulkApplying, setBulkApplying] = useState(false)
   const [bulkResult, setBulkResult]     = useState<string | null>(null)
@@ -503,12 +504,31 @@ export function LeadsTab() {
     if (hideDnc) result = result.filter(g => !g.isDnc)
     if (hideJunk) result = result.filter(g => !g.isJunk)
     if (hideBadNumber) result = result.filter(g => !g.isBadNumber)
+    // Free-text search across name / phone (raw + last-10 digits) / email /
+    // property address / notes. Trimmed + lowercase compare; phone match
+    // additionally strips non-digits so "(408) 781-3058" and "4087813058"
+    // and "408-781-3058" all hit the same lead.
+    const q = search.trim().toLowerCase()
+    if (q) {
+      const qDigits = q.replace(/\D/g, "")
+      result = result.filter(g => {
+        if (g.name && g.name.toLowerCase().includes(q)) return true
+        if (g.email && g.email.toLowerCase().includes(q)) return true
+        if (g.propertyAddress && g.propertyAddress.toLowerCase().includes(q)) return true
+        if (g.notes && g.notes.toLowerCase().includes(q)) return true
+        if (qDigits && g.phone) {
+          const phoneDigits = g.phone.replace(/\D/g, "")
+          if (phoneDigits.includes(qDigits)) return true
+        }
+        return false
+      })
+    }
     if (expandedPhone && !result.some(g => g.phone === expandedPhone)) {
       const pinned = groups.find(g => g.phone === expandedPhone)
       if (pinned) result = [pinned, ...result]
     }
     return result
-  }, [groups, filter, sourceFilter, tempFilter, hideDnc, hideJunk, hideBadNumber, expandedPhone])
+  }, [groups, filter, search, sourceFilter, tempFilter, hideDnc, hideJunk, hideBadNumber, expandedPhone])
 
   const hasActiveSecondary =
     sourceFilter !== "all" || tempFilter !== "all" || hideDnc || hideJunk || hideBadNumber
@@ -1119,6 +1139,29 @@ export function LeadsTab() {
         </div>
       </div>
 
+      {/* Search across name / phone / email / property / notes. Free-text;
+          phone matching strips non-digits so any phone formatting works. */}
+      <div className="mb-2 relative">
+        <Search className="w-3.5 h-3.5 absolute left-3 top-1/2 -translate-y-1/2 text-zinc-500 pointer-events-none" />
+        <input
+          type="text"
+          inputMode="search"
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          placeholder="Search by name, phone, email, address, or notes…"
+          className="w-full pl-9 pr-9 py-2 text-sm rounded bg-zinc-950 border border-zinc-800 text-zinc-100 placeholder:text-zinc-600 focus:outline-none focus:border-zinc-600"
+        />
+        {search && (
+          <button
+            onClick={() => setSearch("")}
+            className="absolute right-2 top-1/2 -translate-y-1/2 p-1 text-zinc-500 hover:text-zinc-200"
+            aria-label="Clear search"
+          >
+            <X className="w-3.5 h-3.5" />
+          </button>
+        )}
+      </div>
+
       {/* Phase 7D Gmail-style filter bar: lifecycle chips always visible,
           secondary filters tucked behind a Filter button, active secondary
           filters render as removable pills inline. */}
@@ -1296,6 +1339,8 @@ export function LeadsTab() {
         <div className="text-sm text-zinc-500 py-12 text-center">
           {groups.length === 0
             ? "No leads yet."
+            : search.trim()
+            ? `No leads match "${search.trim()}".`
             : `No ${LIFECYCLE_FILTERS.find(f => f.key === filter)?.label.toLowerCase() ?? filter} leads.`}
         </div>
       ) : (
