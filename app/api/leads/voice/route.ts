@@ -3,12 +3,10 @@ import {
   FORWARD_TO,
   getCampaignSource,
   getLeadsClient,
-  OUTBOUND_TWILIO_NUMBER,
+  type LeadStatus,
   parseTwilioBody,
   sendTelegramAlert,
 } from "@/lib/leads"
-
-const OUTBOUND_CALLBACK_DEDUP_DAYS = 30
 
 // TwiML voice webhook for LRG Homes Twilio numbers.
 // Flow: log the lead row, then return Dial TwiML so Ryan's cell rings with
@@ -53,7 +51,6 @@ export async function POST(request: Request) {
 
   if (callerPhone) {
     const source = getCampaignSource(twilioNumber)
-    const isOutboundCallback = twilioNumber === OUTBOUND_TWILIO_NUMBER
     // Landing-page Google Ads number gets its own source_type + drip path.
     // Everything else (MFM-A/B, outbound callback) stays on direct-mail.
     const isGoogleAds = twilioNumber === "+16506703914"
@@ -61,50 +58,40 @@ export async function POST(request: Request) {
     try {
       const sb = getLeadsClient()
 
-      // Phase 7C-may8 Bug 1: when a lead dials the outbound caller-ID
-      // number back, they're returning Ryan's outreach against an
-      // existing lead — not a fresh intake. Look up the recent intake
-      // row and skip the drip-campaign stamp so the engine doesn't kick
-      // off a new cycle. The UI groups events by caller_phone, so the
-      // call event still shows up on the existing card.
+      // Always look up the most recent inbound row for this caller (no time
+      // window) so the new event row inherits the cluster's identity:
+      // lifecycle status (parked nurture / contacted / active leads stay in
+      // their lifecycle bucket), source / source_type (cluster stays in its
+      // original campaign — groupLeads' "most recent inbound" rule would
+      // otherwise flip the cluster source to whichever number they last
+      // dialed), and drip_campaign_type (the drip engine queries on
+      // drip_campaign_type IS NOT NULL — a second row for the same lead
+      // would double-fire touches).
       //
-      // 2026-05-11 Bug 1 follow-up: the new callback event row must
-      // inherit source / source_type / drip_campaign_type from the
-      // existing lead — not the CAMPAIGN_MAP default. Otherwise the
-      // group's "most recent inbound" event flips to source="Outbound"
-      // and the lead drops out of its original campaign bucket in the UI.
-      let existingLeadId: string | null = null
-      let existingLead: {
-        source: string | null
-        source_type: string | null
-        drip_campaign_type: string | null
-      } | null = null
-      if (isOutboundCallback) {
-        const since = new Date(
-          Date.now() - OUTBOUND_CALLBACK_DEDUP_DAYS * 86_400_000
-        ).toISOString()
-        const { data: existing } = await sb
-          .from("leads")
-          .select("id, source, source_type, drip_campaign_type")
-          .eq("caller_phone", callerPhone)
-          .not("twilio_number", "is", null)
-          .gte("created_at", since)
-          .order("created_at", { ascending: false })
-          .limit(1)
-        existingLeadId = existing?.[0]?.id ?? null
-        existingLead = existing?.[0] ?? null
-      }
+      // A fresh drip stamp (with touch_number=0 + last_drip_sent_at=now)
+      // fires ONLY when this is a genuinely new caller. Re-engagements
+      // carry the campaign type forward without resetting the drip clock.
+      const { data: existingRows } = await sb
+        .from("leads")
+        .select("id, source, source_type, drip_campaign_type, status")
+        .eq("caller_phone", callerPhone)
+        .not("twilio_number", "is", null)
+        .order("created_at", { ascending: false })
+        .limit(1)
+      const existingRow = existingRows?.[0] ?? null
+      const inheritedStatus: LeadStatus =
+        (existingRow?.status as LeadStatus | undefined) ?? "new"
 
       const insertRow: Record<string, unknown> = {
-        source: existingLead?.source || source,
+        source: existingRow?.source || source,
         source_type:
-          existingLead?.source_type || (isGoogleAds ? "google_ads" : "direct_mail"),
+          existingRow?.source_type || (isGoogleAds ? "google_ads" : "direct_mail"),
         twilio_number: twilioNumber,
         caller_phone: callerPhone,
         lead_type: "call",
-        status: "new",
+        status: inheritedStatus,
       }
-      if (!existingLeadId) {
+      if (!existingRow) {
         // Phase 7B: stamp drip campaign on intake. The engine's hourly
         // scan will pick up touch 0 (15-min missed-call message) when no
         // recording arrives within the buffer, and touch 1 onward at
@@ -114,12 +101,11 @@ export async function POST(request: Request) {
         insertRow.drip_campaign_type = isGoogleAds ? "google_ads_form" : "direct_mail_call"
         insertRow.drip_touch_number = 0
         insertRow.last_drip_sent_at = new Date().toISOString()
-      } else if (existingLead?.drip_campaign_type) {
-        // Carry the existing lead's drip campaign forward so the group's
-        // drip metadata stays consistent across events. We deliberately
-        // do NOT copy drip_touch_number / last_drip_sent_at — the original
-        // intake row owns the drip clock; this row is event history only.
-        insertRow.drip_campaign_type = existingLead.drip_campaign_type
+      } else if (existingRow.drip_campaign_type) {
+        // Carry the cluster's drip campaign forward without resetting the
+        // clock — the original intake row owns drip_touch_number /
+        // last_drip_sent_at; this row is event history only.
+        insertRow.drip_campaign_type = existingRow.drip_campaign_type
       }
 
       const { error } = await sb.from("leads").insert(insertRow)

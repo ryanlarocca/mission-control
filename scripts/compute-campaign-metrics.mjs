@@ -106,9 +106,12 @@ agg AS (
   GROUP BY campaign_source
 ),
 status_agg AS (
-  -- Phase 7D: hot/warm/nurture moved off `status` into a separate
-  -- `temperature` column (hot/warm/cold). The campaign_metrics column
-  -- names stay for backwards compat; nurture_count now holds cold.
+  -- Phase 7D: hot/warm moved off `status` into a separate `temperature`
+  -- column (hot/warm/cold). The campaign_metrics `nurture_count` column
+  -- name is legacy — it counts temperature='cold', not the new lifecycle
+  -- status='nurture'. Lifecycle nurture is a manual park (not auto-derived
+  -- from inbound signals) and would need a separate column if surfaced in
+  -- metrics.
   SELECT
     campaign_source,
     COUNT(*) FILTER (WHERE temperature = 'hot')::int  AS hot_count,

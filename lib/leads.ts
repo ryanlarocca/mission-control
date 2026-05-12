@@ -158,13 +158,15 @@ export type LeadType =
 // that Ryan moves a lead through manually. Temperature (hot/warm/cold) lives
 // in its own `temperature` column and is AI-driven — Ryan never clicks it.
 // DNC / Junk / Bad-Number remain orthogonal boolean flags.
-// Phase 7C's transitional values (hot/warm/nurture as statuses) were remapped
-// by phase7d-lifecycle-temperature.sql: hot/warm→active+temperature, nurture
-// →contacted+cold.
+// Phase 7C's transitional values (hot/warm as statuses) were remapped by
+// phase7d-lifecycle-temperature.sql: hot/warm→active+temperature. The
+// "nurture" value is manual-only — Ryan parks long-term follow-ups here so
+// they leave the New/Contacted/Active filters without going Dead.
 export type LeadStatus =
   | "new"
   | "contacted"
   | "active"
+  | "nurture"
   | "dead"
 
 // Phase 7D — AI-driven temperature column. Drives the read-only emoji badge
@@ -238,6 +240,7 @@ export const VALID_LEAD_STATUSES: readonly LeadStatus[] = [
   "new",
   "contacted",
   "active",
+  "nurture",
   "dead",
 ] as const
 

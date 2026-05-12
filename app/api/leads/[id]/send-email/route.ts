@@ -93,6 +93,37 @@ export async function POST(
     })
     if (insErr) console.warn(`[send-email] event row insert failed for ${id}:`, insErr.message)
 
+    // Mirror the SMS / call new→contacted promote on the cluster's inbound
+    // row. Without this, the outbound row carries status="contacted" but the
+    // group status (derived from mostRecentInbound) stays "new", so the lead
+    // doesn't move out of the New filter after Ryan emails them.
+    try {
+      const inboundQuery = sb
+        .from("leads")
+        .select("id, status")
+        .not("twilio_number", "is", null)
+        .order("created_at", { ascending: false })
+        .limit(1)
+      // Email leads can have null caller_phone (e.g., Google Voice forwards
+      // without a phone in the body). gmail_thread_id is the more reliable
+      // cluster key for email; fall back to caller_phone if no thread.
+      const { data: intake } = lead.gmail_thread_id
+        ? await inboundQuery.eq("gmail_thread_id", lead.gmail_thread_id)
+        : lead.caller_phone
+        ? await inboundQuery.eq("caller_phone", lead.caller_phone)
+        : { data: null as { id: string; status: string }[] | null }
+      const intakeRow = intake?.[0]
+      if (intakeRow && intakeRow.status === "new") {
+        const { error: promoteErr } = await sb
+          .from("leads")
+          .update({ status: "contacted" })
+          .eq("id", intakeRow.id)
+        if (promoteErr) console.error("[send-email] Status promote failed:", promoteErr)
+      }
+    } catch (e) {
+      console.error("[send-email] Status promote threw:", e)
+    }
+
     return NextResponse.json({ ok: true, mailbox: fromMailbox, messageId: data.id || null })
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e)

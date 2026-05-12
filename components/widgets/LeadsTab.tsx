@@ -8,13 +8,11 @@ import {
   Sparkles, PhoneOff, Ban, ShieldOff, Zap, Wand2, Calendar, Pencil, SlidersHorizontal,
 } from "lucide-react"
 import { getCampaign, getNextTouch } from "@/lib/drip-campaigns"
+import type { LeadStatus } from "@/lib/leads"
 
 type LeadType =
   | "call" | "voicemail" | "sms" | "form" | "email"
   | "drip_imessage" | "drip_email"
-// Phase 7D lifecycle (Ryan-controlled, 4 values). Temperature lives in a
-// separate column and is AI-driven.
-type LeadStatus = "new" | "contacted" | "active" | "dead"
 type Temperature = "hot" | "warm" | "cold"
 type SourceType = "direct_mail" | "google_ads"
 
@@ -147,6 +145,7 @@ const LIFECYCLE_FILTERS: { key: LifecycleFilter; label: string }[] = [
   { key: "new",       label: "New" },
   { key: "contacted", label: "Contacted" },
   { key: "active",    label: "Active" },
+  { key: "nurture",   label: "Nurture" },
   { key: "dead",      label: "Dead" },
 ]
 
@@ -167,6 +166,7 @@ const STATUS_BADGE: Record<LeadStatus, string> = {
   new:        "bg-zinc-700 text-zinc-200",
   contacted:  "bg-blue-900/60 text-blue-200",
   active:     "bg-sky-900/60 text-sky-200",
+  nurture:    "bg-amber-900/60 text-amber-200",
   dead:       "bg-zinc-800 text-zinc-500",
 }
 
@@ -207,6 +207,7 @@ const STATUS_LABEL: Record<LeadStatus, string> = {
   new:        "New",
   contacted:  "Contacted",
   active:     "Active",
+  nurture:    "Nurture",
   dead:       "Dead",
 }
 
@@ -1871,7 +1872,7 @@ function LeadCard(p: LeadCardProps) {
           )}
 
           <div className="flex flex-wrap gap-1.5">
-            {(["new", "contacted", "active", "dead"] as LeadStatus[]).map(s => {
+            {(["new", "contacted", "active", "nurture", "dead"] as LeadStatus[]).map(s => {
               const isCurrent = group.status === s
               const isPending = p.pendingStatus === group.phone + ":" + s
               return (

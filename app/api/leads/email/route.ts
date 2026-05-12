@@ -10,6 +10,7 @@ import {
   getGmailClient,
   getLeadsClient,
   isMobileHome,
+  type LeadStatus,
   normalizePhone,
   sendTelegramAlert,
   triageEmailLead,
@@ -57,6 +58,53 @@ interface AppsScriptPayload {
   subject?: string
   body?: string
   date?: string
+}
+
+// Look up the cluster's most recent row so a new inbound row can inherit
+// cluster identity: lifecycle status (parked nurture / contacted / active
+// leads stay in their bucket — groupLeads keys cluster status off the
+// most-recent inbound) and drip_campaign_type (fresh-stamping a second
+// drip_campaign_type row for the same cluster causes the drip engine to
+// double-fire touches). Precedence mirrors groupLeads' cluster key cascade:
+// phone → gmail_thread → email. Returns null when no prior row exists.
+async function lookupEmailCluster(args: {
+  sb: ReturnType<typeof getLeadsClient>
+  phone: string | null
+  threadId: string | null
+  senderEmail: string
+}): Promise<{ status: LeadStatus; dripCampaignType: string | null } | null> {
+  const { sb, phone, threadId, senderEmail } = args
+  const shape = (row: { status: string | null; drip_campaign_type: string | null }) => ({
+    status: (row.status as LeadStatus | undefined) ?? "new",
+    dripCampaignType: row.drip_campaign_type ?? null,
+  })
+  if (phone) {
+    const { data } = await sb
+      .from("leads")
+      .select("status, drip_campaign_type")
+      .eq("caller_phone", phone)
+      .order("created_at", { ascending: false })
+      .limit(1)
+    if (data?.[0]) return shape(data[0])
+  }
+  if (threadId) {
+    const { data } = await sb
+      .from("leads")
+      .select("status, drip_campaign_type")
+      .eq("gmail_thread_id", threadId)
+      .order("created_at", { ascending: false })
+      .limit(1)
+    if (data?.[0]) return shape(data[0])
+  }
+  const { data } = await sb
+    .from("leads")
+    .select("status, drip_campaign_type")
+    .eq("lead_type", "email")
+    .eq("email", senderEmail)
+    .order("created_at", { ascending: false })
+    .limit(1)
+  if (data?.[0]) return shape(data[0])
+  return null
 }
 
 export async function POST(request: Request) {
@@ -176,12 +224,32 @@ async function handleAppsScript(payload: AppsScriptPayload): Promise<NextRespons
   // Haiku triage — non-fatal
   const triage = await triageEmailLead(subject, bodyText)
 
+  // Inherit cluster status + drip metadata so re-engagement doesn't reset to
+  // "new" and doesn't double-stamp drip. Apps Script payloads carry no Gmail
+  // threadId, so phone → email only.
+  const cluster = await lookupEmailCluster({
+    sb, phone, threadId: null, senderEmail,
+  })
+  const inheritedStatus = cluster?.status ?? "new"
+
   // Phase 7B: pick the drip campaign by source bucket. google_ads_email_only
   // upgrades to google_ads_form when caller_phone arrives; direct_mail_email
   // alternates channels mid-cycle once a phone is on the lead.
-  const dripCampaignType = campaign.source_type === "google_ads"
+  const freshDripCampaignType = campaign.source_type === "google_ads"
     ? "google_ads_email_only"
     : "direct_mail_email"
+  // Fresh-stamp drip only for genuinely new clusters. Re-engagements carry
+  // the cluster's existing campaign forward without resetting the clock; the
+  // original intake row owns drip_touch_number / last_drip_sent_at.
+  const dripFields: Record<string, unknown> = !cluster
+    ? {
+        drip_campaign_type: freshDripCampaignType,
+        drip_touch_number: 0,
+        last_drip_sent_at: new Date().toISOString(),
+      }
+    : cluster.dripCampaignType
+    ? { drip_campaign_type: cluster.dripCampaignType }
+    : {}
   // Phase 7C-may8 Bug 5: mobile-home / lot-number flag.
   const isJunkAddr = isMobileHome(bodyText) || isMobileHome(subject)
   const { data: inserted, error: insertErr } = await sb
@@ -202,12 +270,10 @@ async function handleAppsScript(payload: AppsScriptPayload): Promise<NextRespons
       message: messageText,
       ai_notes: triage?.summary ?? null,
       suggested_reply: triage?.suggestedReply ?? null,
-      status: triage?.is_dead ? "dead" : "new",
+      status: triage?.is_dead ? "dead" : inheritedStatus,
       temperature: triage?.temperature ?? null,
       is_junk: isJunkAddr || undefined,
-      drip_campaign_type: dripCampaignType,
-      drip_touch_number: 0,
-      last_drip_sent_at: new Date().toISOString(),
+      ...dripFields,
     })
     .select("id")
     .single()
@@ -334,14 +400,31 @@ async function processSingleMessage(args: {
     return
   }
 
-  // Triage with Haiku — non-fatal; null leaves the lead as "new" and Ryan
-  // sees it untouched.
+  // Triage with Haiku — non-fatal; null leaves the lead with the inherited
+  // cluster status (or "new" for fresh callers) and Ryan sees it untouched.
   const triage = await triageEmailLead(subject, bodyText)
 
+  // Inherit cluster status + drip metadata (see lookupEmailCluster above).
+  const cluster = await lookupEmailCluster({
+    sb, phone, threadId: message.threadId || null, senderEmail,
+  })
+  const inheritedStatus = cluster?.status ?? "new"
+
   // Phase 7B: same drip-campaign mapping as handleAppsScript above.
-  const dripCampaignType = campaign.source_type === "google_ads"
+  const freshDripCampaignType = campaign.source_type === "google_ads"
     ? "google_ads_email_only"
     : "direct_mail_email"
+  // Fresh-stamp drip only for genuinely new clusters; re-engagements carry
+  // the cluster's existing campaign forward without resetting the clock.
+  const dripFields: Record<string, unknown> = !cluster
+    ? {
+        drip_campaign_type: freshDripCampaignType,
+        drip_touch_number: 0,
+        last_drip_sent_at: new Date().toISOString(),
+      }
+    : cluster.dripCampaignType
+    ? { drip_campaign_type: cluster.dripCampaignType }
+    : {}
   // Phase 7C-may8 Bug 5: mobile-home / lot-number flag.
   const isJunkAddr = isMobileHome(bodyText) || isMobileHome(subject)
   const { data: inserted, error: insertErr } = await sb
@@ -360,7 +443,7 @@ async function processSingleMessage(args: {
       message: messageText,
       ai_notes: triage?.summary ?? null,
       suggested_reply: triage?.suggestedReply ?? null,
-      status: triage?.is_dead ? "dead" : "new",
+      status: triage?.is_dead ? "dead" : inheritedStatus,
       temperature: triage?.temperature ?? null,
       is_junk: isJunkAddr || undefined,
       // Persist the Gmail threadId so the Leads-tab card can pull the full
@@ -368,9 +451,7 @@ async function processSingleMessage(args: {
       // back to null when the message has no thread (rare — Gmail always
       // assigns one for inbound mail).
       gmail_thread_id: message.threadId || null,
-      drip_campaign_type: dripCampaignType,
-      drip_touch_number: 0,
-      last_drip_sent_at: new Date().toISOString(),
+      ...dripFields,
     })
     .select("id")
     .single()
