@@ -6,6 +6,7 @@ import {
   Phone, PhoneOutgoing, Voicemail, MessageSquare, ClipboardList, ChevronDown, ChevronRight,
   Loader2, RefreshCw, Send, Check, Mail, Trash2, Bot, Clock, X,
   Sparkles, PhoneOff, Ban, ShieldOff, Zap, Wand2, Calendar, Pencil, Search, SlidersHorizontal,
+  Maximize2,
 } from "lucide-react"
 import { getCampaign, getNextTouch } from "@/lib/drip-campaigns"
 import { isAnonymousCaller } from "@/lib/anonymous"
@@ -707,6 +708,9 @@ export function LeadsTab() {
         setDraftMessage(prev => ({ ...prev, [group.phone]: data.message || "" }))
       } else {
         setEmailDraft(prev => ({ ...prev, [group.phone]: data.message || "" }))
+        // The route returns an AI-suggested subject too — wire it in (it was
+        // being dropped before). Harmless for thread replies (subject unused).
+        if (data.subject) setEmailSubject(prev => ({ ...prev, [group.phone]: data.subject }))
       }
     } catch (e) {
       setDraftError(e instanceof Error ? e.message : String(e))
@@ -1586,6 +1590,10 @@ function LeadCard(p: LeadCardProps) {
   const hasInboundEmail = group.events.some(e => e.lead_type === "email" && !isOutbound(e))
   const hasEmail = !!group.email
   const nextDripLabel = nextDripETA(group)
+  // Popout email editor — the inline composer is a 3-row box, too cramped for
+  // a real multi-paragraph email. Expand opens a roomy modal that edits the
+  // SAME draft state (lives in the parent), so opening/closing loses nothing.
+  const [emailPopout, setEmailPopout] = useState(false)
 
   return (
     <div
@@ -1864,15 +1872,25 @@ function LeadCard(p: LeadCardProps) {
                     ? "💡 Suggested Reply"
                     : hasInboundEmail ? "Email Reply" : "New Email"}
                 </div>
-                <button
-                  onClick={p.onDraftEmail}
-                  disabled={p.draftingEmail}
-                  className="text-[11px] text-purple-300 hover:text-purple-200 inline-flex items-center gap-1 disabled:opacity-50"
-                  title="Have AI draft an email based on the conversation"
-                >
-                  {p.draftingEmail ? <Loader2 className="w-3 h-3 animate-spin" /> : <Wand2 className="w-3 h-3" />}
-                  {p.draftingEmail ? "Drafting…" : "AI draft"}
-                </button>
+                <div className="flex items-center gap-3">
+                  <button
+                    onClick={() => setEmailPopout(true)}
+                    className="text-[11px] text-zinc-400 hover:text-zinc-200 inline-flex items-center gap-1"
+                    title="Expand to a full editor"
+                  >
+                    <Maximize2 className="w-3 h-3" />
+                    Expand
+                  </button>
+                  <button
+                    onClick={p.onDraftEmail}
+                    disabled={p.draftingEmail}
+                    className="text-[11px] text-purple-300 hover:text-purple-200 inline-flex items-center gap-1 disabled:opacity-50"
+                    title="Have AI draft an email based on the conversation"
+                  >
+                    {p.draftingEmail ? <Loader2 className="w-3 h-3 animate-spin" /> : <Wand2 className="w-3 h-3" />}
+                    {p.draftingEmail ? "Drafting…" : "AI draft"}
+                  </button>
+                </div>
               </div>
               {!hasInboundEmail && (
                 <input
@@ -2006,6 +2024,24 @@ function LeadCard(p: LeadCardProps) {
                 </button>
               </div>
             </div>
+          )}
+
+          {emailPopout && hasEmail && (
+            <EmailComposerModal
+              leadName={group.name || phoneDisplay || group.email || "(lead)"}
+              hasInboundEmail={hasInboundEmail}
+              subject={p.emailSubject}
+              onEditSubject={p.onEditEmailSubject}
+              body={p.emailDraft}
+              onEditBody={p.onEditEmailDraft}
+              onDraft={p.onDraftEmail}
+              drafting={p.draftingEmail}
+              onSend={p.onSendEmail}
+              sending={p.sendingEmail}
+              sendError={p.emailSendError}
+              sendSuccess={p.emailSendSuccess}
+              onClose={() => setEmailPopout(false)}
+            />
           )}
 
           <div className="flex flex-wrap gap-1.5">
@@ -2184,6 +2220,135 @@ function LeadCard(p: LeadCardProps) {
           </div>
         </div>
       )}
+    </div>
+  )
+}
+
+// Full-screen email editor. The inline card composer is a cramped 3-row box;
+// this is the "Expand" target — a roomy modal for actually writing/editing a
+// multi-paragraph email. It edits the SAME draft state passed down from
+// LeadsTab (subject + body), so opening and closing it loses nothing and the
+// inline composer stays in sync. Backdrop click + Escape both close (safe —
+// the draft persists in the parent). Auto-closes shortly after a successful
+// send so Ryan sees the confirmation, then it gets out of the way.
+function EmailComposerModal(props: {
+  leadName: string
+  hasInboundEmail: boolean
+  subject: string
+  onEditSubject: (v: string) => void
+  body: string
+  onEditBody: (v: string) => void
+  onDraft: () => void
+  drafting: boolean
+  onSend: () => void
+  sending: boolean
+  sendError: string | null
+  sendSuccess: boolean
+  onClose: () => void
+}) {
+  const {
+    leadName, hasInboundEmail, subject, onEditSubject, body, onEditBody,
+    onDraft, drafting, onSend, sending, sendError, sendSuccess, onClose,
+  } = props
+
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) { if (e.key === "Escape") onClose() }
+    document.addEventListener("keydown", onKey)
+    return () => document.removeEventListener("keydown", onKey)
+  }, [onClose])
+
+  // Close shortly after a successful send so the confirmation is visible.
+  useEffect(() => {
+    if (!sendSuccess) return
+    const t = setTimeout(onClose, 1200)
+    return () => clearTimeout(t)
+  }, [sendSuccess, onClose])
+
+  const canSend = !sending && body.trim().length > 0 && (hasInboundEmail || subject.trim().length > 0)
+
+  return (
+    <div
+      className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-4"
+      onClick={onClose}
+    >
+      <div
+        className="relative w-full max-w-2xl rounded-lg border border-zinc-800 bg-zinc-950 shadow-xl overflow-hidden flex flex-col max-h-[90vh]"
+        onClick={e => e.stopPropagation()}
+      >
+        <div className="px-4 py-3 border-b border-zinc-800 flex items-center gap-2">
+          <Mail className="w-4 h-4 text-zinc-400" />
+          <span className="text-zinc-100 font-medium">
+            {hasInboundEmail ? "Email Reply" : "New Email"} — {leadName}
+          </span>
+          <button
+            onClick={onDraft}
+            disabled={drafting}
+            className="ml-auto text-[11px] text-purple-300 hover:text-purple-200 inline-flex items-center gap-1 disabled:opacity-50"
+            title="Have AI draft an email based on the conversation"
+          >
+            {drafting ? <Loader2 className="w-3 h-3 animate-spin" /> : <Wand2 className="w-3 h-3" />}
+            {drafting ? "Drafting…" : "AI draft"}
+          </button>
+          <button onClick={onClose} className="p-1 rounded hover:bg-zinc-900 text-zinc-400 hover:text-zinc-200">
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+
+        <div className="px-4 py-3 space-y-3 overflow-y-auto">
+          {!hasInboundEmail && (
+            <div>
+              <div className="text-xs text-zinc-500 mb-1">Subject</div>
+              <input
+                type="text"
+                value={subject}
+                onChange={e => onEditSubject(e.target.value)}
+                placeholder="Subject…"
+                className="w-full bg-zinc-900 border border-zinc-800 rounded px-3 py-2 text-sm text-zinc-100 placeholder-zinc-600 focus:outline-none focus:border-zinc-700"
+                style={{ fontSize: 16 }}
+                disabled={sending}
+              />
+            </div>
+          )}
+          <div>
+            <div className="text-xs text-zinc-500 mb-1">Message</div>
+            <textarea
+              value={body}
+              onChange={e => onEditBody(e.target.value)}
+              placeholder="Write the email…"
+              rows={16}
+              className="w-full bg-zinc-900 border border-zinc-800 rounded px-3 py-2 text-sm text-zinc-100 placeholder-zinc-600 focus:outline-none focus:border-zinc-700 resize-y leading-relaxed"
+              style={{ fontSize: 16 }}
+              disabled={sending}
+              autoFocus
+            />
+          </div>
+        </div>
+
+        <div className="px-4 py-3 border-t border-zinc-800 flex items-center gap-2">
+          <div className="text-xs flex-1 min-w-0 truncate">
+            {sendError && <span className="text-red-300">{sendError}</span>}
+            {sendSuccess && (
+              <span className="text-emerald-400 inline-flex items-center gap-1">
+                <Check className="w-3 h-3" /> Email sent
+              </span>
+            )}
+          </div>
+          <button
+            onClick={onClose}
+            className="inline-flex items-center gap-1.5 px-3 py-2 rounded bg-zinc-900 border border-zinc-800 hover:border-zinc-700 text-zinc-300 text-sm font-medium transition-colors"
+          >
+            Close
+          </button>
+          <button
+            onClick={onSend}
+            disabled={!canSend}
+            className="inline-flex items-center gap-1.5 px-4 py-2 min-h-[44px] rounded bg-blue-600 hover:bg-blue-500 disabled:bg-zinc-800 disabled:text-zinc-600 text-white text-sm font-medium transition-colors"
+          >
+            {sending ? <Loader2 className="w-4 h-4 animate-spin" /> : <Mail className="w-4 h-4" />}
+            Send Email
+          </button>
+        </div>
+      </div>
     </div>
   )
 }

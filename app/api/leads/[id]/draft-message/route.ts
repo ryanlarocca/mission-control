@@ -65,10 +65,14 @@ export async function POST(
     else q = q.eq("id", anchor.id)
     const { data: events } = await q.returns<ContextRow[]>()
 
+    // Per-message cap 4000 chars (was 300). A whole call transcript lands in
+    // ONE row — at 300 chars the model only saw the opening of the
+    // conversation and couldn't tell what was actually discussed or what the
+    // agreed next step was. 15 rows × 4000 ≈ 15k tokens, fine for Haiku.
     const transcript = (events || [])
       .filter(r => (r.message || "").trim().length > 0)
       .slice(-15)
-      .map(r => `${dirLabel(r)}: ${(r.message || "").slice(0, 300)}`)
+      .map(r => `${dirLabel(r)}: ${(r.message || "").slice(0, 4000)}`)
       .join("\n") || "(no prior messages)"
 
     const lastInboundDate = (events || [])
@@ -100,14 +104,25 @@ ${sharedContext}
 Output ONLY the message body — no preamble, no quotes, no labels.`
       : `You are drafting a follow-up email from Ryan, a cash home buyer in the Bay Area. Write as if Ryan typed it himself.
 
+FIRST, read the conversation history below and work out:
+  1. Where things currently stand with this lead.
+  2. The specific NEXT STEP — what Ryan said he would do, or what the
+     conversation is clearly waiting on.
+THEN write the email to move that next step forward. Do NOT write a generic
+"just checking in" — write the email the conversation is actually waiting for.
+
 RULES:
-- 3-6 sentences. Professional but casual.
-- Reference the property or prior conversation specifically.
+- Professional but casual — like Ryan typed it himself. No emojis.
+- Open by referencing something specific from the actual conversation.
+- If the next step needs a number, price, or date that is NOT stated
+  anywhere in the conversation, insert a bracketed placeholder for Ryan to
+  fill in — e.g. [OFFER PRICE], [CLOSING DATE]. NEVER invent or estimate a
+  figure.
+- Keep it tight — a few short paragraphs at most.
 - End with "— Ryan" only.
-- No emojis.
 
 Respond as JSON only (no markdown):
-{ "subject": "<short, specific, not salesy>", "body": "<the email body, ending with — Ryan>" }
+{ "subject": "<short, specific, references the property or topic — not salesy>", "body": "<the email body, ending with — Ryan>" }
 
 ${sharedContext}`
 
@@ -116,7 +131,7 @@ ${sharedContext}`
       headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
       body: JSON.stringify({
         model: HAIKU_MODEL,
-        max_tokens: channel === "email" ? 350 : 200,
+        max_tokens: channel === "email" ? 600 : 200,
         messages: [{ role: "user", content: prompt }],
       }),
     })
