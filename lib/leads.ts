@@ -1,6 +1,7 @@
 import { createClient, type SupabaseClient } from "@supabase/supabase-js"
 import { google, gmail_v1 } from "googleapis"
 import emailCampaigns from "@/config/email-campaigns.json"
+import { isAnonymousCaller } from "./anonymous"
 
 export const CAMPAIGN_MAP: Record<string, string> = {
   "+16504364279": "MFM-A",
@@ -129,21 +130,11 @@ export function normalizePhone(raw: string | null | undefined): string {
   return String(raw).trim()
 }
 
-// Twilio sends a non-E.164 placeholder for blocked / withheld caller ID —
-// "Anonymous", "Restricted", "Unavailable", "unknown", "Private", or the
-// keypad-spelled +266696687 ("ANONYMOUS"). Every blocked caller collapses
-// into the same placeholder value, so we can't treat it as a real contact
-// key: intake junks these by default + skips the cluster-inheritance lookup,
-// groupLeads keys them by row id (one card per call, never merged), and the
-// drips forecast filters them out. A substantive voicemail re-promotes the
-// row (see processRecordingBackground).
-const ANONYMOUS_CALLER_VALUES = new Set([
-  "anonymous", "restricted", "unavailable", "unknown", "private", "+266696687",
-])
-export function isAnonymousCaller(phone: string | null | undefined): boolean {
-  if (!phone) return false
-  return ANONYMOUS_CALLER_VALUES.has(phone.trim().toLowerCase())
-}
+// Blocked / withheld caller-ID detection lives in lib/anonymous.ts (a
+// dependency-free module — this file pulls in googleapis and can't be
+// bundled client-side). Imported for internal use here + re-exported so
+// existing `@/lib/leads` importers keep working.
+export { isAnonymousCaller }
 
 export const FORWARD_TO = "+14085006293"
 

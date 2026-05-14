@@ -3,11 +3,11 @@ import {
   FORWARD_TO,
   getCampaignSource,
   getLeadsClient,
-  isAnonymousCaller,
   type LeadStatus,
   parseTwilioBody,
   sendTelegramAlert,
 } from "@/lib/leads"
+import { isAnonymousCaller } from "@/lib/anonymous"
 
 // TwiML voice webhook for LRG Homes Twilio numbers.
 // Flow: log the lead row, then return Dial TwiML so Ryan's cell rings with

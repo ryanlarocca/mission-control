@@ -5,8 +5,8 @@ import {
   analyzeCallTranscript,
   applyAnalyzeCallResult,
   fetchClusterHistory,
-  isAnonymousCaller,
 } from "@/lib/leads"
+import { isAnonymousCaller } from "@/lib/anonymous"
 
 // Phase 7D — re-run the unified analyzer against a lead's stored transcript
 // (or one POSTed in the body). Writes temperature + ai_summary + name +

@@ -8,7 +8,7 @@ import {
   Sparkles, PhoneOff, Ban, ShieldOff, Zap, Wand2, Calendar, Pencil, Search, SlidersHorizontal,
 } from "lucide-react"
 import { getCampaign, getNextTouch } from "@/lib/drip-campaigns"
-import { isAnonymousCaller } from "@/lib/leads"
+import { isAnonymousCaller } from "@/lib/anonymous"
 import type { LeadStatus } from "@/lib/leads"
 import {
   type RelationshipCategory,
