@@ -5,7 +5,10 @@ import { getLeadsClient } from "@/lib/leads"
 // Control approval UI. Auth-gated by middleware.
 //
 // GET  /api/leads/drip-queue                → { items: DripQueueRow[] }
-// PATCH /api/leads/drip-queue               → body { id, action: "approve"|"skip" }
+// PATCH /api/leads/drip-queue               → body { id, action: "approve"|"skip"|"edit", message?, subject? }
+//
+// "edit" rewrites the pending row's message (and optionally subject) so Ryan
+// can tweak Haiku's draft before approving. Only allowed while status=pending.
 //
 // The drip engine drains rows where status="approved" on its hourly pass,
 // sends them, and flips the row to status="sent". Skipped rows stay in the
@@ -54,22 +57,45 @@ export async function GET(request: NextRequest) {
 }
 
 export async function PATCH(request: NextRequest) {
-  let body: { id?: string; action?: string } = {}
+  let body: { id?: string; action?: string; message?: string; subject?: string } = {}
   try {
     body = await request.json()
   } catch {
     return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 })
   }
-  const { id, action } = body
+  const { id, action, message, subject } = body
   if (!id || typeof id !== "string") {
     return NextResponse.json({ error: "id is required" }, { status: 400 })
   }
-  if (action !== "approve" && action !== "skip") {
-    return NextResponse.json({ error: 'action must be "approve" or "skip"' }, { status: 400 })
+  if (action !== "approve" && action !== "skip" && action !== "edit") {
+    return NextResponse.json({ error: 'action must be "approve", "skip", or "edit"' }, { status: 400 })
   }
 
   try {
     const sb = getLeadsClient()
+
+    // Edit: replace message/subject on a pending row only. Returns the
+    // updated row so the UI can refresh inline without a re-fetch.
+    if (action === "edit") {
+      if (typeof message !== "string" || message.trim().length === 0) {
+        return NextResponse.json({ error: "message must be a non-empty string" }, { status: 400 })
+      }
+      const update: Record<string, unknown> = { message: message.trim() }
+      if (typeof subject === "string") update.subject = subject.trim() || null
+      const { data, error } = await sb
+        .from("drip_queue")
+        .update(update)
+        .eq("id", id)
+        .eq("status", "pending")
+        .select()
+        .maybeSingle()
+      if (error) {
+        console.error("[drip-queue:PATCH edit] failed:", error)
+        return NextResponse.json({ error: error.message }, { status: 500 })
+      }
+      if (!data) return NextResponse.json({ error: "row not found or not pending" }, { status: 409 })
+      return NextResponse.json({ item: data })
+    }
 
     // Approve-time staleness check: if there's been any non-drip human
     // contact (inbound or outbound) on this lead since the queue row was
@@ -126,13 +152,16 @@ export async function PATCH(request: NextRequest) {
       action === "approve"
         ? { status: "approved", approved_at: new Date().toISOString() }
         : { status: "skipped" }
-    // Only flip pending rows; ignore re-clicks on already-decided rows so
-    // approval can't accidentally resurrect a skipped touch.
+    // Approve only flips pending rows. Skip also accepts failed rows — the
+    // Drips-tab "Dismiss" button on a failed touch (the lead's cadence
+    // already advanced past it, so dismissing just clears the queue).
+    // Either way the status guard blocks re-clicks on already-decided rows.
+    const allowedFrom = action === "approve" ? ["pending"] : ["pending", "failed"]
     const { data, error } = await sb
       .from("drip_queue")
       .update(update)
       .eq("id", id)
-      .eq("status", "pending")
+      .in("status", allowedFrom)
       .select()
       .single()
     if (error) {

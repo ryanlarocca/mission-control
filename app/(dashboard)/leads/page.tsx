@@ -4,8 +4,9 @@ import { Suspense, useEffect, useState } from "react"
 import { useSearchParams } from "next/navigation"
 import { LeadsTab } from "@/components/widgets/LeadsTab"
 import { FollowUpTab } from "@/components/widgets/FollowUpTab"
+import { DripsTab } from "@/components/widgets/DripsTab"
 
-type View = "leads" | "followups"
+type View = "leads" | "followups" | "drips"
 
 function LeadsPageBody() {
   const searchParams = useSearchParams()
@@ -28,6 +29,7 @@ function LeadsPageBody() {
         {[
           { key: "leads" as View, label: "Leads" },
           { key: "followups" as View, label: "Follow-ups" },
+          { key: "drips" as View, label: "Drips" },
         ].map(({ key, label }) => {
           const active = view === key
           return (
@@ -46,7 +48,7 @@ function LeadsPageBody() {
         })}
       </div>
 
-      {view === "leads" ? <LeadsTab /> : <FollowUpTab />}
+      {view === "leads" ? <LeadsTab /> : view === "followups" ? <FollowUpTab /> : <DripsTab />}
     </div>
   )
 }
