@@ -96,6 +96,16 @@ export function getMailboxForSource(source: string | null | undefined): string |
   return null
 }
 
+// RFC 2047 encoded-word for an email header value. Email headers must be
+// 7-bit ASCII — a raw UTF-8 character (em-dash, curly quote) dropped straight
+// into a `Subject:` line renders as mojibake ("Ã¢Â€Â"") in the recipient's
+// client. Plain-ASCII values pass through untouched so the wire stays
+// human-readable for the common case. Used by every buildRawEmail().
+export function encodeEmailHeader(value: string): string {
+  if (/^[\x00-\x7F]*$/.test(value)) return value
+  return `=?UTF-8?B?${Buffer.from(value, "utf8").toString("base64")}?=`
+}
+
 // Build a Gmail API client that impersonates the given mailbox owner via
 // Google Workspace domain-wide delegation. DWD on the lrghomes.com tenant is
 // authorized for gmail.modify only — gmail.readonly returns 401

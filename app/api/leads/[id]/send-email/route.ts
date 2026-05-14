@@ -1,15 +1,17 @@
 import { NextRequest, NextResponse } from "next/server"
-import { getGmailClient, getLeadsClient } from "@/lib/leads"
+import { getGmailClient, getLeadsClient, getMailboxForSource, encodeEmailHeader } from "@/lib/leads"
 
 // Phase 7C — Part 6: send a manual email to a lead from the lead card.
 //
 // Distinct from /api/leads/email-reply — that endpoint is for replying
 // inside an existing Gmail thread (uses gmail_thread_id + In-Reply-To
 // headers). This endpoint sends a *fresh* email, choosing the sending
-// mailbox by the same priority as the drip engine:
-//   1. lead came in via email   → reply from that mailbox (preserves thread)
-//   2. lead.source_type=google_ads → info@lrghomes.com
-//   3. fallback                  → DRIP_DEFAULT_MAILBOX or ryan@lrghomes.com
+// mailbox by this priority:
+//   1. lead came in via email      → reply from that mailbox (preserves thread)
+//   2. campaign mailbox for source → MFM-A→ryansvg@, MFM-B→ryansvj@ — so the
+//      lead always sees the same address tied to the mailer they responded to
+//   3. lead.source_type=google_ads → info@lrghomes.com
+//   4. fallback                    → DRIP_DEFAULT_MAILBOX or ryan@lrghomes.com
 //
 // Records an outbound `lead_type=email` row so the timeline shows it.
 function buildRawEmail(args: {
@@ -21,7 +23,7 @@ function buildRawEmail(args: {
   const lines = [
     `To: ${args.to}`,
     `From: ${args.from}`,
-    `Subject: ${args.subject}`,
+    `Subject: ${encodeEmailHeader(args.subject)}`,
     "MIME-Version: 1.0",
     "Content-Type: text/plain; charset=UTF-8",
     "",
@@ -79,12 +81,17 @@ export async function POST(
       return NextResponse.json({ error: "lead has no email address" }, { status: 400 })
     }
 
+    // Sending mailbox priority — see the header comment. A call/SMS lead
+    // gets the mailbox tied to its campaign (MFM-A → ryansvg@, MFM-B →
+    // ryansvj@) so it always corresponds to the mailer they responded to.
     const tn = String(lead.twilio_number || "")
+    const campaignMailbox = getMailboxForSource(lead.source)
     const fromMailbox = tn.startsWith("email:")
       ? tn.slice("email:".length)
-      : lead.source_type === "google_ads"
-      ? "info@lrghomes.com"
-      : process.env.DRIP_DEFAULT_MAILBOX || "ryan@lrghomes.com"
+      : campaignMailbox
+      ?? (lead.source_type === "google_ads"
+        ? "info@lrghomes.com"
+        : process.env.DRIP_DEFAULT_MAILBOX || "ryan@lrghomes.com")
 
     const gmail = getGmailClient(fromMailbox)
     const raw = buildRawEmail({ to: recipientEmail, from: fromMailbox, subject, body: text })

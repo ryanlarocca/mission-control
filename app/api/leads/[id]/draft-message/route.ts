@@ -112,17 +112,20 @@ THEN write the email to move that next step forward. Do NOT write a generic
 "just checking in" — write the email the conversation is actually waiting for.
 
 RULES:
-- Professional but casual — like Ryan typed it himself. No emojis.
+- Professional but casual, like Ryan typed it himself. No emojis.
 - Open by referencing something specific from the actual conversation.
 - If the next step needs a number, price, or date that is NOT stated
   anywhere in the conversation, insert a bracketed placeholder for Ryan to
-  fill in — e.g. [OFFER PRICE], [CLOSING DATE]. NEVER invent or estimate a
+  fill in, e.g. [OFFER PRICE], [CLOSING DATE]. NEVER invent or estimate a
   figure.
-- Keep it tight — a few short paragraphs at most.
-- End with "— Ryan" only.
+- Keep it tight: a few short paragraphs at most.
+- Plain ASCII punctuation only in BOTH the subject and body: regular hyphens
+  (-), straight quotes ('), no em-dashes, no en-dashes, no curly quotes. It
+  should read like a person typed it on a normal keyboard.
+- Sign off with just "Ryan" on its own line at the end. No dash before it.
 
 Respond as JSON only (no markdown):
-{ "subject": "<short, specific, references the property or topic — not salesy>", "body": "<the email body, ending with — Ryan>" }
+{ "subject": "<short, specific, references the property or topic, not salesy>", "body": "<the email body, ending with 'Ryan' on its own line>" }
 
 ${sharedContext}`
 

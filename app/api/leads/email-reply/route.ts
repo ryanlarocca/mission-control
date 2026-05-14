@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server"
-import { getGmailClient, getLeadsClient } from "@/lib/leads"
+import { getGmailClient, getLeadsClient, encodeEmailHeader } from "@/lib/leads"
 
 // Send an email reply to an inbound lead from the mailbox that received it.
 //
@@ -222,7 +222,9 @@ function buildRawEmail({ to, from, subject, body, inReplyTo, references }: Build
   const lines = [
     `To: ${to}`,
     `From: ${from}`,
-    `Subject: ${subject}`,
+    // RFC 2047-encode — a raw em-dash / curly quote in the subject (common
+    // when the original subject came from an AI draft) garbles otherwise.
+    `Subject: ${encodeEmailHeader(subject)}`,
   ]
   if (inReplyTo) {
     lines.push(`In-Reply-To: ${inReplyTo}`)
