@@ -1,9 +1,5 @@
 import { NextRequest, NextResponse } from "next/server"
-import {
-  getLeadsClient,
-  VALID_TEMPERATURES,
-  type Temperature,
-} from "@/lib/leads"
+import { getLeadsClient } from "@/lib/leads"
 
 // Phase 7D — cached lead summary, multi-event variant.
 //
@@ -11,12 +7,17 @@ import {
 //   * If ai_summary is set AND ai_summary_generated_at is newer than the
 //     most recent lead-event timestamp on this contact → return cached.
 //   * Otherwise: gather all events for the contact (phone OR email),
-//     call Haiku, store ai_summary + temperature + ai_summary_generated_at,
-//     return the summary.
+//     call Haiku, store ai_summary + ai_summary_generated_at, return it.
 //
-// Output format matches the single-call analyzer (analyzeCallTranscript):
-// short plain paragraph (2-6 sentences) + temperature (hot/warm/cold).
-// The UI prepends a temperature badge from the lead row.
+// SUMMARY-ONLY: this endpoint does NOT write `temperature`. Temperature is
+// owned exclusively by analyzeCallTranscript / triageEmailLead so the badge
+// can't flip every time Ryan expands a card (that drift was the root of the
+// "temperature is inconsistent" complaint). This route still does
+// opportunistic identity write-back (name / property_address / email) since
+// those are factual and the model just read the full cluster.
+//
+// Output: short plain paragraph (2-6 sentences). The UI prepends the
+// temperature badge from the lead row's own `temperature` column.
 
 const HAIKU_MODEL = "anthropic/claude-haiku-4-5"
 
@@ -120,6 +121,7 @@ export async function POST(
         cached: true,
         name: anchor.name ?? null,
         property_address: anchor.property_address ?? null,
+        email: anchor.email ?? null,
       })
     }
 
@@ -142,11 +144,6 @@ TODAY IS ${today}.
 
 Produce a JSON object:
 
-- temperature: one of "hot" | "warm" | "cold"
-    hot  = motivated, wants to sell now or within 1-2 months
-    warm = interested, 3-6 month timeline, open to exploring
-    cold = curious, no timeline, "maybe someday", or unclear
-
 - summary: a plain prose paragraph, 2 to 6 sentences. No headers, no
     bullets, no bold. Cover who the lead is, what their inquiry is about,
     where things stand based on the conversation history, and any obvious
@@ -159,9 +156,13 @@ Produce a JSON object:
 - property_address: any property address the lead mentioned (best-effort,
     even partial — Ryan can clean it up). Null if no address is mentioned.
 
+- email: any email address the lead stated anywhere in the conversation —
+    including spoken / spelled-out forms ("john at gmail dot com"),
+    normalized to a standard address. Null if none appears.
+
 Respond with ONLY the JSON — no markdown fences, no explanation.
 
-{ "temperature": "...", "summary": "...", "name": "..." | null, "property_address": "..." | null }
+{ "summary": "...", "name": "..." | null, "property_address": "..." | null, "email": "..." | null }
 
 LEAD DATA:
 - Name: ${anchor.name || "(unknown)"}
@@ -197,30 +198,27 @@ ${transcript}`
     const cleaned = content.replace(/^```(?:json)?\s*/i, "").replace(/```\s*$/i, "").trim()
 
     let summary: string | null = null
-    let temperature: Temperature | null = null
     let extractedName: string | null = null
     let extractedAddress: string | null = null
+    let extractedEmail: string | null = null
     try {
       const parsed = JSON.parse(cleaned) as {
-        temperature?: string
         summary?: string
         name?: unknown
         property_address?: unknown
+        email?: unknown
       }
       if (parsed.summary && typeof parsed.summary === "string") {
         summary = parsed.summary.trim()
-      }
-      if (
-        parsed.temperature &&
-        (VALID_TEMPERATURES as readonly string[]).includes(parsed.temperature)
-      ) {
-        temperature = parsed.temperature as Temperature
       }
       if (typeof parsed.name === "string" && parsed.name.trim()) {
         extractedName = parsed.name.trim()
       }
       if (typeof parsed.property_address === "string" && parsed.property_address.trim()) {
         extractedAddress = parsed.property_address.trim()
+      }
+      if (typeof parsed.email === "string" && /\S+@\S+\.\S+/.test(parsed.email.trim())) {
+        extractedEmail = parsed.email.trim().toLowerCase()
       }
     } catch {
       // Fall back: treat the whole cleaned response as the paragraph if it's
@@ -236,17 +234,18 @@ ${transcript}`
       ai_summary: summary,
       ai_summary_generated_at: generated_at,
     }
-    if (temperature) update.temperature = temperature
     // 2026-05-11 — opportunistic identity write-back. The model just read the
-    // full cluster transcript; if it spotted a name or address the anchor row
-    // doesn't yet have, fill it. EditableInlineField stays as Ryan's
-    // correction mechanism for mishearings. This is what makes the workflow
-    // fluid: opening a card auto-backfills the name without needing to call
-    // anyone back to "trigger" extraction.
+    // full cluster transcript; if it spotted a name / address / email the
+    // anchor row doesn't yet have, fill it. EditableInlineField stays as
+    // Ryan's correction mechanism for mishearings. This is what makes the
+    // workflow fluid: opening a card auto-backfills identity without needing
+    // to call anyone back to "trigger" extraction. (temperature is NOT
+    // written here — see the file header.)
     if (extractedName && !anchor.name) update.name = extractedName
     if (extractedAddress && !anchor.property_address) {
       update.property_address = extractedAddress
     }
+    if (extractedEmail && !anchor.email) update.email = extractedEmail
     await sb.from("leads").update(update).eq("id", id)
 
     // Return the row's CURRENT effective values (post-update) so the UI
@@ -255,11 +254,11 @@ ${transcript}`
     // already has the name from a prior write never picks it up on refresh.
     return NextResponse.json({
       summary,
-      temperature,
       generated_at,
       cached: false,
       name: (update.name as string | undefined) ?? anchor.name ?? null,
       property_address: (update.property_address as string | undefined) ?? anchor.property_address ?? null,
+      email: (update.email as string | undefined) ?? anchor.email ?? null,
     })
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e)

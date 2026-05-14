@@ -23,12 +23,15 @@ export async function POST(
   const { id } = await ctx.params
   if (!id) return NextResponse.json({ error: "id required" }, { status: 400 })
 
-  let body: { transcript?: unknown } = {}
+  // `silent: true` skips the per-lead Telegram alert — used by the bulk
+  // backlog re-analysis script so a 80+-row re-run doesn't spam the channel.
+  let body: { transcript?: unknown; silent?: unknown } = {}
   try {
     body = await request.json()
   } catch {
     /* empty body is fine — we'll fall back to the lead's stored transcript */
   }
+  const silent = body.silent === true
 
   try {
     const sb = getLeadsClient()
@@ -69,10 +72,12 @@ export async function POST(
 
     await applyAnalyzeCallResult(id, result)
 
-    const recipient = lead.name || result.name || lead.caller_phone || lead.id
-    await sendTelegramAlert(
-      `🤖 Re-analyzed <b>${recipient}</b>: <b>${result.temperature.toUpperCase()}</b> — ${result.summary.slice(0, 200)}`
-    )
+    if (!silent) {
+      const recipient = lead.name || result.name || lead.caller_phone || lead.id
+      await sendTelegramAlert(
+        `🤖 Re-analyzed <b>${recipient}</b>: <b>${result.temperature.toUpperCase()}</b> — ${result.summary.slice(0, 200)}`
+      )
+    }
 
     return NextResponse.json({
       ok: true,

@@ -183,6 +183,31 @@ export const TEMPERATURE_BADGE: Record<Temperature, { emoji: string; label: stri
   cold: { emoji: "❄️", label: "Cold" },
 }
 
+// Single source of truth for the hot/warm/cold rubric. Embedded verbatim in
+// every prompt that classifies temperature (analyzeCallTranscript +
+// triageEmailLead) so the three code paths can't drift apart — drift was the
+// root cause of the "temperature is inconsistent" complaint. The rubric
+// grades CURRENT engagement & deal viability, not just the seller's stated
+// timeline: a real lead with no urgency is `cold` (still drip + nurture), not
+// blank. Ryan owns the lifecycle "dead" status manually — the AI never picks it.
+export const TEMPERATURE_RUBRIC = `Classify the lead's CURRENT engagement and deal viability — not just their stated timeline. Pick exactly one:
+
+  hot  — Motivated AND actionable now. Any of: wants to sell within ~2 months,
+         asked for an offer / price / callback, or is actively negotiating.
+         Warrants a call this week.
+  warm — Real engagement, but no near-term close. Either a 3-6 month timeline,
+         OR active interaction even without a stated timeline — e.g. routed you
+         to their agent for details, asked what you'd offer, is comparing your
+         number to another. Worth periodic personal touches.
+  cold — A real lead, but no urgency AND no active engagement right now. No
+         timeline, "maybe someday", a vague or near-empty voicemail, or a price
+         gap that stalled with no movement. Still gets the automated drip + a
+         long-cycle follow-up — just not a priority call.
+
+NEVER leave temperature blank. A price disagreement, a one-word voicemail, and
+even an explicit "no / don't call me" all classify as cold — Ryan owns the
+"dead" lifecycle status manually.`
+
 // Conventions (no extra columns — keeps schema simple):
 //   - `message` holds the text content of the event regardless of type:
 //       SMS rows       → the SMS body (inbound or outbound)
@@ -485,28 +510,39 @@ export async function processRecordingBackground(args: {
     }
 
     // Phase 7D — single analyzer pass for every inbound recording.
-    // Writes temperature + ai_summary + name + property_address + follow-up
-    // (with 24h default if AI didn't return one). Lifecycle status is left
-    // alone for Ryan to manage.
+    // Writes temperature + ai_summary + name + property_address + email +
+    // follow-up. Lifecycle status is left alone for Ryan to manage.
+    //
+    // If there's no transcript (caller hung up without leaving a message, or
+    // Whisper failed) OR the analyzer can't produce a result, we fall back to
+    // applyColdNoSignalDefault — the lead is still real, so it gets a cold
+    // badge + a 6-month nurture follow-up instead of a blank badge and no
+    // follow-up forever.
     let analysis: AnalyzeCallResult | null = null
-    if (direction === "inbound" && transcription && leadId) {
-      try {
-        // 2026-05-11 Fix 2 — same cluster-history wiring as the outbound
-        // path. Especially important for follow-up voicemails ("I'm busy,
-        // call me back") that don't restate the lead's name / property
-        // from earlier rows in the cluster.
-        const sb = getLeadsClient()
-        const clusterHistory = await fetchClusterHistory(sb, {
-          callerPhone,
-          excludeId: leadId,
-        })
-        analysis = await analyzeCallTranscript(transcription, { clusterHistory })
-        if (analysis) {
-          await applyAnalyzeCallResult(leadId, analysis)
-          console.log(`[analyze-call] Lead ${leadId} → ${analysis.temperature}: ${analysis.summary.slice(0, 100)}`)
+    if (direction === "inbound" && leadId) {
+      if (transcription) {
+        try {
+          // 2026-05-11 Fix 2 — same cluster-history wiring as the outbound
+          // path. Especially important for follow-up voicemails ("I'm busy,
+          // call me back") that don't restate the lead's name / property
+          // from earlier rows in the cluster.
+          const sb = getLeadsClient()
+          const clusterHistory = await fetchClusterHistory(sb, {
+            callerPhone,
+            excludeId: leadId,
+          })
+          analysis = await analyzeCallTranscript(transcription, { clusterHistory })
+          if (analysis) {
+            await applyAnalyzeCallResult(leadId, analysis)
+            console.log(`[analyze-call] Lead ${leadId} → ${analysis.temperature}: ${analysis.summary.slice(0, 100)}`)
+          }
+        } catch (e) {
+          console.error("[analyze-call] Threw:", e)
         }
-      } catch (e) {
-        console.error("[analyze-call] Threw:", e)
+      }
+      if (!analysis) {
+        await applyColdNoSignalDefault(leadId)
+        console.log(`[analyze-call] Lead ${leadId} → cold (no-signal default: ${transcription ? "analysis failed" : "no transcript"})`)
       }
     }
 
@@ -610,6 +646,10 @@ export interface AnalyzeCallResult {
   summary: string
   name: string | null
   property_address: string | null
+  // Email the caller stated out loud — incl. spelled-out / "at gmail dot
+  // com" forms, normalized. Lets a call-only lead get an email on the card
+  // (and the send-email path) without Ryan typing it in. null if none said.
+  email: string | null
   recommended_followup_date: string | null
   followup_reason: string | null
 }
@@ -686,16 +726,12 @@ export async function analyzeCallTranscript(
     : ""
   const prompt = `You are analyzing a phone call transcript between Ryan (a cash home buyer) and a real estate seller lead.
 
-TODAY IS ${today}. All recommended_followup_date values must be on or after today.${historyBlock ? "\n\nExtract NAME and PROPERTY_ADDRESS from the full conversation (prior + fresh). Other fields (temperature, summary, follow-up) should reflect the FRESH transcript primarily, using prior context for continuity.\n" : ""}
+TODAY IS ${today}. All recommended_followup_date values must be on or after today.${historyBlock ? "\n\nExtract NAME, PROPERTY_ADDRESS and EMAIL from the full conversation (prior + fresh). Other fields (temperature, summary, follow-up) should reflect the FRESH transcript primarily, using prior context for continuity.\n" : ""}
 
 Produce a JSON object with these fields:
 
-- temperature: one of "hot" | "warm" | "cold"
-    hot  = actively wants to sell now or within 1-2 months, motivated
-    warm = interested, 3-6 month timeline, open to exploring
-    cold = curious, no timeline, "maybe someday", or unclear / inconclusive
-    (For an explicit "no / don't call me", still pick cold — Ryan controls
-     the lifecycle dead status manually.)
+- temperature: one of "hot" | "warm" | "cold".
+${TEMPERATURE_RUBRIC}
 
 - summary: a plain prose paragraph, 2 to 6 sentences. No headers, no bullets,
     no bold. Cover who the caller is, what their inquiry is about, any
@@ -712,35 +748,53 @@ Produce a JSON object with these fields:
     even partial — Ryan can clean it up). Null only if no address was
     mentioned.
 
-- recommended_followup_date: ISO date YYYY-MM-DD ≥ today, or null.
+- email: any email address the caller stated. Callers often spell it out or
+    say it aloud ("john smith at gmail dot com", "j-s-m-i-t-h") — normalize
+    those spoken forms to a standard address (johnsmith@gmail.com). Null only
+    if no email was mentioned.
 
-    Translate the SELLER's explicitly stated timeline into a date offset
-    from today using this mapping. If the seller did not state any
-    timeline, return null — do NOT invent a date.
+- recommended_followup_date: ISO date YYYY-MM-DD ≥ today. Reason the follow-up
+    timing from what was actually said — EVERY genuine seller lead gets a date.
 
-      Seller said                                  → Offset from today
-      "now" / "ASAP" / "urgent" / "this week"      → 3-7 days
-      "next week" / "in a week or two"             → 7-14 days
-      "couple weeks" / "next few weeks"            → 14-30 days
-      "next month" / "in a month or so"            → 30-45 days
-      "1-2 months" / "couple months"               → 45-75 days
-      "3-6 months"                                 → 90-180 days
-      "later this year" / "before year end"        → near Dec 1 of this year
-      "next year" / "a year from now" / "in a year"→ 365 days
-      "year or two" / "couple years" / "1-2 years" → 365-730 days
-      "few years out" / "3+ years"                 → 730+ days
-      "maybe someday" / "no rush" / "no timeline"  → null (do NOT pick a date)
-      "don't call me" / opt-out                    → null
+    1. If the seller stated an explicit timeline, map it:
+         "now" / "ASAP" / "this week"            → 3-7 days
+         "next week" / "a week or two"            → 7-14 days
+         "couple weeks" / "next few weeks"        → 14-30 days
+         "next month" / "a month or so"           → 30-45 days
+         "1-2 months" / "couple months"           → 45-75 days
+         "3-6 months"                             → 90-180 days
+         "later this year" / "before year end"    → near Dec 1 of this year
+         "next year" / "a year from now"          → ~365 days
+         "year or two" / "couple years"           → 365-730 days
+         "few years out" / "3+ years"             → 730+ days
+
+    2. If NO explicit timeline, reason an interval from the substance of the
+       conversation:
+         - Price gap / valuation mismatch that stalled (seller wants more than
+           Ryan offered, no movement)          → ~180 days. Sellers often
+                                                  soften over time; revisit then.
+         - Actively engaged but no timeline (asked for an offer, routed you to
+           their agent, wants more info)        → 14-30 days while it's warm.
+         - Vague / brief / near-empty voicemail from a real person, no detail
+                                                → ~180 days routine nurture check-in.
+         - Any other real seller with no other signal
+                                                → ~180 days nurture check-in.
+
+    3. Return null ONLY when this clearly isn't a workable seller lead: an
+       explicit "never contact me again" / hostile opt-out, an obvious wrong
+       number, spam, or a non-seller inquiry.
 
 - followup_reason: ONE short sentence that does BOTH:
-    (1) Quotes the EXACT phrase from the transcript that justified the
-        date — wrap the quote in double quotes.
+    (1) Cites the basis — quote the seller's EXACT phrase in double quotes if
+        they gave one, otherwise name the situation (price gap, vague
+        voicemail, etc.).
     (2) States the resulting follow-up timing in plain words.
-    If recommended_followup_date is null, briefly state why instead.
     Examples:
       "Seller said 'maybe in a year or two' — follow up ~1 year out."
       "Caller asked Ryan to 'call me back next week' — follow up in 7 days."
-      "Seller said 'just looking, no rush' — no clear timeline, no auto-followup."
+      "Wants 1.9M, Ryan offered 1.5M — price gap, revisit in ~6 months."
+      "Brief voicemail with no detail — routine 6-month nurture check-in."
+      "Said 'take me off your list' — opt-out, no follow-up."
 
 Respond with ONLY the JSON object — no markdown fences, no explanation.
 
@@ -749,6 +803,7 @@ Respond with ONLY the JSON object — no markdown fences, no explanation.
   "summary": "...",
   "name": "..." | null,
   "property_address": "..." | null,
+  "email": "..." | null,
   "recommended_followup_date": "YYYY-MM-DD" | null,
   "followup_reason": "..." | null
 }
@@ -794,6 +849,10 @@ ${historyBlock}FRESH TRANSCRIPT (this is the current call):
       property_address:
         typeof parsed.property_address === "string" && parsed.property_address.trim()
           ? parsed.property_address.trim()
+          : null,
+      email:
+        typeof parsed.email === "string" && /\S+@\S+\.\S+/.test(parsed.email.trim())
+          ? parsed.email.trim().toLowerCase()
           : null,
       recommended_followup_date:
         typeof parsed.recommended_followup_date === "string" &&
@@ -869,7 +928,7 @@ export async function applyFollowupOnlyResult(
 
   const { data: existing } = await sb
     .from("leads")
-    .select("name, property_address")
+    .select("name, property_address, email")
     .eq("id", leadId)
     .maybeSingle()
 
@@ -882,6 +941,7 @@ export async function applyFollowupOnlyResult(
   if (result.property_address && !existing?.property_address) {
     update.property_address = result.property_address
   }
+  if (result.email && !existing?.email) update.email = result.email
 
   const { error } = await sb.from("leads").update(update).eq("id", leadId)
   if (error) console.error(`[followup-only] update failed for ${leadId}:`, error.message)
@@ -940,6 +1000,10 @@ export async function applyAnalyzeCallResult(
   if (result.property_address && !existing?.property_address) {
     update.property_address = result.property_address
   }
+  // Email the caller stated aloud — fill only when the row has none, so a
+  // hand-corrected address is never clobbered. This is what makes the
+  // send-email path light up for a call-only lead (e.g. Mike Cummings).
+  if (result.email && !existing?.email) update.email = result.email
 
   const { error } = await sb.from("leads").update(update).eq("id", leadId)
   if (error) console.error(`[analyze-call] update failed for ${leadId}:`, error.message)
@@ -977,6 +1041,43 @@ export async function applyAnalyzeCallResult(
   } catch (e) {
     console.error(`[analyze-call] cluster cache invalidate threw for ${leadId}:`, e)
   }
+}
+
+// Cold no-signal default. Used when an inbound call produced no transcript
+// (caller hung up without leaving a message, or Whisper failed) or the
+// analyzer couldn't produce a result. The lead is still real — it just gave
+// us nothing to grade — so rather than leave a blank temperature badge and
+// no follow-up forever, we stamp it `cold` with a 6-month nurture follow-up
+// so it stays on the drip and resurfaces. Only fills fields that are
+// currently empty, so a later real transcript (or a hand edit) wins.
+export async function applyColdNoSignalDefault(leadId: string): Promise<void> {
+  const sb = getLeadsClient()
+  const { data: existing } = await sb
+    .from("leads")
+    .select("temperature, recommended_followup_date, ai_summary")
+    .eq("id", leadId)
+    .maybeSingle()
+  if (!existing) return
+
+  const update: Record<string, unknown> = {}
+  if (!existing.temperature) update.temperature = "cold"
+  if (!existing.recommended_followup_date) {
+    const d = new Date()
+    d.setDate(d.getDate() + 180)
+    update.recommended_followup_date = d.toISOString().slice(0, 10)
+    update.followup_reason =
+      "Called but left no message — cold, routine 6-month nurture check-in."
+    update.followup_generated_at = new Date().toISOString()
+  }
+  if (!existing.ai_summary) {
+    update.ai_summary =
+      "Caller reached voicemail but didn't leave a message — no details to go on yet. Kept on the nurture drip with a 6-month check-in."
+    update.ai_summary_generated_at = new Date().toISOString()
+  }
+  if (Object.keys(update).length === 0) return
+
+  const { error } = await sb.from("leads").update(update).eq("id", leadId)
+  if (error) console.error(`[cold-default] update failed for ${leadId}:`, error.message)
 }
 
 // Email-lead triage — same Haiku model as the call/voicemail path, but the
@@ -1019,9 +1120,7 @@ Respond in JSON only:
 }
 
 temperature:
-  hot  = wants to sell now or requesting immediate callback
-  warm = interested, has a property, wants info, 3-6 month timeline
-  cold = curious, longer term, no urgency
+${TEMPERATURE_RUBRIC}
 
 is_dead: true ONLY for spam / wrong number / explicit unsubscribe / hostile.
   Default false. Use this flag, not temperature, to mark a lead as dead.`

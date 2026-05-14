@@ -719,14 +719,16 @@ export function LeadsTab() {
       const data = await res.json().catch(() => ({}))
       if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`)
       setSummaries(prev => ({ ...prev, [key]: { text: data.summary || "", loading: false, error: null } }))
-      // Stamp the model's full output back onto the underlying lead row so
+      // Stamp the model's output back onto the underlying lead row so
       // groupLeads re-derives the card with the new values immediately —
       // without this we'd wait up to 30s for the autorefetch and the user
       // would see the new summary but a stale "Add name" placeholder.
       // Only stamp non-null fields so we never clobber an existing
-      // hand-corrected name/address with null when the model didn't return
-      // one (summary endpoint returns null for these when the anchor row
-      // already had a value, per its hands-off rule).
+      // hand-corrected name/address/email with null when the model didn't
+      // return one (summary endpoint returns null for these when the anchor
+      // row already had a value, per its hands-off rule). Temperature is NOT
+      // touched here — the summary endpoint is summary-only; the badge stays
+      // owned by analyzeCallTranscript / triageEmailLead.
       setLeads(prev => prev.map(l => {
         if (l.id !== group.mostRecentId) return l
         const next: Lead = {
@@ -734,9 +736,9 @@ export function LeadsTab() {
           ai_summary: data.summary,
           ai_summary_generated_at: data.generated_at,
         }
-        if (data.temperature) next.temperature = data.temperature as Temperature
         if (data.name) next.name = data.name
         if (data.property_address) next.property_address = data.property_address
+        if (data.email) next.email = data.email
         return next
       }))
     } catch (e) {
@@ -1376,10 +1378,12 @@ export function LeadsTab() {
                 setExpandedPhone(willExpand ? group.phone : null)
                 if (willExpand) {
                   void syncOnExpand(group)
-                  // Auto-fetch the AI summary on expand. The endpoint
-                  // short-circuits when the cached value is still fresh,
-                  // so this is cheap on a re-expand.
-                  if (!summaries[group.phone]?.loading) void fetchSummary(group)
+                  // Auto-refresh the AI summary on every expand (force:true).
+                  // Ryan asked for the AI notes to always be current when he
+                  // opens a card instead of having to tap Refresh — so we
+                  // skip the endpoint's cache and regenerate against the
+                  // full cluster each open.
+                  if (!summaries[group.phone]?.loading) void fetchSummary(group, { force: true })
                 }
               }}
               summary={summaries[group.phone]?.text || group.aiSummary || ""}
@@ -1734,22 +1738,27 @@ function LeadCard(p: LeadCardProps) {
                 )}
               </div>
             )}
-            {group.email && (
-              <span className="ml-auto text-zinc-400 text-xs">📧 {group.email}</span>
-            )}
           </div>
 
-          {/* Phase 7C+ — editable name + property. Self-identification in
-              voicemail bodies is the most authoritative source, but parsers
+          {/* Phase 7C+ — editable name / property / email. Self-identification
+              in voicemail bodies is the most authoritative source, but parsers
               still miss occasionally (e.g. Google Voice forwards arrive
               with name="Google Voice" until the body regex catches up).
-              These inline-editable fields let Ryan correct in one tap. */}
+              These inline-editable fields let Ryan correct in one tap — and
+              the email field means a call-only lead can get an address added
+              (by hand or by the AI analyzer) so the send-email path lights up. */}
           <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-zinc-400">
             <EditableInlineField
               value={group.name}
               placeholder="Add name"
               icon="👤"
               onSave={(v) => p.onPatchField("name", v)}
+            />
+            <EditableInlineField
+              value={group.email}
+              placeholder="Add email"
+              icon="📧"
+              onSave={(v) => p.onPatchField("email", v)}
             />
             <EditableInlineField
               value={group.propertyAddress}
