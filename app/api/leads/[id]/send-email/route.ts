@@ -60,7 +60,22 @@ export async function POST(
     if (lead.is_dnc) {
       return NextResponse.json({ error: "lead is DNC" }, { status: 409 })
     }
-    if (!lead.email) {
+
+    // The id we're handed is the cluster's most-recent-inbound row, which
+    // may not be the row that carries the email — e.g. Mike Cummings'
+    // inbound voicemail row has no email, but the later outbound-call row
+    // does (the analyzer pulled it off that transcript). So if the target
+    // row has no email, fall through to any sibling in the cluster.
+    let recipientEmail: string | null = lead.email ?? null
+    if (!recipientEmail) {
+      let sibQ = sb.from("leads").select("email").not("email", "is", null).limit(1)
+      if (lead.caller_phone) sibQ = sibQ.eq("caller_phone", lead.caller_phone)
+      else if (lead.gmail_thread_id) sibQ = sibQ.eq("gmail_thread_id", lead.gmail_thread_id)
+      else sibQ = sibQ.eq("id", id) // no cluster key — this just re-checks the row
+      const { data: sib } = await sibQ
+      recipientEmail = (sib?.[0]?.email as string | undefined) ?? null
+    }
+    if (!recipientEmail) {
       return NextResponse.json({ error: "lead has no email address" }, { status: 400 })
     }
 
@@ -72,7 +87,7 @@ export async function POST(
       : process.env.DRIP_DEFAULT_MAILBOX || "ryan@lrghomes.com"
 
     const gmail = getGmailClient(fromMailbox)
-    const raw = buildRawEmail({ to: lead.email, from: fromMailbox, subject, body: text })
+    const raw = buildRawEmail({ to: recipientEmail, from: fromMailbox, subject, body: text })
     const requestBody: { raw: string; threadId?: string } = { raw }
     if (lead.gmail_thread_id) requestBody.threadId = lead.gmail_thread_id
     const { data } = await gmail.users.messages.send({ userId: "me", requestBody })
@@ -87,7 +102,7 @@ export async function POST(
       message: `${subject}\n\n${text}`,
       status: "contacted",
       name: lead.name,
-      email: lead.email,
+      email: recipientEmail,
       property_address: lead.property_address,
       gmail_thread_id: lead.gmail_thread_id || null,
     })
