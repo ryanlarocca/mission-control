@@ -5,6 +5,7 @@ import {
   analyzeCallTranscript,
   applyAnalyzeCallResult,
   fetchClusterHistory,
+  isAnonymousCaller,
 } from "@/lib/leads"
 
 // Phase 7D — re-run the unified analyzer against a lead's stored transcript
@@ -71,6 +72,29 @@ export async function POST(
     }
 
     await applyAnalyzeCallResult(id, result)
+
+    // Anonymous-caller promotion (mirrors processRecordingBackground): a
+    // blocked-ID lead is is_junk=true by default, but a substantive
+    // transcript — real engagement, or a stated name / address / email —
+    // means it's a genuine lead. Un-junk it; stamp an email drip if they
+    // gave an address. Lets the backlog re-analysis self-heal anonymous
+    // rows that had a real voicemail but were junked before analysis ran.
+    if (isAnonymousCaller(lead.caller_phone)) {
+      const hasSubstance =
+        result.temperature !== "cold" ||
+        !!result.name ||
+        !!result.property_address ||
+        !!result.email
+      if (hasSubstance) {
+        const promote: Record<string, unknown> = { is_junk: false }
+        if (result.email) {
+          promote.drip_campaign_type = "direct_mail_email"
+          promote.drip_touch_number = 0
+          promote.last_drip_sent_at = new Date().toISOString()
+        }
+        await sb.from("leads").update(promote).eq("id", id)
+      }
+    }
 
     if (!silent) {
       const recipient = lead.name || result.name || lead.caller_phone || lead.id

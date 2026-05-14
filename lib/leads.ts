@@ -129,6 +129,22 @@ export function normalizePhone(raw: string | null | undefined): string {
   return String(raw).trim()
 }
 
+// Twilio sends a non-E.164 placeholder for blocked / withheld caller ID —
+// "Anonymous", "Restricted", "Unavailable", "unknown", "Private", or the
+// keypad-spelled +266696687 ("ANONYMOUS"). Every blocked caller collapses
+// into the same placeholder value, so we can't treat it as a real contact
+// key: intake junks these by default + skips the cluster-inheritance lookup,
+// groupLeads keys them by row id (one card per call, never merged), and the
+// drips forecast filters them out. A substantive voicemail re-promotes the
+// row (see processRecordingBackground).
+const ANONYMOUS_CALLER_VALUES = new Set([
+  "anonymous", "restricted", "unavailable", "unknown", "private", "+266696687",
+])
+export function isAnonymousCaller(phone: string | null | undefined): boolean {
+  if (!phone) return false
+  return ANONYMOUS_CALLER_VALUES.has(phone.trim().toLowerCase())
+}
+
 export const FORWARD_TO = "+14085006293"
 
 // Outbound Twilio number used as caller ID for click-to-call relays
@@ -543,6 +559,36 @@ export async function processRecordingBackground(args: {
       if (!analysis) {
         await applyColdNoSignalDefault(leadId)
         console.log(`[analyze-call] Lead ${leadId} → cold (no-signal default: ${transcription ? "analysis failed" : "no transcript"})`)
+      }
+
+      // Anonymous-caller promotion. Blocked-ID callers start is_junk=true at
+      // intake (most are spam). But if this one left a SUBSTANTIVE voicemail
+      // — real engagement, or they gave a name / address / email — it's a
+      // genuine lead. Un-junk it so it surfaces in the leads list + Follow-Up
+      // tab, and if they spoke an email, stamp a drip campaign so it enters
+      // the drip system like any other lead. The row is already its own card
+      // (groupLeads keys anonymous rows by id), so un-junking is all it takes.
+      if (isAnonymousCaller(callerPhone) && analysis) {
+        const hasSubstance =
+          analysis.temperature !== "cold" ||
+          !!analysis.name ||
+          !!analysis.property_address ||
+          !!analysis.email
+        if (hasSubstance) {
+          try {
+            const sb = getLeadsClient()
+            const promote: Record<string, unknown> = { is_junk: false }
+            if (analysis.email) {
+              promote.drip_campaign_type = "direct_mail_email"
+              promote.drip_touch_number = 0
+              promote.last_drip_sent_at = new Date().toISOString()
+            }
+            await sb.from("leads").update(promote).eq("id", leadId)
+            console.log(`[anon-promote] Lead ${leadId} un-junked — substantive voicemail${analysis.email ? " + email drip stamped" : ""}`)
+          } catch (e) {
+            console.error("[anon-promote] Threw:", e)
+          }
+        }
       }
     }
 

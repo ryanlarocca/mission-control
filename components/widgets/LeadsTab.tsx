@@ -8,6 +8,7 @@ import {
   Sparkles, PhoneOff, Ban, ShieldOff, Zap, Wand2, Calendar, Pencil, Search, SlidersHorizontal,
 } from "lucide-react"
 import { getCampaign, getNextTouch } from "@/lib/drip-campaigns"
+import { isAnonymousCaller } from "@/lib/leads"
 import type { LeadStatus } from "@/lib/leads"
 import {
   type RelationshipCategory,
@@ -268,8 +269,13 @@ function groupLeads(leads: Lead[]): LeadGroup[] {
     // Fallback chain when there's no phone: gmail thread → email → row id.
     // Email-only Gmail threads (no phone ever attached) still group by
     // thread, preserving the Phase 7.4 intent for that case.
+    //
+    // "Anonymous" (and other blocked-caller-ID placeholders) is NOT a real
+    // contact key — every withheld caller shares the same value, so keying
+    // on it would merge unrelated people into one card. Treat it as no
+    // phone and fall through to the row-id key: one card per anonymous call.
     let key: string
-    if (l.caller_phone) {
+    if (l.caller_phone && !isAnonymousCaller(l.caller_phone)) {
       key = l.caller_phone
     } else if (l.lead_type === "email" && l.gmail_thread_id) {
       key = `thread:${l.gmail_thread_id}`

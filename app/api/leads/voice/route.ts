@@ -3,6 +3,7 @@ import {
   FORWARD_TO,
   getCampaignSource,
   getLeadsClient,
+  isAnonymousCaller,
   type LeadStatus,
   parseTwilioBody,
   sendTelegramAlert,
@@ -54,30 +55,33 @@ export async function POST(request: Request) {
     // Landing-page Google Ads number gets its own source_type + drip path.
     // Everything else (MFM-A/B, outbound callback) stays on direct-mail.
     const isGoogleAds = twilioNumber === "+16506703914"
+    // Blocked / withheld caller ID — every such call arrives as the same
+    // placeholder ("Anonymous" etc.), so it's NOT a usable contact key.
+    const isAnon = isAnonymousCaller(callerPhone)
     // AWAIT the insert — must complete before the function exits.
     try {
       const sb = getLeadsClient()
 
-      // Always look up the most recent inbound row for this caller (no time
-      // window) so the new event row inherits the cluster's identity:
-      // lifecycle status (parked nurture / contacted / active leads stay in
-      // their lifecycle bucket), source / source_type (cluster stays in its
-      // original campaign — groupLeads' "most recent inbound" rule would
-      // otherwise flip the cluster source to whichever number they last
-      // dialed), and drip_campaign_type (the drip engine queries on
-      // drip_campaign_type IS NOT NULL — a second row for the same lead
-      // would double-fire touches).
+      // For a known number, look up the most recent inbound row for this
+      // caller (no time window) so the new event row inherits the cluster's
+      // identity: lifecycle status (parked nurture / contacted / active
+      // leads stay in their lifecycle bucket), source / source_type (cluster
+      // stays in its original campaign), and drip_campaign_type (the drip
+      // engine queries on drip_campaign_type IS NOT NULL — a second row for
+      // the same lead would double-fire touches).
       //
-      // A fresh drip stamp (with touch_number=0 + last_drip_sent_at=now)
-      // fires ONLY when this is a genuinely new caller. Re-engagements
-      // carry the campaign type forward without resetting the drip clock.
-      const { data: existingRows } = await sb
-        .from("leads")
-        .select("id, source, source_type, drip_campaign_type, status")
-        .eq("caller_phone", callerPhone)
-        .not("twilio_number", "is", null)
-        .order("created_at", { ascending: false })
-        .limit(1)
+      // SKIP this for anonymous callers — they all share one placeholder
+      // value, so inheriting would cross-contaminate unrelated people's
+      // status / source / drip stamp.
+      const { data: existingRows } = isAnon
+        ? { data: null }
+        : await sb
+            .from("leads")
+            .select("id, source, source_type, drip_campaign_type, status")
+            .eq("caller_phone", callerPhone)
+            .not("twilio_number", "is", null)
+            .order("created_at", { ascending: false })
+            .limit(1)
       const existingRow = existingRows?.[0] ?? null
       const inheritedStatus: LeadStatus =
         (existingRow?.status as LeadStatus | undefined) ?? "new"
@@ -91,7 +95,14 @@ export async function POST(request: Request) {
         lead_type: "call",
         status: inheritedStatus,
       }
-      if (!existingRow) {
+      if (isAnon) {
+        // Junk by default — most blocked-ID calls are spam, and you can't
+        // text/call back a withheld number so there's no drip path. If they
+        // leave a substantive voicemail, processRecordingBackground
+        // un-junks it. No drip stamp; groupLeads keys this row by id so it
+        // never merges with other anonymous calls.
+        insertRow.is_junk = true
+      } else if (!existingRow) {
         // Phase 7B: stamp drip campaign on intake. The engine's hourly
         // scan will pick up touch 0 (15-min missed-call message) when no
         // recording arrives within the buffer, and touch 1 onward at
