@@ -413,6 +413,9 @@ export function LeadsTab() {
   const [savingPhoneFor, setSavingPhoneFor] = useState<string | null>(null)
   const [phoneError, setPhoneError]     = useState<string | null>(null)
   const [emailDraft, setEmailDraft]     = useState<Record<string, string>>({})
+  // Subject line for a *fresh* email to a call-only lead (no Gmail thread to
+  // inherit a subject from). Unused for thread replies. Keyed by group.phone.
+  const [emailSubject, setEmailSubject] = useState<Record<string, string>>({})
   const [sendingEmailFor, setSendingEmailFor] = useState<string | null>(null)
   const [emailSendSuccess, setEmailSendSuccess] = useState<string | null>(null)
   const [emailSendError, setEmailSendError] = useState<string | null>(null)
@@ -906,24 +909,43 @@ export function LeadsTab() {
   async function sendEmailReply(group: LeadGroup) {
     const text = (emailDraft[group.phone] ?? group.suggestedReply ?? "").trim()
     if (!text) return
-    // The backend looks up the lead row by id and reads its twilio_number to
-    // know which mailbox to send from, so we need an inbound email row from
-    // this group (not an outbound reply we already sent).
-    const emailLead = group.events.find(e => e.lead_type === "email" && !isOutbound(e))
-    if (!emailLead) return
     setSendingEmailFor(group.phone)
     setEmailSendError(null)
     try {
-      const res = await fetch("/api/leads/email-reply", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ leadId: emailLead.id, message: text }),
-      })
+      // Two send paths:
+      //  - Lead emailed in → there's an inbound email row + Gmail thread.
+      //    /api/leads/email-reply threads the reply (inherits the subject).
+      //  - Call-only lead with an email we captured (AI or hand) → no thread.
+      //    /api/leads/[id]/send-email sends a FRESH email, so it needs a
+      //    subject. Target the most-recent row in the cluster — the route
+      //    reads .email off it and picks the sending mailbox.
+      const emailLead = group.events.find(e => e.lead_type === "email" && !isOutbound(e))
+      let res: Response
+      if (emailLead) {
+        res = await fetch("/api/leads/email-reply", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ leadId: emailLead.id, message: text }),
+        })
+      } else {
+        const subject = (emailSubject[group.phone] ?? "").trim()
+        if (!subject) {
+          setEmailSendError("Subject is required for a new email.")
+          setSendingEmailFor(null)
+          return
+        }
+        res = await fetch(`/api/leads/${group.mostRecentId}/send-email`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ subject, body: text }),
+        })
+      }
       const data = await res.json().catch(() => ({}))
       if (!res.ok || !data.ok) {
         throw new Error(data.error || `HTTP ${res.status}`)
       }
       setEmailDraft(prev => ({ ...prev, [group.phone]: "" }))
+      setEmailSubject(prev => ({ ...prev, [group.phone]: "" }))
       setEmailSendSuccess(group.phone)
       setTimeout(() => setEmailSendSuccess(null), 2500)
       // Refetch to pick up the outbound email row that the route just inserted.
@@ -1429,6 +1451,8 @@ export function LeadsTab() {
               phoneError={savingPhoneFor === null && phoneError && expandedPhone === group.phone ? phoneError : null}
               emailDraft={emailDraft[group.phone] ?? group.suggestedReply ?? ""}
               onEditEmailDraft={(v) => setEmailDraft(prev => ({ ...prev, [group.phone]: v }))}
+              emailSubject={emailSubject[group.phone] ?? ""}
+              onEditEmailSubject={(v) => setEmailSubject(prev => ({ ...prev, [group.phone]: v }))}
               onSendEmail={() => sendEmailReply(group)}
               sendingEmail={sendingEmailFor === group.phone}
               emailSendSuccess={emailSendSuccess === group.phone}
@@ -1501,6 +1525,8 @@ interface LeadCardProps {
   phoneError: string | null
   emailDraft: string
   onEditEmailDraft: (v: string) => void
+  emailSubject: string
+  onEditEmailSubject: (v: string) => void
   onSendEmail: () => void
   sendingEmail: boolean
   emailSendSuccess: boolean
@@ -1551,11 +1577,14 @@ function LeadCard(p: LeadCardProps) {
   const phoneDisplay = group.contactPhone ? formatPhone(group.contactPhone) : null
   const onDrip = !!group.events.find(e => e.drip_campaign_type)?.drip_campaign_type
   const canApplyDrip = !onDrip && !group.isDnc && !group.isJunk && (group.contactPhone || group.email)
-  // The reply composer should reflect the lead's primary inbound channel —
-  // the original email — not whatever the latest event happens to be (which
-  // may be a drip-sent row). Email leads have at least one inbound email
-  // event in the group; that's the only condition we need.
-  const isEmailLead = group.events.some(e => e.lead_type === "email" && !isOutbound(e))
+  // Email composer gating. `hasInboundEmail` = the lead actually emailed in,
+  // so there's a Gmail thread to reply on. `hasEmail` = we have an email
+  // address at all — incl. one the AI pulled off a call transcript or Ryan
+  // typed in. The composer shows whenever `hasEmail` is true (not just for
+  // email-origin leads); a call-only lead with an email sends a FRESH email
+  // (subject required) instead of a thread reply.
+  const hasInboundEmail = group.events.some(e => e.lead_type === "email" && !isOutbound(e))
+  const hasEmail = !!group.email
   const nextDripLabel = nextDripETA(group)
 
   return (
@@ -1822,14 +1851,18 @@ function LeadCard(p: LeadCardProps) {
             />
           </div>
 
-          {isEmailLead ? (
-            // Email-lead composer: reply via Gmail API (blue Send Email).
-            // If the lead also has a phone, an iMessage sub-composer renders
-            // below — Ryan can pick the channel that fits the lead's reply.
+          {hasEmail ? (
+            // Email composer: shows whenever the lead has an email address.
+            //  - hasInboundEmail → reply via Gmail API on the existing thread.
+            //  - call-only lead with an email → fresh email (subject input
+            //    appears below). If the lead also has a phone, an iMessage
+            //    sub-composer renders too so Ryan can pick the channel.
             <div>
               <div className="flex items-center justify-between mb-1.5">
                 <div className="text-xs text-zinc-500">
-                  {group.suggestedReply ? "💡 Suggested Reply" : "Email Reply"}
+                  {group.suggestedReply
+                    ? "💡 Suggested Reply"
+                    : hasInboundEmail ? "Email Reply" : "New Email"}
                 </div>
                 <button
                   onClick={p.onDraftEmail}
@@ -1841,6 +1874,17 @@ function LeadCard(p: LeadCardProps) {
                   {p.draftingEmail ? "Drafting…" : "AI draft"}
                 </button>
               </div>
+              {!hasInboundEmail && (
+                <input
+                  type="text"
+                  value={p.emailSubject}
+                  onChange={e => p.onEditEmailSubject(e.target.value)}
+                  placeholder="Subject…"
+                  className="w-full mb-2 bg-zinc-900 border border-zinc-800 rounded px-3 py-2 text-sm text-zinc-100 placeholder-zinc-600 focus:outline-none focus:border-zinc-700"
+                  style={{ fontSize: 16 }}
+                  disabled={p.sendingEmail}
+                />
+              )}
               <textarea
                 value={p.emailDraft}
                 onChange={e => p.onEditEmailDraft(e.target.value)}
@@ -1862,7 +1906,7 @@ function LeadCard(p: LeadCardProps) {
                 </div>
                 <button
                   onClick={p.onSendEmail}
-                  disabled={p.sendingEmail || !p.emailDraft.trim()}
+                  disabled={p.sendingEmail || !p.emailDraft.trim() || (!hasInboundEmail && !p.emailSubject.trim())}
                   className="inline-flex items-center gap-1.5 px-4 py-2 min-h-[44px] rounded bg-blue-600 hover:bg-blue-500 disabled:bg-zinc-800 disabled:text-zinc-600 text-white text-sm font-medium transition-colors"
                 >
                   {p.sendingEmail ? <Loader2 className="w-4 h-4 animate-spin" /> : <Mail className="w-4 h-4" />}
