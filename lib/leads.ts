@@ -708,6 +708,10 @@ export interface AnalyzeCallResult {
   email: string | null
   recommended_followup_date: string | null
   followup_reason: string | null
+  // True when the seller explicitly opted out ("don't call me again," "take
+  // me off your list," hostile opt-out). applyAnalyzeCallResult flips the
+  // lead to is_dnc=true + status=dead and seeds a dnc_list row.
+  is_dnc: boolean
 }
 
 // Build a short prose timeline of every prior event in the contact's cluster
@@ -813,12 +817,31 @@ ${TEMPERATURE_RUBRIC}
     exploring options and wants a callback. Worth a quick follow-up
     tomorrow morning."
 
-- name: the caller's stated name (best-effort, even if audio was unclear).
-    Null only if the transcript contains no name reference at all.
+- name: the SELLER caller's stated name (best-effort, even if audio was
+    unclear). Null only if no seller name is present.
 
-- property_address: any property address the caller mentioned (best-effort,
-    even partial — Ryan can clean it up). Null only if no address was
-    mentioned.
+    DO NOT extract Ryan's own name as the caller. Ryan is the RECIPIENT —
+    he runs LRG Homes. Watch for these tells that the transcript is Ryan's
+    own voice (his outgoing voicemail greeting, or his outbound voicemail
+    TO a seller) — in any of these cases set name=null:
+      • "This is Ryan with LRG Homes" / "This is Brian with LRG Homes"
+        (Whisper sometimes hears Ryan as Brian)
+      • "I'm not available right now, leave your name and number"
+      • "mailbox is full" / "cannot accept any messages"
+      • "Hi <NAME>, this is Ryan with LRG Homes calling you back / returning
+        your call / got your message" — Ryan addressing the seller is not
+        the seller naming themselves.
+    Only fill name when the SELLER themselves states their name. If the
+    transcript is entirely the voicemail greeting / Ryan's own message,
+    name=null AND property_address=null AND the summary should describe
+    the situation honestly ("Outbound callback reached voicemail" /
+    "Voicemail greeting only — no seller message captured").
+
+- property_address: any property address mentioned (best-effort, even
+    partial — Ryan can clean it up). Null only if no address was mentioned.
+    Cluster history counts — if a prior conversation tied this caller to a
+    specific property, surface it here even when the fresh transcript is
+    just a voicemail greeting.
 
 - email: any email address the caller stated. Callers often spell it out or
     say it aloud ("john smith at gmail dot com", "j-s-m-i-t-h") — normalize
@@ -868,6 +891,20 @@ ${TEMPERATURE_RUBRIC}
       "Brief voicemail with no detail — routine 6-month nurture check-in."
       "Said 'take me off your list' — opt-out, no follow-up."
 
+- is_dnc: boolean. Set true ONLY when the seller has unambiguously asked to
+    not be contacted. Triggering language (examples, not exhaustive):
+      • "don't call me again" / "stop calling" / "take me off your list"
+      • "remove me from your mailing list" / "I'm on the do-not-call list"
+      • "I have no intention of selling — don't contact me again"
+      • "lose my number" / hostile opt-out
+    DO NOT set true for soft passes — "not interested right now," "maybe
+    someday," "wrong number," vague voicemails, polite no-thanks without an
+    opt-out request. Those stay cold with a regular nurture follow-up.
+    When is_dnc is true, also return recommended_followup_date=null and put
+    the opt-out quote in followup_reason. The system halts all outreach
+    (drip + manual) on DNC, so be conservative — false negatives are fine,
+    false positives lose real leads.
+
 Respond with ONLY the JSON object — no markdown fences, no explanation.
 
 {
@@ -877,7 +914,8 @@ Respond with ONLY the JSON object — no markdown fences, no explanation.
   "property_address": "..." | null,
   "email": "..." | null,
   "recommended_followup_date": "YYYY-MM-DD" | null,
-  "followup_reason": "..." | null
+  "followup_reason": "..." | null,
+  "is_dnc": true | false
 }
 
 ${historyBlock}FRESH TRANSCRIPT (this is the current call):
@@ -935,6 +973,7 @@ ${historyBlock}FRESH TRANSCRIPT (this is the current call):
         typeof parsed.followup_reason === "string" && parsed.followup_reason.trim()
           ? parsed.followup_reason.trim()
           : null,
+      is_dnc: parsed.is_dnc === true,
     }
   } catch (e) {
     console.error("[analyze-call] threw:", e)
@@ -1015,8 +1054,45 @@ export async function applyFollowupOnlyResult(
   }
   if (result.email && !existing?.email) update.email = result.email
 
+  // Auto-DNC also honored on outbound-call analysis. The seller's opt-out is
+  // valid regardless of who initiated the call — if Ryan rings them back and
+  // they say "lose my number," we flag DNC here too.
+  if (result.is_dnc) {
+    update.is_dnc = true
+    update.status = "dead"
+    update.recommended_followup_date = null
+  }
+
   const { error } = await sb.from("leads").update(update).eq("id", leadId)
   if (error) console.error(`[followup-only] update failed for ${leadId}:`, error.message)
+
+  if (result.is_dnc) {
+    await seedAiAutoDnc(sb, leadId, {
+      name: (existing?.name as string | null) || result.name || null,
+      property_address:
+        (existing?.property_address as string | null) || result.property_address || null,
+      reason_text: result.followup_reason || null,
+    })
+  }
+}
+
+// Shared dnc_list insert for the auto-DNC path. Mirrors the manual DNC
+// route's shape (reason="requested", added_by tagged) so a future export
+// reads cleanly regardless of who flagged it.
+async function seedAiAutoDnc(
+  sb: SupabaseClient,
+  leadId: string,
+  meta: { name: string | null; property_address: string | null; reason_text: string | null }
+): Promise<void> {
+  const { error } = await sb.from("dnc_list").insert({
+    site_address: meta.property_address,
+    owner_name: meta.name,
+    source_lead_id: leadId,
+    reason: "requested",
+    added_by: "ai",
+  })
+  if (error) console.warn(`[auto-dnc] dnc_list insert failed for ${leadId}: ${error.message}`)
+  console.log(`[auto-dnc] Lead ${leadId} flagged by AI: ${meta.reason_text || "no reason text"}`)
 }
 
 // Phase 7D — persist the unified analyzer result. Writes:
@@ -1077,8 +1153,29 @@ export async function applyAnalyzeCallResult(
   // send-email path light up for a call-only lead (e.g. Mike Cummings).
   if (result.email && !existing?.email) update.email = result.email
 
+  // Auto-DNC: when the seller explicitly opts out, mirror the manual DNC
+  // path (POST /api/leads/[id]/dnc) — flag is_dnc=true, drop lifecycle to
+  // dead, clear the recommended follow-up date. This halts the drip engine
+  // (its WHERE clause filters is_dnc=true) and removes the row from the
+  // active queue. Prompt is conservative on this flag; false positives lose
+  // real leads, so we trust Haiku here.
+  if (result.is_dnc) {
+    update.is_dnc = true
+    update.status = "dead"
+    update.recommended_followup_date = null
+  }
+
   const { error } = await sb.from("leads").update(update).eq("id", leadId)
   if (error) console.error(`[analyze-call] update failed for ${leadId}:`, error.message)
+
+  if (result.is_dnc) {
+    await seedAiAutoDnc(sb, leadId, {
+      name: (existing?.name as string | null) || result.name || null,
+      property_address:
+        (existing?.property_address as string | null) || result.property_address || null,
+      reason_text: result.followup_reason || null,
+    })
+  }
 
   // 2026-05-11 Fix 1 — cluster-wide cache invalidation. The summary endpoint
   // builds its paragraph from the FULL conversation cluster while this
