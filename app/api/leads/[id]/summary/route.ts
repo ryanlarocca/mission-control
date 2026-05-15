@@ -149,6 +149,24 @@ Produce a JSON object:
     where things stand based on the conversation history, and any obvious
     next-step or urgency cue. Emojis allowed where natural.
 
+    ANCHOR ON THE LATEST OUTCOME. The transcript is ordered oldest → newest.
+    The MOST RECENT event drives "where things stand" — don't pull
+    earlier-optimistic framing forward if the latest conversation ended
+    differently. Specifically:
+      • If Ryan made an OFFER, capture the dollar amount AND the seller's
+        response (accepted / declined / countered / undecided).
+      • If the seller declined an offer, the current state is "price gap"
+        — say so explicitly, don't soften to "motivated to sell."
+      • If the seller asked Ryan to wait / call back later, state the
+        timing they gave verbatim.
+      • If the latest event is a hostile pass or opt-out, the summary
+        should say so as the headline, even if earlier rows were warmer.
+
+    PROPERTY SPECIFICS — capture bed/bath count, multi-unit mix per unit
+    (e.g. "duplex: 1x 3bd/2ba + 1x 2bd/1ba"), per-unit or total monthly
+    rents, vacancy status, square footage / lot / year built when stated.
+    These are load-bearing details Ryan revisits later.
+
 - name: the lead's stated name from anywhere in the conversation
     history. Best-effort: pick the most confident mention, not a partial
     guess. Null if no name appears in the transcript.

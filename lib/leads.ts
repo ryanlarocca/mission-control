@@ -798,6 +798,13 @@ ${TEMPERATURE_RUBRIC}
     obvious next-step or urgency cue. Emojis allowed where natural, not
     required.
 
+    ANCHOR ON THE LATEST OUTCOME of the call. If Ryan made an offer, capture
+    the dollar amount AND the seller's response (accepted / declined /
+    countered / undecided). If the seller declined an offer, say "price gap"
+    explicitly — don't soften the rejection to "motivated to sell." If the
+    call ended with a stall or rejection, the summary should reflect that
+    as the current state, not the conversational warmth that preceded it.
+
     PROPERTY SPECIFICS — if the caller and Ryan discuss any of the following,
     capture them EXPLICITLY and concretely in the summary (don't paraphrase
     them away). These are load-bearing details Ryan revisits later:
