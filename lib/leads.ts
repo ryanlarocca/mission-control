@@ -209,17 +209,24 @@ export const TEMPERATURE_BADGE: Record<Temperature, { emoji: string; label: stri
 // blank. Ryan owns the lifecycle "dead" status manually — the AI never picks it.
 export const TEMPERATURE_RUBRIC = `Classify the lead's CURRENT engagement and deal viability — not just their stated timeline. Pick exactly one:
 
-  hot  — Motivated AND actionable now. Any of: wants to sell within ~2 months,
-         asked for an offer / price / callback, or is actively negotiating.
-         Warrants a call this week.
-  warm — Real engagement, but no near-term close. Either a 3-6 month timeline,
-         OR active interaction even without a stated timeline — e.g. routed you
-         to their agent for details, asked what you'd offer, is comparing your
-         number to another. Worth periodic personal touches.
+  hot  — Ready to TRANSACT now. Any of: asked Ryan for an offer / price quote,
+         wants to sell within ~2 months, is actively negotiating (counter-
+         offering, comparing Ryan's number to another), or stated explicit
+         urgency. Warrants a call this week.
+  warm — Active engagement OPENING A CONVERSATION, without (yet) asking to
+         transact. Examples: responded to outreach by leaving a voicemail
+         asking for a callback to discuss, confirmed which property they own
+         + provided callback numbers, routed Ryan to their agent for details,
+         asked clarifying questions about Ryan's process — anything that
+         signals "I'm engaged, but I haven't asked for an offer yet."
+         A simple "call me back" voicemail with property context IS warm —
+         not hot (no offer requested) and not cold (real engagement). 3-6
+         month timelines also land here. Worth periodic personal touches.
   cold — A real lead, but no urgency AND no active engagement right now. No
-         timeline, "maybe someday", a vague or near-empty voicemail, or a price
-         gap that stalled with no movement. Still gets the automated drip + a
-         long-cycle follow-up — just not a priority call.
+         timeline, "maybe someday", a vague or near-empty voicemail with no
+         property context, or a price gap that stalled with no movement.
+         Still gets the automated drip + a long-cycle follow-up — just not a
+         priority call.
 
 NEVER leave temperature blank. A price disagreement, a one-word voicemail, and
 even an explicit "no / don't call me" all classify as cold — Ryan owns the
