@@ -303,12 +303,14 @@ function groupLeads(leads: Lead[]): LeadGroup[] {
     // Status comes from the most recent inbound (if any) so an outbound
     // "contacted" insert doesn't clobber the existing inbound's status.
     const statusSource = mostRecentInbound || mostRecent
-    // Take name/email/address from whichever event has them — the import
-    // backfills these onto the oldest row, while live captures may add them
-    // on a later row. First non-null wins.
-    const name = ascending.map(e => e.name).find(v => v && v.trim()) || null
-    const email = ascending.map(e => e.email).find(v => v && v.trim()) || null
-    const propertyAddress = ascending.map(e => e.property_address).find(v => v && v.trim()) || null
+    // Take name/email/address from whichever event has them. NEWEST non-null
+    // wins so a manual correction on the most-recent row (where PATCH lands)
+    // overrides an earlier auto-parsed value — same pattern as caller_phone
+    // below. Blank newer rows are skipped, so older canonical values still
+    // surface when later captures don't include the field.
+    const name = newestFirst.map(e => e.name).find(v => v && v.trim()) || null
+    const email = newestFirst.map(e => e.email).find(v => v && v.trim()) || null
+    const propertyAddress = newestFirst.map(e => e.property_address).find(v => v && v.trim()) || null
     const aiNotes = newestFirst.map(e => e.ai_notes).find(v => v && v.trim()) || null
     // Suggested reply travels with the email row that produced it. Take the
     // newest non-null one so a follow-up email's draft replaces a stale one.

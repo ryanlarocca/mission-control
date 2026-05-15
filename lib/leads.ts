@@ -637,6 +637,8 @@ export async function summarizeOutboundCall(
 
   const prompt = `You are summarizing a phone call between Ryan (a real estate investor) and a lead. Based on the transcript below, write a brief 1-2 sentence summary of what was discussed and any next steps. No labels, no markdown, no quotes — just the summary text. Maximum 2 sentences.
 
+If the caller and Ryan discussed property specifics — bed/bath count, multi-unit mix (e.g. duplex: 1x 3bd/2ba + 1x 2bd/1ba), per-unit or total monthly rents, vacancy status — include them explicitly. They're load-bearing details for Ryan; don't drop them to save words.
+
 TRANSCRIPT:
 "${transcription}"`
 
@@ -783,8 +785,24 @@ ${TEMPERATURE_RUBRIC}
 - summary: a plain prose paragraph, 2 to 6 sentences. No headers, no bullets,
     no bold. Cover who the caller is, what their inquiry is about, any
     obvious next-step or urgency cue. Emojis allowed where natural, not
-    required. Example: "Brian called about a property he owns at 2127 Los
-    Gatos Almaden Rd. He didn't share a timeline but sounded open to
+    required.
+
+    PROPERTY SPECIFICS — if the caller and Ryan discuss any of the following,
+    capture them EXPLICITLY and concretely in the summary (don't paraphrase
+    them away). These are load-bearing details Ryan revisits later:
+      • bed/bath count (e.g. "3bd/2ba")
+      • multi-unit mix on a duplex / triplex / 4-plex / small MFR — list each
+        unit's size when stated (e.g. "duplex: 1x 3bd/2ba + 1x 2bd/1ba",
+        "4-plex with two 2bd/1ba and two 1bd/1ba")
+      • monthly rents per unit or in total (e.g. "rents \$2,400 and \$1,800",
+        "grossing ~\$8k/mo")
+      • vacancy / occupancy status (which units are occupied, month-to-month
+        vs lease, problem tenants)
+      • square footage, lot size, or year built if stated
+
+    Example: "Brian called about a duplex he owns at 2127 Los Gatos Almaden
+    Rd — 1x 3bd/2ba renting for \$2,800 and 1x 2bd/1ba renting for \$2,100,
+    both month-to-month. He didn't share a timeline but sounded open to
     exploring options and wants a callback. Worth a quick follow-up
     tomorrow morning."
 
