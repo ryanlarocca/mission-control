@@ -194,6 +194,12 @@ async function handleAppsScript(payload: AppsScriptPayload): Promise<NextRespons
     return NextResponse.json({ ok: true })
   }
 
+  // Don't ingest mailer-daemon bounces back from our own outbound sends.
+  if (isBounceEmail(senderEmail, subject)) {
+    console.log(`[email] Skipping bounce from ${senderEmail} — ${subject}`)
+    return NextResponse.json({ ok: true, skipped: "bounce" })
+  }
+
   // Extracted as 10 raw digits; normalize to E.164 so the `caller_phone`
   // column matches the format we use everywhere else (call relay, dedup,
   // PATCH path) and the Call button activates without a manual fix-up.
@@ -360,6 +366,12 @@ async function processSingleMessage(args: {
   // Don't ingest mail we sent to ourselves (e.g. Ryan testing).
   if (senderEmail === emailAddress) {
     console.log(`[email] Skipping ${messageId} — sender is mailbox owner`)
+    return
+  }
+
+  // Don't ingest mailer-daemon bounces back from our own outbound sends.
+  if (isBounceEmail(senderEmail, subject)) {
+    console.log(`[email] Skipping ${messageId} — bounce from ${senderEmail}`)
     return
   }
 
@@ -536,6 +548,25 @@ function extractNameFromBody(text: string): string | null {
     if (m && m[1]) return m[1].trim()
   }
   return null
+}
+
+// Recognize bounce notifications (mailer-daemon, postmaster DSNs, "Undelivered
+// Mail Returned to Sender") so we don't insert a lead for our own failed
+// outbound send. Sender-address check catches the standard Gmail/Workspace
+// envelope; the subject patterns are the belt-and-suspenders for forwarders
+// that rewrite the From header.
+function isBounceEmail(senderEmail: string, subject: string): boolean {
+  const addr = senderEmail.toLowerCase()
+  if (/^(mailer-daemon|postmaster|noreply-dsn|bounce(s|d)?)@/.test(addr)) return true
+  const sub = subject.toLowerCase()
+  return (
+    sub.includes("delivery status notification") ||
+    sub.includes("undelivered mail returned") ||
+    sub.includes("undeliverable") ||
+    sub.includes("mail delivery failed") ||
+    sub.includes("returned mail") ||
+    sub.startsWith("failure notice")
+  )
 }
 
 function parseFromHeader(value: string): { name: string | null; email: string | null } {

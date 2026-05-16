@@ -303,14 +303,22 @@ function groupLeads(leads: Lead[]): LeadGroup[] {
     // Status comes from the most recent inbound (if any) so an outbound
     // "contacted" insert doesn't clobber the existing inbound's status.
     const statusSource = mostRecentInbound || mostRecent
-    // Take name/email/address from whichever event has them. NEWEST non-null
-    // wins so a manual correction on the most-recent row (where PATCH lands)
-    // overrides an earlier auto-parsed value — same pattern as caller_phone
-    // below. Blank newer rows are skipped, so older canonical values still
-    // surface when later captures don't include the field.
-    const name = newestFirst.map(e => e.name).find(v => v && v.trim()) || null
-    const email = newestFirst.map(e => e.email).find(v => v && v.trim()) || null
-    const propertyAddress = newestFirst.map(e => e.property_address).find(v => v && v.trim()) || null
+    // Take name/email/address from the status-driving row FIRST (this is the
+    // row PATCH lands on — see mostRecentId below), so a manual correction
+    // wins even when a NEWER outbound row baked the pre-correction value at
+    // send time (e.g. [id]/send-email copies lead.name into its outbound
+    // row; a later "newest-first" walk would otherwise surface that stale
+    // copy and silently revert the edit on re-render). Falls back to newest
+    // non-null across all events so older canonical values still surface
+    // when the status row is blank.
+    const pickIdentity = (key: "name" | "email" | "property_address"): string | null => {
+      const fromStatus = statusSource[key]
+      if (fromStatus && fromStatus.trim()) return fromStatus
+      return newestFirst.map(e => e[key]).find(v => v && v.trim()) || null
+    }
+    const name = pickIdentity("name")
+    const email = pickIdentity("email")
+    const propertyAddress = pickIdentity("property_address")
     const aiNotes = newestFirst.map(e => e.ai_notes).find(v => v && v.trim()) || null
     // Suggested reply travels with the email row that produced it. Take the
     // newest non-null one so a follow-up email's draft replaces a stale one.
