@@ -32,6 +32,17 @@ interface CampaignPerf {
   roi: number | null
 }
 
+interface OfferEntry {
+  lead_id: string
+  name: string | null
+  caller_phone: string | null
+  email: string | null
+  offer_amount: number | null
+  offer_verbalized_at: string | null
+  campaign_id: string | null
+  campaign_name: string | null
+}
+
 // ── formatters ─────────────────────────────────────────────────────────────
 function fmtMoney(n: number | null): string {
   if (n == null) return "—"
@@ -59,9 +70,15 @@ function fmtDate(iso: string | null): string {
   if (!iso) return "—"
   return new Date(iso + "T00:00:00").toLocaleDateString([], { month: "short", day: "numeric", year: "numeric" })
 }
+function formatPhone(phone: string | null): string {
+  if (!phone) return "—"
+  const m = phone.match(/^\+1(\d{3})(\d{3})(\d{4})$/)
+  return m ? `(${m[1]}) ${m[2]}-${m[3]}` : phone
+}
 
 export function CampaignPerformanceTab() {
   const [campaigns, setCampaigns] = useState<CampaignPerf[] | null>(null)
+  const [offers, setOffers] = useState<OfferEntry[]>([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [showNewModal, setShowNewModal] = useState(false)
@@ -71,8 +88,9 @@ export function CampaignPerformanceTab() {
     try {
       const res = await fetch("/api/campaigns/performance", { cache: "no-store" })
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
-      const payload = await res.json() as { campaigns: CampaignPerf[] }
+      const payload = await res.json() as { campaigns: CampaignPerf[]; offers?: OfferEntry[] }
       setCampaigns(payload.campaigns)
+      setOffers(payload.offers ?? [])
       setError(null)
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
@@ -230,6 +248,39 @@ export function CampaignPerformanceTab() {
           )
         })}
       </div>
+
+      {/* Offers — every verbalized offer across all clusters, newest first. */}
+      {offers.length > 0 && (
+        <div className="rounded-lg border border-amber-900/40 bg-amber-950/10 overflow-x-auto">
+          <div className="px-3 py-2 border-b border-amber-900/40 text-xs text-amber-100 font-medium inline-flex items-center gap-2">
+            💰 Offers <span className="text-amber-300/70">· {offers.length}</span>
+          </div>
+          <table className="w-full text-xs">
+            <thead className="text-zinc-500 bg-zinc-900/40">
+              <tr>
+                <th className="text-left px-3 py-1.5">Lead</th>
+                <th className="text-left px-3 py-1.5">Contact</th>
+                <th className="text-right px-3 py-1.5">Amount</th>
+                <th className="text-left px-3 py-1.5">Verbalized</th>
+                <th className="text-left px-3 py-1.5">Campaign</th>
+              </tr>
+            </thead>
+            <tbody className="text-zinc-300">
+              {offers.map(o => (
+                <tr key={o.lead_id} className="border-t border-zinc-900/60 hover:bg-zinc-900/30">
+                  <td className="px-3 py-1.5">{o.name || <span className="text-zinc-600 italic">(no name)</span>}</td>
+                  <td className="px-3 py-1.5 text-zinc-500 font-mono text-[11px]">
+                    {o.caller_phone ? formatPhone(o.caller_phone) : o.email || "—"}
+                  </td>
+                  <td className="px-3 py-1.5 text-right font-medium text-amber-200">{fmtMoney(o.offer_amount)}</td>
+                  <td className="px-3 py-1.5 text-zinc-500">{o.offer_verbalized_at ? new Date(o.offer_verbalized_at).toLocaleDateString([], { month: "short", day: "numeric", year: "numeric" }) : "—"}</td>
+                  <td className="px-3 py-1.5 text-zinc-400">{o.campaign_name || <span className="text-zinc-600">unattributed</span>}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
 
       {/* Flat comparison table */}
       {campaigns && campaigns.length > 0 && (

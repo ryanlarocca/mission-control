@@ -47,7 +47,7 @@ export async function GET() {
       sb.from("campaigns").select("*"),
       sb
         .from("leads")
-        .select("id, campaign_id, caller_phone, email, gmail_thread_id, is_junk, offer_verbalized_at, deal_closed_at, deal_value")
+        .select("id, name, campaign_id, caller_phone, email, gmail_thread_id, is_junk, offer_verbalized_at, deal_closed_at, deal_value")
         .not("campaign_id", "is", null),
     ])
     if (cErr) return NextResponse.json({ error: cErr.message }, { status: 500 })
@@ -55,6 +55,7 @@ export async function GET() {
 
     type AttrRow = {
       id: string
+      name: string | null
       campaign_id: string
       caller_phone: string | null
       email: string | null
@@ -209,7 +210,70 @@ export async function GET() {
       }
     })
 
-    return NextResponse.json({ campaigns: result })
+    // Flat list of every verbalized offer across all clusters, with the
+    // identifying lead (name/phone/email of the row that has the offer
+    // stamped) + attributed campaign. Powers the Offers section on the
+    // Campaigns tab. Sorted newest first.
+    const { data: offerRowsRaw } = await sb
+      .from("leads")
+      .select("id, name, caller_phone, email, gmail_thread_id, offer_amount, offer_verbalized_at")
+      .not("offer_verbalized_at", "is", null)
+      .order("offer_verbalized_at", { ascending: false })
+    type OfferRow = {
+      id: string
+      name: string | null
+      caller_phone: string | null
+      email: string | null
+      gmail_thread_id: string | null
+      offer_amount: number | null
+      offer_verbalized_at: string | null
+    }
+    // Build cluster → campaign map so each offer can be attributed back
+    // even when it lives on an outbound row with no campaign_id of its own.
+    const campaignByCluster = new Map<string, { id: string; name: string }>()
+    const campaignById = new Map<string, { id: string; name: string }>()
+    for (const c of (campaigns ?? [])) campaignById.set(c.id, { id: c.id, name: c.name })
+    for (const r of attributed) {
+      const k = clusterKey(r)
+      if (!k) continue
+      const c = campaignById.get(r.campaign_id)
+      if (c && !campaignByCluster.has(k)) campaignByCluster.set(k, c)
+    }
+    // Best-effort name resolution: prefer the offer row's own name, else
+    // any cluster sibling's name.
+    const nameByCluster = new Map<string, string>()
+    for (const r of (offerRowsRaw ?? []) as OfferRow[]) {
+      const k = clusterKey(r)
+      if (k && r.name && !nameByCluster.has(k)) nameByCluster.set(k, r.name)
+    }
+    // Also fall back to attributed cluster siblings if the offer row itself
+    // is anonymous (e.g. Tony's SMS row has no name on it).
+    for (const r of attributed) {
+      const k = clusterKey(r)
+      if (k && r.name && !nameByCluster.has(k)) nameByCluster.set(k, r.name)
+    }
+    // Dedupe by cluster so the same offer doesn't appear twice when stamped
+    // on two sibling rows.
+    const seenClusters = new Set<string>()
+    const offers = []
+    for (const r of (offerRowsRaw ?? []) as OfferRow[]) {
+      const k = clusterKey(r) || `id:${r.id}`
+      if (seenClusters.has(k)) continue
+      seenClusters.add(k)
+      const camp = campaignByCluster.get(k) ?? null
+      offers.push({
+        lead_id: r.id,
+        name: nameByCluster.get(k) || r.name || null,
+        caller_phone: r.caller_phone,
+        email: r.email,
+        offer_amount: r.offer_amount,
+        offer_verbalized_at: r.offer_verbalized_at,
+        campaign_id: camp?.id ?? null,
+        campaign_name: camp?.name ?? null,
+      })
+    }
+
+    return NextResponse.json({ campaigns: result, offers })
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e)
     return NextResponse.json({ error: msg }, { status: 500 })
