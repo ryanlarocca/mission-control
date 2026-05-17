@@ -209,20 +209,7 @@ export async function GET() {
       }
     })
 
-    return NextResponse.json({
-      campaigns: result,
-      _debug: {
-        attributed: attributed.length,
-        phones: phones.length,
-        siblings_total: siblings.length,
-        siblings_by_query: sibResults.map(r => (r.data ?? []).length),
-        clusterOfferAt: clusterOfferAt.size,
-        offerKeys: Array.from(clusterOfferAt.keys()),
-        // Bill Koester specifically
-        bill_phone_in_filter: phones.includes("+16505897226"),
-        bill_siblings: siblings.filter(s => s.caller_phone === "+16505897226"),
-      },
-    })
+    return NextResponse.json({ campaigns: result })
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e)
     return NextResponse.json({ error: msg }, { status: 500 })

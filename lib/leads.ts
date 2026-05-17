@@ -615,7 +615,23 @@ export function getLeadsClient(): SupabaseClient {
   if (!url || !key) {
     throw new Error("LRG_SUPABASE_URL and LRG_SUPABASE_SERVICE_KEY must be set")
   }
-  cached = createClient(url, key, { auth: { persistSession: false } })
+  // 2026-05-17 — `cache: "no-store"` on every Supabase fetch is critical
+  // in the Next.js App Router. Next/Vercel automatically caches GET fetch()
+  // responses at the URL level, and supabase-js makes its REST calls via
+  // fetch. Without this override, every GET to PostgREST gets a stale
+  // response indefinitely after the first successful read — caused the
+  // Candace / Bill Koester "offer not showing on Campaigns" bugs where the
+  // pencil-edit wrote to Supabase but subsequent reads from the function
+  // returned the pre-write snapshot. force-dynamic on the route handler
+  // only stops caching of the route's RESPONSE; the inner fetches still
+  // get cached. This setting fixes that at the source.
+  cached = createClient(url, key, {
+    auth: { persistSession: false },
+    global: {
+      fetch: (input: RequestInfo | URL, init?: RequestInit) =>
+        fetch(input, { ...(init ?? {}), cache: "no-store" }),
+    },
+  })
   return cached
 }
 
