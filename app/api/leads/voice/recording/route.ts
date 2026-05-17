@@ -24,6 +24,15 @@ import {
 //   RecordingUrl, RecordingSid, RecordingDuration
 //   From / Caller (lead's number), To / Called (the Twilio number)
 
+// Long recordings (~25+ minutes) push the background pipeline past Vercel's
+// default function budget — Whisper alone can run 30-60s on a 25-min audio
+// file, plus analyze-call + a multi-MB Telegram voice upload. Without an
+// explicit max the function was getting recycled before Whisper's result
+// landed, silently dropping the transcript (see Gigi Williams 2026-05-16,
+// plus two 27-min orphans in the prior 30 days). 300s gives waitUntil()
+// room to finish the slow path on every realistic call length.
+export const maxDuration = 300
+
 const HANGUP_TWIML = `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
   <Hangup />

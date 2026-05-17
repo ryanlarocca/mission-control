@@ -18,6 +18,12 @@ import {
 //
 // Public route — Twilio webhook, listed in middleware.ts PUBLIC_PATHS.
 
+// See app/api/leads/voice/recording/route.ts for the rationale — the outbound
+// path runs the same heavy waitUntil pipeline (Whisper + summarize +
+// analyze-call + Telegram). Same risk of silent transcript drop on long
+// calls without the explicit budget.
+export const maxDuration = 300
+
 const HANGUP_TWIML = `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
   <Hangup />
