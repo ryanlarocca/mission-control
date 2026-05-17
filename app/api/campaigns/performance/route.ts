@@ -71,10 +71,6 @@ export async function GET() {
     const phones = Array.from(new Set(attributed.map(r => r.caller_phone).filter((x): x is string => !!x)))
     const emails = Array.from(new Set(attributed.map(r => r.email).filter((x): x is string => !!x).map(e => e.toLowerCase())))
     const threads = Array.from(new Set(attributed.map(r => r.gmail_thread_id).filter((x): x is string => !!x)))
-    const orParts: string[] = []
-    if (phones.length > 0) orParts.push(`caller_phone.in.(${phones.map(p => `"${p}"`).join(",")})`)
-    if (emails.length > 0) orParts.push(`email.in.(${emails.map(e => `"${e}"`).join(",")})`)
-    if (threads.length > 0) orParts.push(`gmail_thread_id.in.(${threads.map(t => `"${t}"`).join(",")})`)
     type SibRow = {
       caller_phone: string | null
       email: string | null
@@ -83,15 +79,32 @@ export async function GET() {
       deal_closed_at: string | null
       deal_value: number | null
     }
-    let siblings: SibRow[] = []
-    if (orParts.length > 0) {
-      const { data: sib, error: sErr } = await sb
-        .from("leads")
-        .select("caller_phone, email, gmail_thread_id, offer_verbalized_at, deal_closed_at, deal_value")
-        .or(orParts.join(","))
-      if (sErr) return NextResponse.json({ error: sErr.message }, { status: 500 })
-      siblings = (sib ?? []) as SibRow[]
-    }
+    // 2026-05-17 — we used to issue a single `.or()` query combining three
+    // `.in.()` filters, but PostgREST (or supabase-js's encoding of it)
+    // dropped the offer_verbalized_at column to null on rows matched via
+    // OR'd IN clauses with many values — verified by direct comparison
+    // against the same row via `.eq()`. Splitting into three separate
+    // queries dodges the bug entirely and is plenty fast at our row counts.
+    const sibResults = await Promise.all([
+      phones.length > 0
+        ? sb.from("leads")
+            .select("caller_phone, email, gmail_thread_id, offer_verbalized_at, deal_closed_at, deal_value")
+            .in("caller_phone", phones)
+        : Promise.resolve({ data: [], error: null }),
+      emails.length > 0
+        ? sb.from("leads")
+            .select("caller_phone, email, gmail_thread_id, offer_verbalized_at, deal_closed_at, deal_value")
+            .in("email", emails)
+        : Promise.resolve({ data: [], error: null }),
+      threads.length > 0
+        ? sb.from("leads")
+            .select("caller_phone, email, gmail_thread_id, offer_verbalized_at, deal_closed_at, deal_value")
+            .in("gmail_thread_id", threads)
+        : Promise.resolve({ data: [], error: null }),
+    ])
+    const sErr = sibResults.find(r => r.error)?.error
+    if (sErr) return NextResponse.json({ error: sErr.message }, { status: 500 })
+    const siblings: SibRow[] = sibResults.flatMap(r => (r.data ?? []) as SibRow[])
 
     const clusterKey = (r: { caller_phone: string | null; email: string | null; gmail_thread_id: string | null }): string | null => {
       if (r.caller_phone) return `phone:${r.caller_phone}`
@@ -196,26 +209,7 @@ export async function GET() {
       }
     })
 
-    // Diagnostic: refetch Candace's rows directly to check primary-vs-replica freshness
-    const candaceDirect = await sb.from("leads")
-      .select("id, caller_phone, offer_amount, offer_verbalized_at")
-      .eq("caller_phone", "+16509067148")
-    const candaceSiblings = siblings.filter(s => s.caller_phone === "+16509067148")
-    return NextResponse.json({
-      campaigns: result,
-      _debug: {
-        attributed: attributed.length,
-        phones: phones.length,
-        emails: emails.length,
-        threads: threads.length,
-        siblings: siblings.length,
-        clusterOfferAt: clusterOfferAt.size,
-        offerKeys: Array.from(clusterOfferAt.keys()),
-        candaceSibling: siblings.find(s => s.caller_phone === "+16509067148" && s.offer_verbalized_at) ?? null,
-        candaceInSiblings: candaceSiblings,
-        candaceDirect: candaceDirect.data,
-      },
-    })
+    return NextResponse.json({ campaigns: result })
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e)
     return NextResponse.json({ error: msg }, { status: 500 })
