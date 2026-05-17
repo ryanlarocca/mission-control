@@ -298,6 +298,114 @@ export const VALID_LEAD_STATUSES: readonly LeadStatus[] = [
 export const LEAD_FLAG_FIELDS = ["is_dnc", "is_junk", "is_bad_number"] as const
 export type LeadFlagField = typeof LEAD_FLAG_FIELDS[number]
 
+// Standalone offer-detection helper. Used by outbound send paths
+// (send-email, send SMS/iMessage) to capture offers Ryan verbalizes in
+// outgoing messages. Same prompt rules as analyzeCallTranscript's offer
+// block: Ryan's price TO the seller, not the seller's asking price.
+// Caller is responsible for applying the hands-off write-back rule
+// (only stamp when current offer_amount is null).
+export interface OfferDetectionResult {
+  offer_amount: number | null
+  offer_verbalized: boolean
+}
+export async function detectOfferFromText(
+  text: string,
+  ctx?: { channel?: "email" | "sms" | "imessage"; lead_name?: string | null; property?: string | null }
+): Promise<OfferDetectionResult | null> {
+  const apiKey = process.env.OPENROUTER_API_KEY
+  if (!apiKey) return null
+  const trimmed = (text || "").trim()
+  if (trimmed.length < 10) return null
+  // Cheap regex pre-filter — bail if there's no $-amount + Ryan-cue at all.
+  // Saves a Haiku call on routine "thanks for the info" / "calling you back"
+  // type messages.
+  const hasMoney = /\$\s*[\d,]+(?:\.\d+)?\s*[kKmM]?|\b\d+(?:\.\d+)?\s*(?:million|thousand|[kKmM])\b|\b\d{3},\d{3}\b/.test(trimmed)
+  if (!hasMoney) return { offer_amount: null, offer_verbalized: false }
+  const channel = ctx?.channel ?? "email"
+  const prompt = `You are reading an outgoing ${channel} from Ryan (a cash home buyer / investor in the Bay Area) to a real estate seller lead${ctx?.lead_name ? ` named ${ctx.lead_name}` : ""}${ctx?.property ? ` regarding ${ctx.property}` : ""}. Your job is to decide whether Ryan stated a specific purchase-price offer in this message, and if so capture the amount.
+
+CRITICAL: this is RYAN'S price TO the seller. NOT a market reference / comp / asking price the seller mentioned previously.
+
+Return JSON only:
+{
+  "offer_amount": number | null,
+  "offer_verbalized": true | false
+}
+
+RULES:
+- offer_verbalized=true ONLY when Ryan states a specific dollar amount he would pay / offer / do for THIS lead's property in THIS message.
+- Soft / conditional offers count: "I could probably do around $700K" → 700000.
+- Ranges → take the midpoint, round to nearest 1k: "$700-750K" → 725000.
+- Discussion of OTHER market activity, comps, or seller's prior asking price does NOT count.
+- When in doubt, return false. False positives lose campaign-performance signal.
+
+OUTGOING MESSAGE:
+"""
+${trimmed}
+"""
+
+Respond with ONLY the JSON object.`
+  try {
+    const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model: "anthropic/claude-haiku-4-5",
+        max_tokens: 80,
+        messages: [{ role: "user", content: prompt }],
+      }),
+    })
+    if (!res.ok) {
+      console.warn(`[detect-offer] Haiku ${res.status}`)
+      return null
+    }
+    const j = await res.json() as { choices?: { message?: { content?: string } }[] }
+    const content = j.choices?.[0]?.message?.content?.trim() || ""
+    const cleaned = content.replace(/^```(?:json)?\s*/i, "").replace(/```\s*$/i, "").trim()
+    const parsed = JSON.parse(cleaned) as { offer_amount?: unknown; offer_verbalized?: unknown }
+    return {
+      offer_amount: typeof parsed.offer_amount === "number" && Number.isFinite(parsed.offer_amount) && parsed.offer_amount > 0
+        ? parsed.offer_amount : null,
+      offer_verbalized: parsed.offer_verbalized === true,
+    }
+  } catch (e) {
+    console.warn("[detect-offer] threw:", e instanceof Error ? e.message : String(e))
+    return null
+  }
+}
+
+// Apply a detected offer to a lead row's cluster, honoring the hands-off
+// rule: only stamps offer_amount + offer_verbalized_at when the row's
+// current values are both null. Stamps timestamp = now() (live action).
+// Returns true if a write happened.
+export async function applyDetectedOfferToCluster(
+  sb: SupabaseClient,
+  args: { leadId: string; caller_phone: string | null; email: string | null; gmail_thread_id?: string | null; offer_amount: number }
+): Promise<boolean> {
+  // Check every row in the cluster — if ANY of them already has an offer
+  // stamped, do nothing (Ryan's earlier pencil edit or a prior analyzer
+  // pass wins).
+  const orParts: string[] = []
+  if (args.caller_phone) orParts.push(`caller_phone.eq.${args.caller_phone}`)
+  if (args.email) orParts.push(`email.eq.${args.email}`)
+  if (args.gmail_thread_id) orParts.push(`gmail_thread_id.eq.${args.gmail_thread_id}`)
+  if (orParts.length === 0) {
+    // Fallback: stamp directly on the lead row only.
+    const { data: cur } = await sb.from("leads").select("offer_amount").eq("id", args.leadId).single()
+    if (cur?.offer_amount != null) return false
+    const now = new Date().toISOString()
+    const { error } = await sb.from("leads").update({ offer_amount: args.offer_amount, offer_verbalized_at: now }).eq("id", args.leadId)
+    return !error
+  }
+  const { data: cluster } = await sb.from("leads").select("id, offer_amount").or(orParts.join(","))
+  const existing = (cluster ?? []).find(r => r.offer_amount != null)
+  if (existing) return false
+  // Stamp on the leadId provided (typically the just-inserted outbound row).
+  const now = new Date().toISOString()
+  const { error } = await sb.from("leads").update({ offer_amount: args.offer_amount, offer_verbalized_at: now }).eq("id", args.leadId)
+  return !error
+}
+
 // Pick the cluster's authoritative drip-driver row out of N stamped
 // candidates. The decision is two-stage so a user-applied campaign
 // change (e.g. Long-Term Nurture on a cluster previously running

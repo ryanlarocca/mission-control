@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server"
-import { getLeadsClient } from "@/lib/leads"
+import { getLeadsClient, detectOfferFromText, applyDetectedOfferToCluster } from "@/lib/leads"
 
 // Outbound message endpoint for the Leads tab. Sends via the CRMS sidecar
 // (iMessage with SMS fallback — same path the Relationships tab uses) and
@@ -87,6 +87,25 @@ export async function POST(request: NextRequest) {
       console.error("[leads/send] Insert failed:", error)
     } else {
       loggedId = data?.id ?? null
+    }
+
+    // Auto-detect verbalized offer in this outbound SMS/iMessage and stamp
+    // it on the cluster. Same hands-off rule as the email path.
+    if (loggedId) {
+      try {
+        const result = await detectOfferFromText(message, { channel: "imessage" })
+        if (result?.offer_verbalized && typeof result.offer_amount === "number") {
+          const wrote = await applyDetectedOfferToCluster(sb, {
+            leadId: loggedId,
+            caller_phone: phone,
+            email: null,
+            offer_amount: result.offer_amount,
+          })
+          if (wrote) console.log(`[leads/send] auto-stamped offer $${result.offer_amount} on ${phone}`)
+        }
+      } catch (e) {
+        console.warn(`[leads/send] offer detection failed:`, e instanceof Error ? e.message : String(e))
+      }
     }
 
     // Phase 7C-may8 Bug 2: promote the original intake row (twilio_number

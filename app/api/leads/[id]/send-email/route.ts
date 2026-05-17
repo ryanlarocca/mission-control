@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server"
-import { getGmailClient, getLeadsClient, getMailboxForSource, encodeEmailHeader } from "@/lib/leads"
+import { getGmailClient, getLeadsClient, getMailboxForSource, encodeEmailHeader, detectOfferFromText, applyDetectedOfferToCluster } from "@/lib/leads"
 
 // Phase 7C — Part 6: send a manual email to a lead from the lead card.
 //
@@ -100,7 +100,7 @@ export async function POST(
     const { data } = await gmail.users.messages.send({ userId: "me", requestBody })
 
     // Record an outbound row so the timeline shows the send.
-    const { error: insErr } = await sb.from("leads").insert({
+    const { data: outboundRow, error: insErr } = await sb.from("leads").insert({
       source: lead.source,
       source_type: lead.source_type,
       twilio_number: null,
@@ -112,8 +112,34 @@ export async function POST(
       email: recipientEmail,
       property_address: lead.property_address,
       gmail_thread_id: lead.gmail_thread_id || null,
-    })
+    }).select("id").single()
     if (insErr) console.warn(`[send-email] event row insert failed for ${id}:`, insErr.message)
+
+    // Auto-detect any verbalized offer in this outbound email body and
+    // stamp it on the cluster. Hands-off: only writes when the cluster
+    // has no existing offer_amount. Detection runs ONLY on subject + body
+    // — quoted/forwarded thread above is ignored by passing only `text`.
+    if (outboundRow?.id) {
+      try {
+        const result = await detectOfferFromText(`${subject}\n\n${text}`, {
+          channel: "email",
+          lead_name: lead.name,
+          property: lead.property_address,
+        })
+        if (result?.offer_verbalized && typeof result.offer_amount === "number") {
+          const wrote = await applyDetectedOfferToCluster(sb, {
+            leadId: outboundRow.id,
+            caller_phone: lead.caller_phone,
+            email: recipientEmail,
+            gmail_thread_id: lead.gmail_thread_id || null,
+            offer_amount: result.offer_amount,
+          })
+          if (wrote) console.log(`[send-email] auto-stamped offer $${result.offer_amount} on cluster of ${id}`)
+        }
+      } catch (e) {
+        console.warn(`[send-email] offer detection failed for ${id}:`, e instanceof Error ? e.message : String(e))
+      }
+    }
 
     // Mirror the SMS / call new→contacted promote on the cluster's inbound
     // row. Without this, the outbound row carries status="contacted" but the
