@@ -997,6 +997,9 @@ async function fetchEligibleLeads(sb) {
   return dedupeByCluster(data || [])
 }
 
+// MIRROR OF lib/leads.ts `clusterKeyOrId` — keep in sync. Engine runs as
+// plain node (no TS toolchain on Mac mini) so it can't import. If the
+// rule changes, update BOTH places.
 function clusterKey(lead) {
   if (lead.caller_phone && lead.caller_phone !== "Anonymous") return `phone:${lead.caller_phone}`
   if (lead.gmail_thread_id) return `thread:${lead.gmail_thread_id}`

@@ -298,6 +298,33 @@ export const VALID_LEAD_STATUSES: readonly LeadStatus[] = [
 export const LEAD_FLAG_FIELDS = ["is_dnc", "is_junk", "is_bad_number"] as const
 export type LeadFlagField = typeof LEAD_FLAG_FIELDS[number]
 
+// Cluster-key derivation. ONE function in the codebase — used by the
+// drips API (forecast cluster dedupe), campaigns/performance API
+// (siblings + offer hoist), and the dedupeClusterStamps helper. Returns
+// null when no real identifier exists; callers that need a guaranteed
+// non-null bucket key (e.g. dedupe walks where each row needs a slot)
+// can use clusterKeyOrId.
+//
+// "Anonymous" caller_phone is NOT a real key — every withheld-ID call
+// shares the same placeholder, so treating it as a cluster identity
+// would merge unrelated people. Fall through to thread/email/null.
+//
+// Email is lowercased so case variants don't fork the cluster.
+export type ClusterIdentity = {
+  caller_phone: string | null
+  email: string | null
+  gmail_thread_id?: string | null
+}
+export function clusterKey(r: ClusterIdentity): string | null {
+  if (r.caller_phone && r.caller_phone !== "Anonymous") return `phone:${r.caller_phone}`
+  if (r.gmail_thread_id) return `thread:${r.gmail_thread_id}`
+  if (r.email) return `email:${r.email.toLowerCase()}`
+  return null
+}
+export function clusterKeyOrId(r: ClusterIdentity & { id: string }): string {
+  return clusterKey(r) ?? `id:${r.id}`
+}
+
 // Standalone offer-detection helper. Used by outbound send paths
 // (send-email, send SMS/iMessage) to capture offers Ryan verbalizes in
 // outgoing messages. Same prompt rules as analyzeCallTranscript's offer

@@ -11,6 +11,7 @@ import {
 import { getCampaign, getNextTouch } from "@/lib/drip-campaigns"
 import { isAnonymousCaller } from "@/lib/anonymous"
 import type { LeadStatus } from "@/lib/leads"
+import { formatPhone } from "@/lib/utils"
 import {
   type RelationshipCategory,
   RELATIONSHIP_CATEGORY_LABELS,
@@ -215,13 +216,7 @@ const STATUS_LABEL: Record<LeadStatus, string> = {
   dead:       "Dead",
 }
 
-function formatPhone(p: string | null | undefined): string {
-  if (!p) return "—"
-  const digits = p.replace(/\D/g, "")
-  const last10 = digits.length > 10 ? digits.slice(-10) : digits
-  if (last10.length !== 10) return p
-  return `(${last10.slice(0,3)}) ${last10.slice(3,6)}-${last10.slice(6)}`
-}
+// formatPhone moved to lib/utils.ts (see import above).
 
 // Predict when the drip engine will fire the next touch on a group.
 // Returns null when the lead has no campaign assigned, has no remaining

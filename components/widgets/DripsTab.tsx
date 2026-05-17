@@ -6,6 +6,7 @@ import {
   CalendarClock, Send, Mail, MessageSquare, Eye, Sparkles, SkipForward,
   ExternalLink,
 } from "lucide-react"
+import { formatPhone } from "@/lib/utils"
 
 // Drips tab — one-stop shop for every drip in flight. Sections:
 //   Late          pending too long (>24h queued)
@@ -63,12 +64,7 @@ interface DripsPayload {
   meta: { lateThresholdHours: number; forecastDays: number; sentHistoryDays: number; failedHistoryDays: number; generatedAt: string }
 }
 
-function formatPhone(phone: string | null): string | null {
-  if (!phone) return null
-  const m = phone.match(/^\+1(\d{3})(\d{3})(\d{4})$/)
-  if (m) return `(${m[1]}) ${m[2]}-${m[3]}`
-  return phone
-}
+// formatPhone moved to lib/utils.ts.
 
 function relativeFromNow(iso: string): string {
   const t = new Date(iso).getTime()

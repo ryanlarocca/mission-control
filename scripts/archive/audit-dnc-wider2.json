@@ -1,0 +1,29 @@
+{
+  "generated_at": "2026-05-16T20:18:22.781Z",
+  "strong_count": 1,
+  "soft_count": 0,
+  "candidates": [
+    {
+      "bucket": "strong",
+      "key": "+14086557815",
+      "name": "Victor Rodriguez",
+      "rules": [
+        "AI flagged opt-out / no-follow-up"
+      ],
+      "rep_lead_id": "84984bd5-c31f-4ecd-bdaf-b24ddfb45487",
+      "all_lead_ids": [
+        "84984bd5-c31f-4ecd-bdaf-b24ddfb45487"
+      ],
+      "snippets": [
+        {
+          "lead_id": "84984bd5-c31f-4ecd-bdaf-b24ddfb45487",
+          "lead_type": "voicemail",
+          "status": "dead",
+          "field": "followup_reason",
+          "rule": "AI flagged opt-out / no-follow-up",
+          "text": "Caller explicitly stated he would 'never, ever, ever sell' and clarified he doesn't sell properties — not a workable seller lead, no follow-up warranted."
+        }
+      ]
+    }
+  ]
+}

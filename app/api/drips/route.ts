@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server"
-import { getLeadsClient } from "@/lib/leads"
+import { getLeadsClient, clusterKeyOrId } from "@/lib/leads"
 import {
   getCampaign,
   getNextTouch,
@@ -311,13 +311,11 @@ export async function GET(_request: NextRequest) {
     // due one — with a merged_siblings count so it's obvious there are
     // duplicates underneath. (Real fix is making the engine cluster-aware;
     // tracking that separately.)
-    const clusterKey = (item: { caller_phone: string | null; email: string | null; lead_id: string }): string =>
-      item.caller_phone ? `phone:${item.caller_phone}` :
-      item.email ? `email:${item.email.toLowerCase()}` :
-      `id:${item.lead_id}`
+    // Forecast rows key off lead_id (one row per lead), so we map their
+    // identity shape to the shared helper's signature.
     const byCluster = new Map<string, ForecastItem[]>()
     for (const f of rawForecast) {
-      const key = clusterKey(f)
+      const key = clusterKeyOrId({ caller_phone: f.caller_phone, email: f.email, id: f.lead_id })
       if (!byCluster.has(key)) byCluster.set(key, [])
       byCluster.get(key)!.push(f)
     }

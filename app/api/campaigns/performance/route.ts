@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server"
-import { getLeadsClient } from "@/lib/leads"
+import { getLeadsClient, clusterKey } from "@/lib/leads"
 import type { Campaign } from "../route"
 
 // Per-campaign funnel + ROI rollup. One row per campaign (parent + children
@@ -107,12 +107,6 @@ export async function GET() {
     if (sErr) return NextResponse.json({ error: sErr.message }, { status: 500 })
     const siblings: SibRow[] = sibResults.flatMap(r => (r.data ?? []) as SibRow[])
 
-    const clusterKey = (r: { caller_phone: string | null; email: string | null; gmail_thread_id: string | null }): string | null => {
-      if (r.caller_phone) return `phone:${r.caller_phone}`
-      if (r.gmail_thread_id) return `thread:${r.gmail_thread_id}`
-      if (r.email) return `email:${r.email.toLowerCase()}`
-      return null
-    }
     // Cluster-level event signals — does ANY row in this cluster have an
     // offer / a close? Use Set/Map for O(1) lookup during the rollup.
     const clusterOfferAt = new Map<string, string>() // earliest offer timestamp per cluster

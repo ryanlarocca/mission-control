@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react"
 import { Loader2, RefreshCw, Plus, X } from "lucide-react"
+import { formatPhone } from "@/lib/utils"
 
 // Campaign Performance tab — funnel + ROI for every marketing campaign.
 // Reads `/api/campaigns/performance` once on mount and on user refresh.
@@ -70,11 +71,7 @@ function fmtDate(iso: string | null): string {
   if (!iso) return "—"
   return new Date(iso + "T00:00:00").toLocaleDateString([], { month: "short", day: "numeric", year: "numeric" })
 }
-function formatPhone(phone: string | null): string {
-  if (!phone) return "—"
-  const m = phone.match(/^\+1(\d{3})(\d{3})(\d{4})$/)
-  return m ? `(${m[1]}) ${m[2]}-${m[3]}` : phone
-}
+// formatPhone moved to lib/utils.ts.
 
 export function CampaignPerformanceTab() {
   const [campaigns, setCampaigns] = useState<CampaignPerf[] | null>(null)

@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react"
 import { useRouter } from "next/navigation"
+import { formatPhone } from "@/lib/utils"
 import {
   PhoneOutgoing, Loader2, RefreshCw, Check, ChevronDown, Calendar, Clock,
 } from "lucide-react"
@@ -85,13 +86,7 @@ function bucketFor(dateStr: string): Bucket {
   return "later"
 }
 
-function formatPhone(p: string | null | undefined): string {
-  if (!p) return ""
-  const digits = p.replace(/\D/g, "")
-  const last10 = digits.length > 10 ? digits.slice(-10) : digits
-  if (last10.length !== 10) return p
-  return `(${last10.slice(0, 3)}) ${last10.slice(3, 6)}-${last10.slice(6)}`
-}
+// formatPhone moved to lib/utils.ts.
 
 function formatDate(dateStr: string): string {
   const d = new Date(dateStr + "T00:00:00")
