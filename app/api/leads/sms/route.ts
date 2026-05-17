@@ -146,8 +146,29 @@ export async function POST(request: Request) {
         insertRow.drip_campaign_type = existingRow.drip_campaign_type
       }
 
-      const { error } = await sb.from("leads").insert(insertRow)
+      const { data: insertedRow, error } = await sb
+        .from("leads")
+        .insert(insertRow)
+        .select("id")
+        .single()
       if (error) console.error("[sms] Supabase insert failed:", error)
+
+      // Campaign attribution — best-effort.
+      if (insertedRow?.id) {
+        try {
+          const { resolveCampaignId } = await import("@/lib/campaigns")
+          const campaignId = await resolveCampaignId({
+            source: (insertRow.source as string) ?? source,
+            source_type: (insertRow.source_type as string) ?? (isGoogleAds ? "google_ads" : "direct_mail"),
+            created_at: new Date(),
+          })
+          if (campaignId) {
+            await sb.from("leads").update({ campaign_id: campaignId }).eq("id", insertedRow.id)
+          }
+        } catch (e) {
+          console.warn("[sms] campaign attribution failed:", e instanceof Error ? e.message : String(e))
+        }
+      }
     } catch (e) {
       console.error("[sms] Supabase threw:", e)
     }

@@ -900,6 +900,13 @@ export interface AnalyzeCallResult {
   // me off your list," hostile opt-out). applyAnalyzeCallResult flips the
   // lead to is_dnc=true + status=dead and seeds a dnc_list row.
   is_dnc: boolean
+  // Offer detection — Ryan's stated purchase price to the seller (NOT the
+  // seller's asking price). Powers the Campaign Performance funnel
+  // "Responded → Offer → Closed". Conservative: only fires when Ryan
+  // verbalizes a specific dollar amount; soft/conditional offers still
+  // count, but a seller-stated price alone does not.
+  offer_amount: number | null
+  offer_verbalized: boolean
 }
 
 // Build a short prose timeline of every prior event in the contact's cluster
@@ -1100,6 +1107,44 @@ ${TEMPERATURE_RUBRIC}
     (drip + manual) on DNC, so be conservative — false negatives are fine,
     false positives lose real leads.
 
+OFFER DETECTION
+Ryan (the buyer/investor) sometimes states a specific purchase price to
+the seller. When he does, capture it.
+
+- offer_amount: dollar amount Ryan stated as a purchase price to the seller.
+    Number only (e.g., 800000 for "$800K"). Null if no offer.
+- offer_verbalized: true if Ryan stated a specific price to the seller;
+    false otherwise.
+
+CRITICAL: this is RYAN'S price to the seller — NOT the seller's asking
+price. False positives lose real campaign-performance signal, so be
+conservative.
+
+- If ONLY the seller mentions a price ("I want $850K", "I'm asking $1.2M",
+  "I'd take $900K"), set both to null. The seller stating a number is not
+  Ryan offering a number.
+- If Ryan says "I can offer you $800K" / "I was thinking $750K" / "what
+  about $900K for the property" / "we'd be at around $650K" → set
+  offer_amount to the number and offer_verbalized: true.
+- Soft / conditional offers still count: "maybe around $700K if it checks
+  out" → 700000.
+- Ranges → take the midpoint, rounded to the nearest 1k: "$700-750K" →
+  725000.
+- Direct mail letter / "blind" offers in Ryan's mailer don't count — the
+  letter is a marketing piece, not a verbalized offer in this conversation.
+
+Examples:
+  • Seller: "I'd take $900K." Ryan: "Let me think about it." →
+      offer_amount: null, offer_verbalized: false
+  • Ryan: "I can do $850,000 cash, close in 14 days." →
+      offer_amount: 850000, offer_verbalized: true
+  • Ryan: "We're typically in the $600-700K range for properties like this." →
+      offer_amount: 650000, offer_verbalized: true
+  • Ryan (in email): "Based on what you described, I could offer $1.1M." →
+      offer_amount: 1100000, offer_verbalized: true
+  • Seller: "Comps are $1.2M." Ryan: "Okay, what's your timeline?" →
+      offer_amount: null, offer_verbalized: false (Ryan didn't state a price)
+
 Respond with ONLY the JSON object — no markdown fences, no explanation.
 
 {
@@ -1110,7 +1155,9 @@ Respond with ONLY the JSON object — no markdown fences, no explanation.
   "email": "..." | null,
   "recommended_followup_date": "YYYY-MM-DD" | null,
   "followup_reason": "..." | null,
-  "is_dnc": true | false
+  "is_dnc": true | false,
+  "offer_amount": number | null,
+  "offer_verbalized": true | false
 }
 
 ${historyBlock}FRESH TRANSCRIPT (this is the current call):
@@ -1169,6 +1216,11 @@ ${historyBlock}FRESH TRANSCRIPT (this is the current call):
           ? parsed.followup_reason.trim()
           : null,
       is_dnc: parsed.is_dnc === true,
+      offer_amount:
+        typeof parsed.offer_amount === "number" && Number.isFinite(parsed.offer_amount) && parsed.offer_amount > 0
+          ? parsed.offer_amount
+          : null,
+      offer_verbalized: parsed.offer_verbalized === true,
     }
   } catch (e) {
     console.error("[analyze-call] threw:", e)
@@ -1234,7 +1286,7 @@ export async function applyFollowupOnlyResult(
 
   const { data: existing } = await sb
     .from("leads")
-    .select("name, property_address, email")
+    .select("name, property_address, email, offer_amount, offer_verbalized_at, created_at")
     .eq("id", leadId)
     .maybeSingle()
 
@@ -1248,6 +1300,16 @@ export async function applyFollowupOnlyResult(
     update.property_address = result.property_address
   }
   if (result.email && !existing?.email) update.email = result.email
+
+  // Offer detection — same hands-off rule as applyAnalyzeCallResult.
+  // Outbound calls are the canonical "Ryan stated a number" path, so
+  // this branch is the typical write site for offer events.
+  if (result.offer_verbalized && typeof result.offer_amount === "number" && result.offer_amount > 0) {
+    if (existing?.offer_amount == null) update.offer_amount = result.offer_amount
+    if (existing?.offer_verbalized_at == null) {
+      update.offer_verbalized_at = existing?.created_at ?? new Date().toISOString()
+    }
+  }
 
   // Auto-DNC also honored on outbound-call analysis. The seller's opt-out is
   // valid regardless of who initiated the call — if Ryan rings them back and
@@ -1318,7 +1380,7 @@ export async function applyAnalyzeCallResult(
   // across the full contact cluster (Fix 1 below).
   const { data: existing } = await sb
     .from("leads")
-    .select("name, property_address, caller_phone, email")
+    .select("name, property_address, caller_phone, email, offer_amount, offer_verbalized_at, created_at")
     .eq("id", leadId)
     .maybeSingle()
 
@@ -1347,6 +1409,22 @@ export async function applyAnalyzeCallResult(
   // hand-corrected address is never clobbered. This is what makes the
   // send-email path light up for a call-only lead (e.g. Mike Cummings).
   if (result.email && !existing?.email) update.email = result.email
+
+  // Offer detection — hands-off rule. Only write the amount + timestamp
+  // when the row's current values are null, so Ryan's manual pencil edits
+  // on the lead card always win over a later re-analysis. offer_verbalized
+  // is a transient signal from the analyzer (not a column on leads); the
+  // persisted state is (offer_amount, offer_verbalized_at).
+  if (result.offer_verbalized && typeof result.offer_amount === "number" && result.offer_amount > 0) {
+    if (existing?.offer_amount == null) update.offer_amount = result.offer_amount
+    if (existing?.offer_verbalized_at == null) {
+      // Use the lead row's created_at as the offer-event timestamp — that's
+      // when this conversation actually happened. Falls back to now() if
+      // somehow missing. Backfills (re-running analyze on an old row) will
+      // therefore stamp the historical date, not today's.
+      update.offer_verbalized_at = existing?.created_at ?? new Date().toISOString()
+    }
+  }
 
   // Auto-DNC: when the seller explicitly opts out, mirror the manual DNC
   // path (POST /api/leads/[id]/dnc) — flag is_dnc=true, drop lifecycle to
@@ -1458,6 +1536,12 @@ export interface EmailTriageResult {
   is_dead: boolean
   summary: string
   suggestedReply: string
+  // Offer detection — same rules as analyzeCallTranscript. Captures the
+  // case where Ryan has emailed the seller a specific number (typical
+  // direct-mail back-and-forth ending in "Based on what you described,
+  // I could offer $X").
+  offer_amount: number | null
+  offer_verbalized: boolean
 }
 
 export async function triageEmailLead(
@@ -1480,14 +1564,30 @@ Respond in JSON only:
   "temperature": "hot" | "warm" | "cold",
   "is_dead": true | false,
   "summary": "one sentence summary",
-  "suggestedReply": "a short, natural text-message-style reply Ryan can send. Warm, direct, no fluff. 1-2 sentences max."
+  "suggestedReply": "a short, natural text-message-style reply Ryan can send. Warm, direct, no fluff. 1-2 sentences max.",
+  "offer_amount": number | null,
+  "offer_verbalized": true | false
 }
 
 temperature:
 ${TEMPERATURE_RUBRIC}
 
 is_dead: true ONLY for spam / wrong number / explicit unsubscribe / hostile.
-  Default false. Use this flag, not temperature, to mark a lead as dead.`
+  Default false. Use this flag, not temperature, to mark a lead as dead.
+
+OFFER DETECTION
+- offer_amount: dollar amount Ryan stated as a purchase price to the seller
+    in THIS email thread. Number only (e.g., 800000 for "$800K"). Null if
+    no offer.
+- offer_verbalized: true if Ryan stated a specific price; false otherwise.
+- CRITICAL: this is RYAN'S price to the seller — NOT the seller's asking
+    price. If only the seller mentions a price ("I'm asking $1.2M"), both
+    fields stay null. Soft offers count: "I could offer around $700K" →
+    700000. Ranges → midpoint rounded.
+- The body field may contain the seller's reply only or a full email
+    thread. Identify which lines are Ryan's (look for "From: Ryan" or his
+    sign-off "— Ryan" / "Ryan LaRocca"). If you can't tell who said the
+    number, default to null.`
 
   try {
     const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
@@ -1518,6 +1618,8 @@ is_dead: true ONLY for spam / wrong number / explicit unsubscribe / hostile.
       is_dead?: unknown
       summary?: string
       suggestedReply?: string
+      offer_amount?: unknown
+      offer_verbalized?: unknown
     }
     if (
       !parsed.temperature ||
@@ -1533,6 +1635,11 @@ is_dead: true ONLY for spam / wrong number / explicit unsubscribe / hostile.
       is_dead: parsed.is_dead === true,
       summary: parsed.summary.trim(),
       suggestedReply: parsed.suggestedReply.trim(),
+      offer_amount:
+        typeof parsed.offer_amount === "number" && Number.isFinite(parsed.offer_amount) && parsed.offer_amount > 0
+          ? parsed.offer_amount
+          : null,
+      offer_verbalized: parsed.offer_verbalized === true,
     }
   } catch (e) {
     console.error("[triage-email] Threw:", e)

@@ -100,6 +100,35 @@ export async function PATCH(request: NextRequest) {
     }
   }
 
+  // Offer fields (Campaign Performance tab). offer_amount is a number, but
+  // we accept null too — that's the "clear" action from the lead card.
+  // When offer_amount is set without an explicit offer_verbalized_at, we
+  // stamp the timestamp to now() server-side so the UI doesn't have to.
+  if (body.offer_amount !== undefined) {
+    const v = body.offer_amount
+    if (v === null) {
+      update.offer_amount = null
+      // Clearing offer_amount also clears the timestamp — a null amount with
+      // a stamped event date would be inconsistent.
+      update.offer_verbalized_at = null
+    } else if (typeof v === "number" && Number.isFinite(v) && v > 0) {
+      update.offer_amount = v
+      if (body.offer_verbalized_at === undefined) {
+        // Manual override path — user typed a number in the pencil-edit on
+        // the lead card. Stamp the timestamp now so the funnel counts this
+        // as today's event.
+        update.offer_verbalized_at = new Date().toISOString()
+      }
+    } else {
+      return NextResponse.json({ error: "offer_amount must be a positive number or null" }, { status: 400 })
+    }
+  }
+  if (body.offer_verbalized_at !== undefined) {
+    const v = body.offer_verbalized_at
+    if (v === null || typeof v === "string") update.offer_verbalized_at = v
+    else return NextResponse.json({ error: "offer_verbalized_at must be ISO string or null" }, { status: 400 })
+  }
+
   for (const flag of LEAD_FLAG_FIELDS) {
     if (body[flag] !== undefined) {
       if (typeof body[flag] !== "boolean") {

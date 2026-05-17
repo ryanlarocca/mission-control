@@ -291,6 +291,19 @@ async function handleAppsScript(payload: AppsScriptPayload): Promise<NextRespons
 
   console.log(`[email] Inserted email lead ${inserted?.id} from ${senderEmail} (${campaign.source})`)
 
+  // Campaign attribution — best-effort, doesn't fail ingest if it returns null.
+  if (inserted?.id) {
+    try {
+      const { resolveCampaignId } = await import("@/lib/campaigns")
+      const campaignId = await resolveCampaignId({ source: campaign.source, source_type: campaign.source_type, created_at: new Date() })
+      if (campaignId) {
+        await sb.from("leads").update({ campaign_id: campaignId }).eq("id", inserted.id)
+      }
+    } catch (e) {
+      console.warn("[email] campaign attribution failed:", e instanceof Error ? e.message : String(e))
+    }
+  }
+
   const lines = [
     "📧 New email lead",
     `[${formatCampaignLabel(campaign.source)}]`,
@@ -472,6 +485,18 @@ async function processSingleMessage(args: {
     return
   }
   console.log(`[email] Inserted email lead ${inserted?.id} from ${senderEmail} (${campaign.source})`)
+
+  if (inserted?.id) {
+    try {
+      const { resolveCampaignId } = await import("@/lib/campaigns")
+      const campaignId = await resolveCampaignId({ source: campaign.source, source_type: campaign.source_type, created_at: new Date() })
+      if (campaignId) {
+        await sb.from("leads").update({ campaign_id: campaignId }).eq("id", inserted.id)
+      }
+    } catch (e) {
+      console.warn("[email] campaign attribution failed:", e instanceof Error ? e.message : String(e))
+    }
+  }
 
   const lines = [
     "📧 New email lead",
