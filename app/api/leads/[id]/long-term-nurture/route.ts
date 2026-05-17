@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server"
-import { getLeadsClient, haltOutreachForCluster } from "@/lib/leads"
+import { getLeadsClient, haltOutreachForCluster, dedupeClusterStamps } from "@/lib/leads"
 
 // "Move to long-term nurture" — the right move for a lead who explicitly
 // said "not now, maybe in a year or two" (Kiko Ohata 2026-05-17 was the
@@ -103,6 +103,19 @@ export async function POST(
       })
       .eq("id", id)
     if (updErr) return NextResponse.json({ error: updErr.message }, { status: 500 })
+
+    // Sweep cluster siblings' drip_campaign_type so the engine doesn't keep
+    // queuing the OLD campaign's touches in parallel with this new LTN one.
+    // We force this row as the keeper so a sibling that's further along on
+    // direct_mail_call doesn't accidentally beat the just-applied LTN.
+    try {
+      await dedupeClusterStamps(sb,
+        { caller_phone: lead.caller_phone, email: lead.email },
+        { preferredId: id }
+      )
+    } catch (dedupeErr) {
+      console.warn(`[ltn] cluster dedupe failed for ${id}:`, dedupeErr instanceof Error ? dedupeErr.message : String(dedupeErr))
+    }
 
     return NextResponse.json({
       ok: true,

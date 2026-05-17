@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server"
-import { getLeadsClient } from "@/lib/leads"
+import { getLeadsClient, dedupeClusterStamps } from "@/lib/leads"
 import { pickCampaignType } from "@/lib/drip-campaigns"
 
 // Phase 7C — Part 6: assign a drip campaign to a single lead.
@@ -60,6 +60,18 @@ export async function POST(
       .eq("id", id)
     if (updErr) {
       return NextResponse.json({ error: updErr.message }, { status: 500 })
+    }
+
+    // If cluster siblings were already stamped on a different (or same)
+    // campaign, sweep them so the engine doesn't queue parallel touches.
+    // This row is the user-applied keeper.
+    try {
+      await dedupeClusterStamps(sb,
+        { caller_phone: lead.caller_phone, email: lead.email },
+        { preferredId: id }
+      )
+    } catch (dedupeErr) {
+      console.warn(`[apply-drip] cluster dedupe failed for ${id}:`, dedupeErr instanceof Error ? dedupeErr.message : String(dedupeErr))
     }
 
     return NextResponse.json({ ok: true, campaign_type: campaignType })

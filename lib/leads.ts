@@ -298,6 +298,138 @@ export const VALID_LEAD_STATUSES: readonly LeadStatus[] = [
 export const LEAD_FLAG_FIELDS = ["is_dnc", "is_junk", "is_bad_number"] as const
 export type LeadFlagField = typeof LEAD_FLAG_FIELDS[number]
 
+// Pick the cluster's authoritative drip-driver row out of N stamped
+// candidates. The decision is two-stage so a user-applied campaign
+// change (e.g. Long-Term Nurture on a cluster previously running
+// direct_mail_call) wins over a sibling with higher touch progress on
+// the old campaign:
+//   1. Group rows by drip_campaign_type. For each campaign group, find
+//      the most-recent action time (max last_drip_sent_at, falling back
+//      to created_at when the engine never touched the row). The campaign
+//      with the latest action represents the most recent intent.
+//   2. Inside the winning campaign group, pick the best row by:
+//      engine-touched > highest drip_touch_number > most-recent
+//      last_drip_sent_at > most-recent created_at.
+// Exported for tests + the engine's defense-in-depth dedupe path (which
+// duplicates the same logic in plain JS — the engine runs without TS).
+type ClusterRow = {
+  id: string
+  drip_campaign_type: string | null
+  drip_touch_number: number | null
+  last_drip_sent_at: string | null
+  created_at: string
+}
+export function pickClusterWinner<T extends ClusterRow>(rows: T[]): T {
+  if (rows.length === 1) return rows[0]
+  const byCampaign = new Map<string, T[]>()
+  for (const r of rows) {
+    const k = r.drip_campaign_type || "__null__"
+    if (!byCampaign.has(k)) byCampaign.set(k, [])
+    byCampaign.get(k)!.push(r)
+  }
+  let winningCampaign = rows[0].drip_campaign_type ?? "__null__"
+  let bestActionTs = -Infinity
+  byCampaign.forEach((crows, campaign) => {
+    const maxTs = Math.max(...crows.map(r =>
+      r.last_drip_sent_at ? new Date(r.last_drip_sent_at).getTime() : new Date(r.created_at).getTime()
+    ))
+    if (maxTs > bestActionTs) { bestActionTs = maxTs; winningCampaign = campaign }
+  })
+  const pool = byCampaign.get(winningCampaign)!
+  return [...pool].sort((a, b) => {
+    const aT = a.last_drip_sent_at != null
+    const bT = b.last_drip_sent_at != null
+    if (aT !== bT) return bT ? 1 : -1
+    const aN = a.drip_touch_number ?? 0
+    const bN = b.drip_touch_number ?? 0
+    if (aN !== bN) return bN - aN
+    const aL = a.last_drip_sent_at ? new Date(a.last_drip_sent_at).getTime() : 0
+    const bL = b.last_drip_sent_at ? new Date(b.last_drip_sent_at).getTime() : 0
+    if (aL !== bL) return bL - aL
+    return new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
+  })[0]
+}
+
+// Cluster-stamp deduplication. The CRMS drip engine processes leads by
+// scanning every row where `drip_campaign_type IS NOT NULL`, so a cluster
+// (same phone / email / thread) with N stamped rows generates N parallel
+// touches. Brian Bernasconi 2026-05-17 was the canonical case: 3 voicemail
+// rows on +14089791400 all stamped direct_mail_call → 3 pending drips in
+// the queue every cadence step.
+//
+// `dedupeClusterStamps` picks the canonical "active driver" row for a
+// cluster and un-stamps every other stamped row. Used by the apply-drip /
+// long-term-nurture endpoints (after stamping, sweep siblings), the
+// engine's eligibility scan (defense-in-depth), and the one-shot
+// backfill (`scripts/backfill-dedupe-cluster-stamps-2026-05-17.mjs`).
+//
+// Winner selection: among the cluster's stamped rows,
+//   1. prefer rows the engine has actually touched (last_drip_sent_at IS NOT NULL)
+//   2. within those, the highest drip_touch_number
+//   3. tiebreak: most-recent last_drip_sent_at
+//   4. then most-recent created_at
+// EXCEPT when `preferredId` is passed — that row is forced to win regardless,
+// which is what `apply-drip` and `long-term-nurture` use to make a user's
+// just-applied campaign stamp authoritative even if cluster siblings have
+// higher touch progress on a different campaign.
+export async function dedupeClusterStamps(
+  sb: SupabaseClient,
+  clusterIdentity: { caller_phone?: string | null; email?: string | null; gmail_thread_id?: string | null },
+  options: { preferredId?: string; dryRun?: boolean } = {}
+): Promise<{ kept: string | null; unstamped: string[]; skipped: boolean }> {
+  const { preferredId, dryRun } = options
+  const { caller_phone, email, gmail_thread_id } = clusterIdentity
+
+  // Find every stamped row in the cluster. We OR phone+email+thread so we
+  // catch the case where a single physical person has rows that share
+  // some-but-not-all identifiers (e.g. a phone row + an email-only row
+  // with the same email).
+  const orParts: string[] = []
+  if (caller_phone) orParts.push(`caller_phone.eq.${caller_phone}`)
+  if (email) orParts.push(`email.eq.${email}`)
+  if (gmail_thread_id) orParts.push(`gmail_thread_id.eq.${gmail_thread_id}`)
+  if (orParts.length === 0) return { kept: null, unstamped: [], skipped: true }
+
+  const { data: rows, error } = await sb
+    .from("leads")
+    .select("id, drip_campaign_type, drip_touch_number, last_drip_sent_at, created_at")
+    .or(orParts.join(","))
+    .not("drip_campaign_type", "is", null)
+  if (error) {
+    console.error("[dedupe-cluster] lookup failed:", error.message)
+    return { kept: null, unstamped: [], skipped: true }
+  }
+  if (!rows || rows.length <= 1) {
+    // 0 or 1 stamped rows — nothing to dedupe.
+    return { kept: rows?.[0]?.id ?? null, unstamped: [], skipped: true }
+  }
+
+  let winner: typeof rows[0]
+  if (preferredId && rows.some(r => r.id === preferredId)) {
+    winner = rows.find(r => r.id === preferredId)!
+  } else {
+    winner = pickClusterWinner(rows)
+  }
+
+  const losers = rows.filter(r => r.id !== winner.id)
+  if (losers.length === 0) return { kept: winner.id, unstamped: [], skipped: true }
+
+  if (dryRun) return { kept: winner.id, unstamped: losers.map(r => r.id), skipped: false }
+
+  // Un-stamp the losers fully — drip_campaign_type AND drip_touch_number
+  // AND last_drip_sent_at all cleared. Leaves the row's lead history
+  // (lead_type, message, recording_url, ai_summary, ...) untouched.
+  const { error: updErr } = await sb
+    .from("leads")
+    .update({ drip_campaign_type: null, drip_touch_number: null, last_drip_sent_at: null })
+    .in("id", losers.map(r => r.id))
+  if (updErr) {
+    console.error("[dedupe-cluster] unstamp failed:", updErr.message)
+    return { kept: winner.id, unstamped: [], skipped: true }
+  }
+  return { kept: winner.id, unstamped: losers.map(r => r.id), skipped: false }
+}
+
 // Halt all in-flight outreach for the cluster a lead belongs to. Fired when
 // a lead gets junked or DNC'd — we have to sweep BOTH the Drips tab queue
 // (pending/approved rows that were generated before the flag was set) and

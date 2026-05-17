@@ -985,7 +985,75 @@ async function fetchEligibleLeads(sb) {
     console.error("[drip] eligible-lead query failed:", error.message)
     return []
   }
-  return data || []
+  // Cluster dedupe: when a cluster (same phone OR email OR gmail thread)
+  // has multiple stamped rows, the engine MUST pick exactly one driver or
+  // it'll queue parallel touches per row (the Brian Bernasconi pattern).
+  // Mirror lib/leads.ts `dedupeClusterStamps` winner-selection rules:
+  // engine-touched > highest touch_number > most-recent last_drip_sent_at >
+  // most-recent created_at. Losers are skipped (not un-stamped — the
+  // backfill script does the durable cleanup; this is just defense in
+  // depth so a transient race or future regression can't put us back into
+  // the duplicate-queue hole).
+  return dedupeByCluster(data || [])
+}
+
+function clusterKey(lead) {
+  if (lead.caller_phone && lead.caller_phone !== "Anonymous") return `phone:${lead.caller_phone}`
+  if (lead.gmail_thread_id) return `thread:${lead.gmail_thread_id}`
+  if (lead.email) return `email:${(lead.email || "").toLowerCase()}`
+  return `id:${lead.id}`
+}
+
+// Mirrors pickClusterWinner in lib/leads.ts — keep in sync. Two-stage
+// pick so a user-applied campaign change wins over a sibling row with
+// higher touch progress on the old campaign.
+function pickClusterWinner(rows) {
+  if (rows.length === 1) return rows[0]
+  const byCampaign = new Map()
+  for (const r of rows) {
+    const k = r.drip_campaign_type || "__null__"
+    if (!byCampaign.has(k)) byCampaign.set(k, [])
+    byCampaign.get(k).push(r)
+  }
+  let winningCampaign = null
+  let bestActionTs = -Infinity
+  byCampaign.forEach((crows, campaign) => {
+    const maxTs = Math.max(...crows.map(r =>
+      r.last_drip_sent_at ? new Date(r.last_drip_sent_at).getTime() : new Date(r.created_at).getTime()
+    ))
+    if (maxTs > bestActionTs) { bestActionTs = maxTs; winningCampaign = campaign }
+  })
+  const pool = byCampaign.get(winningCampaign)
+  return pool.slice().sort((a, b) => {
+    const aT = a.last_drip_sent_at != null
+    const bT = b.last_drip_sent_at != null
+    if (aT !== bT) return bT ? 1 : -1
+    const aN = a.drip_touch_number ?? 0
+    const bN = b.drip_touch_number ?? 0
+    if (aN !== bN) return bN - aN
+    const aL = a.last_drip_sent_at ? new Date(a.last_drip_sent_at).getTime() : 0
+    const bL = b.last_drip_sent_at ? new Date(b.last_drip_sent_at).getTime() : 0
+    if (aL !== bL) return bL - aL
+    return new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
+  })[0]
+}
+
+function dedupeByCluster(leads) {
+  const byCluster = new Map()
+  for (const lead of leads) {
+    const key = clusterKey(lead)
+    if (!byCluster.has(key)) byCluster.set(key, [])
+    byCluster.get(key).push(lead)
+  }
+  const winners = []
+  let dropped = 0
+  byCluster.forEach((rows) => {
+    const w = pickClusterWinner(rows)
+    winners.push(w)
+    dropped += rows.length - 1
+  })
+  if (dropped > 0) console.log(`[drip] cluster dedupe dropped ${dropped} duplicate-stamp row(s) — see scripts/backfill-dedupe-cluster-stamps for the durable fix`)
+  return winners
 }
 
 // Has this lead got a queued (pending) drip already? If yes we don't queue
