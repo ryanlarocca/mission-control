@@ -196,7 +196,19 @@ export async function GET() {
       }
     })
 
-    return NextResponse.json({ campaigns: result })
+    return NextResponse.json({
+      campaigns: result,
+      _debug: {
+        attributed: attributed.length,
+        phones: phones.length,
+        emails: emails.length,
+        threads: threads.length,
+        siblings: siblings.length,
+        clusterOfferAt: clusterOfferAt.size,
+        offerKeys: Array.from(clusterOfferAt.keys()),
+        candaceSibling: siblings.find(s => s.caller_phone === "+16509067148" && s.offer_verbalized_at) ?? null,
+      },
+    })
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e)
     return NextResponse.json({ error: msg }, { status: 500 })
