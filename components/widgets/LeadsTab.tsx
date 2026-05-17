@@ -244,6 +244,22 @@ function nextDripETA(group: LeadGroup): string | null {
   return `in ${days}d ${rem}h (touch #${next.touchNumber} ${channel})`
 }
 
+// Cross-frame notification: the Drips tab renders LeadsTab inside a same-
+// origin iframe overlay (embed=1). When a lead flag flips in a way that
+// affects what the Drips tab should show (is_junk / is_dnc → halt-outreach
+// sweep runs; ai temperature / followup → not relevant here), notify the
+// parent so it can refetch immediately instead of waiting on its 30s poll.
+// Outside an iframe the parent === self check is a no-op.
+function notifyLeadChangedToParent(leadId: string, fields: string[]) {
+  if (typeof window === "undefined") return
+  if (window.parent === window) return
+  try {
+    window.parent.postMessage({ type: "lead-changed", leadId, fields }, window.location.origin)
+  } catch {
+    /* best-effort; cross-origin would throw but we restricted to same-origin embeds */
+  }
+}
+
 function relativeTime(iso: string): string {
   const then = new Date(iso).getTime()
   const now = Date.now()
@@ -489,6 +505,10 @@ export function LeadsTab() {
   // every 30s autorefetch.
   const searchParams = useSearchParams()
   const deeplinkPhone = searchParams.get("phone")
+  // Embed mode — rendered inside the Drips-tab lead overlay (iframe). Hide
+  // the page header + search + filter chips so the user sees just the
+  // deep-linked card. The card itself is unchanged.
+  const embedMode = searchParams.get("embed") === "1"
   const lastHandledDeeplinkRef = useRef<string | null>(null)
   const scrolledForDeeplinkRef = useRef<string | null>(null)
   useEffect(() => {
@@ -1018,6 +1038,14 @@ export function LeadsTab() {
         const err = await res.json().catch(() => ({}))
         throw new Error(err.error || `HTTP ${res.status}`)
       }
+      // Cross-frame realtime: when this LeadsTab is rendered inside the Drips
+      // tab's iframe overlay (embed=1), flipping is_junk / is_dnc triggers the
+      // server-side halt-outreach sweep that converts pending/approved drip
+      // rows to skipped. Tell the parent frame so it can refetch /api/drips
+      // immediately instead of waiting up to 30s for the next poll.
+      if (patch.is_junk === true || patch.is_dnc === true) {
+        notifyLeadChangedToParent(group.mostRecentId, ["is_junk", "is_dnc"])
+      }
     } catch (e) {
       console.error("flag patch failed:", e)
       void fetchLeads(true)
@@ -1053,6 +1081,7 @@ export function LeadsTab() {
         const err = await res.json().catch(() => ({}))
         throw new Error(err.error || `HTTP ${res.status}`)
       }
+      notifyLeadChangedToParent(group.mostRecentId, ["is_dnc"])
       void fetchLeads(true)
     } catch (e) {
       console.error("dnc failed:", e)
@@ -1182,6 +1211,7 @@ export function LeadsTab() {
 
   return (
     <div>
+      {!embedMode && (<>
       <div className="mb-4 flex items-start justify-between">
         <div>
           <h1 className="text-lg font-semibold text-zinc-100">Leads</h1>
@@ -1387,13 +1417,15 @@ export function LeadsTab() {
         </div>
       )}
 
+      </>)}
+
       {error && (
         <div className="mb-3 px-3 py-2 rounded-md bg-red-900/30 border border-red-900/50 text-sm text-red-200">
           {error}
         </div>
       )}
 
-      <CampaignMetricsStrip />
+      {!embedMode && <CampaignMetricsStrip />}
 
       {loading ? (
         <div className="flex items-center gap-2 text-sm text-zinc-500">

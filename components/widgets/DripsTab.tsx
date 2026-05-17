@@ -1,10 +1,10 @@
 "use client"
 
 import { useCallback, useEffect, useMemo, useState } from "react"
-import { useRouter } from "next/navigation"
 import {
   Bot, Loader2, RefreshCw, Check, X, Pencil, AlertTriangle, Clock,
   CalendarClock, Send, Mail, MessageSquare, Eye, Sparkles, SkipForward,
+  ExternalLink,
 } from "lucide-react"
 
 // Drips tab — one-stop shop for every drip in flight. Sections:
@@ -101,8 +101,18 @@ function displayName(item: { name: string | null; caller_phone: string | null; e
   return item.name || formatPhone(item.caller_phone) || item.email || "(unknown)"
 }
 
+// Which lookup key the LeadsTab deep-link should use when opening this card.
+// Mirrors the group-key rule in groupLeads(): phone wins, else email — that's
+// the value the deep-linked lead card matches against. Without the email
+// fallback, clicking the name on an email-only drip card (no caller_phone)
+// would no-op, which was the bug Ryan flagged 2026-05-17.
+function leadOverlayKey(item: { caller_phone: string | null; email: string | null }): string | null {
+  if (item.caller_phone) return item.caller_phone
+  if (item.email) return `email:${item.email.toLowerCase()}`
+  return null
+}
+
 export function DripsTab() {
-  const router = useRouter()
   const [data, setData] = useState<DripsPayload | null>(null)
   const [loading, setLoading] = useState(false)
   const [err, setErr] = useState<string | null>(null)
@@ -110,6 +120,10 @@ export function DripsTab() {
   const [bulkActing, setBulkActing] = useState<string | null>(null)
   const [editing, setEditing] = useState<Map<string, { message: string; subject: string }>>(new Map())
   const [sentPopout, setSentPopout] = useState<DripCard | null>(null)
+  // Lead-detail overlay: clicking a name on any card opens the full LeadsTab
+  // experience in a modal (iframe of /leads?phone=X&embed=1) without
+  // navigating away from the Drips tab.
+  const [leadOverlay, setLeadOverlay] = useState<string | null>(null)
 
   const fetchData = useCallback(async () => {
     setLoading(true)
@@ -132,19 +146,53 @@ export function DripsTab() {
     return () => clearInterval(id)
   }, [fetchData])
 
+  // Realtime sync with the embedded LeadsTab overlay: when Ryan flips
+  // is_junk / is_dnc on a lead card inside the iframe, the server runs the
+  // halt-outreach sweep on that cluster's drip_queue rows. The iframe then
+  // postMessages us so we refetch instead of waiting up to 30s for the next
+  // poll. Same-origin only (the iframe is /leads-embed on the same host).
+  useEffect(() => {
+    function onMessage(e: MessageEvent) {
+      if (e.origin !== window.location.origin) return
+      const d = e.data
+      if (d && typeof d === "object" && d.type === "lead-changed") {
+        void fetchData()
+      }
+    }
+    window.addEventListener("message", onMessage)
+    return () => window.removeEventListener("message", onMessage)
+  }, [fetchData])
+
+  // Optimistic filter applied to ALL buckets that can hold a queue row keyed
+  // by drip_queue.id: late, due, failed, and the approved-not-sent half of
+  // comingUp. Without removing from comingUp, a row that was in Late/Due
+  // would Send → flip to approved → reappear at the top of Coming up on the
+  // next refetch, which feels like "the lead stayed at the top". After the
+  // 30s auto-refresh (or the 4s post-action refresh) the server is source of
+  // truth again; if the engine hasn't actually sent yet, the row resurfaces
+  // (in Coming up), but the immediate user expectation — "the card I just
+  // acted on goes away" — is satisfied.
+  function removeRowFromAllBuckets(prev: DripsPayload | null, id: string): DripsPayload | null {
+    if (!prev) return prev
+    return {
+      ...prev,
+      late: prev.late.filter(c => c.id !== id),
+      due: prev.due.filter(c => c.id !== id),
+      failed: prev.failed.filter(c => c.id !== id),
+      comingUp: prev.comingUp.filter(item => "kind" in item ? true : item.id !== id),
+    }
+  }
+
   async function sendNow(id: string) {
     setActingOn(id)
     try {
       const res = await fetch(`/api/drips/${id}/send`, { method: "POST" })
       const body = await res.json().catch(() => ({}))
       if (!res.ok && res.status !== 202) throw new Error(body?.error || `HTTP ${res.status}`)
-      // Engine runs async; refresh shortly to catch the sent state.
-      setData(prev => prev ? {
-        ...prev,
-        late: prev.late.filter(c => c.id !== id),
-        due: prev.due.filter(c => c.id !== id),
-      } : prev)
-      setTimeout(() => void fetchData(), 4000)
+      setData(prev => removeRowFromAllBuckets(prev, id))
+      // Engine runs async; give it a beat then refresh so the row lands in
+      // Recently sent. 6s covers a typical iMessage send + Supabase write.
+      setTimeout(() => void fetchData(), 6000)
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e))
     } finally {
@@ -154,6 +202,11 @@ export function DripsTab() {
 
   async function skipPending(id: string) {
     setActingOn(id)
+    // Optimistic first — the card disappears even if the server returns a
+    // race-condition error (e.g., double-click hits a row that was already
+    // skipped). The route is now idempotent on already-skipped, so a 200
+    // confirms the state; we only surface real errors below.
+    setData(prev => removeRowFromAllBuckets(prev, id))
     try {
       const res = await fetch("/api/leads/drip-queue", {
         method: "PATCH",
@@ -162,13 +215,34 @@ export function DripsTab() {
       })
       const body = await res.json().catch(() => ({}))
       if (!res.ok) throw new Error(body?.error || `HTTP ${res.status}`)
-      setData(prev => prev ? {
-        ...prev,
-        late: prev.late.filter(c => c.id !== id),
-        due: prev.due.filter(c => c.id !== id),
-      } : prev)
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e))
+      // Re-fetch so a genuinely failed Skip resurfaces the card.
+      void fetchData()
+    } finally {
+      setActingOn(null)
+    }
+  }
+
+  // Push a pending row out by N days. Touch number stays put; the GET
+  // /api/drips response filters rows with snoozed_until > now() out of the
+  // actionable buckets so the card disappears now and reappears when the
+  // snooze elapses. The lead's cadence clock isn't touched — the engine
+  // stamps last_drip_sent_at at send time, the canonical pattern.
+  async function snoozePending(id: string, days: 1 | 3 | 7) {
+    setActingOn(id)
+    setData(prev => removeRowFromAllBuckets(prev, id))
+    try {
+      const res = await fetch("/api/leads/drip-queue", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id, action: "snooze", days }),
+      })
+      const body = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(body?.error || `HTTP ${res.status}`)
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e))
+      void fetchData()
     } finally {
       setActingOn(null)
     }
@@ -296,8 +370,8 @@ export function DripsTab() {
       const res = await fetch(`/api/drips/${id}/send`, { method: "POST" })
       const body = await res.json().catch(() => ({}))
       if (!res.ok && res.status !== 202) throw new Error(body?.error || `HTTP ${res.status}`)
-      setData(prev => prev ? { ...prev, failed: prev.failed.filter(c => c.id !== id) } : prev)
-      setTimeout(() => void fetchData(), 4000)
+      setData(prev => removeRowFromAllBuckets(prev, id))
+      setTimeout(() => void fetchData(), 6000)
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e))
     } finally {
@@ -307,6 +381,7 @@ export function DripsTab() {
 
   async function dismissFailed(id: string) {
     setActingOn(id)
+    setData(prev => removeRowFromAllBuckets(prev, id))
     try {
       const res = await fetch("/api/leads/drip-queue", {
         method: "PATCH",
@@ -315,9 +390,9 @@ export function DripsTab() {
       })
       const body = await res.json().catch(() => ({}))
       if (!res.ok) throw new Error(body?.error || `HTTP ${res.status}`)
-      setData(prev => prev ? { ...prev, failed: prev.failed.filter(c => c.id !== id) } : prev)
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e))
+      void fetchData()
     } finally {
       setActingOn(null)
     }
@@ -391,7 +466,8 @@ export function DripsTab() {
             onSaveEdit={() => void saveEdit(card.id)}
             onSend={() => void sendNow(card.id)}
             onSkip={() => void skipPending(card.id)}
-            onOpenLead={() => card.caller_phone && router.push(`/leads?phone=${encodeURIComponent(card.caller_phone)}`)}
+            onSnooze={(days) => void snoozePending(card.id, days)}
+            onOpenLead={() => { const k = leadOverlayKey(card); if (k) setLeadOverlay(k) }}
           />
         ))}
         {data.late.length === 0 && (
@@ -426,7 +502,8 @@ export function DripsTab() {
             onSaveEdit={() => void saveEdit(card.id)}
             onSend={() => void sendNow(card.id)}
             onSkip={() => void skipPending(card.id)}
-            onOpenLead={() => card.caller_phone && router.push(`/leads?phone=${encodeURIComponent(card.caller_phone)}`)}
+            onSnooze={(days) => void snoozePending(card.id, days)}
+            onOpenLead={() => { const k = leadOverlayKey(card); if (k) setLeadOverlay(k) }}
           />
         ))}
         {data.due.length === 0 && (
@@ -445,7 +522,7 @@ export function DripsTab() {
                 acting={actingOn === card.id}
                 onRetry={() => void retryFailed(card.id)}
                 onDismiss={() => void dismissFailed(card.id)}
-                onOpenLead={() => card.caller_phone && router.push(`/leads?phone=${encodeURIComponent(card.caller_phone)}`)}
+                onOpenLead={() => { const k = leadOverlayKey(card); if (k) setLeadOverlay(k) }}
               />
             ))}
           </div>
@@ -462,7 +539,7 @@ export function DripsTab() {
               acting={actingOn === item.lead_id}
               onPrepare={() => void prepareForecast(item.lead_id)}
               onSkip={() => void skipForecast(item.lead_id)}
-              onOpenLead={() => item.caller_phone && router.push(`/leads?phone=${encodeURIComponent(item.caller_phone)}`)}
+              onOpenLead={() => { const k = leadOverlayKey(item); if (k) setLeadOverlay(k) }}
             />
           ) : (
             <ApprovedRow
@@ -470,7 +547,7 @@ export function DripsTab() {
               card={item}
               acting={actingOn === item.id}
               onSend={() => void sendNow(item.id)}
-              onOpenLead={() => item.caller_phone && router.push(`/leads?phone=${encodeURIComponent(item.caller_phone)}`)}
+              onOpenLead={() => { const k = leadOverlayKey(item); if (k) setLeadOverlay(k) }}
             />
           )
         )}
@@ -494,12 +571,75 @@ export function DripsTab() {
           card={sentPopout}
           onClose={() => setSentPopout(null)}
           onOpenLead={() => {
-            const phone = sentPopout.caller_phone
+            const k = leadOverlayKey(sentPopout)
             setSentPopout(null)
-            if (phone) router.push(`/leads?phone=${encodeURIComponent(phone)}`)
+            if (k) setLeadOverlay(k)
           }}
         />
       )}
+
+      {leadOverlay && (
+        <LeadOverlay phone={leadOverlay} onClose={() => setLeadOverlay(null)} />
+      )}
+    </div>
+  )
+}
+
+// Full LeadsTab in an iframe overlay so Ryan can act on a lead without
+// leaving the Drips tab. Renders /leads?phone=X&embed=1 — the embed flag
+// hides the leads-page sub-nav so only the deep-linked card shows. Cookies
+// are same-origin so the middleware auth carries into the iframe.
+function LeadOverlay({ phone, onClose }: { phone: string; onClose: () => void }) {
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) { if (e.key === "Escape") onClose() }
+    document.addEventListener("keydown", onKey)
+    return () => document.removeEventListener("keydown", onKey)
+  }, [onClose])
+
+  // The "phone" prop is actually the group key from LeadsTab.groupLeads():
+  // a phone number for phone-bearing leads, "email:<addr>" for email-only.
+  // LeadsTab's deep-link effect matches against group.phone directly, so
+  // either form works as the ?phone= param.
+  const src = `/leads-embed?phone=${encodeURIComponent(phone)}&embed=1`
+  const fullPageUrl = `/leads?phone=${encodeURIComponent(phone)}`
+  const headerLabel = phone.startsWith("email:")
+    ? phone.slice("email:".length)
+    : phone.startsWith("thread:")
+    ? "(email thread)"
+    : formatPhone(phone) ?? phone
+  return (
+    <div className="fixed inset-0 z-50 bg-black/70 flex items-stretch justify-center p-2 sm:p-4" onClick={onClose}>
+      <div
+        className="relative w-full max-w-3xl my-2 rounded-lg border border-zinc-800 bg-zinc-950 shadow-xl overflow-hidden flex flex-col"
+        onClick={e => e.stopPropagation()}
+      >
+        <div className="px-3 py-2 border-b border-zinc-800 flex items-center gap-2 text-xs bg-zinc-950">
+          <span className="text-zinc-200 font-medium">Lead</span>
+          <span className="text-zinc-500 font-mono">{headerLabel}</span>
+          <a
+            href={fullPageUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="ml-auto inline-flex items-center gap-1 px-2 py-1 rounded text-zinc-400 hover:text-zinc-100 hover:bg-zinc-900"
+            title="Open full Leads page in a new tab"
+          >
+            <ExternalLink className="w-3 h-3" />
+            Open
+          </a>
+          <button
+            onClick={onClose}
+            className="p-1 rounded hover:bg-zinc-900 text-zinc-400 hover:text-zinc-200"
+            aria-label="Close lead overlay"
+          >
+            <X className="w-3.5 h-3.5" />
+          </button>
+        </div>
+        <iframe
+          src={src}
+          className="flex-1 w-full bg-zinc-950"
+          title="Lead detail"
+        />
+      </div>
     </div>
   )
 }
@@ -543,7 +683,7 @@ function BucketHeader({
 function PendingCard({
   card, tone, acting, editing,
   onStartEdit, onCancelEdit, onChangeEdit, onSaveEdit,
-  onSend, onSkip, onOpenLead,
+  onSend, onSkip, onSnooze, onOpenLead,
 }: {
   card: DripCard
   tone: "late" | "due"
@@ -555,6 +695,7 @@ function PendingCard({
   onSaveEdit: () => void
   onSend: () => void
   onSkip: () => void
+  onSnooze: (days: 1 | 3 | 7) => void
   onOpenLead: () => void
 }) {
   const isEditing = editing != null
@@ -617,6 +758,21 @@ function PendingCard({
               <Pencil className="w-3.5 h-3.5" />
               Edit
             </button>
+            <div className="inline-flex items-center rounded border border-zinc-800 bg-zinc-900 overflow-hidden" title="Snooze this drip — push the send date out by N days, touch number unchanged">
+              <span className="px-2 py-1.5 min-h-[34px] inline-flex items-center text-[10px] uppercase tracking-wide text-zinc-500 border-r border-zinc-800">
+                <Clock className="w-3 h-3 mr-1" />Snooze
+              </span>
+              {[1, 3, 7].map((d, i) => (
+                <button
+                  key={d}
+                  onClick={() => onSnooze(d as 1 | 3 | 7)}
+                  disabled={acting}
+                  className={`px-2 py-1.5 min-h-[34px] text-xs font-medium text-zinc-300 hover:bg-zinc-800 hover:text-zinc-100 transition-colors disabled:opacity-60 ${i > 0 ? "border-l border-zinc-800" : ""}`}
+                >
+                  {d}d
+                </button>
+              ))}
+            </div>
             <button
               onClick={onSkip}
               disabled={acting}
