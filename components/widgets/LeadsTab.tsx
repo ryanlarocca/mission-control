@@ -70,6 +70,10 @@ interface Lead {
   campaign_label?: string | null
   // Phase 7D
   temperature?: Temperature | null
+  // Campaign Performance — offer-detection columns added 2026-05-17.
+  offer_amount?: number | null
+  offer_verbalized_at?: string | null
+  campaign_id?: string | null
 }
 
 // chat.db stores timestamps in Apple epoch (seconds since 2001-01-01); the
@@ -130,6 +134,11 @@ interface LeadGroup {
   // Phase 7D — AI-driven temperature drives the badge in the lead card
   // header and the Temp filter in the chip row.
   temperature: Temperature | null
+  // Campaign Performance tab: Ryan's stated offer to the seller and when it
+  // was verbalized. Populated by analyzeCallTranscript / triageEmailLead
+  // (hands-off — only writes when null). UI lets Ryan pencil-edit.
+  offerAmount: number | null
+  offerVerbalizedAt: string | null
 }
 
 // Phase 7D: top-row lifecycle chips only. Source / temperature / flag-hides
@@ -396,6 +405,11 @@ function groupLeads(leads: Lead[]): LeadGroup[] {
       suggestedStatus: (suggestedRow?.suggested_status as LeadStatus | null) || null,
       suggestedStatusReason: suggestedRow?.suggested_status_reason || null,
       temperature,
+      // Offer — surface from whichever cluster row has it stamped. The
+      // analyzer writes to the analyzed row; if there's a hand-edit on
+      // any sibling, that wins via newest-first walk.
+      offerAmount: newestFirst.find(r => typeof r.offer_amount === "number" && r.offer_amount > 0)?.offer_amount ?? null,
+      offerVerbalizedAt: newestFirst.find(r => r.offer_verbalized_at)?.offer_verbalized_at ?? null,
     })
   }
   // Sort groups by newest event first
@@ -1526,6 +1540,7 @@ export function LeadsTab() {
               draftingEmail={draftingFor === `${group.phone}:email`}
               draftError={expandedPhone === group.phone ? draftError : null}
               onPatchField={(field, value) => patchFlagOnGroup(group, { [field]: value || null } as Partial<Lead>)}
+              onSaveOffer={(amount) => patchFlagOnGroup(group, { offer_amount: amount } as Partial<Lead>)}
               onSetStatus={(s) => setGroupStatus(group, s)}
               pendingStatus={pendingStatus}
               draftNote={draftNotes[group.phone]}
@@ -1669,6 +1684,9 @@ interface LeadCardProps {
   draftingEmail: boolean
   draftError: string | null
   onPatchField: (field: "name" | "property_address" | "email", value: string) => void
+  // Offer amount edit — separate from onPatchField because the value is a
+  // number (or null to clear), not a string. PATCH /api/leads coerces.
+  onSaveOffer: (amount: number | null) => void
 }
 
 function LeadCard(p: LeadCardProps) {
@@ -1927,6 +1945,12 @@ function LeadCard(p: LeadCardProps) {
               {group.followupReason && <span className="text-zinc-300 truncate">— {group.followupReason}</span>}
             </div>
           )}
+
+          <OfferRow
+            offerAmount={group.offerAmount}
+            offerVerbalizedAt={group.offerVerbalizedAt}
+            onSave={p.onSaveOffer}
+          />
 
           <Timeline
             events={mergeForTimeline(group.events, p.extraEvents)}
@@ -2507,6 +2531,108 @@ function mergeForTimeline(authoritative: Lead[], synthetic: Lead[]): Lead[] {
 // name + property_address on the expanded LeadCard so Ryan can correct
 // parser misses (e.g. "Google Voice" → "Chris Bola") in one tap. Saves
 // on Enter or blur; Esc cancels.
+// Offer line on the expanded lead card. Renders nothing when offerAmount
+// is null. When set, shows "Offer: $800K · May 14 ✏️" with the pencil
+// opening an inline edit that parses dollar inputs like "850k", "$1.2M",
+// "725000". Empty save clears the offer (PATCH offer_amount=null which
+// the leads PATCH route extends to also null offer_verbalized_at). The
+// timestamp is set server-side on the PATCH when offer_amount is set
+// without an explicit offer_verbalized_at — see app/api/leads/route.ts.
+function OfferRow(props: {
+  offerAmount: number | null
+  offerVerbalizedAt: string | null
+  onSave: (amount: number | null) => void
+}) {
+  const [editing, setEditing] = useState(false)
+  const [draft, setDraft] = useState("")
+
+  // Parse user input ("$850k", "1.2M", "725000", "725,000") → number, or
+  // null when the trimmed input is empty (= "clear the offer").
+  function parseAmount(input: string): { amount: number | null; valid: boolean } {
+    const trimmed = input.trim()
+    if (!trimmed) return { amount: null, valid: true }
+    const m = trimmed.replace(/[$,_\s]/g, "").match(/^(\d+(?:\.\d+)?)([kKmM]?)$/)
+    if (!m) return { amount: null, valid: false }
+    const base = parseFloat(m[1])
+    const mult = m[2].toLowerCase() === "k" ? 1000 : m[2].toLowerCase() === "m" ? 1_000_000 : 1
+    const val = Math.round(base * mult)
+    if (!Number.isFinite(val) || val <= 0) return { amount: null, valid: false }
+    return { amount: val, valid: true }
+  }
+
+  function formatAmount(n: number): string {
+    if (n >= 1_000_000) {
+      const m = n / 1_000_000
+      return `$${m.toFixed(m % 1 === 0 ? 0 : 1)}M`
+    }
+    return `$${Math.round(n / 1000)}K`
+  }
+
+  function formatDate(iso: string): string {
+    return new Date(iso).toLocaleDateString([], { month: "short", day: "numeric" })
+  }
+
+  // Empty state → render a low-contrast "+ Add offer" pill so Ryan has a
+  // way to log an offer he made live (not picked up from a transcript).
+  // PATCH /api/leads stamps offer_verbalized_at = now() server-side when
+  // an amount is set without an explicit timestamp — see the route.
+  if (!props.offerAmount && !editing) {
+    return (
+      <button
+        onClick={() => { setDraft(""); setEditing(true) }}
+        className="rounded border border-zinc-800 bg-zinc-950 px-3 py-1 text-[11px] text-zinc-500 inline-flex items-center gap-1.5 hover:border-amber-900/60 hover:text-amber-300 transition-colors"
+        title="Log a verbalized offer (e.g. $1.2M to Candace)"
+      >
+        💰 <span>Add offer</span>
+      </button>
+    )
+  }
+
+  if (!editing) {
+    return (
+      <button
+        onClick={() => { setDraft(props.offerAmount ? formatAmount(props.offerAmount) : ""); setEditing(true) }}
+        className="rounded border border-amber-900/40 bg-amber-950/20 px-3 py-1.5 text-xs text-amber-100 inline-flex items-center gap-2 group hover:bg-amber-950/40 transition-colors max-w-full"
+        title="Edit the verbalized offer amount"
+      >
+        <span className="font-medium">💰 Offer: {props.offerAmount ? formatAmount(props.offerAmount) : "—"}</span>
+        {props.offerVerbalizedAt && (
+          <span className="text-amber-300/70">· {formatDate(props.offerVerbalizedAt)}</span>
+        )}
+        <Pencil className="w-3 h-3 opacity-0 group-hover:opacity-70 transition-opacity" />
+      </button>
+    )
+  }
+
+  const commit = () => {
+    setEditing(false)
+    const { amount, valid } = parseAmount(draft)
+    if (!valid) return // bad input — silently revert; the existing value stays
+    // Don't fire a no-op save when the value didn't actually change.
+    if (amount === props.offerAmount) return
+    props.onSave(amount)
+  }
+
+  return (
+    <div className="rounded border border-amber-900/40 bg-amber-950/20 px-3 py-1.5 text-xs text-amber-100 inline-flex items-center gap-2 max-w-full">
+      <span>💰 Offer</span>
+      <input
+        autoFocus
+        value={draft}
+        onChange={(e) => setDraft(e.target.value)}
+        onBlur={commit}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") { e.preventDefault(); commit() }
+          else if (e.key === "Escape") { setDraft(""); setEditing(false) }
+        }}
+        placeholder="$850k or 1.2M (empty = clear)"
+        className="bg-zinc-900 border border-zinc-700 rounded px-2 py-0.5 text-xs text-zinc-100 focus:outline-none focus:border-zinc-500 min-w-[180px]"
+        style={{ fontSize: 16 }}
+      />
+    </div>
+  )
+}
+
 function EditableInlineField(props: {
   value: string | null
   placeholder: string
