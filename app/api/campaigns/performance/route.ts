@@ -196,6 +196,11 @@ export async function GET() {
       }
     })
 
+    // Diagnostic: refetch Candace's rows directly to check primary-vs-replica freshness
+    const candaceDirect = await sb.from("leads")
+      .select("id, caller_phone, offer_amount, offer_verbalized_at")
+      .eq("caller_phone", "+16509067148")
+    const candaceSiblings = siblings.filter(s => s.caller_phone === "+16509067148")
     return NextResponse.json({
       campaigns: result,
       _debug: {
@@ -207,6 +212,8 @@ export async function GET() {
         clusterOfferAt: clusterOfferAt.size,
         offerKeys: Array.from(clusterOfferAt.keys()),
         candaceSibling: siblings.find(s => s.caller_phone === "+16509067148" && s.offer_verbalized_at) ?? null,
+        candaceInSiblings: candaceSiblings,
+        candaceDirect: candaceDirect.data,
       },
     })
   } catch (e) {
