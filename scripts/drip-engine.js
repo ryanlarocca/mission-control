@@ -78,9 +78,26 @@ const GOOGLE_ADS_FORM_TOUCHES = [
 const ALL_EMAIL = (touches) => touches.map((t) => ({ ...t, channel: "email" }))
 const ALL_IMESSAGE = (touches) => touches.map((t) => ({ ...t, channel: "imessage" }))
 
+// Mirror lib/drip-campaigns.ts exactly — these were diverging (engine used
+// the GOOGLE_ADS_FORM_TOUCHES cadence, lib used a slower one). The UI
+// forecasts off lib, so the engine has to use the same numbers or the
+// forecast lies. Schedule is 48h → 72h → 168h → 336h → 720h → 1440h →
+// 2160h (every 90d after touch #7).
 const DIRECT_MAIL_CALL_TOUCHES = [
-  { touchNumber: 0, delayHours: 0.25, channel: "imessage" }, // missed-call only
-  ...ALL_IMESSAGE(GOOGLE_ADS_FORM_TOUCHES),
+  { touchNumber: 0,  delayHours: 0.25, channel: "imessage" }, // missed-call only
+  { touchNumber: 1,  delayHours: 48,   channel: "imessage" },
+  { touchNumber: 2,  delayHours: 72,   channel: "imessage" },
+  { touchNumber: 3,  delayHours: 168,  channel: "imessage" },
+  { touchNumber: 4,  delayHours: 336,  channel: "imessage" },
+  { touchNumber: 5,  delayHours: 720,  channel: "imessage" },
+  { touchNumber: 6,  delayHours: 1440, channel: "imessage" },
+  { touchNumber: 7,  delayHours: 2160, channel: "imessage" },
+  { touchNumber: 8,  delayHours: 2160, channel: "imessage" },
+  { touchNumber: 9,  delayHours: 2160, channel: "imessage" },
+  { touchNumber: 10, delayHours: 2160, channel: "imessage" },
+  { touchNumber: 11, delayHours: 2160, channel: "imessage" },
+  { touchNumber: 12, delayHours: 2160, channel: "imessage" },
+  { touchNumber: 13, delayHours: 2160, channel: "imessage" },
 ]
 
 const DRIP_CAMPAIGNS = {
@@ -259,6 +276,187 @@ async function buildConversationHistory(lead, sb) {
   return lines.join("\n")
 }
 
+// ─── responsiveness signal extraction ───────────────────────────────────────
+//
+// Look at the cluster's recent activity and answer one question: has the lead
+// actually responded to anything Ryan has sent? The raw transcript blob in
+// `history` *contains* the answer but Haiku has to infer it, which goes
+// wrong (e.g. drafting "Got your missed call yesterday" to a lead Ryan has
+// been chasing). This extractor surfaces the pattern as structured signal
+// so the prompt can pick a different phase guidance variant deterministically.
+//
+// State definitions:
+//   engaged      — lead has replied since Ryan's most recent outbound, within 7d
+//   gone_quiet   — lead responded earlier but has stopped (no inbound in 7d+
+//                  AND Ryan has reached out since their last inbound)
+//   never_responded — Ryan has made >=1 outbound; the lead has never replied
+//                  to outreach (inbounds BEFORE Ryan's first outbound — like a
+//                  Google-Ads form submission — don't count as a "response")
+//   first_contact — no outbound has gone out yet; treat as standard phase
+//
+// Counts cover the last 30d so the prompt can quote real numbers.
+
+const RESPONSIVENESS_WINDOW_DAYS = 30
+const GONE_QUIET_DAYS = 7
+
+function isOutboundRow(row) {
+  // leads-table heuristic: rows that came through Twilio have a non-null
+  // twilio_number (inbound from the lead's perspective — they dialed in or
+  // texted Ryan's Twilio line). Outbound rows from Ryan have a null
+  // twilio_number. Drip-sent rows are also outbound and start with "drip_".
+  if (row.lead_type && String(row.lead_type).startsWith("drip_")) return true
+  return !row.twilio_number
+}
+
+function classifyOutbound(leadType) {
+  const t = String(leadType || "")
+  if (t === "call" || t === "voicemail" || t === "outbound_call") return "call"
+  if (t.startsWith("drip_imessage") || t === "imessage_outbound" || t === "sms_outbound") return "imessage"
+  if (t.startsWith("drip_email") || t === "email_outbound") return "email"
+  return "other"
+}
+
+function classifyInbound(leadType) {
+  const t = String(leadType || "")
+  if (t === "call" || t === "voicemail") return "call"
+  if (t === "sms" || t === "imessage" || t === "imessage_inbound") return "sms"
+  if (t === "email" || t === "email_inbound") return "email"
+  // form_submission / google_ads_form etc. are inbound but not a "reply".
+  if (t.includes("form")) return "form"
+  return "other"
+}
+
+// "Brief inbound" patterns. Strip punctuation/whitespace, lowercase, then
+// match. If the lead's most-recent inbound matches one of these AND is
+// short, we treat it as substance-free — useful for direct_mail_call leads
+// where someone called back, left a "thank you" voicemail, and never said
+// what they wanted. The drip then needs to ASK what they were reaching out
+// about, not pretend it knows.
+const BRIEF_INBOUND_PATTERNS = [
+  /^$/,                                          // empty (failed transcription)
+  /^(thanks?|thank you|ty|appreciate it|cool|ok+|okay|sure|yes|yep|no|nope|hi|hello|hey)\.?$/,
+  /^(got it|sounds good|will do|talk soon|bye|goodbye)\.?$/,
+]
+const BRIEF_INBOUND_MAX_CHARS = 60
+
+function isBriefInbound(messageText) {
+  const txt = (messageText || "").trim().toLowerCase().replace(/[.,!?]+$/, "")
+  if (txt.length === 0) return true
+  if (txt.length > BRIEF_INBOUND_MAX_CHARS) return false
+  return BRIEF_INBOUND_PATTERNS.some((re) => re.test(txt))
+}
+
+async function extractResponsivenessSignals(lead, sb) {
+  const since = new Date(Date.now() - RESPONSIVENESS_WINDOW_DAYS * 86400000).toISOString()
+  let q = sb
+    .from("leads")
+    .select("created_at, lead_type, twilio_number, message")
+    .order("created_at", { ascending: true })
+    .gte("created_at", since)
+    .limit(200)
+  if (lead.caller_phone) q = q.eq("caller_phone", lead.caller_phone)
+  else if (lead.email) q = q.eq("email", lead.email)
+  else q = q.eq("id", lead.id)
+  const { data, error } = await q
+  if (error) {
+    console.warn(`[drip] responsiveness query failed for ${lead.id}:`, error.message)
+    return null
+  }
+
+  const events = []
+  for (const row of data || []) {
+    const isOut = isOutboundRow(row)
+    events.push({ ts: row.created_at, isOut, kind: isOut ? classifyOutbound(row.lead_type) : classifyInbound(row.lead_type), text: row.message || "" })
+  }
+
+  // Add chat.db tail (best-effort — sidecar may be down). Only counts the
+  // most recent 50 messages within our window.
+  if (lead.caller_phone) {
+    try {
+      const msgs = await fetchIMessageHistory(lead.caller_phone)
+      for (const m of msgs.slice(-50)) {
+        const ts = new Date(Number(m.timestamp) + APPLE_EPOCH_OFFSET_MS).toISOString()
+        if (ts < since) continue
+        events.push({ ts, isOut: !!m.is_from_me, kind: m.is_from_me ? "imessage" : "sms" })
+      }
+    } catch (_) { /* ignore */ }
+  }
+  events.sort((a, b) => a.ts.localeCompare(b.ts))
+
+  const outbound = { call: 0, imessage: 0, email: 0 }
+  const inbound = { call: 0, sms: 0, email: 0 }
+  let firstOutboundTs = null
+  let lastOutboundTs = null
+  let lastInboundTs = null
+  let lastInboundKind = null    // 'call' | 'voicemail-like' | 'sms' | 'email'
+  let lastInboundText = ""      // raw transcript / message body for the most recent inbound
+  let responsesSinceFirstOutbound = 0
+  let lastResponseTs = null
+
+  for (const e of events) {
+    if (e.isOut) {
+      if (e.kind === "call") outbound.call += 1
+      else if (e.kind === "imessage") outbound.imessage += 1
+      else if (e.kind === "email") outbound.email += 1
+      if (!firstOutboundTs) firstOutboundTs = e.ts
+      lastOutboundTs = e.ts
+    } else {
+      // Form submissions don't count as a "response" to outreach — they're
+      // the original lead source.
+      if (e.kind === "form") continue
+      if (e.kind === "call") inbound.call += 1
+      else if (e.kind === "sms") inbound.sms += 1
+      else if (e.kind === "email") inbound.email += 1
+      lastInboundTs = e.ts
+      lastInboundKind = e.kind
+      lastInboundText = e.text || ""
+      if (firstOutboundTs && e.ts > firstOutboundTs) {
+        responsesSinceFirstOutbound += 1
+        lastResponseTs = e.ts
+      }
+    }
+  }
+
+  // "Brief inbound" classification — only relevant when there IS a recent
+  // inbound to characterize. Used by the prompt to switch touch #1 from
+  // "follow up on the letter" → "I see you called/voicemailed me, were
+  // you reaching out about a letter I sent?".
+  const briefInbound = lastInboundTs != null && isBriefInbound(lastInboundText)
+
+  const outboundTotal = outbound.call + outbound.imessage + outbound.email
+  const inboundTotal = inbound.call + inbound.sms + inbound.email
+  const daysSinceLastInbound = lastInboundTs
+    ? Math.floor((Date.now() - new Date(lastInboundTs).getTime()) / 86400000)
+    : null
+  const daysSinceLastResponse = lastResponseTs
+    ? Math.floor((Date.now() - new Date(lastResponseTs).getTime()) / 86400000)
+    : null
+
+  let state
+  if (outboundTotal === 0) {
+    state = "first_contact"
+  } else if (responsesSinceFirstOutbound === 0) {
+    state = "never_responded"
+  } else if (daysSinceLastResponse !== null && daysSinceLastResponse >= GONE_QUIET_DAYS) {
+    state = "gone_quiet"
+  } else {
+    state = "engaged"
+  }
+
+  return {
+    state,
+    outbound,
+    inbound,
+    outboundTotal,
+    inboundTotal,
+    daysSinceLastInbound,
+    daysSinceLastResponse,
+    responsesSinceFirstOutbound,
+    briefInbound,
+    lastInboundKind,
+  }
+}
+
 // ─── junk filter (Part 8) ───────────────────────────────────────────────────
 
 const HARD_STOP_PATTERNS = [
@@ -326,21 +524,83 @@ function detectSoftSignals(lead, history) {
 
 const HAIKU_MODEL = "anthropic/claude-haiku-4-5"
 
-function buildSystemPrompt(args) {
-  const { lead, campaign, touchNumber, channel, history, clarify, daysSinceCreated } = args
-  const isGoogleAds = campaign.type.startsWith("google_ads")
-  const phaseGuidance = touchNumber <= 3
+function buildResponsivenessBlock(sig) {
+  if (!sig) return ""
+  // first_contact w/o brief_inbound has nothing useful to add over standard
+  // phase guidance — skip the block to keep the prompt tight.
+  if (sig.state === "first_contact" && !sig.briefInbound) return ""
+  const obParts = []
+  if (sig.outbound.call) obParts.push(`${sig.outbound.call} call/voicemail`)
+  if (sig.outbound.imessage) obParts.push(`${sig.outbound.imessage} text`)
+  if (sig.outbound.email) obParts.push(`${sig.outbound.email} email`)
+  const inboundDesc = sig.responsesSinceFirstOutbound > 0
+    ? `${sig.responsesSinceFirstOutbound} reply (${sig.daysSinceLastResponse}d ago)`
+    : sig.inboundTotal > 0
+    ? `${sig.inboundTotal} initial inbound${sig.briefInbound ? " (brief)" : ""}, no reply since`
+    : "no reply"
+  return `
+RESPONSIVENESS (last 30 days):
+- Ryan's outreach: ${obParts.join(", ") || "none"}
+- Lead's response: ${inboundDesc}
+- State: ${sig.state}${sig.briefInbound ? " (brief inbound)" : ""}
+`
+}
+
+function phaseGuidanceFor(touchNumber, sig) {
+  // Responsiveness overrides the touch-number phase — when the lead has gone
+  // dark, the right message isn't "low-pressure availability check", it's a
+  // warm reach-out that acknowledges the silence.
+  if (sig && sig.state === "never_responded" && sig.outboundTotal >= 1) {
+    return `UNRESPONSIVE — Ryan has reached out ${sig.outboundTotal}x and the lead hasn't responded. Acknowledge you've been trying to connect, no pressure. Examples of the tone: "Hey, just wanted to check in", "Let me know if there's anything I can do to help, otherwise I'll leave you be". Leave the door open without pushing. Do NOT ask a clarifying question and do NOT imply the lead reached out to you.`
+  }
+  if (sig && sig.state === "gone_quiet") {
+    return `GONE QUIET — they responded earlier but the conversation died ${sig.daysSinceLastResponse}d ago. Warm, brief check-in, no recap, no re-ask of an old question. Acknowledge the gap and offer to help. Same tone as UNRESPONSIVE but you can reference that you talked before.`
+  }
+  // Brief initial inbound — lead reached out (call/voicemail/text) but the
+  // content was too thin to interpret intent. Standard touch #1 ("just
+  // following up on the letter") doesn't fit because it assumes we know
+  // what they want. Drift to an acknowledge-and-ask pattern.
+  if (sig && sig.briefInbound && touchNumber === 1) {
+    const inboundDesc = sig.lastInboundKind === "call"
+      ? "missed call and voicemail"
+      : sig.lastInboundKind === "sms"
+      ? "text"
+      : sig.lastInboundKind === "email"
+      ? "email"
+      : "voicemail"
+    return `AMBIGUOUS INITIAL CONTACT — the lead reached out via ${inboundDesc} but their message was too brief to know what they want (e.g. just "thank you" or an empty voicemail). Acknowledge that you saw the ${inboundDesc} from this number, then ASK if they were reaching out about a letter you sent. Example tone: "Hi — got a missed call and voicemail from this number. Were you reaching out about a letter I sent you?". Keep it warm, no assumptions about intent.`
+  }
+  return touchNumber <= 3
     ? "early — low pressure, availability check, no aggressive close"
     : touchNumber <= 6
     ? "mid — value prop: cash, fast close (2-3 wks), no repairs, no commissions, no showings"
     : "long-tail — staying on radar, seasonal market angle, simple check-in"
+}
+
+function buildSystemPrompt(args) {
+  const { lead, campaign, touchNumber, channel, history, clarify, daysSinceCreated, responsiveness } = args
+  const isGoogleAds = campaign.type.startsWith("google_ads")
+  const phaseGuidance = phaseGuidanceFor(touchNumber, responsiveness)
+  const responsivenessBlock = buildResponsivenessBlock(responsiveness)
+  const isUnresponsive = responsiveness && (responsiveness.state === "never_responded" || responsiveness.state === "gone_quiet")
 
   const channelLine = channel === "email"
     ? "Format: email. 2-5 sentences. Sign off only with — Ryan. No subject in body. No emojis."
     : "Format: text message (iMessage). 1-3 sentences. No sign-off. No emojis. Sound like a real person texted this."
 
-  const clarifyClause = clarify
+  // Suppress the clarify-question turn when the lead has gone unresponsive —
+  // pestering them with another question is the wrong move.
+  const clarifyClause = clarify && !isUnresponsive
     ? "\nQUALIFYING TURN: instead of a standard follow-up, ask ONE natural clarifying question (e.g. property location, ownership, timing). Keep it conversational, not interrogative."
+    : ""
+
+  // Anti-hallucination rule. Haiku reads the PRIOR CONVERSATION transcripts
+  // and confidently writes "Got your voicemail" / "Got your missed call"
+  // even when those transcripts are Ryan's OUTBOUND voicemails (the
+  // recording captured the lead's outgoing greeting at the start). When the
+  // lead is silent, we forbid the whole class of "you reached out" phrasing.
+  const directionRule = isUnresponsive
+    ? `\n- DIRECTION: Ryan is the active party reaching out. The lead is silent — do NOT reference any past message, call, or voicemail from the lead, even if the conversation history mentions a voicemail (those are Ryan's outbound voicemails to the lead — the lead's greeting was captured in the recording). Forbidden phrases: "Got your missed call", "Got your voicemail", "Saw you reached out", "Thanks for getting back to me", "Returning your call", "Following up on your message". Frame everything as Ryan's effort to connect with them.`
     : ""
 
   if (isGoogleAds) {
@@ -350,11 +610,11 @@ RULES:
 - Sound like a real person ${channel === "email" ? "wrote this email" : "texted this"}. Short, casual, no filler.
 - Never use "newsletter" tone or templated subject-verb-object patterns.
 - Never repeat an opener from prior touches (conversation history is below).
-- ${channelLine}
+- ${channelLine}${directionRule}
 
 PHASE GUIDANCE: ${phaseGuidance}
 ${clarifyClause}
-
+${responsivenessBlock}
 LEAD CONTEXT:
 - Name: ${lead.name || "(unknown)"}
 - Property: ${lead.property_address || "(unknown)"}
@@ -376,11 +636,11 @@ RULES:
 - Reference the letter they received where natural.
 - Goal is to get them on a phone call — not to close digitally.
 - Never repeat an opener from prior touches (conversation history below).
-- ${channelLine}
+- ${channelLine}${directionRule}
 
 PHASE GUIDANCE: ${phaseGuidance}
 ${clarifyClause}
-
+${responsivenessBlock}
 LEAD CONTEXT:
 - Name: ${lead.name || "(unknown)"}
 - Property: ${lead.property_address || "(unknown — ask naturally if relevant)"}
@@ -590,7 +850,13 @@ async function drainApprovedQueue(sb) {
     }
     try {
       await sendDripTouch({ lead, channel: q.channel, message: q.message, subject: q.subject, sb, queueRow: q })
-      await sb.from("drip_queue").update({ status: "sent", sent_at: new Date().toISOString() }).eq("id", q.id)
+      const sentAt = new Date().toISOString()
+      await sb.from("drip_queue").update({ status: "sent", sent_at: sentAt }).eq("id", q.id)
+      // Cadence clock: bump `last_drip_sent_at` to the ACTUAL send timestamp.
+      // This is what guards the next-touch delay — without this update the
+      // engine would still be using the stale queue-time stamp (or worse,
+      // nothing at all, leading to "touch N+1 due immediately" loops).
+      await sb.from("leads").update({ last_drip_sent_at: sentAt }).eq("id", q.lead_id)
       console.log(`[drip] sent queue ${q.id} → ${q.channel} → ${lead.id}`)
     } catch (e) {
       console.error(`[drip] queue ${q.id} send failed:`, e.message)
@@ -775,6 +1041,7 @@ async function processLead(sb, lead) {
   }
 
   const history = await buildConversationHistory(lead, sb)
+  const responsiveness = await extractResponsivenessSignals(lead, sb)
   const hardStop = detectHardStop(history)
   if (hardStop) {
     console.log(`[drip] HARD STOP lead ${lead.id}: matched "${hardStop}" — flagging DNC + dead`)
@@ -829,6 +1096,7 @@ async function processLead(sb, lead) {
       history,
       clarify,
       daysSinceCreated,
+      responsiveness,
     })
   }
   if (!messageBody) return { skipped: "generation_failed" }
@@ -847,19 +1115,27 @@ async function processLead(sb, lead) {
     return { processed: true, dryRun: true }
   }
 
-  // Advance the lead's drip counters NOW (whether queueing or auto-sending).
-  // The brief: drip touches do NOT change status — only counter + timer.
+  // Advance `drip_touch_number` immediately so the next engine pass knows
+  // which touch is "in flight" and `hasPendingQueueRow` keeps the queue
+  // monogamous — but DO NOT touch `last_drip_sent_at` here. That field
+  // is the cadence clock: it has to reflect the actual send timestamp,
+  // not the queue timestamp. Setting it at queue-time caused drips that
+  // sat in the approval queue for days to falsely "age" the lead — the
+  // moment Ryan clicked Send, the engine saw `last_drip_sent_at` as days
+  // old, decided the next-touch cadence had already elapsed, and queued
+  // touch #N+1 instantly. The actual send-time update now lives in
+  // `drainApprovedQueue` (queued path) and the AUTO_SEND branch below.
   await sb
     .from("leads")
-    .update({
-      drip_touch_number: activeTouch.touchNumber,
-      last_drip_sent_at: new Date().toISOString(),
-    })
+    .update({ drip_touch_number: activeTouch.touchNumber })
     .eq("id", lead.id)
 
   if (AUTO_SEND) {
     try {
       await sendDripTouch({ lead, channel, message: messageBody, subject, sb })
+      // Auto-send fires immediately — record the actual send time so the
+      // cadence clock starts here, not at the (theoretical) queue time.
+      await sb.from("leads").update({ last_drip_sent_at: new Date().toISOString() }).eq("id", lead.id)
       console.log(`[drip] AUTO-SENT lead ${lead.id} touch #${activeTouch.touchNumber} (${channel})`)
       return { processed: true, autoSent: true }
     } catch (e) {
@@ -947,7 +1223,22 @@ async function main() {
   }
 }
 
-main().catch((e) => {
-  console.error("[drip] fatal:", e)
-  process.exit(1)
-})
+// Exports for one-shot helpers (e.g. scripts/regenerate-pending-drips.js)
+// that want to re-use the engine's prompt + signal helpers without running
+// the full hourly pass.
+module.exports = {
+  DRIP_CAMPAIGNS,
+  buildConversationHistory,
+  extractResponsivenessSignals,
+  generateMessage,
+  buildSystemPrompt,
+}
+
+// Skip the hourly main() when imported by a helper script — set by
+// scripts/regenerate-pending-drips.js before the require().
+if (!process.env.DRIP_REGEN_SKIP_MAIN) {
+  main().catch((e) => {
+    console.error("[drip] fatal:", e)
+    process.exit(1)
+  })
+}
