@@ -2572,12 +2572,21 @@ function OfferRow(props: {
     return new Date(iso).toLocaleDateString([], { month: "short", day: "numeric" })
   }
 
-  // No offer + not editing → don't render anything. The pencil-edit entry
-  // point is reachable via a single-line "add offer" affordance only when
-  // the user explicitly opens it — but we don't clutter the card with an
-  // empty Offer slot. Hold for now; if Ryan wants an "Add offer" shortcut
-  // we can wire it later.
-  if (!props.offerAmount && !editing) return null
+  // Empty state → render a low-contrast "+ Add offer" pill so Ryan has a
+  // way to log an offer he made live (not picked up from a transcript).
+  // PATCH /api/leads stamps offer_verbalized_at = now() server-side when
+  // an amount is set without an explicit timestamp — see the route.
+  if (!props.offerAmount && !editing) {
+    return (
+      <button
+        onClick={() => { setDraft(""); setEditing(true) }}
+        className="rounded border border-zinc-800 bg-zinc-950 px-3 py-1 text-[11px] text-zinc-500 inline-flex items-center gap-1.5 hover:border-amber-900/60 hover:text-amber-300 transition-colors"
+        title="Log a verbalized offer (e.g. $1.2M to Candace)"
+      >
+        💰 <span>Add offer</span>
+      </button>
+    )
+  }
 
   if (!editing) {
     return (
