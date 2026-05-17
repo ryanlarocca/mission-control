@@ -28,6 +28,9 @@ export async function GET(request: NextRequest) {
       headers: { Authorization: `Basic ${auth}` },
       // Forward range requests so the browser can seek
       ...(request.headers.get("range") ? { headers: { Authorization: `Basic ${auth}`, Range: request.headers.get("range")! } } : {}),
+      // Defensive: skip Next.js fetch cache. Audio buffers are multi-MB and
+      // shouldn't sit in serverless memory between requests.
+      cache: "no-store",
     })
 
     if (!upstream.ok && upstream.status !== 206) {

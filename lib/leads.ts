@@ -735,7 +735,11 @@ export async function fetchTwilioAudio(url: string): Promise<Buffer | null> {
   }
   const auth = Buffer.from(`${sid}:${token}`).toString("base64")
   try {
-    const res = await fetch(url, { headers: { Authorization: `Basic ${auth}` } })
+    // Defensive cache: no-store. Twilio recording URLs are unique per
+    // recording so cache hits would return the same audio (not stale
+    // data), but the audio buffers can be multi-MB — letting Next.js
+    // hold them in its fetch cache would waste serverless memory.
+    const res = await fetch(url, { headers: { Authorization: `Basic ${auth}` }, cache: "no-store" })
     if (!res.ok) {
       console.error(`[twilio-audio] Fetch failed ${res.status}: ${url}`)
       return null
