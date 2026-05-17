@@ -56,19 +56,24 @@ export async function GET(request: NextRequest) {
   }
 }
 
+const SNOOZE_DAYS = new Set([1, 3, 7])
+
 export async function PATCH(request: NextRequest) {
-  let body: { id?: string; action?: string; message?: string; subject?: string } = {}
+  let body: { id?: string; action?: string; message?: string; subject?: string; days?: number } = {}
   try {
     body = await request.json()
   } catch {
     return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 })
   }
-  const { id, action, message, subject } = body
+  const { id, action, message, subject, days } = body
   if (!id || typeof id !== "string") {
     return NextResponse.json({ error: "id is required" }, { status: 400 })
   }
-  if (action !== "approve" && action !== "skip" && action !== "edit") {
-    return NextResponse.json({ error: 'action must be "approve", "skip", or "edit"' }, { status: 400 })
+  if (action !== "approve" && action !== "skip" && action !== "edit" && action !== "snooze") {
+    return NextResponse.json({ error: 'action must be "approve", "skip", "edit", or "snooze"' }, { status: 400 })
+  }
+  if (action === "snooze" && (typeof days !== "number" || !SNOOZE_DAYS.has(days))) {
+    return NextResponse.json({ error: "snooze days must be 1, 3, or 7" }, { status: 400 })
   }
 
   try {
@@ -94,6 +99,26 @@ export async function PATCH(request: NextRequest) {
         return NextResponse.json({ error: error.message }, { status: 500 })
       }
       if (!data) return NextResponse.json({ error: "row not found or not pending" }, { status: 409 })
+      return NextResponse.json({ item: data })
+    }
+
+    // Snooze: push a pending row's send date out by N days. Touch number is
+    // unchanged. The GET /api/drips response filters rows where
+    // snoozed_until > now() so they drop out of Late/Due/Coming up; once the
+    // timestamp passes, the row resurfaces. We do NOT touch the lead's
+    // last_drip_sent_at — when Ryan eventually approves+sends the row, the
+    // engine stamps the clock at send time (the canonical pattern).
+    if (action === "snooze") {
+      const until = new Date(Date.now() + (days as number) * 86400 * 1000).toISOString()
+      const { data, error } = await sb
+        .from("drip_queue")
+        .update({ snoozed_until: until })
+        .eq("id", id)
+        .in("status", ["pending", "approved", "failed"])
+        .select()
+        .maybeSingle()
+      if (error) return NextResponse.json({ error: error.message }, { status: 500 })
+      if (!data) return NextResponse.json({ error: "row not found or not pending/approved/failed" }, { status: 409 })
       return NextResponse.json({ item: data })
     }
 
@@ -152,22 +177,72 @@ export async function PATCH(request: NextRequest) {
       action === "approve"
         ? { status: "approved", approved_at: new Date().toISOString() }
         : { status: "skipped" }
-    // Approve only flips pending rows. Skip also accepts failed rows — the
-    // Drips-tab "Dismiss" button on a failed touch (the lead's cadence
-    // already advanced past it, so dismissing just clears the queue).
-    // Either way the status guard blocks re-clicks on already-decided rows.
-    const allowedFrom = action === "approve" ? ["pending"] : ["pending", "failed"]
+    // Approve only flips pending rows. Skip accepts pending/failed/approved —
+    // pending is the normal Drips-tab Skip, failed is the Dismiss button on a
+    // failed touch, and approved covers the case where a row is stuck mid-
+    // flight (engine couldn't fire — e.g., sidecar trigger broke) and Ryan
+    // wants to take it off the engine's next drain pass. Counters already
+    // advanced when the row was queued, so skipping just clears it from the
+    // queue.
+    const allowedFrom = action === "approve" ? ["pending"] : ["pending", "failed", "approved"]
+    // maybeSingle (not single) so a no-op call doesn't throw. .single() in
+    // supabase-js v2 throws "Cannot coerce the result to a single JSON object"
+    // when the UPDATE matches 0 rows — which is exactly what happens on a
+    // double-click of Skip (first request flips status, second hits a row
+    // that's no longer in allowedFrom). Treat that as idempotent success
+    // after confirming the row already reached the target state, so the UI
+    // can dismiss the card without a spurious 500.
     const { data, error } = await sb
       .from("drip_queue")
       .update(update)
       .eq("id", id)
       .in("status", allowedFrom)
       .select()
-      .single()
+      .maybeSingle()
     if (error) {
       console.error(`[drip-queue:PATCH] ${action} failed:`, error)
       return NextResponse.json({ error: error.message }, { status: 500 })
     }
+    if (!data) {
+      // Update matched no rows — either the id doesn't exist or the row is
+      // already past the allowed-from states. Look it up and decide.
+      const targetStatus = action === "approve" ? "approved" : "skipped"
+      const { data: existing } = await sb
+        .from("drip_queue")
+        .select("*")
+        .eq("id", id)
+        .maybeSingle()
+      if (!existing) {
+        return NextResponse.json({ error: "row not found" }, { status: 404 })
+      }
+      if (existing.status === targetStatus) {
+        // Already where we wanted it — idempotent success.
+        return NextResponse.json({ item: existing, alreadyApplied: true })
+      }
+      return NextResponse.json(
+        { error: `cannot ${action} row with status=${existing.status}` },
+        { status: 409 }
+      )
+    }
+
+    // Skip advances the cadence clock: "skip = I'm handling this myself,
+    // move on." Without this, the next touch's eligibility is based on
+    // whatever last_drip_sent_at was at the SKIPPED touch's queue time —
+    // which, for a touch Ryan deliberately decided NOT to send, would
+    // re-queue touch #N+1 the moment its delay elapses from that stale
+    // anchor. Resetting to now means: "treat this skip as if a touch fired
+    // here; the next one is X days from now." Active conversations still
+    // get an additional push via the engine's `hasActiveConversation`
+    // hold on the next pass, so engaged leads aren't accidentally messaged.
+    if (action === "skip" && data.lead_id) {
+      const skipAt = new Date().toISOString()
+      const { error: leadUpErr } = await sb
+        .from("leads")
+        .update({ last_drip_sent_at: skipAt })
+        .eq("id", data.lead_id)
+      if (leadUpErr) console.warn("[drip-queue:PATCH skip] lead clock update failed:", leadUpErr.message)
+    }
+
     return NextResponse.json({ item: data })
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e)

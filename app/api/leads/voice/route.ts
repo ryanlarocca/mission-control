@@ -124,8 +124,8 @@ export async function POST(request: Request) {
     } catch (e) {
       console.error("[voice] Supabase insert threw:", e)
     }
-    // Telegram stays fire-and-forget — sendTelegramAlert is best-effort.
-    void sendTelegramAlert(`📞 New lead call — <b>${source}</b> — ${callerPhone}`)
+    // Await so Vercel doesn't kill the in-flight fetch when the response returns.
+    await sendTelegramAlert(`📞 New lead call — <b>${source}</b> — ${callerPhone}`)
   }
 
   return new NextResponse(buildTwiml(twilioNumber), {

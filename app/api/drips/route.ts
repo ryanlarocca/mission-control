@@ -8,6 +8,14 @@ import {
   type DripCampaignType,
 } from "@/lib/drip-campaigns"
 
+// Vercel was edge-caching the GET response (x-vercel-cache: HIT, age 30min+)
+// because the handler reads no per-request input — Next.js inferred it as
+// static. That made the Drips tab serve stale buckets: a row that had
+// already flipped pending → sent in Supabase kept showing up in Late for
+// half an hour. force-dynamic disables the edge cache so every refresh
+// re-runs the route against the live DB.
+export const dynamic = "force-dynamic"
+
 // Drips tab data source. Combines the drip_queue table (current state) with
 // a per-lead forecast (what the engine will queue next based on cadence).
 //
@@ -242,6 +250,16 @@ export async function GET(_request: NextRequest) {
     }
 
     // 3. Bucket the queue rows.
+    //
+    // Two server-side filters applied to ACTIONABLE buckets (late/due/
+    // failed/approvedNotSent — never recentSent, which is an audit trail):
+    //   - snoozed_until > now() — Ryan pushed this row out via the snooze
+    //     button. Hide it until the timestamp passes; then it reappears.
+    //   - lead.is_junk / is_dnc — the halt-outreach sweep should have
+    //     converted these rows to skipped already (see haltOutreachForCluster),
+    //     but defense in depth: if a race left a pending/approved row in
+    //     place, never surface it.
+    const nowMs = now.getTime()
     const late: DripCard[] = []
     const due: DripCard[] = []
     const failed: DripCard[] = []
@@ -250,14 +268,21 @@ export async function GET(_request: NextRequest) {
     for (const row of (queueRows ?? []) as Record<string, unknown>[]) {
       const lead = leadById.get(row.lead_id as string)
       const card = buildCard(row, lead, nameByPhone, nameByEmail)
+      const snoozedUntil = (row.snoozed_until as string | null) ?? null
+      const isSnoozed = snoozedUntil != null && new Date(snoozedUntil).getTime() > nowMs
+      const leadBlocked = !!(lead?.is_junk || lead?.is_dnc)
+      const hideFromActionable = isSnoozed || leadBlocked
       if (card.status === "pending") {
+        if (hideFromActionable) continue
         if (card.created_at < lateCutoff) late.push(card)
         else due.push(card)
       } else if (card.status === "approved") {
+        if (hideFromActionable) continue
         approvedNotSent.push(card)
       } else if (card.status === "sent") {
         recentSent.push(card)
       } else if (card.status === "failed") {
+        if (hideFromActionable) continue
         failed.push(card)
       }
     }

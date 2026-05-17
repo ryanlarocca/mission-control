@@ -11,7 +11,11 @@ import { getLeadsClient } from "@/lib/leads"
 // send (e.g. a transient sidecar error) gets the same staleness re-check as a
 // pending row, then re-enters the drain queue.
 
-const SIDECAR_URL = process.env.SIDECAR_URL || "http://localhost:5799"
+// .trim() defends against a stray trailing newline in the env value
+// (update-sidecar-url.sh used to `echo` the URL, which baked a `\n` into the
+// Vercel env var and silently broke every drip-trigger fetch). Belt-and-
+// suspenders even after the shell-script fix.
+const SIDECAR_URL = (process.env.SIDECAR_URL || "http://localhost:5799").trim()
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
 export async function POST(_request: NextRequest, { params }: { params: { id: string } }) {

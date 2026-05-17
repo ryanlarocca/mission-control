@@ -4,7 +4,7 @@ import { NextRequest, NextResponse } from "next/server"
 // next touch via Haiku and writes a pending drip_queue row. The UI's next
 // /api/drips refresh will surface the row in Due.
 
-const SIDECAR_URL = process.env.SIDECAR_URL || "http://localhost:5799"
+const SIDECAR_URL = (process.env.SIDECAR_URL || "http://localhost:5799").trim()
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
 export async function POST(request: NextRequest) {
