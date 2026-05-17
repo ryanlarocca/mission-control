@@ -100,6 +100,18 @@ const DIRECT_MAIL_CALL_TOUCHES = [
   { touchNumber: 13, delayHours: 2160, channel: "imessage" },
 ]
 
+// Long-term nurture — must match lib/drip-campaigns.ts exactly. Soft
+// cadence for "not now, maybe in 1-2 years" leads. Cumulative timing:
+// 60 / 120 / 180 / 240 / 365 / 540 days from apply time.
+const LONG_TERM_NURTURE_TOUCHES = [
+  { touchNumber: 1, delayHours: 1440, channel: "email" },     // 60d
+  { touchNumber: 2, delayHours: 1440, channel: "imessage" },  // +60d → 120d
+  { touchNumber: 3, delayHours: 1440, channel: "email" },     // +60d → 180d
+  { touchNumber: 4, delayHours: 1440, channel: "imessage" },  // +60d → 240d
+  { touchNumber: 5, delayHours: 3000, channel: "email" },     // +125d → 365d
+  { touchNumber: 6, delayHours: 4200, channel: "imessage" },  // +175d → 540d
+]
+
 const DRIP_CAMPAIGNS = {
   google_ads_form: {
     type: "google_ads_form",
@@ -126,6 +138,11 @@ const DRIP_CAMPAIGNS = {
     entryDelayHours: 48,
     touches: ALL_EMAIL(GOOGLE_ADS_FORM_TOUCHES),
   },
+  long_term_nurture: {
+    type: "long_term_nurture",
+    entryDelayHours: 0,
+    touches: LONG_TERM_NURTURE_TOUCHES,
+  },
 }
 
 // Phase 7C: lifecycle-only stop list. Active = Ryan's working it; dead =
@@ -141,6 +158,11 @@ function effectiveChannel(campaign, touchNumber, hasPhone) {
   const defined = campaign.touches.find((t) => t.touchNumber === touchNumber)
   if ((campaign.type === "direct_mail_email" || campaign.type === "google_ads_email_only") && hasPhone) {
     return touchNumber % 2 === 1 ? "imessage" : "email"
+  }
+  // Long-term nurture downgrades its iMessage touches to email when the
+  // lead has no phone — otherwise they silently no-op.
+  if (campaign.type === "long_term_nurture" && !hasPhone) {
+    return "email"
   }
   return defined ? defined.channel : "imessage"
 }
@@ -580,6 +602,7 @@ function phaseGuidanceFor(touchNumber, sig) {
 function buildSystemPrompt(args) {
   const { lead, campaign, touchNumber, channel, history, clarify, daysSinceCreated, responsiveness } = args
   const isGoogleAds = campaign.type.startsWith("google_ads")
+  const isLongTermNurture = campaign.type === "long_term_nurture"
   const phaseGuidance = phaseGuidanceFor(touchNumber, responsiveness)
   const responsivenessBlock = buildResponsivenessBlock(responsiveness)
   const isUnresponsive = responsiveness && (responsiveness.state === "never_responded" || responsiveness.state === "gone_quiet")
@@ -602,6 +625,42 @@ function buildSystemPrompt(args) {
   const directionRule = isUnresponsive
     ? `\n- DIRECTION: Ryan is the active party reaching out. The lead is silent — do NOT reference any past message, call, or voicemail from the lead, even if the conversation history mentions a voicemail (those are Ryan's outbound voicemails to the lead — the lead's greeting was captured in the recording). Forbidden phrases: "Got your missed call", "Got your voicemail", "Saw you reached out", "Thanks for getting back to me", "Returning your call", "Following up on your message". Frame everything as Ryan's effort to connect with them.`
     : ""
+
+  // Long-term nurture — for leads who explicitly said "not now, maybe in a
+  // year or two". The whole point is patience: a soft seasonal check-in, no
+  // sales push, no question about timing (they already told us). Tone is
+  // closer to "thinking of you" than "follow up on the letter". Never
+  // mention the original mailer or treat them like a fresh lead — they're
+  // someone Ryan has already had a real conversation with.
+  if (isLongTermNurture) {
+    return `You are writing a ${channel === "email" ? "soft check-in email" : "soft check-in text"} from Ryan, a cash home buyer in the Bay Area, to a lead Ryan already spoke with who said they're not ready to sell yet (typically a 1-2 year horizon).
+
+RULES:
+- Sound like a real person ${channel === "email" ? "wrote this" : "texted this"}. Warm, brief, no sales push.
+- This is NOT a first contact. Do NOT reference a letter or treat them like a new lead.
+- Do NOT ask about timing or readiness — they already told you they're not ready. Asking again is the wrong move.
+- Goal is to stay in their orbit so they think of you when the time IS right. No clarifying questions, no value-prop pitch.
+- ${channelLine}${directionRule}
+
+PHASE GUIDANCE: long-term nurture touch #${touchNumber}. ${touchNumber === 1
+      ? "First soft check-in, ~60 days after you last spoke. Brief 'how's the year going' or seasonal angle. No ask."
+      : touchNumber <= 4
+      ? "Quarterly seasonal check-in. Reference the season or a generic life event (new year, holidays, spring) where natural. Keep it short."
+      : touchNumber === 5
+      ? "Anniversary check-in (~1 year). 'It's been about a year since we talked' is fine. Still no ask."
+      : "1.5+ year check-in. Light touch, possibly mention you're still around if the timing ever becomes right."}
+${responsivenessBlock}
+LEAD CONTEXT:
+- Name: ${lead.name || "(unknown)"}
+- Property: ${lead.property_address || "(unknown)"}
+- Touch number: ${touchNumber}
+- Days since first contact: ${daysSinceCreated}
+
+PRIOR CONVERSATION (oldest → newest):
+${history || "(no prior conversation)"}
+
+Output ONLY the message body — no preamble, no quotes, no labels.`
+  }
 
   if (isGoogleAds) {
     return `You are writing a ${channel === "email" ? "follow-up email" : "follow-up text message"} from Ryan, a cash home buyer in the Bay Area, to a lead who filled out a form online about selling their property.

@@ -6,7 +6,7 @@ import {
   Phone, PhoneOutgoing, Voicemail, MessageSquare, ClipboardList, ChevronDown, ChevronRight,
   Loader2, RefreshCw, Send, Check, Mail, Trash2, Bot, Clock, X,
   Sparkles, PhoneOff, Ban, ShieldOff, Zap, Wand2, Calendar, Pencil, Search, SlidersHorizontal,
-  Maximize2,
+  Maximize2, Hourglass,
 } from "lucide-react"
 import { getCampaign, getNextTouch } from "@/lib/drip-campaigns"
 import { isAnonymousCaller } from "@/lib/anonymous"
@@ -1068,6 +1068,60 @@ export function LeadsTab() {
     }
   }
 
+  // Refresh chat.db + Gmail history for the open lead. syncOnExpand normally
+  // fires once per session per group (gated by syncedGroups Set) — this is
+  // the manual "I just texted Susan from my phone, pull it in now" path.
+  // Until inbound SMS moves to Twilio, chat.db is the canonical store for
+  // iMessage/SMS Ryan sends from his Mac/iPhone, and it isn't auto-pushed
+  // to Supabase.
+  const [refreshingSyncFor, setRefreshingSyncFor] = useState<string | null>(null)
+  async function refreshSyncForGroup(group: LeadGroup) {
+    setRefreshingSyncFor(group.phone)
+    try {
+      // Clear the dedupe-gate AND the prior synthetic events so this re-fetch
+      // can re-build the merged set without leaving duplicates from a stale
+      // run sitting in extraEvents.
+      setSyncedGroups(prev => {
+        const next = new Set(prev); next.delete(group.phone); return next
+      })
+      setExtraEvents(prev => {
+        const next = { ...prev }; delete next[group.phone]; return next
+      })
+      // syncOnExpand reads syncedGroups via the closure captured at the time
+      // of its definition (useCallback dep), so we have to wait a tick for
+      // the state update to settle before calling it.
+      await new Promise(r => setTimeout(r, 0))
+      await syncOnExpand(group)
+    } finally {
+      setRefreshingSyncFor(null)
+    }
+  }
+
+  // Long-term nurture: for leads who said "not now, maybe in a year or two".
+  // Skips the cluster's pending drips, switches them onto the slow
+  // long_term_nurture campaign (first email touch at 60d), and stamps a
+  // 6-month follow-up reminder. See app/api/leads/[id]/long-term-nurture.
+  async function longTermNurtureGroup(group: LeadGroup) {
+    const who = group.name || group.contactPhone || group.email || "this lead"
+    if (!confirm(`Move ${who} to long-term nurture? Stops the current cadence, switches to slow check-ins (~60d / 120d / 180d / 240d / 365d / 540d, alternating email + iMessage), and sets a 6-month follow-up reminder.`)) return
+    try {
+      const res = await fetch(`/api/leads/${group.mostRecentId}/long-term-nurture`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: "{}",
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`)
+      // Embed-mode → notify the Drips tab parent so it refetches and the
+      // queue rows we just skipped drop out of view immediately.
+      notifyLeadChangedToParent(group.mostRecentId, ["drip_campaign_type", "recommended_followup_date"])
+      void fetchLeads(true)
+    } catch (e) {
+      console.error("long-term-nurture failed:", e)
+      alert(`Long-term nurture failed: ${e instanceof Error ? e.message : String(e)}`)
+    }
+  }
+
   async function flagDnc(group: LeadGroup) {
     if (!confirm(`Mark ${group.name || group.contactPhone || group.email || "this lead"} as DNC? This halts ALL outreach and adds them to the suppression list.`)) return
     setLeads(prev => prev.map(l => l.id === group.mostRecentId ? { ...l, is_dnc: true, status: "dead" } : l))
@@ -1464,6 +1518,8 @@ export function LeadsTab() {
               summaryLoading={!!summaries[group.phone]?.loading}
               summaryError={summaries[group.phone]?.error || null}
               onRefreshSummary={() => fetchSummary(group, { force: true })}
+              onRefreshMessages={() => void refreshSyncForGroup(group)}
+              refreshingMessages={refreshingSyncFor === group.phone}
               onDraftText={() => generateDraft(group, "imessage")}
               onDraftEmail={() => generateDraft(group, "email")}
               draftingText={draftingFor === `${group.phone}:imessage`}
@@ -1511,6 +1567,7 @@ export function LeadsTab() {
               selected={selectedIds.has(group.mostRecentId)}
               onToggleSelect={() => toggleSelect(group.mostRecentId)}
               onApplyDrip={() => applyDripToGroup(group)}
+              onLongTermNurture={() => longTermNurtureGroup(group)}
               onMarkBadNumber={() => patchFlagOnGroup(group, { is_bad_number: !group.isBadNumber })}
               onMarkJunk={() => {
                 // 2026-05-11 — flipping junk ON also moves the lead to
@@ -1586,6 +1643,7 @@ interface LeadCardProps {
   selected: boolean
   onToggleSelect: () => void
   onApplyDrip: () => void
+  onLongTermNurture: () => void
   onMarkBadNumber: () => void
   onMarkJunk: () => void
   onFlagDnc: () => void
@@ -1603,6 +1661,8 @@ interface LeadCardProps {
   summaryLoading: boolean
   summaryError: string | null
   onRefreshSummary: () => void
+  onRefreshMessages: () => void
+  refreshingMessages: boolean
   onDraftText: () => void
   onDraftEmail: () => void
   draftingText: boolean
@@ -1875,6 +1935,8 @@ function LeadCard(p: LeadCardProps) {
             aiError={p.summaryError}
             temperature={group.temperature}
             onRefreshAi={p.onRefreshSummary}
+            onRefreshMessages={group.contactPhone ? p.onRefreshMessages : undefined}
+            refreshingMessages={p.refreshingMessages}
           />
 
           <div>
@@ -2129,6 +2191,16 @@ function LeadCard(p: LeadCardProps) {
                   >
                     <Zap className="w-3.5 h-3.5" />
                     Apply Drip
+                  </button>
+                )}
+                {(group.contactPhone || group.email) && !group.events.some(e => e.drip_campaign_type === "long_term_nurture") && (
+                  <button
+                    onClick={p.onLongTermNurture}
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 min-h-[36px] rounded bg-indigo-900/40 border border-indigo-900 text-indigo-200 hover:bg-indigo-900/60 text-xs font-medium transition-colors"
+                    title="Move to slow long-term nurture (60/120/180/240/365/540 days, alternating email + iMessage) + 6-month follow-up reminder"
+                  >
+                    <Hourglass className="w-3.5 h-3.5" />
+                    Long-Term Nurture
                   </button>
                 )}
                 {group.contactPhone && (
@@ -2497,11 +2569,31 @@ function Timeline(props: {
   aiError: string | null
   temperature: Temperature | null
   onRefreshAi: () => void
+  // Optional — when present, renders a "Refresh from chat.db" button in the
+  // timeline header. Lets Ryan pull in iMessage/SMS sent from his phone or
+  // Mac without re-opening the card. Auto-fires on first expand; this is
+  // the manual re-pull for in-session updates.
+  onRefreshMessages?: () => void
+  refreshingMessages?: boolean
 }) {
-  const { events, aiText, aiLoading, aiError, temperature, onRefreshAi } = props
+  const { events, aiText, aiLoading, aiError, temperature, onRefreshAi, onRefreshMessages, refreshingMessages } = props
   return (
     <div className="space-y-2">
-      <div className="text-xs text-zinc-500 mb-1.5">Timeline</div>
+      <div className="flex items-center justify-between mb-1.5">
+        <div className="text-xs text-zinc-500">Timeline</div>
+        {onRefreshMessages && (
+          <button
+            type="button"
+            onClick={onRefreshMessages}
+            disabled={refreshingMessages}
+            className="inline-flex items-center gap-1 text-[11px] text-zinc-500 hover:text-zinc-200 disabled:opacity-50 px-2 py-0.5 rounded hover:bg-zinc-900 transition-colors"
+            title="Pull recent iMessage/SMS history from chat.db (for messages you sent from your phone/Mac that haven't synced here yet)"
+          >
+            {refreshingMessages ? <Loader2 className="w-3 h-3 animate-spin" /> : <RefreshCw className="w-3 h-3" />}
+            Refresh messages
+          </button>
+        )}
+      </div>
       {events.map(ev => (
         <TimelineEvent key={ev.id} ev={ev} />
       ))}

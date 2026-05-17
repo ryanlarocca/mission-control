@@ -14,6 +14,7 @@ export type DripCampaignType =
   | "direct_mail_call"
   | "direct_mail_sms"
   | "direct_mail_email"
+  | "long_term_nurture"
 
 export type DripChannel = "imessage" | "email"
 
@@ -84,6 +85,24 @@ const DIRECT_MAIL_SMS_TOUCHES: DripTouch[] = DIRECT_MAIL_CALL_TOUCHES.filter(
 // found. Same touch numbers — no restart on upgrade.
 const DIRECT_MAIL_EMAIL_TOUCHES: DripTouch[] = GOOGLE_ADS_EMAIL_ONLY_TOUCHES
 
+// Long-term nurture — for leads who say "not now, maybe in 1-2 years".
+// Stops the aggressive direct_mail_call cadence; soft check-ins every
+// ~60d in year 1, then half-yearly in year 2. Total: 60 / 120 / 180 /
+// 240 / 365 / 540 days from apply time. Channel alternates email →
+// iMessage starting with email so the first touch (60d out) is the
+// least intrusive. delayHours are INTERVALS between touches, not
+// cumulative-from-start: 1440h = 60d, 3000h = 125d, 4200h = 175d.
+// Applied via POST /api/leads/[id]/long-term-nurture (also stamps a
+// 6-month follow-up callback on the lead).
+const LONG_TERM_NURTURE_TOUCHES: DripTouch[] = [
+  { touchNumber: 1, delayHours: 1440, channel: "email" },     // 60d
+  { touchNumber: 2, delayHours: 1440, channel: "imessage" },  // +60d → 120d
+  { touchNumber: 3, delayHours: 1440, channel: "email" },     // +60d → 180d
+  { touchNumber: 4, delayHours: 1440, channel: "imessage" },  // +60d → 240d
+  { touchNumber: 5, delayHours: 3000, channel: "email" },     // +125d → 365d (anniversary)
+  { touchNumber: 6, delayHours: 4200, channel: "imessage" },  // +175d → 540d
+]
+
 export const DRIP_CAMPAIGNS: Record<DripCampaignType, DripCampaign> = {
   google_ads_form: {
     type: "google_ads_form",
@@ -109,6 +128,11 @@ export const DRIP_CAMPAIGNS: Record<DripCampaignType, DripCampaign> = {
     type: "direct_mail_email",
     entryDelayHours: 48,
     touches: DIRECT_MAIL_EMAIL_TOUCHES,
+  },
+  long_term_nurture: {
+    type: "long_term_nurture",
+    entryDelayHours: 0,
+    touches: LONG_TERM_NURTURE_TOUCHES,
   },
 }
 
@@ -139,6 +163,12 @@ export function effectiveChannelForTouch(
   }
   if (campaign.type === "google_ads_email_only" && hasPhone) {
     return touchNumber % 2 === 1 ? "imessage" : "email"
+  }
+  // Long-term nurture: defined channels alternate email/iMessage but when
+  // the lead has no phone, downgrade iMessage touches to email so they
+  // don't silently no-op.
+  if (campaign.type === "long_term_nurture" && !hasPhone) {
+    return "email"
   }
   return defined?.channel ?? "imessage"
 }

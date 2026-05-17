@@ -154,6 +154,39 @@ export async function PATCH(request: NextRequest) {
       }
     }
 
+    // Follow-up auto-supersession: when a recommended_followup_date is set
+    // on this row, clear it on every OTHER row in the cluster. Ryan's mental
+    // model is "one follow-up reminder per lead" — without this rule, the
+    // Follow-Ups tab surfaces every per-row date that ever got assigned
+    // (e.g. a 2-month AI followup AND a 6-month manual one) and the user
+    // can't tell which one to act on. Setting a new date is an implicit
+    // "kill the others" command. NULL writes are excluded — those are
+    // clears, not new schedules, and shouldn't sweep siblings.
+    const supersedingFollowup =
+      "recommended_followup_date" in update &&
+      typeof update.recommended_followup_date === "string" &&
+      update.recommended_followup_date.length > 0
+    if (supersedingFollowup) {
+      try {
+        const orParts: string[] = []
+        if (data.caller_phone) orParts.push(`caller_phone.eq.${data.caller_phone}`)
+        if (data.email) orParts.push(`email.eq.${data.email}`)
+        if (orParts.length > 0) {
+          const { data: siblings } = await sb.from("leads").select("id").or(orParts.join(","))
+          const sibIds = (siblings ?? []).map(r => r.id as string).filter(sid => sid !== id)
+          if (sibIds.length > 0) {
+            await sb
+              .from("leads")
+              .update({ recommended_followup_date: null, followup_reason: null })
+              .in("id", sibIds)
+              .not("recommended_followup_date", "is", null)
+          }
+        }
+      } catch (supersedeErr) {
+        console.warn(`[leads:PATCH] followup supersession failed for ${id}:`, supersedeErr instanceof Error ? supersedeErr.message : String(supersedeErr))
+      }
+    }
+
     return NextResponse.json({ lead: data })
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e)
