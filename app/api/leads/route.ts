@@ -4,6 +4,7 @@ import {
   normalizePhone,
   VALID_LEAD_STATUSES,
   LEAD_FLAG_FIELDS,
+  haltOutreachForCluster,
   type LeadStatus,
   type LeadFlagField,
 } from "@/lib/leads"
@@ -134,6 +135,25 @@ export async function PATCH(request: NextRequest) {
       console.error("[leads:PATCH] Update failed:", error)
       return NextResponse.json({ error: error.message }, { status: 500 })
     }
+
+    // "Halt outreach" side effects: if this PATCH flipped is_junk or is_dnc
+    // to true, any pending/approved drips on this lead's cluster + any
+    // outstanding follow-up date are now wrong. The engine already filters
+    // these flags on its hourly pass, but rows queued BEFORE the flag was
+    // set still show up in the Drips tab and would fire if Ryan clicked
+    // Send. We sweep them here so junking a lead actually removes them
+    // from view immediately.
+    const flaggedHalt = update.is_junk === true || update.is_dnc === true
+    if (flaggedHalt) {
+      try {
+        await haltOutreachForCluster(sb, data)
+      } catch (sweepErr) {
+        // Don't fail the whole PATCH — the flag is already set, the engine
+        // will catch the sweep next pass. Just log loudly.
+        console.warn(`[leads:PATCH] halt-outreach sweep failed for ${id}:`, sweepErr instanceof Error ? sweepErr.message : String(sweepErr))
+      }
+    }
+
     return NextResponse.json({ lead: data })
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e)

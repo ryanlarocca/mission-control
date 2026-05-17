@@ -298,6 +298,62 @@ export const VALID_LEAD_STATUSES: readonly LeadStatus[] = [
 export const LEAD_FLAG_FIELDS = ["is_dnc", "is_junk", "is_bad_number"] as const
 export type LeadFlagField = typeof LEAD_FLAG_FIELDS[number]
 
+// Halt all in-flight outreach for the cluster a lead belongs to. Fired when
+// a lead gets junked or DNC'd — we have to sweep BOTH the Drips tab queue
+// (pending/approved rows that were generated before the flag was set) and
+// the Follow-Ups tab (any `recommended_followup_date` on cluster rows).
+// Walks the cluster via caller_phone/email so siblings stamped with their
+// own drip_campaign_type are caught too. Skips drip rows instead of
+// deleting them so the audit trail survives.
+//
+// Idempotent / no-op when nothing to clean up. Designed to be called from
+// any handler that flips is_junk or is_dnc to true on a lead row.
+export async function haltOutreachForCluster(
+  sb: SupabaseClient,
+  flaggedLead: { id: string; caller_phone: string | null; email: string | null; is_dnc?: boolean | null; is_junk?: boolean | null },
+): Promise<{ skippedDrips: number; clearedFollowups: number }> {
+  const reason = flaggedLead.is_dnc ? "lead_marked_dnc" : "lead_marked_junk"
+
+  // Find every leads-table row in the cluster (same phone OR same email).
+  // Falls back to just the flagged row if neither identifier is set.
+  const orParts: string[] = []
+  if (flaggedLead.caller_phone) orParts.push(`caller_phone.eq.${flaggedLead.caller_phone}`)
+  if (flaggedLead.email) orParts.push(`email.eq.${flaggedLead.email}`)
+  let clusterIds: string[]
+  if (orParts.length > 0) {
+    const { data: siblings } = await sb.from("leads").select("id").or(orParts.join(","))
+    clusterIds = (siblings ?? []).map((r) => r.id as string)
+    if (!clusterIds.includes(flaggedLead.id)) clusterIds.push(flaggedLead.id)
+  } else {
+    clusterIds = [flaggedLead.id]
+  }
+
+  // (1) Skip any pending/approved drip_queue rows for the cluster.
+  const { data: killed, error: dqErr } = await sb
+    .from("drip_queue")
+    .update({ status: "skipped", error: reason })
+    .in("lead_id", clusterIds)
+    .in("status", ["pending", "approved"])
+    .select("id")
+  if (dqErr) console.warn(`[halt-outreach] drip_queue sweep failed:`, dqErr.message)
+  const skippedDrips = (killed ?? []).length
+  if (skippedDrips > 0) console.log(`[halt-outreach] skipped ${skippedDrips} drip_queue row(s) for cluster of ${flaggedLead.id} (${reason})`)
+
+  // (2) Clear recommended_followup_date so the Follow-Ups tab drops the row.
+  // Also clear followup_reason so a future un-junk doesn't leave stale text.
+  const { data: cleared, error: fuErr } = await sb
+    .from("leads")
+    .update({ recommended_followup_date: null, followup_reason: null })
+    .in("id", clusterIds)
+    .not("recommended_followup_date", "is", null)
+    .select("id")
+  if (fuErr) console.warn(`[halt-outreach] follow-up clear failed:`, fuErr.message)
+  const clearedFollowups = (cleared ?? []).length
+  if (clearedFollowups > 0) console.log(`[halt-outreach] cleared follow-up on ${clearedFollowups} cluster row(s) of ${flaggedLead.id} (${reason})`)
+
+  return { skippedDrips, clearedFollowups }
+}
+
 // Display label for a lead. Prefers campaign_label (Phase 7C overlay) over
 // the historical source column. Both can be null on imports that didn't
 // match a known mailbox or twilio number.

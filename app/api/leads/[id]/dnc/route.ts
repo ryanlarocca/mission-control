@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server"
-import { getLeadsClient } from "@/lib/leads"
+import { getLeadsClient, haltOutreachForCluster } from "@/lib/leads"
 
 // Phase 7C — Part 6 + Part 9: DNC button on the lead card.
 //
@@ -67,6 +67,14 @@ export async function POST(
     if (dncErr) {
       // Don't fail the whole request — the lead is already flagged. Log only.
       console.warn(`[dnc] dnc_list insert failed for ${id}: ${dncErr.message}`)
+    }
+
+    // Halt in-flight outreach: skip pending/approved drips + clear the
+    // follow-up date for every cluster sibling. Same sweep junk uses.
+    try {
+      await haltOutreachForCluster(sb, { ...lead, is_dnc: true })
+    } catch (sweepErr) {
+      console.warn(`[dnc] halt-outreach sweep failed for ${id}:`, sweepErr instanceof Error ? sweepErr.message : String(sweepErr))
     }
 
     return NextResponse.json({ ok: true })
