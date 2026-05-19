@@ -166,13 +166,15 @@ export async function PATCH(request: NextRequest) {
     }
 
     // "Halt outreach" side effects: if this PATCH flipped is_junk or is_dnc
-    // to true, any pending/approved drips on this lead's cluster + any
-    // outstanding follow-up date are now wrong. The engine already filters
-    // these flags on its hourly pass, but rows queued BEFORE the flag was
-    // set still show up in the Drips tab and would fire if Ryan clicked
-    // Send. We sweep them here so junking a lead actually removes them
-    // from view immediately.
-    const flaggedHalt = update.is_junk === true || update.is_dnc === true
+    // to true — OR set status to "dead" — any pending/approved drips on this
+    // lead's cluster + any outstanding follow-up date are now wrong. The
+    // engine filters dead/junk/dnc on its hourly pass, but rows queued
+    // BEFORE the change still sit in the Drips tab, and an already-approved
+    // row would still fire (drainApprovedQueue doesn't re-check status).
+    // We sweep them here so marking a lead dead/junk/dnc clears the queued
+    // drips + the follow-up date immediately.
+    const flaggedHalt =
+      update.is_junk === true || update.is_dnc === true || update.status === "dead"
     if (flaggedHalt) {
       try {
         await haltOutreachForCluster(sb, data)

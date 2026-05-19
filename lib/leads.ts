@@ -577,9 +577,15 @@ export async function dedupeClusterStamps(
 // any handler that flips is_junk or is_dnc to true on a lead row.
 export async function haltOutreachForCluster(
   sb: SupabaseClient,
-  flaggedLead: { id: string; caller_phone: string | null; email: string | null; is_dnc?: boolean | null; is_junk?: boolean | null },
+  flaggedLead: { id: string; caller_phone: string | null; email: string | null; is_dnc?: boolean | null; is_junk?: boolean | null; status?: string | null },
 ): Promise<{ skippedDrips: number; clearedFollowups: number }> {
-  const reason = flaggedLead.is_dnc ? "lead_marked_dnc" : "lead_marked_junk"
+  const reason = flaggedLead.is_dnc
+    ? "lead_marked_dnc"
+    : flaggedLead.is_junk
+    ? "lead_marked_junk"
+    : flaggedLead.status === "dead"
+    ? "lead_marked_dead"
+    : "lead_marked_junk"
 
   // Find every leads-table row in the cluster (same phone OR same email).
   // Falls back to just the flagged row if neither identifier is set.

@@ -190,7 +190,7 @@ export function FollowUpTab() {
       // an outbound landed under the same lead — both might carry follow-up
       // suggestions but Ryan only wants one to-do per person.
       const byKey = new Map<string, Lead>()
-      for (const l of (data.leads || []).filter(l => l.recommended_followup_date && !l.is_dnc && !l.is_junk)) {
+      for (const l of (data.leads || []).filter(l => l.recommended_followup_date && !l.is_dnc && !l.is_junk && l.status !== "dead")) {
         const key = l.caller_phone || (l.email ? `email:${l.email.toLowerCase()}` : `id:${l.id}`)
         const existing = byKey.get(key)
         if (!existing || (l.recommended_followup_date! < (existing.recommended_followup_date || "9999-12-31"))) {
