@@ -4,7 +4,7 @@ import { useState, useEffect, useRef, useMemo, Component, ReactNode } from "reac
 import {
   Send, RefreshCw, SkipForward, Phone, Loader2,
   UserCheck, User, Wrench, TrendingUp, Home, Building2,
-  MessageSquare, AlertTriangle, CheckCircle2, Check,
+  MessageSquare, AlertTriangle, CheckCircle2, Check, Search, X,
 } from "lucide-react"
 import type { LucideIcon } from "lucide-react"
 import { ContactDetailModal } from "./ContactDetailModal"
@@ -269,6 +269,12 @@ function CRMSTabInner() {
   const [loadingContacts, setLoadingContacts] = useState(true)
   const [contactsError, setContactsError]     = useState<string | null>(null)
 
+  // ── Relationship search (full BoB sheet, lazy-loaded on first focus) ──
+  const [searchQuery, setSearchQuery]             = useState("")
+  const [allContacts, setAllContacts]             = useState<CRMSContact[]>([])
+  const [allContactsLoaded, setAllContactsLoaded] = useState(false)
+  const [loadingAll, setLoadingAll]               = useState(false)
+
   // ── Session state ──
   const [selectedId, setSelectedId]   = useState<string>("")
   const [modality, setModality]       = useState<Modality>("Reconnect")
@@ -296,6 +302,7 @@ function CRMSTabInner() {
   const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const categoryPickerRef = useRef<HTMLDivElement>(null)
   const textareaRef = useRef<HTMLTextAreaElement | null>(null)
+  const allLoadRef = useRef(false)
 
   // Close the category picker when the user taps outside. Uses pointerdown
   // (fires before click) and a setTimeout so the tap that opened the picker
@@ -381,6 +388,30 @@ function CRMSTabInner() {
       setContactsError("Could not load contacts — check Sheets API / service account.")
     } finally {
       setLoadingContacts(false)
+    }
+  }
+
+  // Lazy-load the full BoB sheet the first time the search box is focused.
+  // Separate from fetchContacts (which only returns today's capped queue).
+  async function ensureAllContacts() {
+    if (allLoadRef.current || loadingAll) return
+    allLoadRef.current = true
+    setLoadingAll(true)
+    try {
+      const res = await fetch("/api/crms/all-contacts", { cache: "no-store" })
+      if (!res.ok) throw new Error()
+      const data = await res.json()
+      const loaded: CRMSContact[] = (data.contacts || []).map((c: CRMSContact) => ({
+        ...c,
+        type: coerceType(c.type ?? c.category),
+        category: coerceType(c.type ?? c.category),
+      }))
+      setAllContacts(loaded)
+      setAllContactsLoaded(true)
+    } catch {
+      allLoadRef.current = false // allow a retry on the next focus
+    } finally {
+      setLoadingAll(false)
     }
   }
 
@@ -751,7 +782,28 @@ function CRMSTabInner() {
   const isChangingTier = tierChangingFor === selectedContact?.id
   const currentMessage = selectedContact ? getMessage(selectedContact) : ""
   const touches        = selectedContact ? touchesByPhone[selectedContact.phone] : undefined
-  const detailContact  = detailPhone ? contacts.find(c => c.phone === detailPhone) ?? null : null
+  const detailContact  = detailPhone
+    ? (contacts.find(c => c.phone === detailPhone)
+        ?? allContacts.find(c => c.phone === detailPhone)
+        ?? null)
+    : null
+
+  // Search across the full BoB sheet — name / phone / type / tier / notes.
+  const searchResults = useMemo(() => {
+    const q = searchQuery.trim().toLowerCase()
+    if (!q) return []
+    const qDigits = q.replace(/\D/g, "")
+    return allContacts
+      .filter(c => {
+        if (c.name.toLowerCase().includes(q)) return true
+        if (qDigits && c.phone.includes(qDigits)) return true
+        if (c.type.toLowerCase().includes(q)) return true
+        if (c.tier.toLowerCase() === q) return true
+        if (c.notes && c.notes.toLowerCase().includes(q)) return true
+        return false
+      })
+      .slice(0, 40)
+  }, [searchQuery, allContacts])
 
   const availableModalities: Modality[] = selectedContact
     ? MODALITIES_BY_TYPE[selectedContact.type]
@@ -827,6 +879,60 @@ function CRMSTabInner() {
         {sent.size > 0 && (
           <div className="bg-emerald-500/10 border border-emerald-500/20 rounded px-3 py-1.5">
             <p className="text-xs text-emerald-400 font-medium">{sent.size} sent this session</p>
+          </div>
+        )}
+      </div>
+
+      {/* Relationship search — look up anyone in the BoB sheet, not just today's queue */}
+      <div>
+        <div className="flex items-center gap-2 bg-zinc-900 border border-zinc-800 rounded-lg px-3 py-2">
+          <Search className="w-3.5 h-3.5 text-zinc-600 shrink-0" />
+          <input
+            type="text"
+            value={searchQuery}
+            onChange={e => setSearchQuery(e.target.value)}
+            onFocus={ensureAllContacts}
+            placeholder="Search all relationships — name, phone, type, or notes…"
+            className="flex-1 bg-transparent text-zinc-200 placeholder:text-zinc-600 focus:outline-none"
+            style={{ fontSize: "16px" }}
+          />
+          {loadingAll && <Loader2 className="w-3.5 h-3.5 text-zinc-600 animate-spin shrink-0" />}
+          {searchQuery && (
+            <button
+              onClick={() => setSearchQuery("")}
+              className="text-zinc-600 hover:text-zinc-300 shrink-0"
+              aria-label="Clear search"
+            >
+              <X className="w-3.5 h-3.5" />
+            </button>
+          )}
+        </div>
+        {searchQuery.trim() && (
+          <div className="mt-1 bg-zinc-900 border border-zinc-800 rounded-lg divide-y divide-zinc-800 max-h-[360px] overflow-y-auto">
+            {searchResults.length === 0 ? (
+              <p className="text-xs text-zinc-600 px-3 py-3">
+                {loadingAll || !allContactsLoaded ? "Loading contacts…" : "No matches"}
+              </p>
+            ) : (
+              searchResults.map(c => {
+                const Icon = categoryIcon[c.type] ?? User
+                return (
+                  <button
+                    key={c.id}
+                    onClick={() => setDetailPhone(c.phone)}
+                    className="w-full flex items-center gap-2 px-3 py-2.5 text-left hover:bg-zinc-800 transition-colors"
+                  >
+                    <span className={`text-xs font-bold px-1 py-0.5 rounded border leading-none shrink-0 ${tierStyle[c.tier] ?? tierStyle.C}`}>
+                      {c.tier}
+                    </span>
+                    <Icon className={`w-3.5 h-3.5 shrink-0 ${categoryColor[c.type] ?? "text-zinc-400"}`} />
+                    <span className="text-xs font-medium text-zinc-200 truncate flex-1 min-w-0">{c.name}</span>
+                    <span className="text-xs text-zinc-600 shrink-0 hidden sm:block">{TYPE_LABEL[c.type]}</span>
+                    <span className="text-xs text-zinc-600 font-mono shrink-0">{c.phone}</span>
+                  </button>
+                )
+              })
+            )}
           </div>
         )}
       </div>
@@ -1168,17 +1274,19 @@ function CRMSTabInner() {
           onClose={() => setDetailPhone(null)}
           onSendToast={showSendToast}
           onNotesSaved={(sheetRow, newNotes) => {
-            setContacts(prev => prev.map(c =>
+            const patch = (c: CRMSContact) =>
               c.sheetRow === sheetRow
                 ? { ...c, notes: newNotes, hasNotes: newNotes.trim().length > 0, notesStale: false }
                 : c
-            ))
+            setContacts(prev => prev.map(patch))
+            setAllContacts(prev => prev.map(patch))
           }}
           onCategoryChanged={(sheetRow, newCategory) => {
             const next = coerceType(newCategory)
-            setContacts(prev => prev.map(c =>
+            const patch = (c: CRMSContact) =>
               c.sheetRow === sheetRow ? { ...c, type: next, category: next } : c
-            ))
+            setContacts(prev => prev.map(patch))
+            setAllContacts(prev => prev.map(patch))
             // If the modal is on the currently selected contact, snap modality to a valid one
             if (selectedContact && selectedContact.sheetRow === sheetRow) {
               const allowed = MODALITIES_BY_TYPE[next] as string[]
