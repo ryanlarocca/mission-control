@@ -49,7 +49,7 @@ export async function POST(
     const sb = getLeadsClient()
     const { data: anchor, error } = await sb
       .from("leads")
-      .select("id, name, email, caller_phone, source, campaign_label, property_address, status, ai_summary")
+      .select("id, name, email, caller_phone, source, campaign_label, property_address, status, ai_summary, notes")
       .eq("id", id)
       .maybeSingle()
     if (error) return NextResponse.json({ error: error.message }, { status: 500 })
@@ -79,6 +79,11 @@ export async function POST(
       .filter(r => r.twilio_number && (r.message || "").trim().length > 0)
       .slice(-1)[0]?.created_at || null
 
+    // Ryan's hand-typed notes from the lead card. When present these are
+    // PRIORITY guidance for this draft — appended to the end of sharedContext
+    // (max recency) and flagged as instructions, not content to quote.
+    const ryanNotes = (anchor.notes || "").trim()
+
     const sharedContext = `LEAD CONTEXT:
 - Name: ${anchor.name || "(unknown)"}
 - Property: ${anchor.property_address || "(unknown)"}
@@ -88,7 +93,13 @@ export async function POST(
 ${anchor.ai_summary ? `- Summary: ${anchor.ai_summary}\n` : ""}
 
 PRIOR MESSAGES (oldest → newest, may be empty):
-${transcript}`
+${transcript}${ryanNotes ? `
+
+RYAN'S NOTES — PRIORITY GUIDANCE FOR THIS DRAFT:
+Ryan typed these notes himself to steer this specific reply. Treat them as
+instructions for what the message should cover, ask, or avoid. They are
+internal shorthand — apply the intent, never quote or paste them verbatim.
+${ryanNotes}` : ""}`
 
     const prompt = channel === "imessage"
       ? `You are drafting a text message from Ryan, a cash home buyer in the Bay Area. This is a MANUAL follow-up (not part of the automated drip). Write as if Ryan typed it himself.
@@ -97,6 +108,7 @@ RULES:
 - 1-3 sentences. Sound human. No emojis.
 - Reference specific context from the conversation (property, last topic discussed, etc.)
 - Goal: re-engage, get them on a phone call.
+- If "RYAN'S NOTES" appear below, they are the top priority — build the message around what they say to cover, ask, or avoid.
 - No sign-off.
 
 ${sharedContext}
@@ -112,6 +124,7 @@ THEN write the email to move that next step forward. Do NOT write a generic
 "just checking in" — write the email the conversation is actually waiting for.
 
 RULES:
+- If "RYAN'S NOTES" appear below, they are the top priority — build the email around what they say to cover, ask, or avoid (this overrides the inferred next step where they conflict).
 - Professional but casual, like Ryan typed it himself. No emojis.
 - Open by referencing something specific from the actual conversation.
 - If the next step needs a number, price, or date that is NOT stated
