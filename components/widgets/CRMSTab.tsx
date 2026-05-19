@@ -4,7 +4,7 @@ import { useState, useEffect, useRef, useMemo, Component, ReactNode } from "reac
 import {
   Send, RefreshCw, SkipForward, Phone, Loader2,
   UserCheck, User, Wrench, TrendingUp, Home, Building2,
-  MessageSquare, AlertTriangle, CheckCircle2, Check, Search, X,
+  MessageSquare, AlertTriangle, CheckCircle2, Check, Search, X, Banknote,
 } from "lucide-react"
 import type { LucideIcon } from "lucide-react"
 import { ContactDetailModal } from "./ContactDetailModal"
@@ -14,7 +14,7 @@ import type { TouchesSummary } from "./ContactDetailModal"
 // TYPES
 // ══════════════════════════════════════════════════════════════════════════════
 
-type ContactType = "Agent" | "Personal" | "Vendor" | "PM" | "Investor" | "Seller"
+type ContactType = "Agent" | "Personal" | "Vendor" | "PM" | "Investor" | "PrivateMoney" | "Seller"
 type Tier = "A" | "B" | "C" | "D" | "E"
 type Modality =
   | "Familiar" | "Reconnect" | "ColdReintro"
@@ -33,6 +33,7 @@ const MODALITIES_BY_TYPE: Record<ContactType, Modality[]> = {
   Agent:    ["Familiar", "Reconnect", "ColdReintro"],
   Vendor:   ["Familiar", "Reconnect", "ColdReintro"],
   Investor: ["Familiar", "Reconnect", "ColdReintro"],
+  PrivateMoney: ["Familiar", "Reconnect", "ColdReintro"],
   Seller:   ["Familiar", "Reconnect", "ColdReintro"],
   PM:       ["Portfolio", "Reconnect", "ColdReintro"],
   Personal: ["CatchUp", "CheckIn", "Reconnect"],
@@ -42,6 +43,7 @@ const DEFAULT_MODALITY: Record<ContactType, Modality> = {
   Agent:    "Reconnect",
   Vendor:   "Reconnect",
   Investor: "Reconnect",
+  PrivateMoney: "Reconnect",
   Seller:   "Reconnect",
   PM:       "Portfolio",
   Personal: "CheckIn",
@@ -51,15 +53,15 @@ const TIERS: Tier[] = ["A", "B", "C", "D", "E"]
 
 const TYPE_LABEL: Record<ContactType, string> = {
   Agent: "Agent", Personal: "Personal", Vendor: "Vendor",
-  PM: "PM", Investor: "Investor", Seller: "Seller",
+  PM: "PM", Investor: "Investor", PrivateMoney: "Private Money", Seller: "Seller",
 }
 
 const TYPE_LABEL_PLURAL: Record<ContactType, string> = {
   Agent: "Agents", Personal: "Personal", Vendor: "Vendors",
-  PM: "PMs", Investor: "Investors", Seller: "Sellers",
+  PM: "PMs", Investor: "Investors", PrivateMoney: "Private Money", Seller: "Sellers",
 }
 
-const ALL_TYPES: ContactType[] = ["Agent", "Vendor", "Personal", "PM", "Investor", "Seller"]
+const ALL_TYPES: ContactType[] = ["Agent", "Vendor", "Personal", "PM", "Investor", "PrivateMoney", "Seller"]
 
 const QUICK_EMOJIS = ["👍", "🙏", "💪", "😂", "🔥", "✅"]
 
@@ -67,6 +69,7 @@ function coerceType(t: unknown): ContactType {
   if (typeof t !== "string") return "Agent"
   if (t === "Property Manager") return "PM"
   if (t === "Personal Contact") return "Personal"
+  if (t === "Private Money" || t === "Private money") return "PrivateMoney"
   if (ALL_TYPES.includes(t as ContactType)) return t as ContactType
   return "Agent"
 }
@@ -119,6 +122,7 @@ const categoryColor: Record<ContactType, string> = {
   Personal: "text-pink-400",
   Vendor:   "text-orange-400",
   Investor: "text-blue-400",
+  PrivateMoney: "text-lime-400",
   Seller:   "text-emerald-400",
   PM:       "text-teal-400",
 }
@@ -128,6 +132,7 @@ const categoryIcon: Record<ContactType, LucideIcon> = {
   Personal: User,
   Vendor:   Wrench,
   Investor: TrendingUp,
+  PrivateMoney: Banknote,
   Seller:   Home,
   PM:       Building2,
 }
@@ -137,6 +142,7 @@ const categoryBadge: Record<ContactType, string> = {
   Personal: "bg-pink-500/15 text-pink-300 border-pink-500/30",
   Vendor:   "bg-orange-500/15 text-orange-300 border-orange-500/30",
   Investor: "bg-blue-500/15 text-blue-300 border-blue-500/30",
+  PrivateMoney: "bg-lime-500/15 text-lime-300 border-lime-500/30",
   Seller:   "bg-emerald-500/15 text-emerald-300 border-emerald-500/30",
   PM:       "bg-teal-500/15 text-teal-300 border-teal-500/30",
 }
@@ -232,7 +238,7 @@ const SEND_TIMEOUT_MS = 30000
 const GENERATE_DEBOUNCE_MS = 300
 
 const DEFAULT_DAILY_TARGET: Record<ContactType, number> = {
-  Agent: 20, Vendor: 5, Personal: 5, PM: 2, Investor: 2, Seller: 1,
+  Agent: 20, Vendor: 5, Personal: 5, PM: 2, Investor: 2, PrivateMoney: 5, Seller: 1,
 }
 
 function formatAbsoluteDate(iso: string | null): string {
@@ -764,7 +770,7 @@ function CRMSTabInner() {
   // Per-type sent counts (for progress bar)
   const sentByType = useMemo(() => {
     const counts: Record<ContactType, number> = {
-      Agent: 0, Vendor: 0, Personal: 0, PM: 0, Investor: 0, Seller: 0,
+      Agent: 0, Vendor: 0, Personal: 0, PM: 0, Investor: 0, PrivateMoney: 0, Seller: 0,
     }
     for (const c of contacts) {
       if (sent.has(c.id)) counts[c.type] = (counts[c.type] || 0) + 1

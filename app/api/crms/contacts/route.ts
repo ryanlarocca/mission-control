@@ -17,6 +17,7 @@ const DAILY_TARGETS: Record<ContactType, number> = {
   Personal: 2,
   PM:       0,
   Investor: 0,
+  PrivateMoney: 3,
   Seller:   0,
 }
 
@@ -110,10 +111,10 @@ export async function GET() {
     console.log(`[crms/contacts] Sheet returned ${rows.length} rows`)
 
     const buckets: Record<ContactType, DueContact[]> = {
-      Agent: [], Vendor: [], Personal: [], PM: [], Investor: [], Seller: [],
+      Agent: [], Vendor: [], Personal: [], PM: [], Investor: [], PrivateMoney: [], Seller: [],
     }
     const totalDueByType: Record<ContactType, number> = {
-      Agent: 0, Vendor: 0, Personal: 0, PM: 0, Investor: 0, Seller: 0,
+      Agent: 0, Vendor: 0, Personal: 0, PM: 0, Investor: 0, PrivateMoney: 0, Seller: 0,
     }
     const now = new Date()
 
@@ -162,7 +163,7 @@ export async function GET() {
     // Sort each bucket: most overdue first, then tier priority A > B > C > D
     const tierOrder: Record<string, number> = { A: 0, B: 1, C: 2, D: 3 }
     const fullBuckets: Record<ContactType, DueContact[]> = {
-      Agent: [], Vendor: [], Personal: [], PM: [], Investor: [], Seller: [],
+      Agent: [], Vendor: [], Personal: [], PM: [], Investor: [], PrivateMoney: [], Seller: [],
     }
     for (const t of ALL_TYPES) {
       buckets[t].sort((a, b) => {

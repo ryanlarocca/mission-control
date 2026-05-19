@@ -10,6 +10,7 @@ export type RelationshipCategory =
   | "Personal"
   | "PM"
   | "Investor"
+  | "PrivateMoney"
   | "Seller"
 
 export const RELATIONSHIP_CATEGORIES: readonly RelationshipCategory[] = [
@@ -18,6 +19,7 @@ export const RELATIONSHIP_CATEGORIES: readonly RelationshipCategory[] = [
   "Personal",
   "PM",
   "Investor",
+  "PrivateMoney",
   "Seller",
 ] as const
 
@@ -30,6 +32,7 @@ export const RELATIONSHIP_CATEGORY_LABELS: Record<RelationshipCategory, string> 
   Personal: "Personal",
   PM:       "Property Mgr",
   Investor: "Investor",
+  PrivateMoney: "Private Money",
   Seller:   "Seller",
 }
 
@@ -39,6 +42,7 @@ export const RELATIONSHIP_CATEGORY_PICKER_ORDER: readonly RelationshipCategory[]
   "Agent",
   "Vendor",
   "Investor",
+  "PrivateMoney",
   "PM",
   "Personal",
   "Seller",
@@ -54,6 +58,7 @@ export function normalizeCategory(raw: string): RelationshipCategory {
   const s = (raw || "").trim()
   if (s === "Property Manager") return "PM"
   if (s === "Personal Contact") return "Personal"
+  if (s === "Private Money" || s === "Private money") return "PrivateMoney"
   if (isValidCategory(s)) return s
   return "Agent"
 }

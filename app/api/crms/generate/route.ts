@@ -9,13 +9,14 @@ const PREFS_FILE = `${DATA_DIR}/modality_prefs.json`
 
 // ── Type system ────────────────────────────────────────────────────────────
 
-type ContactType = "Agent" | "Personal" | "Vendor" | "PM" | "Investor" | "Seller"
+type ContactType = "Agent" | "Personal" | "Vendor" | "PM" | "Investor" | "PrivateMoney" | "Seller"
 type Modality = "Familiar" | "Reconnect" | "ColdReintro" | "Portfolio" | "CatchUp" | "CheckIn"
 
 const MODALITIES_BY_TYPE: Record<ContactType, Modality[]> = {
   Agent:    ["Familiar", "Reconnect", "ColdReintro"],
   Vendor:   ["Familiar", "Reconnect", "ColdReintro"],
   Investor: ["Familiar", "Reconnect", "ColdReintro"],
+  PrivateMoney: ["Familiar", "Reconnect", "ColdReintro"],
   Seller:   ["Familiar", "Reconnect", "ColdReintro"],
   PM:       ["Portfolio", "Reconnect", "ColdReintro"],
   Personal: ["CatchUp", "CheckIn", "Reconnect"],
@@ -23,7 +24,7 @@ const MODALITIES_BY_TYPE: Record<ContactType, Modality[]> = {
 
 const DEFAULT_MODALITY: Record<ContactType, Modality> = {
   Agent: "Reconnect", Vendor: "Reconnect", Investor: "Reconnect", Seller: "Reconnect",
-  PM: "Portfolio", Personal: "CheckIn",
+  PM: "Portfolio", Personal: "CheckIn", PrivateMoney: "Reconnect",
 }
 
 const LEGACY_MODALITY_MAP: Record<string, Modality> = {
@@ -41,7 +42,8 @@ function normalizeType(t: unknown): ContactType {
   const s = t.trim()
   if (s === "Property Manager") return "PM"
   if (s === "Personal Contact") return "Personal"
-  if (s === "Agent" || s === "Personal" || s === "Vendor" || s === "PM" || s === "Investor" || s === "Seller") return s
+  if (s === "Private Money" || s === "Private money") return "PrivateMoney"
+  if (s === "Agent" || s === "Personal" || s === "Vendor" || s === "PM" || s === "Investor" || s === "PrivateMoney" || s === "Seller") return s
   return "Agent"
 }
 
@@ -77,6 +79,24 @@ Open with "Hey {name}, this is Ryan LaRocca."
 Briefly establish: investor, buys fixers/value-add.
 Notes (use only if relevant): {notes}
 Soft ask: "are you still active in real estate?" or similar.
+2-3 sentences. No sign-off, no emojis. Match the voice examples exactly.`,
+
+  PrivateMoney_Familiar: `Write a short iMessage from Ryan LaRocca (Bay Area real estate investor) to {name}, a capital partner Ryan knows well — someone who has partnered with Ryan on real estate deals, or could. They know who Ryan is — do NOT open with "it's Ryan LaRocca" or any self-introduction.
+Use these notes if anything is current and relevant: {notes}
+Start with a genuine check-in, then naturally signal that Ryan is actively finding deals and would love to partner with them on a project. Warm and peer-to-peer — texting someone you do business with and like.
+2-4 sentences. No sign-off, no emojis. Sound exactly like the voice examples above.`,
+
+  PrivateMoney_Reconnect: `Write a short iMessage from Ryan LaRocca (Bay Area real estate investor) to {name}, a capital partner Ryan has spoken with before but it's been a while.
+Open with "Hey {name}, it's Ryan LaRocca" or similar.
+Use these notes for context on how they connected: {notes}
+Ryan is actively buying investment properties (fixers, value-add) in the Bay Area and is looking for partners to put capital to work on deals — work that in naturally so they know exactly what Ryan is after.
+2-3 sentences. No sign-off, no emojis. Match the voice examples exactly.`,
+
+  PrivateMoney_ColdReintro: `Write a short iMessage from Ryan LaRocca (Bay Area real estate investor) to {name}. Ryan doesn't really know this person well — this is a reintroduction.
+Open with "Hey {name}, this is Ryan LaRocca."
+Briefly establish: investor buying fixers/value-add in the Bay Area, looking for capital partners to team up on deals.
+Notes (use only if relevant): {notes}
+Soft ask: whether they're still active investing or open to partnering on a project.
 2-3 sentences. No sign-off, no emojis. Match the voice examples exactly.`,
 
   Vendor_Familiar: `Write a short iMessage from Ryan to {name}, a vendor/tradesperson Ryan has worked with and knows well. They know who Ryan is — do NOT open with "it's Ryan LaRocca" or any self-introduction.
@@ -126,6 +146,11 @@ const FALLBACKS: Record<string, string> = {
   Agent_ColdReintro: `Hey {first}, this is Ryan LaRocca — I had your contact saved from a while back and wanted to reintroduce myself.
 
 I'm an investor in the Bay Area buying fixers and value-add properties. Are you still active in real estate?`,
+  PrivateMoney_Familiar: `Hey {first}, how have you been? I've been ramping up on the acquisition side and have a few deals in the works — would love to partner up on a project if the timing's right for you.`,
+  PrivateMoney_Reconnect: `Hey {first}, it's Ryan LaRocca — it's been a minute. I'm actively buying investment properties in the Bay Area (fixers, value-add) and looking for capital partners on deals. Would love to catch up and see if there's a fit.`,
+  PrivateMoney_ColdReintro: `Hey {first}, this is Ryan LaRocca — I had your contact saved from a while back and wanted to reintroduce myself.
+
+I'm an investor in the Bay Area buying fixers and value-add properties, and I partner with folks looking to put their capital to work on deals. Are you still active investing?`,
   Vendor_Familiar: `Hey {first}, hope you've been staying busy. Been a minute since we had you out — how's the business?`,
   Vendor_Reconnect: `Hey {first}, it's Ryan LaRocca — appreciated the work you did for us a while back. How's the business been? I may have something coming up and wanted to see if you're still taking on jobs.`,
   Vendor_ColdReintro: `Hey {first}, this is Ryan LaRocca — I have your contact saved from a while back. Are you still taking on work these days?`,
@@ -145,6 +170,10 @@ function lookupPrompt(table: Record<string, string>, type: ContactType, modality
   }
   if (type === "Personal") {
     return table.Personal_CheckIn || table.Personal_CatchUp || table.Personal_Reconnect || table.Agent_Reconnect
+  }
+  // Private Money — capital-partner copy; never fall back to Agent prompts.
+  if (type === "PrivateMoney") {
+    return table.PrivateMoney_Reconnect || table.PrivateMoney_ColdReintro || table.PrivateMoney_Familiar || table.Agent_Reconnect
   }
   return table[`Agent_${modality}`] || table.Agent_Reconnect
 }

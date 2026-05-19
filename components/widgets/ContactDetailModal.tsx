@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from "react"
 import {
   X, Loader2, Send, Save, Phone,
-  UserCheck, User, Wrench, TrendingUp, Home, Building2,
+  UserCheck, User, Wrench, TrendingUp, Home, Building2, Banknote,
 } from "lucide-react"
 import type { LucideIcon } from "lucide-react"
 
@@ -40,12 +40,12 @@ interface Props {
   onCategoryChanged?: (sheetRow: number, category: string) => void
 }
 
-const CATEGORY_OPTIONS = ["Agent", "Vendor", "Personal", "PM", "Investor", "Seller"] as const
+const CATEGORY_OPTIONS = ["Agent", "Vendor", "Personal", "PM", "Investor", "PrivateMoney", "Seller"] as const
 type CategoryOption = typeof CATEGORY_OPTIONS[number]
 
 const categoryIcon: Record<CategoryOption, LucideIcon> = {
   Agent: UserCheck, Personal: User, Vendor: Wrench,
-  Investor: TrendingUp, Seller: Home, PM: Building2,
+  Investor: TrendingUp, Seller: Home, PM: Building2, PrivateMoney: Banknote,
 }
 
 const categoryColor: Record<CategoryOption, string> = {
@@ -53,6 +53,7 @@ const categoryColor: Record<CategoryOption, string> = {
   Personal: "text-pink-400",
   Vendor:   "text-orange-400",
   Investor: "text-blue-400",
+  PrivateMoney: "text-lime-400",
   Seller:   "text-emerald-400",
   PM:       "text-teal-400",
 }
@@ -62,14 +63,23 @@ const categoryBadge: Record<CategoryOption, string> = {
   Personal: "bg-pink-500/15 text-pink-300 border-pink-500/30",
   Vendor:   "bg-orange-500/15 text-orange-300 border-orange-500/30",
   Investor: "bg-blue-500/15 text-blue-300 border-blue-500/30",
+  PrivateMoney: "bg-lime-500/15 text-lime-300 border-lime-500/30",
   Seller:   "bg-emerald-500/15 text-emerald-300 border-emerald-500/30",
   PM:       "bg-teal-500/15 text-teal-300 border-teal-500/30",
+}
+
+// Display labels — the picker + badge render this instead of the raw key
+// so "PrivateMoney" shows as "Private Money".
+const CATEGORY_LABEL: Record<CategoryOption, string> = {
+  Agent: "Agent", Vendor: "Vendor", Personal: "Personal",
+  PM: "PM", Investor: "Investor", PrivateMoney: "Private Money", Seller: "Seller",
 }
 
 function coerceCategory(raw: string): CategoryOption {
   const s = (raw || "").trim()
   if (s === "Property Manager") return "PM"
   if (s === "Personal Contact") return "Personal"
+  if (s === "Private Money" || s === "Private money") return "PrivateMoney"
   if ((CATEGORY_OPTIONS as readonly string[]).includes(s)) return s as CategoryOption
   return "Agent"
 }
@@ -253,7 +263,7 @@ export function ContactDetailModal({ contact, onClose, onSendToast, onNotesSaved
                   title="Change contact type"
                   className={`text-xs px-2 py-1 rounded border leading-none transition-colors hover:brightness-125 disabled:opacity-50 ${categoryBadge[currentCategory]}`}
                 >
-                  {currentCategory}
+                  {CATEGORY_LABEL[currentCategory]}
                   {savingCategory && (
                     <Loader2 className="inline-block w-3 h-3 animate-spin ml-1 -mb-0.5" />
                   )}
@@ -276,7 +286,7 @@ export function ContactDetailModal({ contact, onClose, onSendToast, onNotesSaved
                           }`}
                         >
                           <Icon className={`w-4 h-4 shrink-0 ${categoryColor[t]}`} />
-                          {t}
+                          {CATEGORY_LABEL[t]}
                         </button>
                       )
                     })}
