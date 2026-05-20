@@ -2513,37 +2513,42 @@ function EmailComposerModal(props: {
   )
 }
 
-// Strip a leading "<subject>\n\n" prefix off an event's message. Inbound
-// email rows store "<subject>\n\n<body>" but outbound replies (from
-// /api/leads/email-reply) store just the body. Synthetic events from
-// /sync-email always wrap subject + body. Comparing body-only across the
-// two sources keeps dedupe consistent regardless of who stored what.
-function eventBodyOnly(m: string | null | undefined): string {
-  const s = (m || "").trim()
-  const sep = s.indexOf("\n\n")
-  return sep > 0 ? s.slice(sep + 2) : s
+// Whitespace-normalized message text for cross-source dedupe.
+function normalizeMsg(m: string | null | undefined): string {
+  return (m || "").replace(/\s+/g, " ").trim().toLowerCase()
 }
 
-function eventSig(l: Lead): string {
-  return `${isOutbound(l) ? "out" : "in"}|${eventBodyOnly(l.message).slice(0, 200)}`
+// Is this the same message from two sources? The same email is stored
+// differently depending on origin: an inbound email leads-row is
+// "<subject>\n\n<body>", an outbound reply row (from /api/leads/email-reply)
+// is body-only, and a Gmail-synced synthetic ALWAYS wraps "<subject>\n\n
+// <body>". Email bodies themselves contain blank lines (the greeting —
+// "Hi Grace,\n\n…"), so splitting subject from body on the first "\n\n" is
+// unreliable and was double-rendering replies. Instead: normalize whitespace
+// and treat two same-direction events as the same message when the longer
+// text ends with the shorter — a subject prefix is the only legitimate
+// difference between the two encodings. The length floor stops a short
+// phatic reply ("ok") that happens to be a suffix from collapsing wrongly.
+function sameTimelineEvent(a: Lead, b: Lead): boolean {
+  if (isOutbound(a) !== isOutbound(b)) return false
+  const na = normalizeMsg(a.message)
+  const nb = normalizeMsg(b.message)
+  if (!na || !nb) return na === nb
+  if (na === nb) return true
+  const [short, long] = na.length <= nb.length ? [na, nb] : [nb, na]
+  return short.length >= 25 && long.endsWith(short)
 }
 
 // Combine the group's authoritative events (from Supabase) with synthetic
-// events merged in from chat.db / Gmail thread sync. Sorted oldest → newest
-// so the existing Timeline renderer's chronological assumption holds.
-//
-// Render-time dedupe is critical here: the syncOnExpand path also dedupes
-// synthetic events against the events it sees AT EXPAND TIME, but if Ryan
-// replies via /api/leads/email-reply AFTER expanding, the new authoritative
-// outbound row arrives in the next 30s `fetchLeads(true)` tick — the
-// pre-existing synthetic version stays in `extraEvents` and renders
-// alongside it as a duplicate bubble. Comparing body-only signatures here
-// catches that case, plus the auth-vs-synthetic prefix-format mismatch
-// (auth outbound is just-body; synthetic always wraps subject+body).
+// events merged in from chat.db / Gmail thread sync, deduping cross-source
+// matches. Sorted oldest → newest so the Timeline renderer's chronological
+// assumption holds. This render-time dedupe is the final gate — syncOnExpand
+// also filters, but if Ryan replies after expanding, the new authoritative
+// row arrives on the next fetch tick while the synthetic version lingers in
+// `extraEvents`; sameTimelineEvent collapses the pair here.
 function mergeForTimeline(authoritative: Lead[], synthetic: Lead[]): Lead[] {
   if (synthetic.length === 0) return authoritative
-  const authSigs = new Set(authoritative.map(eventSig))
-  const filtered = synthetic.filter(s => !authSigs.has(eventSig(s)))
+  const filtered = synthetic.filter(s => !authoritative.some(a => sameTimelineEvent(a, s)))
   return [...authoritative, ...filtered].sort(
     (a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
   )

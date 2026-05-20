@@ -32,6 +32,7 @@ interface ContactRow {
   name: string | null
   phone: string | null
   email: string | null
+  gmailThreadId: string | null
   source: string | null
   propertyAddress: string | null
   status: string
@@ -116,6 +117,15 @@ function dateFromInterval(opt: { days?: number; months?: number }): string {
   return `${y}-${m}-${dd}`
 }
 
+// Snooze target for a follow-up call. Pushes out N days from TODAY when the
+// follow-up is already overdue (or due today), else from its current future
+// date. Adding days to a stale overdue date would land right back in the
+// past — so a 1-3 day snooze on an old lead never actually hid it.
+function snoozeFollowupDate(currentDue: string, days: number): string {
+  const today = dateFromInterval({})
+  return addDaysToDate(currentDue > today ? currentDue : today, days)
+}
+
 function relativeFromNow(iso: string): string {
   const diffMs = new Date(iso).getTime() - Date.now()
   const abs = Math.abs(diffMs)
@@ -129,8 +139,13 @@ function relativeFromNow(iso: string): string {
   return past ? `${Math.round(d / 7)}w ago` : `in ${Math.round(d / 7)}w`
 }
 
-function leadOverlayKey(row: { phone: string | null; email: string | null }): string | null {
+// Build the lead-card overlay key. MUST match groupLeads()'s key rule in
+// LeadsTab — phone → thread:<gmail_thread_id> → email:<addr> — or the
+// deep-linked card won't be found (e.g. an email lead with a Gmail thread
+// is keyed `thread:…`, not `email:…`).
+function leadOverlayKey(row: { phone: string | null; gmailThreadId: string | null; email: string | null }): string | null {
   if (row.phone) return row.phone
+  if (row.gmailThreadId) return `thread:${row.gmailThreadId}`
   if (row.email) return `email:${row.email.toLowerCase()}`
   return null
 }
@@ -359,7 +374,7 @@ export function FollowUpsTab() {
     setActingOn(row.clusterKey)
     dropRow(row.clusterKey)
     try {
-      await patchFollowup(row, addDaysToDate(callTouch.due, days), undefined as unknown as string)
+      await patchFollowup(row, snoozeFollowupDate(callTouch.due, days), undefined as unknown as string)
       void fetchData(true)
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e))

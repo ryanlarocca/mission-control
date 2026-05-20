@@ -69,6 +69,9 @@ interface ContactRow {
   name: string | null
   phone: string | null
   email: string | null
+  // Gmail thread id — the lead-card overlay keys email-thread contacts by
+  // `thread:<id>` (matching groupLeads), so the worklist must surface it.
+  gmailThreadId: string | null
   source: string | null
   propertyAddress: string | null
   status: string
@@ -219,20 +222,27 @@ export async function GET(_request: NextRequest) {
     // Live (pending/approved) queue rows grouped by cluster — the resolver
     // prefers a real queued row over a forecast.
     const liveQueueByCluster = new Map<string, Record<string, unknown>[]>()
+    // Clusters with a snoozed pending/approved drip row — their whole drip
+    // side stays deferred (the queue row AND the cadence forecast) until the
+    // snooze passes. Without this the forecast just re-surfaces the same
+    // touch the moment the queue row is hidden, so Snooze looked broken.
+    const snoozedDripClusters = new Set<string>()
     for (const row of (queueRows ?? []) as Record<string, unknown>[]) {
       const status = row.status as string
       if (status !== "pending" && status !== "approved") continue
       const lead = leadById.get(row.lead_id as string)
       if (!lead) continue
-      // Snoozed rows are pushed out of view until the timestamp passes.
-      const snoozedUntil = (row.snoozed_until as string | null) ?? null
-      if (snoozedUntil && new Date(snoozedUntil).getTime() > now.getTime()) continue
       const key = clusterKeyOrId({
         caller_phone: lead.caller_phone,
         email: lead.email,
         gmail_thread_id: lead.gmail_thread_id,
         id: lead.id,
       })
+      const snoozedUntil = (row.snoozed_until as string | null) ?? null
+      if (snoozedUntil && new Date(snoozedUntil).getTime() > now.getTime()) {
+        snoozedDripClusters.add(key)
+        continue
+      }
       if (!liveQueueByCluster.has(key)) liveQueueByCluster.set(key, [])
       liveQueueByCluster.get(key)!.push(row)
     }
@@ -247,7 +257,10 @@ export async function GET(_request: NextRequest) {
       const rep = byRecent[0]
       if ((rep.status ?? "").toLowerCase() === "dead") return
 
-      const stamped = leads.filter((l) => l.drip_campaign_type)
+      // A snoozed drip defers the cluster's whole drip side — drop both the
+      // queued row (already excluded above) and the cadence forecast.
+      const dripSnoozed = snoozedDripClusters.has(key)
+      const stamped = dripSnoozed ? [] : leads.filter((l) => l.drip_campaign_type)
       const dripLead = pickDripLead(stamped)
 
       // Oldest live queue row on the cluster — the one the engine queued
@@ -314,6 +327,8 @@ export async function GET(_request: NextRequest) {
           ),
         phone,
         email,
+        gmailThreadId:
+          leads.find((l) => l.lead_type === "email" && l.gmail_thread_id)?.gmail_thread_id ?? null,
         source: leads.find((l) => l.source)?.source ?? null,
         propertyAddress: property,
         status: rep.status ?? "new",
