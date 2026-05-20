@@ -5,10 +5,13 @@ import { useSearchParams } from "next/navigation"
 import {
   Phone, PhoneOutgoing, Voicemail, MessageSquare, ClipboardList, ChevronDown, ChevronRight,
   Loader2, RefreshCw, Send, Check, Mail, Trash2, Bot, Clock, X,
-  Sparkles, PhoneOff, Ban, ShieldOff, Zap, Wand2, Calendar, Pencil, Search, SlidersHorizontal,
+  Sparkles, PhoneOff, Ban, ShieldOff, Zap, Wand2, Pencil, Search, SlidersHorizontal,
   Maximize2, Hourglass,
 } from "lucide-react"
-import { getCampaign, getNextTouch } from "@/lib/drip-campaigns"
+import {
+  resolveNextTouch, describeTouchWhen, classifyUrgency,
+  type NextTouch, type NextTouchSummary,
+} from "@/lib/next-touch"
 import { isAnonymousCaller } from "@/lib/anonymous"
 import type { LeadStatus } from "@/lib/leads"
 import { formatPhone } from "@/lib/utils"
@@ -121,7 +124,7 @@ interface LeadGroup {
   inboundCount: number
   // Phase 7C derived/copied fields. Flags + intelligence fields live on the
   // status-driving row (the lead's "primary" row). Drip metadata lives on
-  // the original intake row (kept on the existing nextDripETA path).
+  // the original intake row (read by the shared next-touch resolver).
   isDnc: boolean
   isJunk: boolean
   isBadNumber: boolean
@@ -217,36 +220,6 @@ const STATUS_LABEL: Record<LeadStatus, string> = {
 }
 
 // formatPhone moved to lib/utils.ts (see import above).
-
-// Predict when the drip engine will fire the next touch on a group.
-// Returns null when the lead has no campaign assigned, has no remaining
-// touches, sits in a stop-status (active/dead), or carries a hard-stop
-// flag (DNC/Junk). The engine itself enforces all the same rules; this
-// is a UI-only hint.
-function nextDripETA(group: LeadGroup): string | null {
-  const stopStatuses: LeadStatus[] = ["active", "dead"]
-  if (stopStatuses.includes(group.status)) return null
-  if (group.isDnc || group.isJunk) return null
-  // Drip metadata lives on the original intake row (stamped on insert).
-  const intake = group.events.find(e => e.drip_campaign_type) || group.events[0]
-  if (!intake?.drip_campaign_type) return null
-  const campaign = getCampaign(intake.drip_campaign_type)
-  if (!campaign) return null
-  const next = getNextTouch(campaign, intake.drip_touch_number ?? 0)
-  if (!next) return null
-  const lastSent = intake.last_drip_sent_at
-    ? new Date(intake.last_drip_sent_at).getTime()
-    : new Date(intake.created_at).getTime()
-  const dueAt = lastSent + next.delayHours * 3600 * 1000
-  const ms = dueAt - Date.now()
-  const channel = next.channel === "email" ? "email" : "iMessage"
-  if (ms <= 0) return `due now (touch #${next.touchNumber} ${channel})`
-  const hours = Math.floor(ms / 3600000)
-  if (hours < 24) return `in ${hours}h (touch #${next.touchNumber} ${channel})`
-  const days = Math.floor(hours / 24)
-  const rem = hours - days * 24
-  return `in ${days}d ${rem}h (touch #${next.touchNumber} ${channel})`
-}
 
 // Cross-frame notification: the Drips tab renders LeadsTab inside a same-
 // origin iframe overlay (embed=1). When a lead flag flips in a way that
@@ -1684,6 +1657,58 @@ interface LeadCardProps {
   onSaveOffer: (amount: number | null) => void
 }
 
+// Unified "next touch" indicator — the single line on a lead card that
+// answers "when is this contact next being reached, and how". The soonest
+// of the drip forecast / follow-up call is the headline; the other (if
+// any) shows as a faint second line. Same lib/next-touch resolver that
+// powers the Follow Ups tab, so the card and the worklist can't disagree.
+function TouchLabel({ touch }: { touch: NextTouch }) {
+  const Icon = touch.kind === "call" ? Phone : Bot
+  const label = touch.kind === "call"
+    ? "Call"
+    : `Drip #${touch.touchNumber}${touch.channel === "email" ? " email" : ""}`
+  return (
+    <span className="inline-flex items-center gap-1 min-w-0">
+      <Icon className="w-3 h-3 shrink-0" />
+      <span className="truncate">
+        {label} · {describeTouchWhen(touch)}
+        {touch.kind === "call" && touch.reason ? ` — ${touch.reason}` : ""}
+      </span>
+    </span>
+  )
+}
+
+function NextTouchPill({ summary }: { summary: NextTouchSummary }) {
+  if (!summary.primary) {
+    return (
+      <div className="text-xs text-zinc-600 inline-flex items-center gap-1.5">
+        <Clock className="w-3 h-3 shrink-0" /> No touch scheduled
+      </div>
+    )
+  }
+  const urgency = classifyUrgency(summary.primary)
+  const tone =
+    urgency === "overdue" ? "border-red-900/50 bg-red-950/30 text-red-200"
+      : urgency === "today" ? "border-amber-900/50 bg-amber-950/30 text-amber-200"
+      : "border-zinc-800 bg-zinc-900/40 text-zinc-300"
+  return (
+    <div className={`rounded border px-3 py-1.5 text-xs flex flex-col gap-0.5 max-w-full ${tone}`}>
+      <span className="inline-flex items-center gap-1.5 min-w-0">
+        <Clock className="w-3 h-3 shrink-0" />
+        <span className="font-medium shrink-0">Next touch</span>
+        <span className="opacity-50 shrink-0">·</span>
+        <TouchLabel touch={summary.primary} />
+      </span>
+      {summary.secondary && (
+        <span className="inline-flex items-center gap-1.5 text-zinc-500 pl-[18px] min-w-0">
+          <span className="shrink-0">then</span>
+          <TouchLabel touch={summary.secondary} />
+        </span>
+      )}
+    </div>
+  )
+}
+
 function LeadCard(p: LeadCardProps) {
   const { group, expanded } = p
   const Icon = TYPE_ICON[group.mostRecentEvent.lead_type ?? "call"] || Phone
@@ -1704,7 +1729,22 @@ function LeadCard(p: LeadCardProps) {
   // (subject required) instead of a thread reply.
   const hasInboundEmail = group.events.some(e => e.lead_type === "email" && !isOutbound(e))
   const hasEmail = !!group.email
-  const nextDripLabel = nextDripETA(group)
+  // Unified next-touch: drip forecast + follow-up call resolved into one
+  // soonest-first summary (see lib/next-touch). Drip metadata lives on the
+  // intake row; flags / follow-up live on the group.
+  const intakeRow = group.events.find(e => e.drip_campaign_type) || group.events[0]
+  const nextTouch = resolveNextTouch({
+    dripCampaignType: intakeRow?.drip_campaign_type,
+    dripTouchNumber: intakeRow?.drip_touch_number,
+    lastDripSentAt: intakeRow?.last_drip_sent_at,
+    createdAt: intakeRow?.created_at ?? group.mostRecentEvent.created_at,
+    hasPhone: !!group.contactPhone,
+    status: group.status,
+    isDnc: group.isDnc,
+    isJunk: group.isJunk,
+    recommendedFollowupDate: group.recommendedFollowupDate,
+    followupReason: group.followupReason,
+  })
   // Popout email editor — the inline composer is a 3-row box, too cramped for
   // a real multi-paragraph email. Expand opens a roomy modal that edits the
   // SAME draft state (lives in the parent), so opening/closing loses nothing.
@@ -1926,20 +1966,7 @@ function LeadCard(p: LeadCardProps) {
             />
           </div>
 
-          {nextDripLabel && (
-            <div className="text-xs text-zinc-500 inline-flex items-center gap-1.5">
-              <Clock className="w-3 h-3" />
-              <span>Next drip {nextDripLabel}</span>
-            </div>
-          )}
-
-          {group.recommendedFollowupDate && (
-            <div className="rounded border border-emerald-900/40 bg-emerald-950/20 px-3 py-1.5 text-xs text-emerald-200 inline-flex items-center gap-2 max-w-full">
-              <Calendar className="w-3 h-3 shrink-0" />
-              <span className="font-medium">Follow up {new Date(group.recommendedFollowupDate + "T00:00:00").toLocaleDateString([], { month: "short", day: "numeric" })}</span>
-              {group.followupReason && <span className="text-zinc-300 truncate">— {group.followupReason}</span>}
-            </div>
-          )}
+          <NextTouchPill summary={nextTouch} />
 
           <OfferRow
             offerAmount={group.offerAmount}

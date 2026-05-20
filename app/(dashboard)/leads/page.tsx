@@ -3,21 +3,18 @@
 import { Suspense, useEffect, useState } from "react"
 import { useSearchParams } from "next/navigation"
 import { LeadsTab } from "@/components/widgets/LeadsTab"
-import { FollowUpTab } from "@/components/widgets/FollowUpTab"
-import { DripsTab } from "@/components/widgets/DripsTab"
+import { FollowUpsTab } from "@/components/widgets/FollowUpsTab"
 
-type View = "leads" | "followups" | "drips"
+type View = "leads" | "followups"
 
 function LeadsPageBody() {
   const searchParams = useSearchParams()
-  // When the Follow-Up tab routes here with ?phone=..., force the Leads
-  // sub-view so the card the user wants to see actually renders. Without
-  // this, the wrapper's view state stays on "followups" after the
-  // router.push and the user lands back on the to-do list.
+  // When a card routes here with ?phone=..., force the Leads sub-view so
+  // the card the user wants actually renders. Without this the wrapper's
+  // view state could stay on "followups" after the router.push.
   const phoneParam = searchParams.get("phone")
-  // ?embed=1 — page is rendered inside the Drips-tab lead modal (iframe).
-  // Hide the sub-nav so the modal shows just the LeadsTab content, with the
-  // deep-linked card auto-expanded.
+  // ?embed=1 — page is rendered inside a lead-card iframe overlay. Hide the
+  // sub-nav so the modal shows just the LeadsTab content.
   const embedMode = searchParams.get("embed") === "1"
   const [view, setView] = useState<View>("leads")
 
@@ -27,14 +24,13 @@ function LeadsPageBody() {
 
   return (
     <div className="max-w-3xl">
-      {/* Phase 7C — Part 5: sub-nav between the main Leads view and the
-          Follow-Up to-do list (recommendations from the AI call analyzer). */}
+      {/* Two tabs: Leads is the database, Follow Ups is the merged worklist
+          (calls + drips) — see components/widgets/FollowUpsTab.tsx. */}
       {!embedMode && (
         <div className="mb-4 flex gap-1.5 border-b border-zinc-800">
           {[
             { key: "leads" as View, label: "Leads" },
-            { key: "followups" as View, label: "Follow-ups" },
-            { key: "drips" as View, label: "Drips" },
+            { key: "followups" as View, label: "Follow Ups" },
           ].map(({ key, label }) => {
             const active = view === key
             return (
@@ -54,7 +50,7 @@ function LeadsPageBody() {
         </div>
       )}
 
-      {view === "leads" ? <LeadsTab /> : view === "followups" ? <FollowUpTab /> : <DripsTab />}
+      {view === "leads" ? <LeadsTab /> : <FollowUpsTab />}
     </div>
   )
 }

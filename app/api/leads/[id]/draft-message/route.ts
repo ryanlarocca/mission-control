@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server"
-import { getLeadsClient } from "@/lib/leads"
+import { getLeadsClient, getMailboxForSource } from "@/lib/leads"
 
 // Phase 7C — Part 7: on-demand draft generator. Click "Draft Text" or
 // "Draft Email" on a lead card → AI returns a contextual draft. NOT
@@ -23,6 +23,90 @@ function dirLabel(r: ContextRow): string {
     return r.lead_type?.startsWith("drip_") ? "ryan(drip)" : "ryan"
   }
   return "lead"
+}
+
+// chat.db timestamps are Apple-epoch ms; convert to Unix epoch ms.
+const APPLE_EPOCH_OFFSET_MS = 978307200000
+const SIDECAR_TIMEOUT_MS = 12000
+
+interface ConvItem {
+  tsMs: number
+  dir: string
+  text: string
+  isInbound: boolean
+}
+
+// Pull the live conversation tail the leads table never sees: iMessage/SMS
+// from chat.db and Gmail thread replies, both via the CRMS sidecar (the
+// same endpoints the lead card's expand-sync uses). Best-effort — a sidecar
+// failure just falls back to the Supabase rows so the draft still works.
+async function fetchLiveMessages(
+  anchor: { caller_phone: string | null; gmail_thread_id: string | null; source: string | null },
+  sidecarUrl: string | null
+): Promise<ConvItem[]> {
+  if (!sidecarUrl) return []
+  const out: ConvItem[] = []
+
+  if (anchor.caller_phone) {
+    try {
+      const res = await fetch(`${sidecarUrl}/sync-imessage`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ phone: anchor.caller_phone }),
+        signal: AbortSignal.timeout(SIDECAR_TIMEOUT_MS),
+      })
+      if (res.ok) {
+        const data = (await res.json()) as {
+          messages?: { timestamp: number; is_from_me: boolean; text: string }[]
+        }
+        for (const m of data.messages || []) {
+          const text = (m.text || "").trim()
+          if (!text) continue
+          out.push({
+            tsMs: Number(m.timestamp) + APPLE_EPOCH_OFFSET_MS,
+            dir: m.is_from_me ? "ryan" : "lead",
+            text,
+            isInbound: !m.is_from_me,
+          })
+        }
+      }
+    } catch {
+      /* best-effort — sidecar down */
+    }
+  }
+
+  if (anchor.gmail_thread_id) {
+    const mailbox = getMailboxForSource(anchor.source)
+    if (mailbox) {
+      try {
+        const res = await fetch(`${sidecarUrl}/sync-email`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ threadId: anchor.gmail_thread_id, mailbox }),
+          signal: AbortSignal.timeout(SIDECAR_TIMEOUT_MS + 4000),
+        })
+        if (res.ok) {
+          const data = (await res.json()) as {
+            messages?: { body: string; timestamp: number; is_from_ryan: boolean }[]
+          }
+          for (const m of data.messages || []) {
+            const text = (m.body || "").trim()
+            if (!text) continue
+            out.push({
+              tsMs: Number(m.timestamp),
+              dir: m.is_from_ryan ? "ryan" : "lead",
+              text,
+              isInbound: !m.is_from_ryan,
+            })
+          }
+        }
+      } catch {
+        /* best-effort — sidecar down */
+      }
+    }
+  }
+
+  return out
 }
 
 export async function POST(
@@ -49,7 +133,7 @@ export async function POST(
     const sb = getLeadsClient()
     const { data: anchor, error } = await sb
       .from("leads")
-      .select("id, name, email, caller_phone, source, campaign_label, property_address, status, ai_summary, notes")
+      .select("id, name, email, caller_phone, gmail_thread_id, source, campaign_label, property_address, status, ai_summary, notes")
       .eq("id", id)
       .maybeSingle()
     if (error) return NextResponse.json({ error: error.message }, { status: 500 })
@@ -65,19 +149,44 @@ export async function POST(
     else q = q.eq("id", anchor.id)
     const { data: events } = await q.returns<ContextRow[]>()
 
-    // Per-message cap 4000 chars (was 300). A whole call transcript lands in
-    // ONE row — at 300 chars the model only saw the opening of the
-    // conversation and couldn't tell what was actually discussed or what the
-    // agreed next step was. 15 rows × 4000 ≈ 15k tokens, fine for Haiku.
-    const transcript = (events || [])
+    // Build the conversation from THREE sources, not just Supabase rows:
+    // recent iMessages/SMS live in chat.db and Gmail replies live in the
+    // thread — neither is mirrored into the leads table. Pull both live via
+    // the sidecar so the draft reflects what was actually said, right now.
+    // Per-message cap 4000 chars — a whole call transcript lands in ONE row.
+    const supaItems: ConvItem[] = (events || [])
       .filter(r => (r.message || "").trim().length > 0)
-      .slice(-15)
-      .map(r => `${dirLabel(r)}: ${(r.message || "").slice(0, 4000)}`)
+      .map(r => ({
+        tsMs: new Date(r.created_at).getTime(),
+        dir: dirLabel(r),
+        text: (r.message || "").trim(),
+        isInbound: !!r.twilio_number,
+      }))
+
+    const sidecarUrl = process.env.SIDECAR_URL?.replace(/\/+$/, "") || null
+    const liveItems = await fetchLiveMessages(
+      anchor as { caller_phone: string | null; gmail_thread_id: string | null; source: string | null },
+      sidecarUrl
+    )
+
+    // Merge → sort → dedupe. A logged SMS can also surface in the chat.db
+    // tail; near-identical text collapses to a single line.
+    const seen = new Set<string>()
+    const conv: ConvItem[] = []
+    for (const it of [...supaItems, ...liveItems].sort((a, b) => a.tsMs - b.tsMs)) {
+      const key = it.text.toLowerCase().replace(/\s+/g, " ").slice(0, 120)
+      if (seen.has(key)) continue
+      seen.add(key)
+      conv.push(it)
+    }
+
+    const transcript = conv
+      .slice(-16)
+      .map(it => `${it.dir}: ${it.text.slice(0, 4000)}`)
       .join("\n") || "(no prior messages)"
 
-    const lastInboundDate = (events || [])
-      .filter(r => r.twilio_number && (r.message || "").trim().length > 0)
-      .slice(-1)[0]?.created_at || null
+    const lastInbound = conv.filter(it => it.isInbound).slice(-1)[0]
+    const lastInboundDate = lastInbound ? new Date(lastInbound.tsMs).toISOString() : null
 
     // Ryan's hand-typed notes from the lead card. When present these are
     // PRIORITY guidance for this draft — appended to the end of sharedContext
