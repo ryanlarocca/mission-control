@@ -353,7 +353,15 @@ export function FollowUpsTab() {
     }
   }
 
-  async function patchFollowup(row: ContactRow, date: string | null, reason: string | null) {
+  // manualTouch=true tells the API this came from a completed call (Done) —
+  // it resets the contact's drip cadence. Snooze leaves it false: a snooze
+  // is "not yet", not "I handled this".
+  async function patchFollowup(
+    row: ContactRow,
+    date: string | null,
+    reason: string | null,
+    manualTouch = false,
+  ) {
     if (!row.followupLeadId) return
     const res = await fetch("/api/leads", {
       method: "PATCH",
@@ -362,6 +370,7 @@ export function FollowUpsTab() {
         id: row.followupLeadId,
         recommended_followup_date: date,
         ...(reason !== undefined ? { followup_reason: reason } : {}),
+        ...(manualTouch ? { manual_touch: true } : {}),
       }),
     })
     if (!res.ok) {
@@ -422,10 +431,13 @@ export function FollowUpsTab() {
     setActingOn(row.clusterKey)
     dropRow(row.clusterKey)
     try {
+      // "Done" is a completed call — a manual touch. Reset the drip cadence
+      // (manualTouch=true) so a stale drip doesn't drag the contact straight
+      // back to the top of the worklist.
       if (opt.key === "none") {
-        await patchFollowup(row, null, null)
+        await patchFollowup(row, null, null, true)
       } else {
-        await patchFollowup(row, dateFromInterval(opt), `Manual — ${opt.label}`)
+        await patchFollowup(row, dateFromInterval(opt), `Manual — ${opt.label}`, true)
       }
       void fetchData(true)
     } catch (e) {
@@ -1297,22 +1309,28 @@ function ComposeModal({
       const data = await res.json().catch(() => ({}))
       // /send returns {success}; /email-reply + /send-email return {ok}.
       if (!res.ok || !(data.success || data.ok)) throw new Error(data.error || `HTTP ${res.status}`)
-      // Manual outreach satisfies this round — roll the follow-up forward a
-      // week so a lead who goes quiet resurfaces. Best-effort.
-      if (row.followupLeadId) {
-        try {
-          await fetch("/api/leads", {
-            method: "PATCH",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              id: row.followupLeadId,
-              recommended_followup_date: dateFromInterval({ days: 7 }),
-              followup_reason: `Followed up via ${isEmail ? "email" : "text"}`,
-            }),
-          })
-        } catch {
-          /* message already sent — a stale follow-up just stays put */
-        }
+      // Manual outreach is a touch: reset the drip cadence + skip queued
+      // drips (manual_touch) so the contact isn't dragged back to the top by
+      // a stale drip. Fires even with no existing follow-up row — a drip-only
+      // contact still needs the reset. When a follow-up date does exist, roll
+      // it forward a week too. Best-effort — the message has already sent.
+      try {
+        await fetch("/api/leads", {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            id: row.followupLeadId ?? row.leadId,
+            manual_touch: true,
+            ...(row.followupLeadId
+              ? {
+                  recommended_followup_date: dateFromInterval({ days: 7 }),
+                  followup_reason: `Followed up via ${isEmail ? "email" : "text"}`,
+                }
+              : {}),
+          }),
+        })
+      } catch {
+        /* message already sent — a stale follow-up just stays put */
       }
       onSent(isEmail ? "Email sent — next follow-up in 1 week" : "Text sent — next follow-up in 1 week")
     } catch (e) {

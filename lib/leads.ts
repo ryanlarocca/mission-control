@@ -627,6 +627,95 @@ export async function haltOutreachForCluster(
   return { skippedDrips, clearedFollowups }
 }
 
+// A manual outreach — a completed follow-up call, a hand-sent email or text —
+// counts as a drip touch. The drip campaign is a fixed sequence of touches on
+// a cadence; when Ryan reaches out himself, that manual outreach stands in for
+// the drip touch that was next, so the cadence picks up at the touch AFTER it.
+// Without this a stale `last_drip_sent_at` makes the next drip forecast
+// immediately overdue and the contact stays pinned to the top of the Follow
+// Ups worklist the moment Ryan finishes with them.
+//
+// For every drip-stamped row in the contact's cluster this:
+//   (1) restarts the cadence clock (last_drip_sent_at = now), so the next
+//       touch is a full interval out from this manual touch; and
+//   (2) consumes the touch that was about to fire —
+//         · a pending/approved drip_queue row is skipped (its touch number
+//           was already advanced when the engine queued it), or
+//         · a pure forecast advances drip_touch_number by one.
+// Either way the net effect is the same: the next drip is the one after
+// whatever the manual outreach replaced. This generalises the existing Skip
+// behaviour (drip-queue Skip for a queued touch, forecast-skip for a
+// forecast) so it fires automatically on Done / Email / Text.
+export async function registerManualTouch(
+  sb: SupabaseClient,
+  lead: { id: string; caller_phone: string | null; email: string | null },
+): Promise<{ clockReset: number; advanced: number; skippedDrips: number }> {
+  // Resolve the cluster — same phone OR same email — so the reset lands on
+  // whichever sibling row actually carries the drip campaign.
+  const orParts: string[] = []
+  if (lead.caller_phone) orParts.push(`caller_phone.eq.${lead.caller_phone}`)
+  if (lead.email) orParts.push(`email.eq.${lead.email}`)
+  let clusterIds: string[]
+  if (orParts.length > 0) {
+    const { data: siblings } = await sb.from("leads").select("id").or(orParts.join(","))
+    clusterIds = (siblings ?? []).map((r) => r.id as string)
+    if (!clusterIds.includes(lead.id)) clusterIds.push(lead.id)
+  } else {
+    clusterIds = [lead.id]
+  }
+
+  const touchAt = new Date().toISOString()
+
+  // Skip any live drip_queue rows — the manual touch supersedes them — and
+  // note which leads had one: those already had drip_touch_number advanced
+  // at queue time, so they must NOT be advanced again below.
+  const { data: liveQueue, error: lqErr } = await sb
+    .from("drip_queue")
+    .select("id, lead_id")
+    .in("lead_id", clusterIds)
+    .in("status", ["pending", "approved"])
+  if (lqErr) console.warn(`[manual-touch] drip_queue lookup failed:`, lqErr.message)
+  const queuedLeadIds = new Set((liveQueue ?? []).map((r) => r.lead_id as string))
+  let skippedDrips = 0
+  if ((liveQueue ?? []).length > 0) {
+    const { data: killed, error: dqErr } = await sb
+      .from("drip_queue")
+      .update({ status: "skipped", error: "superseded_by_manual_touch" })
+      .in("id", (liveQueue ?? []).map((r) => r.id as string))
+      .select("id")
+    if (dqErr) console.warn(`[manual-touch] drip_queue sweep failed:`, dqErr.message)
+    skippedDrips = (killed ?? []).length
+  }
+
+  // For every drip-stamped row in the cluster: restart the cadence clock,
+  // and advance the touch counter unless a (now-skipped) queue row already
+  // did so when the engine queued it.
+  const { data: dripRows, error: drErr } = await sb
+    .from("leads")
+    .select("id, drip_touch_number")
+    .in("id", clusterIds)
+    .not("drip_campaign_type", "is", null)
+  if (drErr) console.warn(`[manual-touch] drip-row lookup failed:`, drErr.message)
+
+  let clockReset = 0
+  let advanced = 0
+  for (const r of (dripRows ?? []) as { id: string; drip_touch_number: number | null }[]) {
+    const update: Record<string, unknown> = { last_drip_sent_at: touchAt }
+    if (!queuedLeadIds.has(r.id)) {
+      update.drip_touch_number = (r.drip_touch_number ?? 0) + 1
+      advanced++
+    }
+    const { error: upErr } = await sb.from("leads").update(update).eq("id", r.id)
+    if (upErr) console.warn(`[manual-touch] cadence update failed for ${r.id}:`, upErr.message)
+    else clockReset++
+  }
+
+  if (clockReset > 0 || skippedDrips > 0) {
+    console.log(`[manual-touch] cluster of ${lead.id}: reset ${clockReset} cadence clock(s) (${advanced} advanced), skipped ${skippedDrips} queued drip(s)`)
+  }
+  return { clockReset, advanced, skippedDrips }
+}
+
 // Display label for a lead. Prefers campaign_label (Phase 7C overlay) over
 // the historical source column. Both can be null on imports that didn't
 // match a known mailbox or twilio number.

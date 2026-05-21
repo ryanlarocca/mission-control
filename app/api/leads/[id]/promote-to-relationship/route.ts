@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server"
-import { getLeadsClient } from "@/lib/leads"
+import { getLeadsClient, haltOutreachForCluster } from "@/lib/leads"
 import { isValidCategory, RELATIONSHIP_CATEGORIES } from "@/lib/crms"
 import { getSheetsClient, SHEET_ID } from "@/lib/sheets"
 
@@ -110,16 +110,42 @@ export async function POST(
       )
     }
 
-    // Update the lead row: dead + marker in notes so the lead card and
-    // any future viewer can see what happened.
+    // Mark the WHOLE contact dead — not just the clicked row. A contact is
+    // a cluster of leads rows sharing a phone/email (a call spawns its own
+    // row, a voicemail another, the drip campaign often lives on yet
+    // another). Promotion means "this person is a relationship now", so
+    // every row for them must drop out of New/Contacted/Active and out of
+    // the Follow Ups worklist. Dead-marking a single row left sibling rows
+    // alive — and the Follow Ups worklist represents a cluster by its
+    // newest row, so a still-alive sibling kept the promoted contact pinned
+    // to the worklist with their drip cadence still running.
     const promoMarker = `[PROMOTED → Relationships: ${category} · ${today}]`
     const newNotes = lead.notes && lead.notes.trim()
       ? `${promoMarker} ${lead.notes}`
       : promoMarker
-    const { error: updErr } = await sb
+
+    // Resolve the cluster (same phone OR same email).
+    const orParts: string[] = []
+    if (lead.caller_phone) orParts.push(`caller_phone.eq.${lead.caller_phone}`)
+    if (lead.email) orParts.push(`email.eq.${lead.email}`)
+    let clusterIds = [lead.id]
+    if (orParts.length > 0) {
+      const { data: siblings } = await sb.from("leads").select("id").or(orParts.join(","))
+      const ids = (siblings ?? []).map((r) => r.id as string)
+      if (ids.length > 0) clusterIds = Array.from(new Set([lead.id, ...ids]))
+    }
+
+    // Dead-mark every row in the cluster; the promotion marker goes on the
+    // clicked row so the lead card still shows what happened.
+    const { error: clusterErr } = await sb
       .from("leads")
-      .update({ status: "dead", notes: newNotes })
+      .update({ status: "dead" })
+      .in("id", clusterIds)
+    const { error: notesErr } = await sb
+      .from("leads")
+      .update({ notes: newNotes })
       .eq("id", lead.id)
+    const updErr = clusterErr ?? notesErr
     if (updErr) {
       // Sheet write already succeeded — surface this but don't fail.
       console.error("[promote-to-relationship] lead update failed:", updErr.message)
@@ -130,6 +156,19 @@ export async function POST(
         leadUpdated: false,
         updateError: updErr.message,
       })
+    }
+
+    // Sweep the cluster's pending/approved drips + any outstanding
+    // follow-up dates — the same halt the Leads-tab "mark dead" path runs.
+    // Without it a queued drip would still fire at someone who's now a
+    // relationship. Best-effort: the dead status already stops the engine.
+    try {
+      await haltOutreachForCluster(sb, { ...lead, status: "dead" })
+    } catch (sweepErr) {
+      console.warn(
+        "[promote-to-relationship] halt-outreach sweep failed:",
+        sweepErr instanceof Error ? sweepErr.message : String(sweepErr)
+      )
     }
 
     return NextResponse.json({

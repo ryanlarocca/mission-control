@@ -5,6 +5,7 @@ import {
   VALID_LEAD_STATUSES,
   LEAD_FLAG_FIELDS,
   haltOutreachForCluster,
+  registerManualTouch,
   type LeadStatus,
   type LeadFlagField,
 } from "@/lib/leads"
@@ -153,15 +154,27 @@ export async function PATCH(request: NextRequest) {
     }
   }
 
-  if (Object.keys(update).length === 0) {
+  // manual_touch is a side-effect flag, not a column: a completed call /
+  // hand-sent email or text resets the contact's drip cadence (see
+  // registerManualTouch). The Done and Email/Text actions set it; Snooze
+  // does not. It can ride alongside a normal field update (the usual case)
+  // or arrive on its own.
+  const manualTouch = body.manual_touch === true
+
+  if (Object.keys(update).length === 0 && !manualTouch) {
     return NextResponse.json({ error: "Nothing to update" }, { status: 400 })
   }
 
   try {
     const sb = getLeadsClient()
-    const { data, error } = await sb.from("leads").update(update).eq("id", id).select().single()
+    // Apply the column update when there is one; a manual_touch-only call
+    // just loads the row so the cadence reset can resolve its cluster.
+    const { data, error } =
+      Object.keys(update).length > 0
+        ? await sb.from("leads").update(update).eq("id", id).select().single()
+        : await sb.from("leads").select().eq("id", id).single()
     if (error) {
-      console.error("[leads:PATCH] Update failed:", error)
+      console.error("[leads:PATCH] failed:", error)
       return NextResponse.json({ error: error.message }, { status: 500 })
     }
 
@@ -215,6 +228,18 @@ export async function PATCH(request: NextRequest) {
         }
       } catch (supersedeErr) {
         console.warn(`[leads:PATCH] followup supersession failed for ${id}:`, supersedeErr instanceof Error ? supersedeErr.message : String(supersedeErr))
+      }
+    }
+
+    // Manual-touch cadence reset — restart the drip clock + skip queued
+    // drips for the cluster so a contact Ryan just reached out to isn't
+    // immediately re-surfaced by a stale drip. Best-effort: the user's
+    // action already succeeded, a missed reset just re-surfaces next pass.
+    if (manualTouch) {
+      try {
+        await registerManualTouch(sb, data)
+      } catch (touchErr) {
+        console.warn(`[leads:PATCH] manual-touch cadence reset failed for ${id}:`, touchErr instanceof Error ? touchErr.message : String(touchErr))
       }
     }
 
