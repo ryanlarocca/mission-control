@@ -451,19 +451,46 @@ export function LeadsTab() {
   const [draftingFor, setDraftingFor] = useState<string | null>(null)
   const [draftError, setDraftError]   = useState<string | null>(null)
 
+  // Bumped on every optimistic local edit (see applyLeadEdit). fetchLeads
+  // discards any response whose request began before the latest edit, so a
+  // slow in-flight refetch (or the 30s poll) can't silently revert it.
+  const lastMutationAtRef = useRef(0)
+  const fetchAbortRef = useRef<AbortController | null>(null)
+
+  // Apply an optimistic edit to the leads list. Stamps the edit time so a
+  // refetch already in flight won't clobber the user's just-applied change.
+  const applyLeadEdit = useCallback((updater: (prev: Lead[]) => Lead[]) => {
+    lastMutationAtRef.current = Date.now()
+    setLeads(updater)
+  }, [])
+
   const fetchLeads = useCallback(async (silent = false) => {
     if (!silent) setRefreshing(true)
+    // Cancel any in-flight fetch so a slow earlier response can't land
+    // after a newer one and overwrite it.
+    fetchAbortRef.current?.abort()
+    const ac = new AbortController()
+    fetchAbortRef.current = ac
+    const startedAt = Date.now()
     try {
-      const res = await fetch("/api/leads?limit=500", { cache: "no-store" })
+      const res = await fetch("/api/leads?limit=500", { cache: "no-store", signal: ac.signal })
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
       const data = await res.json()
+      // Discard this snapshot if the user made an optimistic edit after the
+      // request began — the server data predates the edit and would revert it.
+      if (lastMutationAtRef.current > startedAt) return
       setLeads(data.leads ?? [])
       setError(null)
     } catch (e) {
+      if ((e as { name?: string })?.name === "AbortError") return
       setError(e instanceof Error ? e.message : String(e))
     } finally {
-      setLoading(false)
-      setRefreshing(false)
+      // Only the most-recent fetch owns the shared loading flags.
+      if (fetchAbortRef.current === ac) {
+        fetchAbortRef.current = null
+        setLoading(false)
+        setRefreshing(false)
+      }
     }
   }, [])
 
@@ -754,7 +781,7 @@ export function LeadsTab() {
       // row already had a value, per its hands-off rule). Temperature is NOT
       // touched here — the summary endpoint is summary-only; the badge stays
       // owned by analyzeCallTranscript / triageEmailLead.
-      setLeads(prev => prev.map(l => {
+      applyLeadEdit(prev => prev.map(l => {
         if (l.id !== group.mostRecentId) return l
         const next: Lead = {
           ...l,
@@ -769,7 +796,7 @@ export function LeadsTab() {
     } catch (e) {
       setSummaries(prev => ({ ...prev, [key]: { text: prev[key]?.text || "", loading: false, error: e instanceof Error ? e.message : String(e) } }))
     }
-  }, [])
+  }, [applyLeadEdit])
 
   async function addPhone(group: LeadGroup, raw: string) {
     const trimmed = raw.trim()
@@ -790,14 +817,32 @@ export function LeadsTab() {
       const normalized = updated?.caller_phone ?? trimmed
       // Optimistic: stamp the normalized phone onto the lead row so the
       // group re-derives with contactPhone set and the Call button activates.
-      setLeads(prev => prev.map(l => l.id === group.mostRecentId ? { ...l, caller_phone: normalized } : l))
+      applyLeadEdit(prev => prev.map(l => l.id === group.mostRecentId ? { ...l, caller_phone: normalized } : l))
       setPhoneDraft(prev => ({ ...prev, [group.phone]: "" }))
-      // Silent refresh — the group key was `email:<addr>` (since it had no
-      // phone before) and groupLeads will now key it by the phone number.
-      // Without a fresh fetch the syncedGroups Set still holds the old
-      // email-key, so the synthetic timeline events render under a
-      // dead key and disappear until the next 30s tick. The fetch
-      // re-keys cleanly.
+      // The cluster's group key changes from email:/thread:/id: to the phone
+      // number now that it has one. extraEvents + syncedGroups are keyed by
+      // the group key, so migrate them to the new key — otherwise the
+      // already-synced iMessage/Gmail history orphans under the dead key and
+      // vanishes from the card, and syncedGroups no longer gates the new key
+      // (a re-expand would re-sync from scratch and double-render).
+      if (normalized && normalized !== group.phone) {
+        setExtraEvents(prev => {
+          if (!(group.phone in prev)) return prev
+          const next = { ...prev }
+          const moved = next[group.phone]
+          delete next[group.phone]
+          next[normalized] = [...(next[normalized] ?? []), ...moved]
+          return next
+        })
+        setSyncedGroups(prev => {
+          if (!prev.has(group.phone)) return prev
+          const next = new Set(prev)
+          next.delete(group.phone)
+          next.add(normalized)
+          return next
+        })
+      }
+      // Silent refresh to reconcile with the server's re-keyed cluster.
       void fetchLeads(true)
     } catch (e) {
       setPhoneError(e instanceof Error ? e.message : String(e))
@@ -809,7 +854,7 @@ export function LeadsTab() {
   async function setGroupStatus(group: LeadGroup, status: LeadStatus) {
     setPendingStatus(group.phone + ":" + status)
     // Optimistic update: patch the row that drives status display
-    setLeads(prev => prev.map(l => l.id === group.mostRecentId ? { ...l, status } : l))
+    applyLeadEdit(prev => prev.map(l => l.id === group.mostRecentId ? { ...l, status } : l))
     await patchLead(group.mostRecentId, { status })
     setPendingStatus(null)
   }
@@ -825,7 +870,7 @@ export function LeadsTab() {
     if (val === undefined) return
     if ((val || "") === (group.notes ?? "")) return
     // Optimistic
-    setLeads(prev => prev.map(l => l.id === group.mostRecentId ? { ...l, notes: val } : l))
+    applyLeadEdit(prev => prev.map(l => l.id === group.mostRecentId ? { ...l, notes: val } : l))
     void patchLead(group.mostRecentId, { notes: val })
     // Extract a follow-up date from the note text if a timeframe is mentioned.
     void fetch(`/api/leads/${group.mostRecentId}/extract-followup`, {
@@ -834,7 +879,7 @@ export function LeadsTab() {
       body: JSON.stringify({ notes: val }),
     }).then(r => r.json()).then((data: { date?: string | null; reason?: string | null }) => {
       if (data.date) {
-        setLeads(prev => prev.map(l =>
+        applyLeadEdit(prev => prev.map(l =>
           l.id === group.mostRecentId
             ? { ...l, recommended_followup_date: data.date ?? undefined, followup_reason: data.reason ?? undefined }
             : l
@@ -912,7 +957,7 @@ export function LeadsTab() {
       // Optimistic: drop those rows from local state immediately so the
       // card disappears without waiting for the next fetch.
       const idSet = new Set(ids)
-      setLeads(prev => prev.filter(l => !idSet.has(l.id)))
+      applyLeadEdit(prev => prev.filter(l => !idSet.has(l.id)))
       setExpandedPhone(null)
       setDeleteArmedFor(null)
     } catch (e) {
@@ -1009,7 +1054,7 @@ export function LeadsTab() {
   // (so the UI moves immediately) and refetches in the background to
   // catch any server-side derivations (DNC list write, drip auto-route).
   async function patchFlagOnGroup(group: LeadGroup, patch: Partial<Lead>) {
-    setLeads(prev => prev.map(l => l.id === group.mostRecentId ? { ...l, ...patch } : l))
+    applyLeadEdit(prev => prev.map(l => l.id === group.mostRecentId ? { ...l, ...patch } : l))
     try {
       const res = await fetch("/api/leads", {
         method: "PATCH",
@@ -1106,7 +1151,7 @@ export function LeadsTab() {
 
   async function flagDnc(group: LeadGroup) {
     if (!confirm(`Mark ${group.name || group.contactPhone || group.email || "this lead"} as DNC? This halts ALL outreach and adds them to the suppression list.`)) return
-    setLeads(prev => prev.map(l => l.id === group.mostRecentId ? { ...l, is_dnc: true, status: "dead" } : l))
+    applyLeadEdit(prev => prev.map(l => l.id === group.mostRecentId ? { ...l, is_dnc: true, status: "dead" } : l))
     try {
       const res = await fetch(`/api/leads/${group.mostRecentId}/dnc`, {
         method: "POST",
@@ -1126,7 +1171,7 @@ export function LeadsTab() {
   }
 
   async function clearDnc(group: LeadGroup) {
-    setLeads(prev => prev.map(l => l.id === group.mostRecentId ? { ...l, is_dnc: false } : l))
+    applyLeadEdit(prev => prev.map(l => l.id === group.mostRecentId ? { ...l, is_dnc: false } : l))
     try {
       await fetch(`/api/leads/${group.mostRecentId}/dnc`, { method: "DELETE" })
       void fetchLeads(true)
@@ -1157,7 +1202,7 @@ export function LeadsTab() {
       setPromoteOpenFor(null)
       // Optimistic: mark dead in local state so the card moves out of New/
       // Contacted/Active without waiting for refetch.
-      setLeads(prev => prev.map(l =>
+      applyLeadEdit(prev => prev.map(l =>
         l.id === group.mostRecentId ? { ...l, status: "dead" } : l
       ))
       window.setTimeout(() => setPromoteSuccessFor(prev => prev === group.phone ? null : prev), 4000)
@@ -1172,7 +1217,7 @@ export function LeadsTab() {
   async function acceptSuggestedStatus(group: LeadGroup) {
     if (!group.suggestedStatus) return
     const next = group.suggestedStatus
-    setLeads(prev => prev.map(l =>
+    applyLeadEdit(prev => prev.map(l =>
       l.id === group.mostRecentId
         ? { ...l, status: next, suggested_status: null, suggested_status_reason: null }
         : l
@@ -1192,7 +1237,7 @@ export function LeadsTab() {
   }
 
   async function dismissSuggestedStatus(group: LeadGroup) {
-    setLeads(prev => prev.map(l =>
+    applyLeadEdit(prev => prev.map(l =>
       l.id === group.mostRecentId
         ? { ...l, suggested_status: null, suggested_status_reason: null }
         : l
@@ -1485,6 +1530,14 @@ export function LeadsTab() {
               expanded={expandedPhone === group.phone}
               onToggle={() => {
                 const willExpand = expandedPhone !== group.phone
+                // Switching cards — clear transient per-action banners so a
+                // failure/success from the previously-open card doesn't
+                // render under this one (these are single top-level states,
+                // routed to a card only by expandedPhone).
+                setSendError(null); setCallError(null); setPhoneError(null)
+                setEmailSendError(null); setDeleteError(null); setPromoteError(null)
+                setDraftError(null)
+                setSendSuccess(null); setCallSuccess(null); setEmailSendSuccess(null)
                 setExpandedPhone(willExpand ? group.phone : null)
                 if (willExpand) {
                   void syncOnExpand(group)
@@ -2668,9 +2721,13 @@ function EditableInlineField(props: {
 }) {
   const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState(props.value || "")
-  // External value can change (e.g. silent refetch overwrites a stale row);
-  // sync the draft so we don't render stale text after a successful save.
-  useEffect(() => { setDraft(props.value || "") }, [props.value])
+  // Re-sync the draft from props ONLY while NOT actively editing. Syncing
+  // during an edit let a 30s background refetch land mid-keystroke and wipe
+  // whatever the user had typed. When editing ends, the effect re-runs and
+  // re-syncs so the next open starts from the current value.
+  useEffect(() => {
+    if (!editing) setDraft(props.value || "")
+  }, [props.value, editing])
 
   if (!editing) {
     return (
