@@ -42,7 +42,7 @@ export async function POST(request: NextRequest) {
   const sb = getLeadsClient()
   const { data: lead, error: lookupErr } = await sb
     .from("leads")
-    .select("id, email, twilio_number, gmail_thread_id, source, source_type, message, caller_phone")
+    .select("id, email, twilio_number, gmail_thread_id, source, source_type, message, caller_phone, is_dnc")
     .eq("id", leadId)
     .maybeSingle()
   if (lookupErr) {
@@ -50,6 +50,12 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "Lookup failed" }, { status: 500 })
   }
   if (!lead) return NextResponse.json({ error: "Lead not found" }, { status: 404 })
+
+  // DNC guard — never email a lead flagged Do-Not-Contact. Mirrors the
+  // check in /api/leads/[id]/send-email.
+  if (lead.is_dnc) {
+    return NextResponse.json({ error: "lead is DNC" }, { status: 409 })
+  }
 
   if (!lead.email) {
     return NextResponse.json({ error: "Lead has no email address to reply to" }, { status: 400 })
