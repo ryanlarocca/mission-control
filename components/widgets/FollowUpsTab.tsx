@@ -370,11 +370,38 @@ export function FollowUpsTab() {
     }
   }
 
-  async function snoozeCall(row: ContactRow, callTouch: NextTouch, days: number) {
+  // Snooze is contact-level: one Snooze defers BOTH the follow-up call and
+  // the queued drip, so a lead with both touches can't resurface on the
+  // other front the moment one of them is snoozed.
+  async function snoozeContact(row: ContactRow, days: number) {
     setActingOn(row.clusterKey)
     dropRow(row.clusterKey)
     try {
-      await patchFollowup(row, snoozeFollowupDate(callTouch.due, days), undefined as unknown as string)
+      const ops: Promise<unknown>[] = []
+      const callTouch =
+        row.primary.kind === "call" ? row.primary
+          : row.secondary?.kind === "call" ? row.secondary : null
+      if (callTouch && row.followupLeadId) {
+        ops.push(patchFollowup(row, snoozeFollowupDate(callTouch.due, days), undefined as unknown as string))
+      }
+      const dripTouch =
+        row.primary.kind === "drip" ? row.primary
+          : row.secondary?.kind === "drip" ? row.secondary : null
+      if (dripTouch?.queueId) {
+        ops.push(
+          fetch("/api/leads/drip-queue", {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ id: dripTouch.queueId, action: "snooze", days }),
+          }).then(async (res) => {
+            if (!res.ok) {
+              const b = await res.json().catch(() => ({}))
+              throw new Error(b?.error || `HTTP ${res.status}`)
+            }
+          })
+        )
+      }
+      await Promise.all(ops)
       void fetchData(true)
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e))
@@ -525,7 +552,7 @@ export function FollowUpsTab() {
     onPrepare: prepareForecast,
     onSkipForecast: skipForecast,
     onCall: placeCall,
-    onSnoozeCall: snoozeCall,
+    onSnoozeContact: snoozeContact,
     onDoneCall: doneCall,
     onPickInterval: applyInterval,
     onEmail: (row: ContactRow) => setComposeFor({ row, channel: "email" }),
@@ -715,7 +742,7 @@ interface CardHandlers {
   onPrepare: (row: ContactRow) => void
   onSkipForecast: (row: ContactRow) => void
   onCall: (row: ContactRow) => void
-  onSnoozeCall: (row: ContactRow, callTouch: NextTouch, days: number) => void
+  onSnoozeContact: (row: ContactRow, days: number) => void
   onDoneCall: (row: ContactRow) => void
   onPickInterval: (row: ContactRow, opt: { key: string; label: string; days?: number; months?: number }) => void
   onEmail: (row: ContactRow) => void
@@ -768,7 +795,7 @@ function ContactCard({ row, ...h }: { row: ContactRow } & CardHandlers) {
           row={row} touch={callTouch} acting={acting}
           intervalOpen={h.intervalOpenFor === row.clusterKey}
           onCall={() => h.onCall(row)}
-          onSnooze={(d) => h.onSnoozeCall(row, callTouch, d)}
+          onSnooze={(d) => h.onSnoozeContact(row, d)}
           onDone={() => h.onDoneCall(row)}
           onPickInterval={(opt) => h.onPickInterval(row, opt)}
           onEmail={() => h.onEmail(row)}
@@ -784,7 +811,7 @@ function ContactCard({ row, ...h }: { row: ContactRow } & CardHandlers) {
           onOpenLead={() => h.onOpenLead(row)}
           onSend={() => dripTouch.queueId && h.onSendDrip(row, dripTouch.queueId)}
           onSkip={() => dripTouch.queueId && h.onQueueAction(row, dripTouch.queueId, "skip")}
-          onSnooze={(d) => dripTouch.queueId && h.onQueueAction(row, dripTouch.queueId, "snooze", d)}
+          onSnooze={(d) => h.onSnoozeContact(row, d)}
           onStartEdit={() => dripTouch.queueId && h.onStartEdit(dripTouch.queueId, dripTouch)}
           onChangeEdit={(f, v) => dripTouch.queueId && h.onChangeEdit(dripTouch.queueId, f, v)}
           onCancelEdit={() => dripTouch.queueId && h.onCancelEdit(dripTouch.queueId)}
@@ -860,7 +887,7 @@ function CallBlock({
         )}
         {/* Inline segmented control — no popup, so it can't be clipped by
             the card's overflow-hidden or hidden behind the next card. */}
-        <div className="inline-flex items-center rounded border border-zinc-800 bg-zinc-900 overflow-hidden" title="Snooze — push this follow-up out">
+        <div className="inline-flex items-center rounded border border-zinc-800 bg-zinc-900 overflow-hidden" title="Snooze — defers this contact's call and drip">
           <span className="px-2 py-1.5 min-h-[34px] inline-flex items-center text-[10px] uppercase tracking-wide text-zinc-500 border-r border-zinc-800">
             <Clock className="w-3 h-3 mr-1" />Snooze
           </span>
@@ -994,7 +1021,7 @@ function DripBlock({
             >
               <Pencil className="w-3.5 h-3.5" /> Edit
             </button>
-            <div className="inline-flex items-center rounded border border-zinc-800 bg-zinc-900 overflow-hidden" title="Snooze — push this drip out">
+            <div className="inline-flex items-center rounded border border-zinc-800 bg-zinc-900 overflow-hidden" title="Snooze — defers this contact's call and drip">
               <span className="px-2 py-1.5 min-h-[34px] inline-flex items-center text-[10px] uppercase tracking-wide text-zinc-500 border-r border-zinc-800">
                 <Clock className="w-3 h-3 mr-1" />Snooze
               </span>
