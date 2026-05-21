@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server"
 import type { NextRequest } from "next/server"
+import { verifySessionToken } from "@/lib/session"
 
 const SESSION_COOKIE = "mc_session"
 // Only Twilio's webhook callbacks are public. Everything else under
@@ -19,7 +20,7 @@ const PUBLIC_PATHS = [
   "/api/leads/email",
 ]
 
-export function middleware(request: NextRequest) {
+export async function middleware(request: NextRequest) {
   const { pathname } = request.nextUrl
 
   // Allow login page and webhook callbacks through. We match the path
@@ -32,11 +33,13 @@ export function middleware(request: NextRequest) {
     return NextResponse.next()
   }
 
-  // Check session cookie
+  // Verify the signed session token. Pre-fix cookies (whose value was the
+  // raw secret) and expired/forged tokens all fail here — see lib/session.ts.
   const session = request.cookies.get(SESSION_COOKIE)?.value
   const secret = process.env.MC_SESSION_SECRET
+  const valid = await verifySessionToken(session, secret)
 
-  if (!session || !secret || session.trim() !== secret.trim()) {
+  if (!valid) {
     const loginUrl = new URL("/login", request.url)
     loginUrl.searchParams.set("from", pathname)
     return NextResponse.redirect(loginUrl)
