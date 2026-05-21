@@ -1124,6 +1124,10 @@ async function hasPriorNonDripEvent(sb, lead) {
     return false
   }
   for (const row of data || []) {
+    // The lead's own intake row is not "prior" contact — it IS the missed
+    // call. Without this skip, every direct_mail_call lead's own "call"
+    // intake row counted as prior activity and suppressed touch #0.
+    if (row.id === lead.id) continue
     if (!row.lead_type) continue
     if (row.lead_type.startsWith("drip_")) continue
     // Seed row for a true missed call is fine — let that through.

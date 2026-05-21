@@ -6,6 +6,7 @@ import { gmail_v1 } from "googleapis"
 export const maxDuration = 30
 import {
   EMAIL_CAMPAIGN_MAP,
+  dedupeClusterStamps,
   getEmailCampaign,
   getGmailClient,
   getLeadsClient,
@@ -291,6 +292,17 @@ async function handleAppsScript(payload: AppsScriptPayload): Promise<NextRespons
 
   console.log(`[email] Inserted email lead ${inserted?.id} from ${senderEmail} (${campaign.source})`)
 
+  // Re-engagement carried the cluster's drip stamp onto this new event
+  // row. Sweep so exactly ONE row drives the drip engine (same fix as the
+  // voice/sms routes). No-op when the cluster has ≤1 stamped row.
+  if (cluster?.dripCampaignType) {
+    try {
+      await dedupeClusterStamps(sb, { caller_phone: phone, email: senderEmail })
+    } catch (e) {
+      console.warn("[email] cluster dedupe failed:", e instanceof Error ? e.message : String(e))
+    }
+  }
+
   // Campaign attribution — best-effort, doesn't fail ingest if it returns null.
   if (inserted?.id) {
     try {
@@ -485,6 +497,20 @@ async function processSingleMessage(args: {
     return
   }
   console.log(`[email] Inserted email lead ${inserted?.id} from ${senderEmail} (${campaign.source})`)
+
+  // Re-engagement carried the cluster's drip stamp onto this new event
+  // row — sweep so the engine sees one driver row.
+  if (cluster?.dripCampaignType) {
+    try {
+      await dedupeClusterStamps(sb, {
+        caller_phone: phone,
+        email: senderEmail,
+        gmail_thread_id: message.threadId || null,
+      })
+    } catch (e) {
+      console.warn("[email] cluster dedupe failed:", e instanceof Error ? e.message : String(e))
+    }
+  }
 
   if (inserted?.id) {
     try {

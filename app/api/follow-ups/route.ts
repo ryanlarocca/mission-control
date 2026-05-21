@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server"
-import { getLeadsClient, clusterKeyOrId } from "@/lib/leads"
+import { getLeadsClient, clusterKeyOrId, isAnonymousCaller } from "@/lib/leads"
 import {
   resolveNextTouch,
   touchSortKey,
@@ -129,7 +129,7 @@ function pickDripLead(stamped: CandidateLead[]): CandidateLead | null {
       dripTouchNumber: l.drip_touch_number,
       lastDripSentAt: l.last_drip_sent_at,
       createdAt: l.created_at,
-      hasPhone: Boolean(l.caller_phone && l.caller_phone !== "Anonymous"),
+      hasPhone: Boolean(l.caller_phone && !isAnonymousCaller(l.caller_phone)),
       status: l.status ?? "new",
       isDnc: l.is_dnc,
       isJunk: l.is_junk,
@@ -288,7 +288,7 @@ export async function GET(_request: NextRequest) {
           (a.recommended_followup_date ?? ISO_MAX).localeCompare(b.recommended_followup_date ?? ISO_MAX)
         )[0]
 
-      const hasPhone = leads.some((l) => l.caller_phone && l.caller_phone !== "Anonymous")
+      const hasPhone = leads.some((l) => l.caller_phone && !isAnonymousCaller(l.caller_phone))
       const input: NextTouchInput = {
         dripCampaignType: dripLead?.drip_campaign_type,
         dripTouchNumber: dripLead?.drip_touch_number,
@@ -307,7 +307,7 @@ export async function GET(_request: NextRequest) {
       if (!summary.primary) return
 
       const phone =
-        leads.find((l) => l.caller_phone && l.caller_phone !== "Anonymous")?.caller_phone ?? null
+        leads.find((l) => l.caller_phone && !isAnonymousCaller(l.caller_phone))?.caller_phone ?? null
       const email = leads.find((l) => l.email)?.email ?? null
       const property = leads.find((l) => l.property_address)?.property_address ?? null
       const temp = byRecent.find((l) => l.temperature)?.temperature ?? null
@@ -327,8 +327,12 @@ export async function GET(_request: NextRequest) {
           ),
         phone,
         email,
+        // Any row carrying a thread id — matches clusterKeyOrId, which keys
+        // on gmail_thread_id regardless of lead_type. Restricting to
+        // lead_type==="email" left thread-clustered contacts with a null
+        // thread id, so the lead-card deeplink opened an empty card.
         gmailThreadId:
-          leads.find((l) => l.lead_type === "email" && l.gmail_thread_id)?.gmail_thread_id ?? null,
+          leads.find((l) => l.gmail_thread_id)?.gmail_thread_id ?? null,
         source: leads.find((l) => l.source)?.source ?? null,
         propertyAddress: property,
         status: rep.status ?? "new",

@@ -1,5 +1,7 @@
 import { NextResponse } from "next/server"
 import {
+  OUTBOUND_TWILIO_NUMBER,
+  dedupeClusterStamps,
   getCampaignSource,
   getLeadsClient,
   isDncMessage,
@@ -43,6 +45,10 @@ export async function POST(request: Request) {
   // Landing-page Google Ads number gets google_ads source_type + the
   // google_ads_form drip path; MFM-A/B + outbound callback stay on direct-mail.
   const isGoogleAds = to === "+16506703914"
+  // A text to the outbound caller-ID number is a callback against outreach
+  // Ryan already started — treat it as a callback, not a fresh intake, and
+  // never start a fresh drip on it.
+  const isOutboundCallback = to === OUTBOUND_TWILIO_NUMBER
 
   if (from) {
     try {
@@ -133,16 +139,21 @@ export async function POST(request: Request) {
       if (isJunkAddr) insertRow.is_junk = true
 
       if (!existingRow) {
-        // Fresh intake — stamp drip campaign for the engine to pick up.
-        // Google Ads landing number runs the AI-drafted google_ads_form
-        // cadence; MFM-A/B inbound SMS stays on direct_mail_sms.
-        insertRow.drip_campaign_type = isGoogleAds ? "google_ads_form" : "direct_mail_sms"
-        insertRow.drip_touch_number = 0
-        insertRow.last_drip_sent_at = new Date().toISOString()
+        if (!isOutboundCallback) {
+          // Fresh intake — stamp drip campaign for the engine to pick up.
+          // Skipped for texts to the outbound caller-ID number: that's a
+          // lead replying to outreach Ryan already started, not a new
+          // direct-mail lead — a fresh drip would double up. Google Ads
+          // landing number runs google_ads_form; MFM-A/B stays direct_mail_sms.
+          insertRow.drip_campaign_type = isGoogleAds ? "google_ads_form" : "direct_mail_sms"
+          insertRow.drip_touch_number = 0
+          insertRow.last_drip_sent_at = new Date().toISOString()
+        }
       } else if (existingRow.drip_campaign_type) {
         // Carry the cluster's drip campaign forward without resetting the
         // clock — the original intake row owns drip_touch_number /
-        // last_drip_sent_at; this row is event history only.
+        // last_drip_sent_at; this row is event history only. The cluster
+        // is de-duped after insert so the engine sees ONE driver row.
         insertRow.drip_campaign_type = existingRow.drip_campaign_type
       }
 
@@ -152,6 +163,18 @@ export async function POST(request: Request) {
         .select("id")
         .single()
       if (error) console.error("[sms] Supabase insert failed:", error)
+
+      // Re-engagement carried the cluster's drip stamp onto this new event
+      // row. Sweep the cluster so exactly ONE row drives the drip engine —
+      // N stamped rows would queue N parallel touches. No-op for a
+      // single-stamp cluster.
+      if (existingRow?.drip_campaign_type) {
+        try {
+          await dedupeClusterStamps(sb, { caller_phone: from, email: null })
+        } catch (e) {
+          console.warn("[sms] cluster dedupe failed:", e instanceof Error ? e.message : String(e))
+        }
+      }
 
       // Campaign attribution — best-effort.
       if (insertedRow?.id) {

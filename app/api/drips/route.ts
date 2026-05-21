@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server"
-import { getLeadsClient, clusterKeyOrId } from "@/lib/leads"
+import { getLeadsClient, clusterKeyOrId, isAnonymousCaller } from "@/lib/leads"
 import {
   getCampaign,
   getNextTouch,
@@ -295,9 +295,11 @@ export async function GET(_request: NextRequest) {
     const rawForecast: ForecastItem[] = []
     for (const lead of (stampedLeads ?? []) as LeadLite[]) {
       if (leadsWithLiveQueue.has(lead.id)) continue
-      // Filter Anonymous voicemails — we can't iMessage to "Anonymous", and
-      // surfacing them clutters the view without giving Ryan a way to act.
-      if (lead.caller_phone === "Anonymous") continue
+      // Filter blocked-caller-ID voicemails — we can't message a withheld
+      // number, and surfacing them clutters the view with no way to act.
+      // isAnonymousCaller covers the whole set (Restricted/Unavailable/...),
+      // not just the literal "Anonymous".
+      if (isAnonymousCaller(lead.caller_phone)) continue
       const f = forecastNextTouch(lead, now, horizon)
       if (!f) continue
       f.name = resolveName(lead, nameByPhone, nameByEmail)

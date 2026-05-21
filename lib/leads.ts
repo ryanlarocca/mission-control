@@ -305,9 +305,13 @@ export type LeadFlagField = typeof LEAD_FLAG_FIELDS[number]
 // non-null bucket key (e.g. dedupe walks where each row needs a slot)
 // can use clusterKeyOrId.
 //
-// "Anonymous" caller_phone is NOT a real key — every withheld-ID call
-// shares the same placeholder, so treating it as a cluster identity
-// would merge unrelated people. Fall through to thread/email/null.
+// A blocked / withheld caller-ID value is NOT a real key. Twilio sends
+// one of several placeholders ("Anonymous", "Restricted", "Unavailable",
+// "Private", ...) — every withheld-ID call collapses onto one of them, so
+// treating it as a cluster identity would merge unrelated people. Match
+// the FULL set via isAnonymousCaller() (a literal "Anonymous"-only check
+// silently merged every "Restricted"/"Unavailable" caller). Fall through
+// to thread/email/null for those.
 //
 // Email is lowercased so case variants don't fork the cluster.
 export type ClusterIdentity = {
@@ -316,7 +320,7 @@ export type ClusterIdentity = {
   gmail_thread_id?: string | null
 }
 export function clusterKey(r: ClusterIdentity): string | null {
-  if (r.caller_phone && r.caller_phone !== "Anonymous") return `phone:${r.caller_phone}`
+  if (r.caller_phone && !isAnonymousCaller(r.caller_phone)) return `phone:${r.caller_phone}`
   if (r.gmail_thread_id) return `thread:${r.gmail_thread_id}`
   if (r.email) return `email:${r.email.toLowerCase()}`
   return null
@@ -455,6 +459,7 @@ type ClusterRow = {
   created_at: string
 }
 export function pickClusterWinner<T extends ClusterRow>(rows: T[]): T {
+  if (rows.length === 0) throw new Error("pickClusterWinner: called with empty rows")
   if (rows.length === 1) return rows[0]
   const byCampaign = new Map<string, T[]>()
   for (const r of rows) {

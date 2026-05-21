@@ -1,6 +1,8 @@
 import { NextResponse } from "next/server"
 import {
   FORWARD_TO,
+  OUTBOUND_TWILIO_NUMBER,
+  dedupeClusterStamps,
   getCampaignSource,
   getLeadsClient,
   type LeadStatus,
@@ -55,6 +57,10 @@ export async function POST(request: Request) {
     // Landing-page Google Ads number gets its own source_type + drip path.
     // Everything else (MFM-A/B, outbound callback) stays on direct-mail.
     const isGoogleAds = twilioNumber === "+16506703914"
+    // A callback to the outbound caller-ID number is a lead responding to
+    // outreach Ryan already started by hand — not a fresh direct-mail
+    // lead. It must NOT get a fresh drip stamp.
+    const isOutboundCallback = twilioNumber === OUTBOUND_TWILIO_NUMBER
     // Blocked / withheld caller ID — every such call arrives as the same
     // placeholder ("Anonymous" etc.), so it's NOT a usable contact key.
     const isAnon = isAnonymousCaller(callerPhone)
@@ -103,19 +109,26 @@ export async function POST(request: Request) {
         // never merges with other anonymous calls.
         insertRow.is_junk = true
       } else if (!existingRow) {
-        // Phase 7B: stamp drip campaign on intake. The engine's hourly
-        // scan will pick up touch 0 (15-min missed-call message) when no
-        // recording arrives within the buffer, and touch 1 onward at
-        // each cadence step. Google Ads landing-page calls skip the
-        // missed-call template and run the AI-drafted google_ads_form
-        // cadence from touch 1.
-        insertRow.drip_campaign_type = isGoogleAds ? "google_ads_form" : "direct_mail_call"
-        insertRow.drip_touch_number = 0
-        insertRow.last_drip_sent_at = new Date().toISOString()
+        if (!isOutboundCallback) {
+          // Phase 7B: stamp drip campaign on intake. The engine's hourly
+          // scan picks up touch 0 (15-min missed-call message) for a
+          // direct_mail_call lead — that touch is gated on
+          // `drip_touch_number IS NULL`, so we stamp NULL here, not 0.
+          // (0 means "touch #0 already done"; stamping 0 on intake
+          // silently killed the missed-call opener for every lead.)
+          // Google Ads landing-page calls skip touch #0 and run the
+          // AI-drafted google_ads_form cadence from touch 1.
+          insertRow.drip_campaign_type = isGoogleAds ? "google_ads_form" : "direct_mail_call"
+          insertRow.drip_touch_number = null
+          insertRow.last_drip_sent_at = new Date().toISOString()
+        }
+        // else: a first-ever contact via the outbound callback number —
+        // insert a plain event row, no drip stamp.
       } else if (existingRow.drip_campaign_type) {
         // Carry the cluster's drip campaign forward without resetting the
         // clock — the original intake row owns drip_touch_number /
-        // last_drip_sent_at; this row is event history only.
+        // last_drip_sent_at; this row is event history only. The cluster
+        // is de-duped after insert so the engine sees ONE driver row.
         insertRow.drip_campaign_type = existingRow.drip_campaign_type
       }
 
@@ -125,6 +138,18 @@ export async function POST(request: Request) {
         .select("id")
         .single()
       if (error) console.error("[voice] Supabase insert failed:", error)
+
+      // Re-engagement carried the cluster's drip stamp onto this new event
+      // row. Sweep the cluster so exactly ONE row drives the drip engine —
+      // N stamped rows would queue N parallel touches. No-op when the
+      // cluster has ≤1 stamped row.
+      if (existingRow?.drip_campaign_type) {
+        try {
+          await dedupeClusterStamps(sb, { caller_phone: callerPhone, email: null })
+        } catch (e) {
+          console.warn("[voice] cluster dedupe failed:", e instanceof Error ? e.message : String(e))
+        }
+      }
 
       // Campaign attribution — best-effort.
       if (insertedRow?.id) {
