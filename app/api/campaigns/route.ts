@@ -19,6 +19,11 @@ export interface Campaign {
   created_at: string
 }
 
+// The GET reads live Supabase data with no per-request input. Without
+// force-dynamic, Vercel edge-caches the response and a campaign created
+// via the POST below won't appear in the list until the next deploy.
+export const dynamic = "force-dynamic"
+
 export async function GET() {
   try {
     const sb = getLeadsClient()

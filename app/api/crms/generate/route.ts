@@ -411,13 +411,29 @@ export async function POST(request: Request) {
       body: reqBody,
     })
 
-    const data = await res.json()
-    const raw = data.choices?.[0]?.message?.content?.trim() || ""
+    // The fallback template — used whenever OpenRouter fails or returns
+    // nothing usable, so the composer never silently shows a blank message.
+    const fallbackMessage = () =>
+      lookupPrompt(FALLBACKS, type, modality).replace(/{first}/g, firstName)
+
+    if (!res.ok) {
+      const errText = await res.text().catch(() => "")
+      console.error(`crms/generate: OpenRouter ${res.status}`, errText.slice(0, 300))
+      return NextResponse.json({ message: fallbackMessage(), isFallback: true })
+    }
+
+    const data = await res.json().catch(() => null)
+    const raw = data?.choices?.[0]?.message?.content?.trim() || ""
     const message = raw
       .replace(/\*\*/g, "")
       .replace(/[\r\n]+/g, " ")
       .replace(/\s{2,}/g, " ")
       .trim()
+
+    if (!message) {
+      console.error("crms/generate: OpenRouter returned an empty message")
+      return NextResponse.json({ message: fallbackMessage(), isFallback: true })
+    }
 
     return NextResponse.json({ message, isFallback: false })
   } catch (err) {

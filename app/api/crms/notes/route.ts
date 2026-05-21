@@ -13,11 +13,33 @@ export async function POST(request: Request) {
     const value = typeof notes === "string" ? notes : ""
 
     const sheets = getSheetsClient()
+
+    // Preserve any [enriched: YYYY-MM-DD] staleness marker. The read
+    // routes strip this prefix before the UI ever sees it, so an edited
+    // note arrives here without it. Writing `value` raw would erase the
+    // marker on the first manual edit — permanently breaking 90-day
+    // staleness detection and delta re-enrichment for that contact.
+    // Re-read the current cell and splice the marker back on.
+    let finalValue = value
+    if (!/^\[enriched:\s*\d{4}-\d{2}-\d{2}\]/.test(value)) {
+      try {
+        const cur = await sheets.spreadsheets.values.get({
+          spreadsheetId: SHEET_ID,
+          range: `Sheet1!I${sheetRow}`,
+        })
+        const existing = String(cur.data.values?.[0]?.[0] ?? "")
+        const m = existing.match(/^\[enriched:\s*(\d{4}-\d{2}-\d{2})\]/)
+        if (m) finalValue = `[enriched: ${m[1]}] ${value}`
+      } catch (e) {
+        console.warn("crms/notes: could not read cell to preserve enriched marker:", e)
+      }
+    }
+
     await sheets.spreadsheets.values.update({
       spreadsheetId: SHEET_ID,
       range: `Sheet1!I${sheetRow}`,
       valueInputOption: "RAW",
-      requestBody: { values: [[value]] },
+      requestBody: { values: [[finalValue]] },
     })
 
     return NextResponse.json({ success: true })

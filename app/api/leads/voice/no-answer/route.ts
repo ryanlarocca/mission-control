@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server"
+import { waitUntil } from "@vercel/functions"
 import { getLeadsClient, parseTwilioBody } from "@/lib/leads"
 
 // Called when the original Dial leg ends (Ryan answered, declined, or
@@ -47,9 +48,12 @@ export async function POST(request: Request) {
   }
 
   // Caller reached voicemail — flag the existing lead row so the recording
-  // callback can find it. Fire-and-forget: don't block the TwiML response.
+  // callback can find it. Runs via waitUntil so Vercel keeps the function
+  // alive until the write commits: a bare `void (async…)()` is dropped when
+  // the function is recycled on the TwiML response, leaving the row as
+  // lead_type="call" and the recording orphaned.
   if (dialStatus !== "completed" && callerPhone) {
-    void (async () => {
+    waitUntil((async () => {
       try {
         const sb = getLeadsClient()
         const fiveMinAgo = new Date(Date.now() - 5 * 60 * 1000).toISOString()
@@ -79,7 +83,7 @@ export async function POST(request: Request) {
       } catch (e) {
         console.error("[no-answer] Threw:", e)
       }
-    })()
+    })())
   }
 
   const twiml = dialStatus === "completed" ? hangupTwiml() : recordTwiml()

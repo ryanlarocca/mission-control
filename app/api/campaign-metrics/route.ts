@@ -5,6 +5,12 @@ import { getLeadsClient } from "@/lib/leads"
 // the Leads tab analytics strip. Compute via:
 //   node scripts/compute-campaign-metrics.mjs
 // (cron candidate later — for now, on-demand).
+
+// This GET reads live Supabase data with no per-request input. Without
+// force-dynamic, Vercel edge-caches the route response and serves a
+// frozen snapshot until the next deploy.
+export const dynamic = "force-dynamic"
+
 export async function GET() {
   try {
     const sb = getLeadsClient()
