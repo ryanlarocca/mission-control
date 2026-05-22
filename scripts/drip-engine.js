@@ -757,17 +757,55 @@ function missedCallTouch0Body() {
 
 // ─── senders ────────────────────────────────────────────────────────────────
 
-async function sendIMessage(phone, message) {
-  const res = await fetch(`${SIDECAR_URL}/send`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ phone, message }),
-  })
-  if (!res.ok) {
-    const txt = await res.text().catch(() => "")
-    throw new Error(`sidecar send ${res.status}: ${txt.slice(0, 200)}`)
+// Drip texts go out via the Twilio Messaging API from the outbound caller-ID
+// number (TWILIO_NUMBER, +16502043247) — the same approved A2P 10DLC path the
+// manual compose box uses (app/api/leads/send/route.ts). Migrated off the
+// Mac-mini sidecar (iMessage) on 2026-05-21 so a lead sees ONE number for
+// every call + text. The "imessage" channel label is kept everywhere else in
+// this engine (campaign cadence defs, the drip_imessage lead_type, the UI
+// timeline) — it now just means "the texting channel"; only the transport
+// underneath changed. Throwing here marks the drip_queue row `failed`, which
+// surfaces in the Drips tab's Failed bucket with a Retry button.
+function normalizeE164(raw) {
+  const trimmed = String(raw || "").trim()
+  if (trimmed.startsWith("+") && /^\+\d{10,15}$/.test(trimmed)) return trimmed
+  const digits = trimmed.replace(/\D/g, "")
+  if (digits.length === 10) return `+1${digits}`
+  if (digits.length === 11 && digits.startsWith("1")) return `+${digits}`
+  return null
+}
+
+async function sendSms(phone, message) {
+  const sid = process.env.TWILIO_ACCOUNT_SID
+  const token = process.env.TWILIO_AUTH_TOKEN
+  const from = (process.env.TWILIO_NUMBER || "").trim()
+  if (!sid || !token || !from) {
+    throw new Error("TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN and TWILIO_NUMBER must be set")
   }
-  return res.json().catch(() => ({}))
+  const to = normalizeE164(phone)
+  if (!to) throw new Error(`invalid phone: ${phone}`)
+
+  // MessagingServiceSid routes through the approved campaign explicitly; if it
+  // isn't set we send From the number, which is attached to the same campaign.
+  const form = new URLSearchParams({ To: to, Body: message })
+  const msgService = (process.env.TWILIO_MESSAGING_SERVICE_SID || "").trim()
+  if (msgService) form.set("MessagingServiceSid", msgService)
+  else form.set("From", from)
+
+  const auth = Buffer.from(`${sid}:${token}`).toString("base64")
+  const res = await fetch(`https://api.twilio.com/2010-04-01/Accounts/${sid}/Messages.json`, {
+    method: "POST",
+    headers: {
+      Authorization: `Basic ${auth}`,
+      "Content-Type": "application/x-www-form-urlencoded",
+    },
+    body: form.toString(),
+  })
+  const json = await res.json().catch(() => ({}))
+  if (!res.ok) {
+    throw new Error(`twilio send ${res.status}: ${(json && json.message) || "unknown error"}`)
+  }
+  return { sid: json.sid || null, status: json.status || null }
 }
 
 function getGmailClient(userEmail) {
@@ -929,7 +967,7 @@ async function drainApprovedQueue(sb) {
 async function sendDripTouch({ lead, channel, message, subject, sb, queueRow }) {
   if (channel === "imessage") {
     if (!lead.caller_phone) throw new Error("no phone")
-    await sendIMessage(lead.caller_phone, message)
+    await sendSms(lead.caller_phone, message)
   } else if (channel === "email") {
     const subj = subject || dripEmailSubject(lead)
     await sendDripEmail({ lead, body: message, subject: subj })
@@ -1362,6 +1400,7 @@ module.exports = {
   extractResponsivenessSignals,
   generateMessage,
   buildSystemPrompt,
+  sendSms,
 }
 
 // Skip the hourly main() when imported by a helper script — set by
