@@ -10,11 +10,11 @@ const PREFS_FILE = `${DATA_DIR}/modality_prefs.json`
 // ── Type system ────────────────────────────────────────────────────────────
 
 type ContactType = "Agent" | "Personal" | "Vendor" | "PM" | "Investor" | "PrivateMoney" | "Seller"
-type Modality = "Familiar" | "Reconnect" | "ColdReintro" | "Portfolio" | "CatchUp" | "CheckIn"
+type Modality = "Familiar" | "Reconnect" | "ColdReintro" | "Portfolio" | "CatchUp" | "CheckIn" | "Referral"
 
 const MODALITIES_BY_TYPE: Record<ContactType, Modality[]> = {
   Agent:    ["Familiar", "Reconnect", "ColdReintro"],
-  Vendor:   ["Familiar", "Reconnect", "ColdReintro"],
+  Vendor:   ["Referral", "Familiar", "Reconnect", "ColdReintro"],
   Investor: ["Familiar", "Reconnect", "ColdReintro"],
   PrivateMoney: ["Familiar", "Reconnect", "ColdReintro"],
   Seller:   ["Familiar", "Reconnect", "ColdReintro"],
@@ -23,7 +23,7 @@ const MODALITIES_BY_TYPE: Record<ContactType, Modality[]> = {
 }
 
 const DEFAULT_MODALITY: Record<ContactType, Modality> = {
-  Agent: "Reconnect", Vendor: "Reconnect", Investor: "Reconnect", Seller: "Reconnect",
+  Agent: "Reconnect", Vendor: "Referral", Investor: "Reconnect", Seller: "Reconnect",
   PM: "Portfolio", Personal: "CheckIn", PrivateMoney: "Reconnect",
 }
 
@@ -119,6 +119,12 @@ Ask whether they're still taking on work. Polite, a touch tentative.
 NOT a real estate prospecting message.
 2-3 sentences. No sign-off, no emojis. Match the voice examples exactly.`,
 
+  Vendor_Referral: `Write a short iMessage from Ryan LaRocca (Bay Area real estate investor) to {name}, a vendor/tradesperson. This is a DIRECT referral ask — get straight to the point, no dancing around it, no "just checking in."
+Open with "Hey {name}, it's Ryan LaRocca."
+Notes (use only for light personalization if genuinely current — otherwise ignore): {notes}
+Be straight: Ryan is actively buying properties in the Bay Area and pays a share of the profit on any referral that closes. Ask them to send any owner looking to sell — a fixer, a tired rental, an estate — Ryan's way.
+Confident and direct, not salesy. 3-4 short sentences. No sign-off, no emojis. Match the voice examples exactly.`,
+
   PM_Portfolio: `Write a short iMessage from Ryan LaRocca (Bay Area investor) to {name}, a property manager.
 Notes: {notes}
 Ask if anything in their portfolio has come up for sale or any owners looking to sell.
@@ -154,6 +160,7 @@ I'm an investor in the Bay Area buying fixers and value-add properties, and I pa
   Vendor_Familiar: `Hey {first}, hope you've been staying busy. Been a minute since we had you out — how's the business?`,
   Vendor_Reconnect: `Hey {first}, it's Ryan LaRocca — appreciated the work you did for us a while back. How's the business been? I may have something coming up and wanted to see if you're still taking on jobs.`,
   Vendor_ColdReintro: `Hey {first}, this is Ryan LaRocca — I have your contact saved from a while back. Are you still taking on work these days?`,
+  Vendor_Referral: `Hey {first}, it's Ryan LaRocca — I'm a real estate investor here in the Bay Area. I'll be straight with you: I'm actively buying properties, and I pay a share of the profit on any referral that closes. If you ever hear of an owner looking to sell — a fixer, a tired rental, an estate — send them my way. I'll make it worth your while.`,
   PM_Portfolio: `Hey {first}, it's Ryan LaRocca — I'm an investor in the Bay Area and I wanted to reach out. Do you have any properties in your portfolio where the owner might be looking to sell? Always looking for my next project.`,
   Personal_CatchUp: `Hey {first}, been a minute — how have you been? We need to catch up soon.`,
   Personal_CheckIn: `Hey {first}, was just thinking about you — hope you're doing well. What have you been up to?`,

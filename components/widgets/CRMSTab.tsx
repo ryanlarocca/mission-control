@@ -18,7 +18,7 @@ type ContactType = "Agent" | "Personal" | "Vendor" | "PM" | "Investor" | "Privat
 type Tier = "A" | "B" | "C" | "D" | "E"
 type Modality =
   | "Familiar" | "Reconnect" | "ColdReintro"
-  | "Portfolio" | "CatchUp" | "CheckIn"
+  | "Portfolio" | "CatchUp" | "CheckIn" | "Referral"
 
 const MODALITY_LABEL: Record<Modality, string> = {
   Familiar:    "Familiar",
@@ -27,11 +27,12 @@ const MODALITY_LABEL: Record<Modality, string> = {
   Portfolio:   "Portfolio",
   CatchUp:     "Catch Up",
   CheckIn:     "Check In",
+  Referral:    "Referral",
 }
 
 const MODALITIES_BY_TYPE: Record<ContactType, Modality[]> = {
   Agent:    ["Familiar", "Reconnect", "ColdReintro"],
-  Vendor:   ["Familiar", "Reconnect", "ColdReintro"],
+  Vendor:   ["Referral", "Familiar", "Reconnect", "ColdReintro"],
   Investor: ["Familiar", "Reconnect", "ColdReintro"],
   PrivateMoney: ["Familiar", "Reconnect", "ColdReintro"],
   Seller:   ["Familiar", "Reconnect", "ColdReintro"],
@@ -41,7 +42,7 @@ const MODALITIES_BY_TYPE: Record<ContactType, Modality[]> = {
 
 const DEFAULT_MODALITY: Record<ContactType, Modality> = {
   Agent:    "Reconnect",
-  Vendor:   "Reconnect",
+  Vendor:   "Referral",
   Investor: "Reconnect",
   PrivateMoney: "Reconnect",
   Seller:   "Reconnect",
@@ -153,6 +154,7 @@ const modalityActive: Record<Modality, string> = {
   Portfolio:   "bg-teal-500/10 text-teal-400 border-teal-500/40",
   CatchUp:     "bg-pink-500/10 text-pink-400 border-pink-500/40",
   CheckIn:     "bg-violet-500/10 text-violet-400 border-violet-500/40",
+  Referral:    "bg-orange-500/10 text-orange-400 border-orange-500/40",
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
