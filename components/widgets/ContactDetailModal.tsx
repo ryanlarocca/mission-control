@@ -22,7 +22,6 @@ interface InteractionEntry {
 
 export interface ContactDetailContact {
   id: string
-  sheetRow: number
   name: string
   category: string
   tier: string
@@ -36,8 +35,8 @@ interface Props {
   contact: ContactDetailContact
   onClose: () => void
   onSendToast: (msg: string) => void
-  onNotesSaved: (sheetRow: number, notes: string) => void
-  onCategoryChanged?: (sheetRow: number, category: string) => void
+  onNotesSaved: (id: string, notes: string) => void
+  onCategoryChanged?: (id: string, category: string) => void
 }
 
 const CATEGORY_OPTIONS = ["Agent", "Vendor", "Personal", "PM", "Investor", "PrivateMoney", "Seller"] as const
@@ -132,10 +131,10 @@ export function ContactDetailModal({ contact, onClose, onSendToast, onNotesSaved
       const res = await fetch("/api/crms/category", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ sheetRow: contact.sheetRow, category: next }),
+        body: JSON.stringify({ id: contact.id, category: next }),
       })
       if (!res.ok) throw new Error()
-      onCategoryChanged?.(contact.sheetRow, next)
+      onCategoryChanged?.(contact.id, next)
     } catch {
       onSendToast(`Type update failed for ${contact.name}`)
     } finally {
@@ -179,10 +178,10 @@ export function ContactDetailModal({ contact, onClose, onSendToast, onNotesSaved
       const res = await fetch("/api/crms/notes", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ sheetRow: contact.sheetRow, notes }),
+        body: JSON.stringify({ id: contact.id, notes }),
       })
       if (!res.ok) throw new Error()
-      onNotesSaved(contact.sheetRow, notes)
+      onNotesSaved(contact.id, notes)
       setNotesSaved(true)
       setTimeout(() => setNotesSaved(false), 2500)
     } catch {
@@ -213,8 +212,7 @@ export function ContactDetailModal({ contact, onClose, onSendToast, onNotesSaved
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
-              name: contact.name, phone: contact.phone,
-              sheetRow: contact.sheetRow, modality: "Reconnect", message: msg,
+              id: contact.id, modality: "Reconnect", message: msg,
               action: "sent", tier: contact.tier, category: contact.category,
               generatedMessage: "", wasEdited: true,
             }),
@@ -313,8 +311,6 @@ export function ContactDetailModal({ contact, onClose, onSendToast, onNotesSaved
               </span>
               <span className="text-zinc-600">Last contacted</span>
               <span className="text-zinc-300">{contact.lastContacted || "—"}</span>
-              <span className="text-zinc-600">Sheet row</span>
-              <span className="text-zinc-300 font-mono">{contact.sheetRow}</span>
             </div>
           </div>
 

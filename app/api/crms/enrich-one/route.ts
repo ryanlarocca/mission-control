@@ -1,4 +1,6 @@
 import { NextResponse } from "next/server"
+import { getLeadsClient } from "@/lib/leads"
+import { to10Digit } from "@/lib/relationships"
 
 // Proxies to the CRMS FDA sidecar running on localhost:5799
 // The sidecar has Full Disk Access and runs crms-enrich-one.js logic directly.
@@ -30,6 +32,24 @@ export async function POST(request: Request) {
       }
 
       const data = await res.json()
+
+      // Persist the enriched note to Supabase. The sidecar still writes the
+      // (now-frozen) BoB sheet, so post-migration the app must own
+      // persistence — otherwise the note is lost on the next page load.
+      if (typeof data?.note === "string" && data.note.trim()) {
+        const tenDigit = to10Digit(phone)
+        if (tenDigit.length === 10) {
+          try {
+            await getLeadsClient()
+              .from("relationships")
+              .update({ notes: data.note, enriched_at: new Date().toISOString() })
+              .eq("phone", `+1${tenDigit}`)
+          } catch (e) {
+            console.error("crms/enrich-one: failed to persist note to Supabase:", e)
+          }
+        }
+      }
+
       return NextResponse.json({ enriched: true, note: data.note, lastContacted: data.lastContacted })
     } catch (fetchErr: unknown) {
       clearTimeout(timeout)

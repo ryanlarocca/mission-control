@@ -1727,6 +1727,44 @@ export async function applyAnalyzeCallResult(
     })
   }
 
+  // Option B — relationships self-heal (Sheet→Supabase migration, 2026-05-22).
+  // If this caller was promoted to the Book of Business while the call was
+  // still transcribing, their relationship row froze with a bare "Promoted
+  // from Leads." stub. Now that the transcript landed and we have a real
+  // ai_summary, fill that stub in. Match on source_lead_id (the precise FK)
+  // OR caller_phone (covers contacts promoted before the FK existed). Only
+  // the stub is healed — hand-written notes are never clobbered. Best-effort.
+  try {
+    const summary = (result.summary || "").replace(/\s+/g, " ").trim()
+    if (summary) {
+      const orParts = [`source_lead_id.eq.${leadId}`]
+      if (existing?.caller_phone) orParts.push(`phone.eq.${existing.caller_phone}`)
+      const { data: rels } = await sb
+        .from("relationships")
+        .select("id, notes")
+        .or(orParts.join(","))
+      const isStub = (n: string | null) =>
+        !n || !n.trim() || n.trim() === "Promoted from Leads."
+      const healIds = (rels ?? [])
+        .filter((r) => isStub(r.notes as string | null))
+        .map((r) => r.id as string)
+      if (healIds.length > 0) {
+        const { error: relErr } = await sb
+          .from("relationships")
+          .update({
+            notes: `Promoted from Leads. ${summary}`.slice(0, 1000),
+            enriched_at: new Date().toISOString(),
+          })
+          .in("id", healIds)
+        if (relErr) {
+          console.error(`[analyze-call] relationship self-heal failed for ${leadId}:`, relErr.message)
+        }
+      }
+    }
+  } catch (e) {
+    console.error(`[analyze-call] relationship self-heal threw for ${leadId}:`, e)
+  }
+
   // 2026-05-11 Fix 1 — cluster-wide cache invalidation. The summary endpoint
   // builds its paragraph from the FULL conversation cluster while this
   // analyzer only sees the fresh recording. If a card was expanded BEFORE

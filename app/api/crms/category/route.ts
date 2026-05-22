@@ -1,15 +1,15 @@
 import { NextResponse } from "next/server"
-import { getSheetsClient, SHEET_ID } from "@/lib/sheets"
+import { getLeadsClient } from "@/lib/leads"
 import { isValidCategory, RELATIONSHIP_CATEGORIES } from "@/lib/crms"
 
 export const dynamic = "force-dynamic"
 
 export async function POST(request: Request) {
   try {
-    const { sheetRow, category } = await request.json()
+    const { id, category } = await request.json()
 
-    if (!sheetRow || typeof sheetRow !== "number") {
-      return NextResponse.json({ error: "sheetRow required" }, { status: 400 })
+    if (!id || typeof id !== "string") {
+      return NextResponse.json({ error: "id required" }, { status: 400 })
     }
     const c = String(category || "").trim()
     if (!isValidCategory(c)) {
@@ -19,13 +19,9 @@ export async function POST(request: Request) {
       )
     }
 
-    const sheets = getSheetsClient()
-    await sheets.spreadsheets.values.update({
-      spreadsheetId: SHEET_ID,
-      range: `Sheet1!E${sheetRow}`,
-      valueInputOption: "RAW",
-      requestBody: { values: [[c]] },
-    })
+    const supabase = getLeadsClient()
+    const { error } = await supabase.from("relationships").update({ category: c }).eq("id", id)
+    if (error) throw error
 
     return NextResponse.json({ success: true, category: c })
   } catch (err) {

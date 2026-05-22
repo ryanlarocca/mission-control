@@ -1,31 +1,31 @@
 import { NextRequest, NextResponse } from "next/server"
 import { getLeadsClient, haltOutreachForCluster } from "@/lib/leads"
 import { isValidCategory, RELATIONSHIP_CATEGORIES } from "@/lib/crms"
-import { getSheetsClient, SHEET_ID } from "@/lib/sheets"
 
-// Promote a lead into the Relationships (BoB) Google Sheet. Used when a
-// caller turns out to be a referral source rather than a seller — e.g.
-// Kelly Ray was an agent, Ricardo was an electrician. Both can drive
-// future deals if they're in the cadence-driven follow-up queue instead
+// Promote a lead into the Relationships (Book of Business) Supabase table.
+// Used when a caller turns out to be a referral source rather than a seller
+// — e.g. Kelly Ray was an agent, Ricardo an electrician. Both can drive
+// future deals once they're in the cadence-driven follow-up queue instead
 // of buried in the Leads tab.
 //
-// Side effects on the lead row:
-//   - status set to "dead" so it falls out of New/Contacted/Active.
-//   - notes prepended with a "[PROMOTED → Relationships: <category>]"
-//     marker + the date, so future viewers know what happened.
+// Side effects on the lead row (unchanged from commit 8c32500):
+//   - the whole contact cluster's status set to "dead".
+//   - the clicked row's notes prefixed with a "[PROMOTED → Relationships]"
+//     marker so future viewers know what happened.
 //
-// Sheet columns (Sheet1) for reference:
-//   A=name  B=phone  C=—  D=—  E=type/category  F=—  G=LastContacted
-//   H=tier  I=notes (with optional "[enriched: YYYY-MM-DD]" prefix)
-//   J=snooze_until
+// The new `relationships` row carries source_lead_id = lead.id. That FK is
+// what lets applyAnalyzeCallResult self-heal the contact's notes if the call
+// is still transcribing at promote time — dissolving the old partial-notes
+// race (the bug that motivated the Sheet → Supabase migration).
 
 const VALID_TIERS = new Set(["A", "B", "C", "D"])
 const DEFAULT_TIER = "C"
 
-function normalizePhoneLast10(phone: string | null | undefined): string | null {
+function toE164(phone: string | null | undefined): string | null {
   if (!phone) return null
   const digits = String(phone).replace(/\D/g, "")
-  return digits.length >= 10 ? digits.slice(-10) : null
+  if (digits.length < 10) return null
+  return `+1${digits.slice(-10)}`
 }
 
 export async function POST(
@@ -62,10 +62,10 @@ export async function POST(
     if (lookupErr) return NextResponse.json({ error: lookupErr.message }, { status: 500 })
     if (!lead) return NextResponse.json({ error: "lead not found" }, { status: 404 })
 
-    const phone10 = normalizePhoneLast10(lead.caller_phone)
-    if (!phone10) {
+    const phoneE164 = toE164(lead.caller_phone)
+    if (!phoneE164) {
       return NextResponse.json(
-        { error: "lead has no usable phone (Relationships sheet requires a 10-digit phone)" },
+        { error: "lead has no usable phone (a relationship needs a 10-digit phone)" },
         { status: 400 }
       )
     }
@@ -76,55 +76,51 @@ export async function POST(
       )
     }
 
-    // Build the notes that land in column I. Carry the AI summary forward
-    // (compressed to one line) so Ryan opens the contact with usable context
-    // instead of a blank row. Tag with [enriched: YYYY-MM-DD] so the
-    // CRMS-side staleness check (90 days) starts counting from today.
-    const today = new Date().toISOString().slice(0, 10)
+    // Carry the AI summary forward (compressed to one line) so the contact
+    // opens with usable context. If the call is still transcribing, ai_summary
+    // is empty here — applyAnalyzeCallResult self-heals these notes via
+    // source_lead_id once the transcript lands.
     const aiContext = (lead.ai_summary || "").replace(/\s+/g, " ").trim()
-    const sheetNotes = aiContext
-      ? `[enriched: ${today}] Promoted from Leads. ${aiContext}`.slice(0, 1000)
-      : `[enriched: ${today}] Promoted from Leads.`
+    const notes = aiContext
+      ? `Promoted from Leads. ${aiContext}`.slice(0, 1000)
+      : "Promoted from Leads."
 
-    // Append to Sheet1. Column order: A name | B phone | C — | D — | E category
-    // | F — | G LastContacted (blank so the cadence fires) | H tier | I notes
-    // | J snooze_until (blank).
-    const sheets = getSheetsClient()
-    let appendedRange: string | null = null
-    try {
-      const appendRes = await sheets.spreadsheets.values.append({
-        spreadsheetId: SHEET_ID,
-        range: "Sheet1!A1",
-        valueInputOption: "USER_ENTERED",
-        insertDataOption: "INSERT_ROWS",
-        requestBody: {
-          values: [[lead.name, phone10, "", "", category, "", "", tier, sheetNotes, ""]],
-        },
+    // Insert the Book-of-Business row. enriched_at = now() starts the 90-day
+    // staleness clock from today.
+    const { data: rel, error: insErr } = await sb
+      .from("relationships")
+      .insert({
+        name: lead.name.trim(),
+        phone: phoneE164,
+        email: lead.email || null,
+        category,
+        tier,
+        notes,
+        enriched_at: new Date().toISOString(),
+        source_lead_id: lead.id,
       })
-      appendedRange = appendRes.data.updates?.updatedRange || null
-    } catch (e) {
-      console.error("[promote-to-relationship] sheet append failed:", e)
+      .select("id")
+      .single()
+    if (insErr) {
+      console.error("[promote-to-relationship] relationships insert failed:", insErr)
       return NextResponse.json(
-        { error: "Failed to write to Relationships sheet", details: e instanceof Error ? e.message : String(e) },
+        { error: "Failed to create relationship", details: insErr.message },
         { status: 502 }
       )
     }
+    const relationshipId = rel?.id ?? null
 
-    // Mark the WHOLE contact dead — not just the clicked row. A contact is
-    // a cluster of leads rows sharing a phone/email (a call spawns its own
-    // row, a voicemail another, the drip campaign often lives on yet
-    // another). Promotion means "this person is a relationship now", so
-    // every row for them must drop out of New/Contacted/Active and out of
-    // the Follow Ups worklist. Dead-marking a single row left sibling rows
-    // alive — and the Follow Ups worklist represents a cluster by its
-    // newest row, so a still-alive sibling kept the promoted contact pinned
-    // to the worklist with their drip cadence still running.
+    // --- lead-side: unchanged from commit 8c32500 ---
+    // Mark the WHOLE contact dead — not just the clicked row. A contact is a
+    // cluster of leads rows sharing a phone/email; promotion means every row
+    // for them must drop out of New/Contacted/Active and the Follow Ups
+    // worklist.
+    const today = new Date().toISOString().slice(0, 10)
     const promoMarker = `[PROMOTED → Relationships: ${category} · ${today}]`
     const newNotes = lead.notes && lead.notes.trim()
       ? `${promoMarker} ${lead.notes}`
       : promoMarker
 
-    // Resolve the cluster (same phone OR same email).
     const orParts: string[] = []
     if (lead.caller_phone) orParts.push(`caller_phone.eq.${lead.caller_phone}`)
     if (lead.email) orParts.push(`email.eq.${lead.email}`)
@@ -135,8 +131,6 @@ export async function POST(
       if (ids.length > 0) clusterIds = Array.from(new Set([lead.id, ...ids]))
     }
 
-    // Dead-mark every row in the cluster; the promotion marker goes on the
-    // clicked row so the lead card still shows what happened.
     const { error: clusterErr } = await sb
       .from("leads")
       .update({ status: "dead" })
@@ -147,21 +141,21 @@ export async function POST(
       .eq("id", lead.id)
     const updErr = clusterErr ?? notesErr
     if (updErr) {
-      // Sheet write already succeeded — surface this but don't fail.
+      // The relationship row already exists — surface this but don't fail.
       console.error("[promote-to-relationship] lead update failed:", updErr.message)
       return NextResponse.json({
         ok: true,
-        appendedRange,
-        sheetWritten: true,
+        category,
+        tier,
+        relationshipId,
+        relationshipCreated: true,
         leadUpdated: false,
         updateError: updErr.message,
       })
     }
 
-    // Sweep the cluster's pending/approved drips + any outstanding
-    // follow-up dates — the same halt the Leads-tab "mark dead" path runs.
-    // Without it a queued drip would still fire at someone who's now a
-    // relationship. Best-effort: the dead status already stops the engine.
+    // Sweep the cluster's pending/approved drips + outstanding follow-up
+    // dates — same halt the Leads-tab "mark dead" path runs.
     try {
       await haltOutreachForCluster(sb, { ...lead, status: "dead" })
     } catch (sweepErr) {
@@ -175,8 +169,8 @@ export async function POST(
       ok: true,
       category,
       tier,
-      appendedRange,
-      sheetWritten: true,
+      relationshipId,
+      relationshipCreated: true,
       leadUpdated: true,
     })
   } catch (e) {

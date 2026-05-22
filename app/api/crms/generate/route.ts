@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server"
 import fs from "fs"
-import { getSheetsClient, SHEET_ID } from "@/lib/sheets"
+import { getLeadsClient } from "@/lib/leads"
 
 const OPENROUTER_KEY = process.env.OPENROUTER_API_KEY || ""
 const MODEL = "anthropic/claude-sonnet-4-5"
@@ -209,8 +209,8 @@ STALE REFERENCE RULES (strict — applies to every modality: Familiar, Reconnect
 
 // ── Voice examples (dynamic few-shot from Log tab) ─────────────────────────
 
-// Log tab columns: A=timestamp B=name C=phone D=sheetRow E=modality F=action
-// G=tier H=category I=message
+// Voice few-shot examples come from the relationship_touches table (formerly
+// the BoB "Log" tab). Only the fields the few-shot needs are loaded.
 type LogRow = {
   timestamp: string
   modality: string
@@ -228,34 +228,23 @@ async function loadLogRows(): Promise<LogRow[]> {
     return voiceCache.data
   }
   try {
-    const sheets = getSheetsClient()
-    const res = await sheets.spreadsheets.values.get({
-      spreadsheetId: SHEET_ID,
-      range: "Log!A:I",
-    })
-    const raw = (res.data.values || []) as string[][]
-    // Drop header row if present (first cell contains "timestamp" or similar
-    // non-ISO text — easiest detection: not parseable as date).
-    const rows: LogRow[] = []
-    for (let i = 0; i < raw.length; i++) {
-      const r = raw[i]
-      if (!r || r.length < 9) continue
-      const ts = r[0] || ""
-      // Skip header: if row 0 and timestamp is not a parseable date
-      if (i === 0 && isNaN(new Date(ts).getTime())) continue
-      rows.push({
-        timestamp: ts,
-        modality: r[4] || "",
-        action: r[5] || "",
-        category: r[7] || "",
-        message: r[8] || "",
-      })
-    }
+    const supabase = getLeadsClient()
+    const { data, error } = await supabase
+      .from("relationship_touches")
+      .select("occurred_at, modality, action, category_at_touch, message")
+    if (error) throw error
+    const rows: LogRow[] = (data ?? []).map((r) => ({
+      timestamp: r.occurred_at ?? "",
+      modality: r.modality ?? "",
+      action: r.action ?? "",
+      category: r.category_at_touch ?? "",
+      message: r.message ?? "",
+    }))
     voiceCache = { data: rows, fetchedAt: now }
     return rows
   } catch (e) {
     console.error("loadLogRows failed:", e)
-    // Cache empty so we don't hammer the API on repeated failures
+    // Cache empty so we don't hammer the DB on repeated failures
     voiceCache = { data: [], fetchedAt: now }
     return []
   }

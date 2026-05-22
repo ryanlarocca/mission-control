@@ -90,7 +90,6 @@ function coerceModality(m: unknown, type: ContactType): Modality {
 
 interface CRMSContact {
   id:            string
-  sheetRow:      number
   name:          string
   category:      ContactType
   type:          ContactType
@@ -369,7 +368,7 @@ function CRMSTabInner() {
     setLoadingContacts(true)
     setContactsError(null)
     try {
-      const res = await fetch("/api/crms/contacts")
+      const res = await fetch("/api/crms/contacts", { cache: "no-store" })
       if (!res.ok) throw new Error()
       const data = await res.json()
       const loaded: CRMSContact[] = (data.contacts || []).map((c: CRMSContact) => ({
@@ -391,7 +390,7 @@ function CRMSTabInner() {
         fetchTouches(firstDue.phone)
       }
     } catch {
-      setContactsError("Could not load contacts — check Sheets API / service account.")
+      setContactsError("Could not load contacts — check the database connection.")
     } finally {
       setLoadingContacts(false)
     }
@@ -505,13 +504,12 @@ function CRMSTabInner() {
     setCategoryPickerOpen(false)
     if (selectedContact.type === newCategory) return
     const targetId = selectedContact.id
-    const targetRow = selectedContact.sheetRow
     setCategoryChangingFor(targetId)
     try {
       const res = await fetch("/api/crms/category", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ sheetRow: targetRow, category: newCategory }),
+        body: JSON.stringify({ id: targetId, category: newCategory }),
       })
       if (!res.ok) throw new Error()
       setContacts(prev => prev.map(c =>
@@ -541,7 +539,7 @@ function CRMSTabInner() {
       const res = await fetch("/api/crms/tier", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ sheetRow: selectedContact.sheetRow, tier: newTier }),
+        body: JSON.stringify({ id: selectedContact.id, tier: newTier }),
       })
       if (!res.ok) throw new Error()
 
@@ -599,8 +597,7 @@ function CRMSTabInner() {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
-              name: contact.name, phone: contact.phone,
-              sheetRow: contact.sheetRow, modality: mod, message,
+              id: contact.id, modality: mod, message,
               action: "sent", tier: contact.tier, category: contact.type,
               generatedMessage, wasEdited,
             }),
@@ -647,8 +644,7 @@ function CRMSTabInner() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          name: contact.name, phone: contact.phone,
-          sheetRow: contact.sheetRow, modality, message: "",
+          id: contact.id, modality, message: "",
           action: "skipped", tier: contact.tier, category: contact.type,
         }),
       })
@@ -675,8 +671,7 @@ function CRMSTabInner() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          name: contact.name, phone: contact.phone,
-          sheetRow: contact.sheetRow, modality: mod, message: "[marked contacted manually]",
+          id: contact.id, modality: mod, message: "[marked contacted manually]",
           action: "sent", tier: contact.tier, category: contact.type,
           generatedMessage: "", wasEdited: false,
         }),
@@ -1279,22 +1274,22 @@ function CRMSTabInner() {
           contact={detailContact}
           onClose={() => setDetailPhone(null)}
           onSendToast={showSendToast}
-          onNotesSaved={(sheetRow, newNotes) => {
+          onNotesSaved={(id, newNotes) => {
             const patch = (c: CRMSContact) =>
-              c.sheetRow === sheetRow
+              c.id === id
                 ? { ...c, notes: newNotes, hasNotes: newNotes.trim().length > 0, notesStale: false }
                 : c
             setContacts(prev => prev.map(patch))
             setAllContacts(prev => prev.map(patch))
           }}
-          onCategoryChanged={(sheetRow, newCategory) => {
+          onCategoryChanged={(id, newCategory) => {
             const next = coerceType(newCategory)
             const patch = (c: CRMSContact) =>
-              c.sheetRow === sheetRow ? { ...c, type: next, category: next } : c
+              c.id === id ? { ...c, type: next, category: next } : c
             setContacts(prev => prev.map(patch))
             setAllContacts(prev => prev.map(patch))
             // If the modal is on the currently selected contact, snap modality to a valid one
-            if (selectedContact && selectedContact.sheetRow === sheetRow) {
+            if (selectedContact && selectedContact.id === id) {
               const allowed = MODALITIES_BY_TYPE[next] as string[]
               if (!allowed.includes(modality)) {
                 const nextMod = DEFAULT_MODALITY[next]

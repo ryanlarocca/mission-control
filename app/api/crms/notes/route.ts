@@ -1,46 +1,27 @@
 import { NextResponse } from "next/server"
-import { getSheetsClient, SHEET_ID } from "@/lib/sheets"
+import { getLeadsClient } from "@/lib/leads"
 
 export const dynamic = "force-dynamic"
 
 export async function POST(request: Request) {
   try {
-    const { sheetRow, notes } = await request.json()
+    const { id, notes } = await request.json()
 
-    if (!sheetRow || typeof sheetRow !== "number") {
-      return NextResponse.json({ error: "sheetRow required" }, { status: 400 })
+    if (!id || typeof id !== "string") {
+      return NextResponse.json({ error: "id required" }, { status: 400 })
     }
-    const value = typeof notes === "string" ? notes : ""
+    const value = typeof notes === "string" ? notes.trim() : ""
 
-    const sheets = getSheetsClient()
-
-    // Preserve any [enriched: YYYY-MM-DD] staleness marker. The read
-    // routes strip this prefix before the UI ever sees it, so an edited
-    // note arrives here without it. Writing `value` raw would erase the
-    // marker on the first manual edit — permanently breaking 90-day
-    // staleness detection and delta re-enrichment for that contact.
-    // Re-read the current cell and splice the marker back on.
-    let finalValue = value
-    if (!/^\[enriched:\s*\d{4}-\d{2}-\d{2}\]/.test(value)) {
-      try {
-        const cur = await sheets.spreadsheets.values.get({
-          spreadsheetId: SHEET_ID,
-          range: `Sheet1!I${sheetRow}`,
-        })
-        const existing = String(cur.data.values?.[0]?.[0] ?? "")
-        const m = existing.match(/^\[enriched:\s*(\d{4}-\d{2}-\d{2})\]/)
-        if (m) finalValue = `[enriched: ${m[1]}] ${value}`
-      } catch (e) {
-        console.warn("crms/notes: could not read cell to preserve enriched marker:", e)
-      }
-    }
-
-    await sheets.spreadsheets.values.update({
-      spreadsheetId: SHEET_ID,
-      range: `Sheet1!I${sheetRow}`,
-      valueInputOption: "RAW",
-      requestBody: { values: [[finalValue]] },
-    })
+    // A manual notes save counts as re-verifying the contact, so enriched_at
+    // is refreshed — which resets the 90-day staleness clock. (Pre-migration
+    // the sheet-backed route instead preserved the old [enriched:] marker;
+    // enriched_at is a real column now, so the marker hack is gone.)
+    const supabase = getLeadsClient()
+    const { error } = await supabase
+      .from("relationships")
+      .update({ notes: value || null, enriched_at: new Date().toISOString() })
+      .eq("id", id)
+    if (error) throw error
 
     return NextResponse.json({ success: true })
   } catch (err) {
