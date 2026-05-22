@@ -220,14 +220,63 @@ export function FollowUpsTab() {
 
   // ---- drip actions -------------------------------------------------------
 
-  async function sendDrip(row: ContactRow, queueId: string) {
+  async function sendDrip(row: ContactRow, queueId: string, opts?: { force?: boolean }) {
+    const force = opts?.force === true
     setActingOn(row.clusterKey)
     try {
-      const res = await fetch(`/api/drips/${queueId}/send`, { method: "POST" })
+      const res = await fetch(`/api/drips/${queueId}/send`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ force }),
+      })
       const body = await res.json().catch(() => ({}))
-      if (!res.ok && res.status !== 202) throw new Error(body?.error || `HTTP ${res.status}`)
+      // Server says the draft is stale (contact had non-drip activity since
+      // it was written). Surface it loudly instead of silently dropping the
+      // row — the stale-drip UI already gives the user Regenerate / Send
+      // anyway / Skip; this catches the race where stale flips true between
+      // fetch and click on a row the badge didn't cover yet.
+      if (res.status === 409 && (body as { stale?: boolean })?.stale) {
+        setErr((body as { error?: string })?.error || "Contact had activity since this was drafted — pick Regenerate / Send anyway / Skip.")
+        void fetchData(true)
+        return
+      }
+      if (!res.ok && res.status !== 202) throw new Error((body as { error?: string })?.error || `HTTP ${res.status}`)
+      showToast(force ? "Sending anyway ✓" : "Sent ✓")
       dropRow(row.clusterKey)
       setTimeout(() => void fetchData(true), 6000)
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e))
+    } finally {
+      setActingOn(null)
+    }
+  }
+
+  // "Regenerate" on a stale queued drip — skip the stale draft and ask the
+  // engine to write a fresh one that reflects the conversation as it stands
+  // now. Two-step: skip + prepare. The engine's hasPendingQueueRow check
+  // would otherwise refuse to draft alongside an existing pending row.
+  async function regenerateDrip(row: ContactRow, queueId: string) {
+    if (!row.dripLeadId) return
+    setActingOn(row.clusterKey)
+    try {
+      const skipRes = await fetch("/api/leads/drip-queue", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: queueId, action: "skip" }),
+      })
+      if (!skipRes.ok) {
+        const body = await skipRes.json().catch(() => ({}))
+        throw new Error((body as { error?: string })?.error || `HTTP ${skipRes.status}`)
+      }
+      const prepRes = await fetch("/api/drips/prepare", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ leadId: row.dripLeadId }),
+      })
+      const body = await prepRes.json().catch(() => ({}))
+      if (!prepRes.ok && prepRes.status !== 202) throw new Error((body as { error?: string })?.error || `HTTP ${prepRes.status}`)
+      showToast("Regenerating drip with the latest context")
+      setTimeout(() => void fetchData(true), 8000)
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e))
     } finally {
@@ -544,6 +593,7 @@ export function FollowUpsTab() {
     actingOn, editing, intervalOpenFor,
     onOpenLead: (row: ContactRow) => { const k = leadOverlayKey(row); if (k) setLeadOverlay(k) },
     onSendDrip: sendDrip,
+    onRegenerateDrip: regenerateDrip,
     onQueueAction: queueAction,
     onStartEdit: (queueId: string, t: NextTouch) =>
       setEditing(prev => new Map(prev).set(queueId, { message: t.message ?? "", subject: t.subject ?? "" })),
@@ -745,7 +795,8 @@ interface CardHandlers {
   editing: Map<string, { message: string; subject: string }>
   intervalOpenFor: string | null
   onOpenLead: (row: ContactRow) => void
-  onSendDrip: (row: ContactRow, queueId: string) => void
+  onSendDrip: (row: ContactRow, queueId: string, opts?: { force?: boolean }) => void
+  onRegenerateDrip: (row: ContactRow, queueId: string) => void
   onQueueAction: (row: ContactRow, queueId: string, action: "skip" | "snooze", days?: 1 | 3 | 7) => void
   onStartEdit: (queueId: string, t: NextTouch) => void
   onChangeEdit: (queueId: string, field: "message" | "subject", value: string) => void
@@ -821,7 +872,8 @@ function ContactCard({ row, ...h }: { row: ContactRow } & CardHandlers) {
           row={row} touch={dripTouch} acting={acting} hasCallAbove={!!callTouch}
           editDraft={dripTouch.queueId ? h.editing.get(dripTouch.queueId) ?? null : null}
           onOpenLead={() => h.onOpenLead(row)}
-          onSend={() => dripTouch.queueId && h.onSendDrip(row, dripTouch.queueId)}
+          onSend={(opts) => dripTouch.queueId && h.onSendDrip(row, dripTouch.queueId, opts)}
+          onRegenerate={() => dripTouch.queueId && h.onRegenerateDrip(row, dripTouch.queueId)}
           onSkip={() => dripTouch.queueId && h.onQueueAction(row, dripTouch.queueId, "skip")}
           onSnooze={(d) => h.onSnoozeContact(row, d)}
           onStartEdit={() => dripTouch.queueId && h.onStartEdit(dripTouch.queueId, dripTouch)}
@@ -952,7 +1004,7 @@ function CallBlock({
 
 function DripBlock({
   row, touch, acting, hasCallAbove, editDraft,
-  onOpenLead, onSend, onSkip, onSnooze,
+  onOpenLead, onSend, onRegenerate, onSkip, onSnooze,
   onStartEdit, onChangeEdit, onCancelEdit, onSaveEdit,
   onPrepare, onSkipForecast,
 }: {
@@ -962,7 +1014,8 @@ function DripBlock({
   hasCallAbove: boolean
   editDraft: { message: string; subject: string } | null
   onOpenLead: () => void
-  onSend: () => void
+  onSend: (opts?: { force?: boolean }) => void
+  onRegenerate: () => void
   onSkip: () => void
   onSnooze: (days: 1 | 3 | 7) => void
   onStartEdit: () => void
@@ -975,6 +1028,10 @@ function DripBlock({
   const isEditing = editDraft != null
   const channelLabel = touch.channel === "email" ? "Email" : "iMessage"
   const dueNow = !touch.isQueued && new Date(touch.due).getTime() <= Date.now()
+  // Stale = the draft pre-dates a non-drip event on the cluster. Surfaces
+  // a warning + Regenerate/Send-anyway in place of plain Send so Ryan can
+  // pick consciously instead of having the send route silent-skip the row.
+  const stale = touch.isQueued && touch.stale === true
 
   return (
     <div className={`px-3 py-2 ${hasCallAbove ? "border-t border-zinc-900" : "border-t border-zinc-900"}`}>
@@ -987,7 +1044,20 @@ function DripBlock({
         <span className={touch.isQueued ? "text-amber-300" : "text-zinc-500"}>
           {describeTouchWhen(touch)}
         </span>
+        {stale && (
+          <>
+            <span className="text-zinc-600">·</span>
+            <span className="inline-flex items-center gap-1 text-amber-400" title="A non-drip event landed on this cluster after this draft was written — Send will be auto-skipped. Use Regenerate to draft a fresh message, or Send anyway to override.">
+              <AlertTriangle className="w-3 h-3" /> stale
+            </span>
+          </>
+        )}
       </div>
+      {stale && !isEditing && (
+        <div className="mt-1 text-xs text-amber-400/80">
+          Contact had activity since this draft was written.
+        </div>
+      )}
 
       {/* queued drip — show + edit the generated message */}
       {touch.isQueued && !isEditing && (
@@ -1055,13 +1125,25 @@ function DripBlock({
             >
               <X className="w-3.5 h-3.5" /> Skip
             </button>
+            {stale && (
+              <button
+                onClick={onRegenerate}
+                disabled={acting}
+                title="Skip this stale draft and ask the engine for a fresh one with the latest context."
+                className="inline-flex items-center gap-1.5 px-2.5 py-1.5 min-h-[34px] rounded bg-sky-900/40 border border-sky-900/60 text-sky-200 hover:bg-sky-900/60 text-xs font-medium transition-colors disabled:opacity-60"
+              >
+                {acting ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <RefreshCw className="w-3.5 h-3.5" />}
+                Regenerate
+              </button>
+            )}
             <button
-              onClick={onSend}
+              onClick={() => onSend(stale ? { force: true } : undefined)}
               disabled={acting}
-              className="inline-flex items-center gap-1.5 px-3 py-1.5 min-h-[34px] rounded bg-emerald-600 hover:bg-emerald-500 disabled:bg-zinc-800 disabled:text-zinc-600 text-white text-xs font-medium transition-colors"
+              title={stale ? "Override the staleness check and send this draft as-is." : undefined}
+              className={`inline-flex items-center gap-1.5 px-3 py-1.5 min-h-[34px] rounded text-white text-xs font-medium transition-colors disabled:bg-zinc-800 disabled:text-zinc-600 ${stale ? "bg-amber-600 hover:bg-amber-500" : "bg-emerald-600 hover:bg-emerald-500"}`}
             >
               {acting ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Send className="w-3.5 h-3.5" />}
-              Send
+              {stale ? "Send anyway" : "Send"}
             </button>
           </>
         )}

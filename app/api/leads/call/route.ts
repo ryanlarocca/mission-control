@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server"
-import { FORWARD_TO, getLeadsClient, getTwilioNumber } from "@/lib/leads"
+import { FORWARD_TO, getLeadsClient, getTwilioNumber, registerManualTouch } from "@/lib/leads"
 
 // Outbound call relay. Click "Call" on a lead card →
 //   1. Insert an outbound `lead_type=call` row (twilio_number=null per the
@@ -177,6 +177,18 @@ export async function POST(request: NextRequest) {
   } catch (e) {
     // Best-effort — never fail the call response on a promote glitch.
     console.error("[leads/call] Status promote threw:", e)
+  }
+
+  // A placed outbound call is a manual touch — it stands in for the next
+  // drip. Reset the cadence clock + skip any pending/approved drip on the
+  // cluster so a contact Ryan just called isn't left pinned to the top of
+  // the Follow Ups queue by a stale drip. Best-effort: the call already
+  // went through; a missed reset just re-surfaces on the next engine pass.
+  try {
+    const sb = getLeadsClient()
+    await registerManualTouch(sb, { id: leadId, caller_phone: leadPhone, email: null })
+  } catch (e) {
+    console.error("[leads/call] manual-touch cadence reset threw:", e)
   }
 
   return NextResponse.json({ success: true, callSid, leadId })

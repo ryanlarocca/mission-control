@@ -18,9 +18,17 @@ import { getLeadsClient } from "@/lib/leads"
 const SIDECAR_URL = (process.env.SIDECAR_URL || "http://localhost:5799").trim()
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
-export async function POST(_request: NextRequest, { params }: { params: { id: string } }) {
+export async function POST(request: NextRequest, { params }: { params: { id: string } }) {
   const id = params.id
   if (!UUID_RE.test(id)) return NextResponse.json({ error: "invalid id" }, { status: 400 })
+
+  // Body is optional. `{force: true}` bypasses the staleness check below —
+  // the UI sets it on the "Send anyway" branch of the stale-drip prompt.
+  let force = false
+  try {
+    const body = await request.json()
+    if (body && typeof body === "object" && (body as { force?: unknown }).force === true) force = true
+  } catch { /* empty body is fine */ }
 
   try {
     const sb = getLeadsClient()
@@ -39,7 +47,9 @@ export async function POST(_request: NextRequest, { params }: { params: { id: st
     // Staleness check on pending/failed rows: if a non-drip event happened on
     // the cluster after the row was queued, the draft is stale — auto-skip.
     // (Approved rows already passed this check when Ryan approved them.)
-    if (row.status === "pending" || row.status === "failed") {
+    // `force=true` lets the UI bypass this when Ryan explicitly picks "Send
+    // anyway" on the stale-drip prompt.
+    if ((row.status === "pending" || row.status === "failed") && !force) {
       const { data: lead } = await sb
         .from("leads")
         .select("caller_phone, email")
@@ -52,8 +62,12 @@ export async function POST(_request: NextRequest, { params }: { params: { id: st
         const { data: newer } = await q
         const stale = (newer || []).some(r => r.lead_type && !(r.lead_type as string).startsWith("drip_"))
         if (stale) {
-          await sb.from("drip_queue").update({ status: "skipped", error: "stale_after_human_reply" }).eq("id", id).eq("status", row.status)
-          return NextResponse.json({ error: "Stale draft — auto-skipped (human contact since queue)." }, { status: 409 })
+          // 409 + `stale: true` so the client can show the Regenerate /
+          // Send anyway / Skip prompt instead of just dropping the row.
+          return NextResponse.json(
+            { error: "Stale draft — contact had activity since this was drafted.", stale: true },
+            { status: 409 }
+          )
         }
       }
 

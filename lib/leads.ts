@@ -1563,7 +1563,7 @@ export async function applyFollowupOnlyResult(
 
   const { data: existing } = await sb
     .from("leads")
-    .select("name, property_address, email, offer_amount, offer_verbalized_at, created_at")
+    .select("name, property_address, caller_phone, email, offer_amount, offer_verbalized_at, created_at")
     .eq("id", leadId)
     .maybeSingle()
 
@@ -1607,6 +1607,20 @@ export async function applyFollowupOnlyResult(
         (existing?.property_address as string | null) || result.property_address || null,
       reason_text: result.followup_reason || null,
     })
+    // AI-driven DNC writes status=dead directly (no /api/leads PATCH), so the
+    // PATCH route's halt-outreach sweep never runs. Call it here too, or any
+    // pending/approved drips on the cluster stay live and re-surface in the
+    // Follow Ups queue for a contact we just killed.
+    try {
+      await haltOutreachForCluster(sb, {
+        id: leadId,
+        caller_phone: (existing?.caller_phone as string | null) ?? null,
+        email: (existing?.email as string | null) ?? null,
+        is_dnc: true,
+      })
+    } catch (e) {
+      console.warn(`[followup-only] halt-outreach sweep failed for ${leadId}:`, e instanceof Error ? e.message : String(e))
+    }
   }
 }
 
@@ -1725,6 +1739,20 @@ export async function applyAnalyzeCallResult(
         (existing?.property_address as string | null) || result.property_address || null,
       reason_text: result.followup_reason || null,
     })
+    // AI-driven DNC writes status=dead directly (no /api/leads PATCH), so the
+    // PATCH route's halt-outreach sweep never runs. Call it here too, or any
+    // pending/approved drips on the cluster stay live and re-surface in the
+    // Follow Ups queue for a contact we just killed.
+    try {
+      await haltOutreachForCluster(sb, {
+        id: leadId,
+        caller_phone: (existing?.caller_phone as string | null) ?? null,
+        email: (existing?.email as string | null) ?? null,
+        is_dnc: true,
+      })
+    } catch (e) {
+      console.warn(`[analyze-call] halt-outreach sweep failed for ${leadId}:`, e instanceof Error ? e.message : String(e))
+    }
   }
 
   // Option B — relationships self-heal (Sheet→Supabase migration, 2026-05-22).

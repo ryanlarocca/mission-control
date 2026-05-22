@@ -49,6 +49,13 @@ export interface NextTouch {
   // preview and Edit the message without a second fetch.
   message: string | null
   subject: string | null
+  // True when the queued drip's draft was rendered before a non-drip event
+  // landed on the cluster (a manual call/text/email since the engine wrote
+  // this row). The send route's staleness check will auto-skip the row in
+  // that case — the UI surfaces a "stale" badge so Ryan knows before he
+  // clicks Send and can choose Regenerate / Send anyway / Skip instead.
+  // False for forecasts and for fresh queued drips with no newer activity.
+  stale: boolean
 }
 
 export interface NextTouchSummary {
@@ -71,6 +78,10 @@ export interface QueuedDrip {
   createdAt: string // ISO — when the engine queued it
   message: string | null
   subject: string | null
+  // True when there's a non-drip event on the cluster after `createdAt` —
+  // the draft pre-dates a manual touch and the send route's staleness check
+  // will auto-skip it. Computed by `/api/follow-ups`. Defaults to false.
+  stale?: boolean
 }
 
 export interface NextTouchInput {
@@ -178,6 +189,7 @@ function resolveDripTouch(input: NextTouchInput): NextTouch | null {
       queueId: q.id,
       message: q.message,
       subject: q.subject,
+      stale: q.stale === true,
     }
   }
 
@@ -196,7 +208,19 @@ function resolveDripTouch(input: NextTouchInput): NextTouch | null {
   const baseMs = input.lastDripSentAt
     ? new Date(input.lastDripSentAt).getTime()
     : new Date(input.createdAt).getTime() + campaign.entryDelayHours * HOUR_MS
-  const due = new Date(baseMs + next.delayHours * HOUR_MS).toISOString()
+  // Entry-touch floor — mirror drip-engine.js `entryHoldMs`. The engine holds
+  // the very first touch (drip_touch_number 0/null → touch #1) until BOTH the
+  // touch's own delay AND the campaign's entryDelayHours grace period have
+  // elapsed: max(next.delayHours, entryDelayHours). Earlier this floor was
+  // only applied in the lastDripSentAt-is-null branch above, so once a row
+  // had a last_drip_sent_at the forecast marked touch #1 due `entryDelayHours
+  // − delayHours` too early — the UI showed "Prepare", the engine returned
+  // `not_due`, and the click silently wrote nothing.
+  const isEntryTouch = (input.dripTouchNumber ?? 0) === 0 && next.touchNumber === 1
+  const effectiveDelayHours = isEntryTouch
+    ? Math.max(next.delayHours, campaign.entryDelayHours)
+    : next.delayHours
+  const due = new Date(baseMs + effectiveDelayHours * HOUR_MS).toISOString()
 
   return {
     kind: "drip",
@@ -209,6 +233,7 @@ function resolveDripTouch(input: NextTouchInput): NextTouch | null {
     queueId: null,
     message: null,
     subject: null,
+    stale: false,
   }
 }
 
@@ -227,6 +252,7 @@ function resolveCallTouch(input: NextTouchInput): NextTouch | null {
     queueId: null,
     message: null,
     subject: null,
+    stale: false,
   }
 }
 

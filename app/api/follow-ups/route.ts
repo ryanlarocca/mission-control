@@ -232,6 +232,13 @@ export async function GET(_request: NextRequest) {
       if (status !== "pending" && status !== "approved") continue
       const lead = leadById.get(row.lead_id as string)
       if (!lead) continue
+      // A pending/approved drip whose own lead row is dead / DNC / junk is a
+      // stale artifact — the lead was killed after the engine queued the
+      // touch (e.g. an AI analyzer set status=dead without running the halt
+      // sweep). Never surface it as an actionable worklist row. The engine
+      // already filters these on its hourly pass; this is the read-side
+      // guard so an orphan can't pin a dead contact to the top of the queue.
+      if (lead.is_dnc || lead.is_junk || (lead.status ?? "").toLowerCase() === "dead") continue
       const key = clusterKeyOrId({
         caller_phone: lead.caller_phone,
         email: lead.email,
@@ -250,12 +257,15 @@ export async function GET(_request: NextRequest) {
     // 5. Resolve each cluster to a worklist row.
     const rows: ContactRow[] = []
     clusters.forEach((leads, key) => {
-      // Skip explicitly killed contacts — DNC, junk, or a dead most-recent
-      // row. These were intentionally removed from outreach.
-      if (leads.some((l) => l.is_dnc || l.is_junk)) return
+      // Skip explicitly killed contacts — if ANY row in the cluster is dead /
+      // DNC / junk, the whole contact is out of outreach. Earlier this only
+      // checked `dead` on the most-recent row, which left a contact in the
+      // queue when an older row was killed; Ryan's expectation (2026-05-22)
+      // is that marking any single row dead/junk/DNC removes the whole 6-7
+      // row cluster from all communication.
+      if (leads.some((l) => l.is_dnc || l.is_junk || (l.status ?? "").toLowerCase() === "dead")) return
       const byRecent = [...leads].sort((a, b) => b.created_at.localeCompare(a.created_at))
       const rep = byRecent[0]
-      if ((rep.status ?? "").toLowerCase() === "dead") return
 
       // A snoozed drip defers the cluster's whole drip side — drop both the
       // queued row (already excluded above) and the cadence forecast.
@@ -269,6 +279,19 @@ export async function GET(_request: NextRequest) {
         (a.created_at as string).localeCompare(b.created_at as string)
       )
       const qRow = liveQueue[0]
+      // Staleness — mirrors the send route's check. If any non-drip lead row
+      // on the cluster lands AFTER the queued drip was written, the draft
+      // pre-dates that activity and the send route will auto-skip it. We
+      // surface this as a `stale` flag so the UI badges the row before Ryan
+      // clicks Send (rather than the click silently killing the drip).
+      const qCreatedAt = qRow ? (qRow.created_at as string) : null
+      const stale = qCreatedAt
+        ? leads.some((l) =>
+            l.created_at > qCreatedAt &&
+            !!l.lead_type &&
+            !l.lead_type.startsWith("drip_"),
+          )
+        : false
       const queuedDrip: QueuedDrip | null = qRow
         ? {
             id: qRow.id as string,
@@ -278,6 +301,7 @@ export async function GET(_request: NextRequest) {
             createdAt: qRow.created_at as string,
             message: (qRow.message as string | null) ?? null,
             subject: (qRow.subject as string | null) ?? null,
+            stale,
           }
         : null
 
