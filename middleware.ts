@@ -8,9 +8,6 @@ const SESSION_COOKIE = "mc_session"
 const PUBLIC_PATHS = [
   "/login",
   "/api/auth",
-  // Contact CRUD for the COI Addition skill — server-side scripts with no
-  // browser session. The route enforces its own MC_API_KEY auth.
-  "/api/relationships",
   "/api/leads/voice",
   "/api/leads/sms",
   // Twilio fetches these for outbound call relay (initiated from /api/leads/call,

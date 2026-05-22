@@ -1,6 +1,5 @@
 import { NextResponse } from "next/server"
 import { getLeadsClient } from "@/lib/leads"
-import { safeEqual } from "@/lib/session"
 import { normalizeCategory } from "@/lib/crms"
 import { fetchAllRelationships, to10Digit } from "@/lib/relationships"
 
@@ -15,17 +14,9 @@ export const dynamic = "force-dynamic"
 
 const VALID_TIERS = new Set(["A", "B", "C", "D", "E"])
 
-// /api/relationships is a middleware PUBLIC_PATH so server-side callers (the
-// COI Addition scripts, which have no browser session) can reach it — the
-// route enforces its own static-key auth here. MC_API_KEY lives in env.
-function rejectIfNoKey(request: Request): NextResponse | null {
-  const expected = process.env.MC_API_KEY
-  const provided = request.headers.get("x-api-key")
-  if (!expected || !provided || !safeEqual(provided, expected)) {
-    return NextResponse.json({ error: "unauthorized" }, { status: 401 })
-  }
-  return null
-}
+// Auth: this route stays behind the normal mc_session middleware. The COI
+// Addition scripts (no browser session) mint a fresh session token from
+// MC_SESSION_SECRET — no separate API key / Vercel env var needed.
 
 function normName(s: unknown): string {
   return String(s ?? "").toLowerCase().split(/\s+/).filter(Boolean).join(" ")
@@ -39,8 +30,6 @@ function toE164(phone: unknown): string | null {
 // GET — duplicate search by name (exact/partial), phone (last-10), email.
 // Mirrors the old check-duplicate.py semantics.
 export async function GET(request: Request) {
-  const denied = rejectIfNoKey(request)
-  if (denied) return denied
   try {
     const url = new URL(request.url)
     const qName = normName(url.searchParams.get("name"))
@@ -87,8 +76,6 @@ export async function GET(request: Request) {
 // POST — create a contact. Caller is expected to have run the GET dedup
 // check first (the COI Addition skill does).
 export async function POST(request: Request) {
-  const denied = rejectIfNoKey(request)
-  if (denied) return denied
   try {
     const body = await request.json()
     const name = String(body.name ?? "").trim()
@@ -130,8 +117,6 @@ export async function POST(request: Request) {
 // PATCH — update fields on an existing contact (fix a missing phone/email,
 // rename, re-tier). Only the fields present in the body are touched.
 export async function PATCH(request: Request) {
-  const denied = rejectIfNoKey(request)
-  if (denied) return denied
   try {
     const body = await request.json()
     const id = String(body.id ?? "")
