@@ -37,6 +37,7 @@ interface Props {
   onSendToast: (msg: string) => void
   onNotesSaved: (id: string, notes: string) => void
   onCategoryChanged?: (id: string, category: string) => void
+  onTierChanged?: (id: string, tier: string) => void
 }
 
 const CATEGORY_OPTIONS = ["Agent", "Vendor", "Personal", "PM", "Investor", "PrivateMoney", "Seller"] as const
@@ -74,6 +75,16 @@ const CATEGORY_LABEL: Record<CategoryOption, string> = {
   PM: "PM", Investor: "Investor", PrivateMoney: "Private Money", Seller: "Seller",
 }
 
+const TIERS = ["A", "B", "C", "D", "E"] as const
+
+const tierStyle: Record<string, string> = {
+  A: "bg-amber-500/20 text-amber-400 border-amber-500/30",
+  B: "bg-blue-500/20 text-blue-400 border-blue-500/30",
+  C: "bg-zinc-500/20 text-zinc-400 border-zinc-500/30",
+  D: "bg-purple-500/20 text-purple-400 border-purple-500/30",
+  E: "bg-zinc-700/20 text-zinc-600 border-zinc-700/30",
+}
+
 function coerceCategory(raw: string): CategoryOption {
   const s = (raw || "").trim()
   if (s === "Property Manager") return "PM"
@@ -92,7 +103,7 @@ function formatDateTime(iso: string): string {
   })
 }
 
-export function ContactDetailModal({ contact, onClose, onSendToast, onNotesSaved, onCategoryChanged }: Props) {
+export function ContactDetailModal({ contact, onClose, onSendToast, onNotesSaved, onCategoryChanged, onTierChanged }: Props) {
   const [history, setHistory] = useState<InteractionEntry[]>([])
   const [loadingHistory, setLoadingHistory] = useState(true)
   const [notes, setNotes] = useState(contact.notes)
@@ -101,6 +112,7 @@ export function ContactDetailModal({ contact, onClose, onSendToast, onNotesSaved
   const [quickMessage, setQuickMessage] = useState("")
   const [categoryPickerOpen, setCategoryPickerOpen] = useState(false)
   const [savingCategory, setSavingCategory] = useState(false)
+  const [savingTier, setSavingTier] = useState(false)
   const categoryPickerRef = useRef<HTMLDivElement>(null)
 
   const currentCategory = coerceCategory(contact.category)
@@ -139,6 +151,24 @@ export function ContactDetailModal({ contact, onClose, onSendToast, onNotesSaved
       onSendToast(`Type update failed for ${contact.name}`)
     } finally {
       setSavingCategory(false)
+    }
+  }
+
+  async function handleTierSelect(next: string) {
+    if (next === contact.tier || savingTier) return
+    setSavingTier(true)
+    try {
+      const res = await fetch("/api/crms/tier", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: contact.id, tier: next }),
+      })
+      if (!res.ok) throw new Error()
+      onTierChanged?.(contact.id, next)
+    } catch {
+      onSendToast(`Tier update failed for ${contact.name}`)
+    } finally {
+      setSavingTier(false)
     }
   }
 
@@ -291,7 +321,24 @@ export function ContactDetailModal({ contact, onClose, onSendToast, onNotesSaved
                   </div>
                 )}
               </div>
-              <span className="text-xs text-zinc-500">· Tier {contact.tier}</span>
+              <span className="text-xs text-zinc-600 ml-1">Tier</span>
+              {TIERS.map(t => (
+                <button
+                  key={t}
+                  type="button"
+                  onClick={() => handleTierSelect(t)}
+                  disabled={savingTier}
+                  title={t === "E" ? "Non-recurring — excluded from the queue" : t === "D" ? "Yearly cadence" : `Tier ${t}`}
+                  className={`text-xs font-bold px-1.5 py-0.5 rounded border leading-none transition-colors disabled:opacity-50 ${
+                    contact.tier === t
+                      ? tierStyle[t]
+                      : "bg-transparent text-zinc-600 border-zinc-800 hover:text-zinc-300 hover:border-zinc-600"
+                  }`}
+                >
+                  {t}
+                </button>
+              ))}
+              {savingTier && <Loader2 className="w-3 h-3 text-zinc-500 animate-spin" />}
             </div>
           </div>
           <button onClick={onClose} className="text-zinc-500 hover:text-zinc-200 p-1">

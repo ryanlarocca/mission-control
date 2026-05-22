@@ -298,17 +298,26 @@ Now write a message to ${firstName} in this same voice.
 `
 }
 
+// Prepended when Ryan has never contacted this person — overrides the
+// preamble's "write a reconnect message" fallback so a first-ever outreach
+// never claims a past relationship.
+const NEW_CONTACT_RULE = `FIRST-EVER OUTREACH — Ryan has NEVER contacted this person before. Do NOT write "it's been a while", "been a minute", "since we last connected", "reconnect", "reaching back out", or imply any prior conversation or relationship. Write a genuine first introduction.
+
+`
+
 function buildPrompt(
   type: ContactType,
   modality: Modality,
   firstName: string,
   notes: string,
-  voiceExamples: string[] = []
+  voiceExamples: string[] = [],
+  everContacted = true
 ): string {
   const base = lookupPrompt(PROMPTS, type, modality)
   const currentYear = String(new Date().getFullYear())
   const voiceBlock = buildVoiceBlock(voiceExamples, firstName)
-  return (CONTEXT_FILTER_PREAMBLE + voiceBlock + base)
+  const newContactRule = everContacted ? "" : NEW_CONTACT_RULE
+  return (newContactRule + CONTEXT_FILTER_PREAMBLE + voiceBlock + base)
     .replace(/{currentYear}/g, currentYear)
     .replace(/{name}/g, firstName)
     .replace(/{notes}/g, notes || "No notes available.")
@@ -339,11 +348,29 @@ function savePrefs(prefs: Record<string, PrefRecord>) {
   } catch {}
 }
 
+// Role / descriptor words that get entered ahead of a real name in the BoB
+// ("Painter Art", "Realtor Mike", "Agent Smith"). Never use one as a first name.
+const ROLE_WORDS = new Set([
+  "agent", "agents", "realtor", "realtors", "broker", "brokers", "painter",
+  "plumber", "contractor", "handyman", "roofer", "electrician", "landscaper",
+  "vendor", "investor", "lender", "seller", "buyer", "wholesaler",
+  "mr", "mrs", "ms", "dr",
+])
+
+// First real name from a contact name — skips leading role/descriptor words
+// so "Painter Art" → "Art" and "Realtor Mike Jones" → "Mike". Returns "" when
+// there's no usable name (caller then blocks the message).
+function extractFirstName(name: string): string {
+  for (const t of String(name || "").trim().split(/\s+/)) {
+    const clean = t.replace(/[^a-zA-Z]/g, "")
+    if (clean.length >= 2 && !ROLE_WORDS.has(clean.toLowerCase())) return clean
+  }
+  return ""
+}
+
 function isBadFirstName(first: string): boolean {
-  if (!first) return true
-  if (first.length < 2) return true
-  if (/^agent$/i.test(first)) return true
-  return false
+  if (!first || first.length < 2) return true
+  return ROLE_WORDS.has(first.toLowerCase())
 }
 
 // ── Routes ─────────────────────────────────────────────────────────────────
@@ -352,13 +379,16 @@ export async function POST(request: Request) {
   try {
     const body = await request.json()
     const { name, phone, notes, hasNotes, savePreference } = body
+    // Default true (safe): only a contact the UI explicitly flags as never
+    // contacted gets the first-outreach prompt rule.
+    const everContacted = body.everContacted !== false
 
     const type = normalizeType(body.category ?? body.contactType ?? body.type)
     const modality = normalizeModality(body.modality, type)
 
-    const firstName = (name || "").trim().split(/\s+/)[0] || ""
+    const firstName = extractFirstName(name)
     if (isBadFirstName(firstName)) {
-      return NextResponse.json({ error: "Bad contact data — fix name in sheet" }, { status: 400 })
+      return NextResponse.json({ error: "Bad contact data — fix the contact's name" }, { status: 400 })
     }
 
     if (savePreference && phone) {
@@ -383,7 +413,7 @@ export async function POST(request: Request) {
 
     // Voice few-shot examples (dynamic — from Log tab, 5-min cache)
     const voiceExamples = await fetchVoiceExamples(type, modality, 5)
-    const prompt = buildPrompt(type, modality, firstName, notes, voiceExamples)
+    const prompt = buildPrompt(type, modality, firstName, notes, voiceExamples, everContacted)
 
     const reqBody = JSON.stringify({
       model: MODEL,

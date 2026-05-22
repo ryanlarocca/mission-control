@@ -435,13 +435,14 @@ function CRMSTabInner() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          name:     contact.name,
-          phone:    contact.phone,
-          tier:     contact.tier,
-          category: contact.type,
-          modality: mod,
-          notes:    contact.notes,
-          hasNotes: contact.hasNotes,
+          name:          contact.name,
+          phone:         contact.phone,
+          tier:          contact.tier,
+          category:      contact.type,
+          modality:      mod,
+          notes:         contact.notes,
+          hasNotes:      contact.hasNotes,
+          everContacted: contact.lastContact !== "never",
         }),
         signal: controller.signal,
       })
@@ -1298,6 +1299,12 @@ function CRMSTabInner() {
                 generate(updated, nextMod, true)
               }
             }
+          }}
+          onTierChanged={(id, newTier) => {
+            const patch = (c: CRMSContact) =>
+              c.id === id ? { ...c, tier: newTier as Tier } : c
+            setContacts(prev => prev.map(patch))
+            setAllContacts(prev => prev.map(patch))
           }}
         />
       )}
