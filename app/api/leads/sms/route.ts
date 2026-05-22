@@ -10,6 +10,7 @@ import {
   parseTwilioBody,
   sendTelegramAlert,
 } from "@/lib/leads"
+import { scoreLeadSpam, spamAlertLines, spamReviewColumns, type SpamScore } from "@/lib/lead-spam"
 
 // Twilio fires this when a lead texts MFM-A, MFM-B, or the outbound caller-ID
 // number. We log it and alert Ryan; no auto-reply for now.
@@ -51,6 +52,9 @@ export async function POST(request: Request) {
   const isOutboundCallback = to === OUTBOUND_TWILIO_NUMBER
 
   if (from) {
+    // Fake-lead score — assigned in the non-DNC path below, read again at
+    // the Telegram alert (outside the try), so declared at this scope.
+    let spam: SpamScore | null = null
     try {
       const sb = getLeadsClient()
 
@@ -157,6 +161,14 @@ export async function POST(request: Request) {
         insertRow.drip_campaign_type = existingRow.drip_campaign_type
       }
 
+      // Score the sender's number for fake-lead red flags — Google Ads
+      // leads only for now, fresh leads only (a known returning texter
+      // must not be re-flagged). A text carries only a phone at intake.
+      if (isGoogleAds && !existingRow) {
+        spam = scoreLeadSpam({ phone: from })
+        if (spam.suspicious) Object.assign(insertRow, spamReviewColumns(spam))
+      }
+
       const { data: insertedRow, error } = await sb
         .from("leads")
         .insert(insertRow)
@@ -198,9 +210,10 @@ export async function POST(request: Request) {
 
     const preview = bodyText.length > 300 ? bodyText.slice(0, 300) + "…" : bodyText
     const escaped = preview.replace(/[<>&]/g, c => c === "<" ? "&lt;" : c === ">" ? "&gt;" : "&amp;")
-    void sendTelegramAlert(
-      `💬 New lead text — <b>${source}</b> — ${from}\n"${escaped}"`
-    )
+    const smsAlert = [`💬 New lead text — <b>${source}</b> — ${from}\n"${escaped}"`]
+    // Append the fake-lead warning to the same note — no-op when clean.
+    if (spam) smsAlert.push(...spamAlertLines(spam))
+    void sendTelegramAlert(smsAlert.join("\n"))
   }
 
   return new NextResponse(EMPTY_TWIML, {

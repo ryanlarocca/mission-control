@@ -18,6 +18,7 @@ import {
   sendTelegramAlert,
   triageEmailLead,
 } from "@/lib/leads"
+import { scoreLeadSpam, spamAlertLines, spamReviewColumns } from "@/lib/lead-spam"
 
 // Gmail Push → Pub/Sub → this route. Pub/Sub HTTP push delivers an
 // envelope of the form:
@@ -267,6 +268,15 @@ async function handleAppsScript(payload: AppsScriptPayload): Promise<NextRespons
     : {}
   // Phase 7C-may8 Bug 5: mobile-home / lot-number flag.
   const isJunkAddr = isMobileHome(bodyText) || isMobileHome(subject)
+  // Fake-lead detection — Google Ads leads only for now (direct-mail /
+  // MFM campaigns are a different audience and excluded). Fresh leads
+  // only: a returning known lead must not get re-flagged every time it
+  // replies. `spam` is null for non-Google-Ads or re-engagements, which
+  // suppresses both the review banner and the alert.
+  const spam =
+    cluster || campaign.source_type !== "google_ads"
+      ? null
+      : scoreLeadSpam({ name, email: senderEmail, phone })
   const { data: inserted, error: insertErr } = await sb
     .from("leads")
     .insert({
@@ -288,6 +298,9 @@ async function handleAppsScript(payload: AppsScriptPayload): Promise<NextRespons
       status: triage?.is_dead ? "dead" : inheritedStatus,
       temperature: triage?.temperature ?? null,
       is_junk: isJunkAddr || undefined,
+      // Suspected-fake review banner (suggested_status + reason). {} when
+      // the lead is clean or is a re-engagement — spreads harmlessly.
+      ...(spam ? spamReviewColumns(spam) : {}),
       ...dripFields,
     })
     .select("id")
@@ -335,6 +348,9 @@ async function handleAppsScript(payload: AppsScriptPayload): Promise<NextRespons
     const tempLabel = triage.is_dead ? "DEAD" : triage.temperature.toUpperCase()
     lines.push(`🤖 AI: <b>${tempLabel}</b> — ${escapeHtml(triage.summary)}`)
   }
+  // Append the fake-lead warning to the alert Ryan already gets — one
+  // note with all the context, not a second message. No-op when clean.
+  if (spam) lines.push(...spamAlertLines(spam))
   await sendTelegramAlert(lines.join("\n"))
 
   return NextResponse.json({ ok: true, leadId: inserted?.id })
@@ -472,6 +488,11 @@ async function processSingleMessage(args: {
     : {}
   // Phase 7C-may8 Bug 5: mobile-home / lot-number flag.
   const isJunkAddr = isMobileHome(bodyText) || isMobileHome(subject)
+  // Fake-lead detection — Google Ads + fresh leads only (see handleAppsScript).
+  const spam =
+    cluster || campaign.source_type !== "google_ads"
+      ? null
+      : scoreLeadSpam({ name, email: senderEmail, phone })
   const { data: inserted, error: insertErr } = await sb
     .from("leads")
     .insert({
@@ -491,6 +512,8 @@ async function processSingleMessage(args: {
       status: triage?.is_dead ? "dead" : inheritedStatus,
       temperature: triage?.temperature ?? null,
       is_junk: isJunkAddr || undefined,
+      // Suspected-fake review banner — {} when clean or a re-engagement.
+      ...(spam ? spamReviewColumns(spam) : {}),
       // Persist the Gmail threadId so the Leads-tab card can pull the full
       // back-and-forth via /api/leads/sync-email when Ryan expands it. Falls
       // back to null when the message has no thread (rare — Gmail always
@@ -543,6 +566,8 @@ async function processSingleMessage(args: {
     const tempLabel = triage.is_dead ? "DEAD" : triage.temperature.toUpperCase()
     lines.push(`🤖 AI: <b>${tempLabel}</b> — ${escapeHtml(triage.summary)}`)
   }
+  // Append the fake-lead warning to the alert — no-op when clean.
+  if (spam) lines.push(...spamAlertLines(spam))
   await sendTelegramAlert(lines.join("\n"))
 }
 

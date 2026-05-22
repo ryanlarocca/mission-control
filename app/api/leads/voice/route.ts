@@ -10,6 +10,7 @@ import {
   sendTelegramAlert,
 } from "@/lib/leads"
 import { isAnonymousCaller } from "@/lib/anonymous"
+import { scoreLeadSpam, spamAlertLines, spamReviewColumns, type SpamScore } from "@/lib/lead-spam"
 
 // TwiML voice webhook for LRG Homes Twilio numbers.
 // Flow: log the lead row, then return Dial TwiML so Ryan's cell rings with
@@ -64,6 +65,10 @@ export async function POST(request: Request) {
     // Blocked / withheld caller ID — every such call arrives as the same
     // placeholder ("Anonymous" etc.), so it's NOT a usable contact key.
     const isAnon = isAnonymousCaller(callerPhone)
+    // Fake-lead score — assigned inside the try once `existingRow` is
+    // known, and read again at the Telegram alert below (outside the try),
+    // so it has to be declared out here.
+    let spam: SpamScore | null = null
     // AWAIT the insert — must complete before the function exits.
     try {
       const sb = getLeadsClient()
@@ -132,6 +137,15 @@ export async function POST(request: Request) {
         insertRow.drip_campaign_type = existingRow.drip_campaign_type
       }
 
+      // Score the caller's number for fake-lead red flags — Google Ads
+      // leads only for now, fresh + non-anonymous calls only. (Anonymous
+      // calls are already junked above; a known returning caller must not
+      // be re-flagged.) A call carries only a phone at intake.
+      if (isGoogleAds && !isAnon && !existingRow) {
+        spam = scoreLeadSpam({ phone: callerPhone })
+        if (spam.suspicious) Object.assign(insertRow, spamReviewColumns(spam))
+      }
+
       const { data: insertedRow, error } = await sb
         .from("leads")
         .insert(insertRow)
@@ -171,7 +185,10 @@ export async function POST(request: Request) {
       console.error("[voice] Supabase insert threw:", e)
     }
     // Await so Vercel doesn't kill the in-flight fetch when the response returns.
-    await sendTelegramAlert(`📞 New lead call — <b>${source}</b> — ${callerPhone}`)
+    const callAlert = [`📞 New lead call — <b>${source}</b> — ${callerPhone}`]
+    // Append the fake-lead warning to the same note — no-op when clean.
+    if (spam) callAlert.push(...spamAlertLines(spam))
+    await sendTelegramAlert(callAlert.join("\n"))
   }
 
   return new NextResponse(buildTwiml(twilioNumber), {
