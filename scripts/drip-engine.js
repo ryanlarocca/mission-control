@@ -918,10 +918,15 @@ function escapeHtml(s) {
 // ─── main passes ────────────────────────────────────────────────────────────
 
 async function drainApprovedQueue(sb) {
+  const nowIso = new Date().toISOString()
   const { data: approved, error } = await sb
     .from("drip_queue")
     .select("*")
     .eq("status", "approved")
+    // Respect a snooze on an approved row. Without this, snoozing an
+    // already-approved drip hid it from the UI but the engine still sent
+    // it on the next pass — Snooze looked like a no-op.
+    .or(`snoozed_until.is.null,snoozed_until.lte.${nowIso}`)
     .order("created_at", { ascending: true })
     .limit(50)
   if (error) {
@@ -943,6 +948,17 @@ async function drainApprovedQueue(sb) {
     if (leadErr || !lead) {
       console.warn(`[drip] queue ${q.id}: lead fetch failed`)
       await sb.from("drip_queue").update({ status: "failed", error: "lead_not_found" }).eq("id", q.id)
+      continue
+    }
+    // Re-check the lead's flags at SEND time — a row approved hours ago may
+    // since have been DNC'd, junked, or marked dead. haltOutreachForCluster
+    // sweeps pending/approved rows when a flag flips, but that sweep is
+    // best-effort; this is the durable backstop so an approved drip never
+    // fires to a lead who opted out after approval.
+    if (lead.is_dnc || lead.is_junk || DRIP_STOP_STATUSES.has(lead.status)) {
+      const reason = lead.is_dnc ? "lead_dnc" : lead.is_junk ? "lead_junk" : `lead_${lead.status}`
+      console.log(`[drip] queue ${q.id}: lead now ${reason} — skipping send`)
+      await sb.from("drip_queue").update({ status: "skipped", error: `superseded:${reason}` }).eq("id", q.id)
       continue
     }
     try {

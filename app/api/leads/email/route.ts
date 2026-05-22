@@ -5,7 +5,9 @@ import { gmail_v1 } from "googleapis"
 // + Haiku triage + Supabase insert can blow past Vercel's 10s default. Bump it.
 export const maxDuration = 30
 import {
+  CAMPAIGN_MAP,
   EMAIL_CAMPAIGN_MAP,
+  FORWARD_TO,
   dedupeClusterStamps,
   getEmailCampaign,
   getGmailClient,
@@ -84,6 +86,12 @@ async function lookupEmailCluster(args: {
       .from("leads")
       .select("status, drip_campaign_type")
       .eq("caller_phone", phone)
+      // Inbound rows only (twilio_number IS NOT NULL) — matching the
+      // voice/sms intake lookups. Without this, the most recent row for the
+      // phone could be an outbound call/SMS Ryan made (twilio_number=null,
+      // status="contacted"), so a brand-new email lead was born "contacted"
+      // and skipped the fresh drip stamp.
+      .not("twilio_number", "is", null)
       .order("created_at", { ascending: false })
       .limit(1)
     if (data?.[0]) return shape(data[0])
@@ -698,12 +706,25 @@ function stripQuoted(text: string): string {
   return out.join("\n").trim()
 }
 
+// LRG's own numbers (last-10-digit form): the Twilio campaign numbers, the
+// outbound caller-ID line, the forward-to cell. A direct-mail reply email
+// routinely quotes the original mailer — which prints Ryan's callback number
+// — so the naive "first 10 digits wins" grabbed Ryan's number and merged the
+// lead onto the wrong cluster. Skip any match that is one of these.
+const LRG_OWN_NUMBERS = new Set(
+  [...Object.keys(CAMPAIGN_MAP), FORWARD_TO].map((n) => n.replace(/\D/g, "").slice(-10))
+)
+
 function extractPhoneFromText(text: string): string | null {
   if (!text) return null
-  const re = /(?:\+?1[\s.\-]*)?\(?(\d{3})\)?[\s.\-]*(\d{3})[\s.\-]*(\d{4})/
-  const m = re.exec(text)
-  if (!m) return null
-  return `${m[1]}${m[2]}${m[3]}`
+  const re = /(?:\+?1[\s.\-]*)?\(?(\d{3})\)?[\s.\-]*(\d{3})[\s.\-]*(\d{4})/g
+  let m: RegExpExecArray | null
+  while ((m = re.exec(text)) !== null) {
+    const digits = `${m[1]}${m[2]}${m[3]}`
+    if (LRG_OWN_NUMBERS.has(digits)) continue // skip Ryan's / Twilio's own numbers
+    return digits
+  }
+  return null
 }
 
 function formatPhoneForAlert(input: string): string {

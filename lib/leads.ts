@@ -28,8 +28,8 @@ export const OUTBOUND_TWILIO_NUMBER = "+16502043247"
 export const GOOGLE_ADS_LANDING_NUMBER = "+16506703914"
 
 // Phase 7C-may8 Bug 6: explicit STOP keywords flag the lead DNC and kill the
-// drip. Match either an exact keyword (single-word "stop") or a substring
-// for multi-word phrases. Lowercase the input and trim before comparing.
+// drip. DNC_KEYWORDS is the reference list; the matching in isDncMessage is
+// deliberately NOT a blanket substring scan — see the comment there.
 export const DNC_KEYWORDS = [
   "stop",
   "unsubscribe",
@@ -38,11 +38,33 @@ export const DNC_KEYWORDS = [
   "opt out",
 ] as const
 
+// Decide whether an inbound message is a Do-Not-Contact / opt-out request.
+//
+// A blanket substring match killed real leads: "I'll stop by Tuesday", "the
+// bus stop", "don't stop reaching out" all contain "stop". So:
+//   - "stop"        → opt-out only when the whole message IS "stop", or
+//                     "stop" is aimed at the contact ("stop texting me")
+//   - "unsubscribe" → unambiguous; match as a whole word anywhere
+//   - multi-word phrases ("do not contact", "remove me", "opt out") →
+//     match as a whole phrase anywhere, word-bounded so e.g. "adopt
+//     outside" does not trip "opt out"
 export function isDncMessage(text: string | null | undefined): boolean {
   if (!text) return false
   const normalized = text.toLowerCase().trim()
   if (!normalized) return false
-  return DNC_KEYWORDS.some((kw) => normalized === kw || normalized.includes(kw))
+  // Whole message is a bare single-word opt-out (allow trailing punctuation).
+  const bare = normalized.replace(/[.!?,\s]+$/, "")
+  if (bare === "stop" || bare === "unsubscribe") return true
+  if (/\bunsubscribe\b/.test(normalized)) return true
+  // "stop" only counts when it's aimed at the contact channel itself.
+  if (/\bstop\s+(texting|contacting|messaging|calling|emailing|mailing|reaching|sending)\b/.test(normalized)) {
+    return true
+  }
+  // Unambiguous multi-word opt-out phrases, word-bounded.
+  for (const phrase of ["do not contact", "remove me", "opt out"]) {
+    if (new RegExp(`\\b${phrase.replace(/ /g, "\\s+")}\\b`).test(normalized)) return true
+  }
+  return false
 }
 
 // Phase 7C-may8 Bug 5: mobile-home / lot detection. Direct mail and Google
