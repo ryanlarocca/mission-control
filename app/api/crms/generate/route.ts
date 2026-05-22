@@ -224,6 +224,7 @@ type LogRow = {
   action: string
   category: string
   message: string
+  replied: boolean
 }
 
 const VOICE_CACHE_TTL_MS = 5 * 60 * 1000
@@ -238,7 +239,9 @@ async function loadLogRows(): Promise<LogRow[]> {
     const supabase = getLeadsClient()
     const { data, error } = await supabase
       .from("relationship_touches")
-      .select("occurred_at, modality, action, category_at_touch, message")
+      .select("occurred_at, modality, action, category_at_touch, message, replied_at")
+      .order("occurred_at", { ascending: false })
+      .limit(1000)
     if (error) throw error
     const rows: LogRow[] = (data ?? []).map((r) => ({
       timestamp: r.occurred_at ?? "",
@@ -246,6 +249,7 @@ async function loadLogRows(): Promise<LogRow[]> {
       action: r.action ?? "",
       category: r.category_at_touch ?? "",
       message: r.message ?? "",
+      replied: r.replied_at != null,
     }))
     voiceCache = { data: rows, fetchedAt: now }
     return rows
@@ -265,6 +269,14 @@ function rowMatchesModality(row: LogRow, modality: Modality, type: ContactType):
   return normalizeModality(row.modality, type) === modality
 }
 
+// Narrow a pool of sent messages to the most relevant for (type, modality):
+// exact type + modality, falling back to same-type/any-modality if thin.
+function narrowExamples(pool: LogRow[], type: ContactType, modality: Modality): LogRow[] {
+  const exact = pool.filter(r => rowMatchesType(r, type) && rowMatchesModality(r, modality, type))
+  if (exact.length >= 3) return exact
+  return pool.filter(r => rowMatchesType(r, type))
+}
+
 async function fetchVoiceExamples(
   type: ContactType,
   modality: Modality,
@@ -275,15 +287,13 @@ async function fetchVoiceExamples(
 
   const sent = rows.filter(r => (r.action || "").toLowerCase() === "sent" && r.message && r.message.trim())
 
-  // Pass 1: exact type + modality match
-  let matched = sent.filter(r => rowMatchesType(r, type) && rowMatchesModality(r, modality, type))
+  // Prefer messages that actually got a reply — the AI should mimic what
+  // works, not just what's most recent. Cold-start fallback: if there are
+  // fewer than 3 replied-to examples for this contact type, use all sent.
+  let matched = narrowExamples(sent.filter(r => r.replied), type, modality)
+  if (matched.length < 3) matched = narrowExamples(sent, type, modality)
 
-  // Pass 2: same type, any modality — if we don't have 3+
-  if (matched.length < 3) {
-    matched = sent.filter(r => rowMatchesType(r, type))
-  }
-
-  // Sort by timestamp desc, take the first `limit`
+  // Most recent first, capped at `limit`.
   matched.sort((a, b) => {
     const ta = new Date(a.timestamp).getTime() || 0
     const tb = new Date(b.timestamp).getTime() || 0
