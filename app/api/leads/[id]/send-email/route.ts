@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server"
-import { getGmailClient, getLeadsClient, getMailboxForSource, encodeEmailHeader, detectOfferFromText, applyDetectedOfferToCluster } from "@/lib/leads"
+import { getGmailClient, getLeadsClient, getMailboxForSource, encodeEmailHeader, detectOfferFromText, applyDetectedOfferToCluster, registerManualTouch } from "@/lib/leads"
 
 // Phase 7C — Part 6: send a manual email to a lead from the lead card.
 //
@@ -138,6 +138,15 @@ export async function POST(
         }
       } catch (e) {
         console.warn(`[send-email] offer detection failed for ${id}:`, e instanceof Error ? e.message : String(e))
+      }
+    }
+
+    // Reset the drip cadence clock — same rationale as leads/send/route.ts.
+    if (outboundRow?.id) {
+      try {
+        await registerManualTouch(sb, { id: outboundRow.id, caller_phone: lead.caller_phone, email: recipientEmail })
+      } catch (e) {
+        console.warn(`[send-email] cadence reset failed for ${id}:`, e instanceof Error ? e.message : String(e))
       }
     }
 

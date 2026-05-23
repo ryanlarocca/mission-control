@@ -4,6 +4,7 @@ import {
   applyDetectedOfferToCluster,
   getLeadsClient,
   getTwilioNumber,
+  registerManualTouch,
 } from "@/lib/leads"
 
 // Outbound message endpoint for the Leads + Follow Ups tabs. Sends via the
@@ -211,6 +212,19 @@ export async function POST(request: NextRequest) {
         .update({ status: "contacted" })
         .eq("id", intakeRow.id)
       if (promoteErr) console.error("[leads/send] Status promote failed:", promoteErr)
+    }
+
+    // Reset the drip cadence clock — a manual Send is a real touch. Without
+    // this, last_drip_sent_at stays at its old value and the engine (or the
+    // UI forecast) treats the next drip as immediately due even though Ryan
+    // just sent a message. registerManualTouch also skips any live queue
+    // rows so they don't double-fire alongside this manual message.
+    if (loggedId) {
+      try {
+        await registerManualTouch(sb, { id: loggedId, caller_phone: phone, email: null })
+      } catch (e) {
+        console.warn("[leads/send] cadence reset failed:", e instanceof Error ? e.message : String(e))
+      }
     }
   } catch (e) {
     logError = e instanceof Error ? e.message : String(e)

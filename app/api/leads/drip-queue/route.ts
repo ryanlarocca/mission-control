@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server"
-import { getLeadsClient } from "@/lib/leads"
+import { getLeadsClient, registerManualTouch } from "@/lib/leads"
 
 // Drip queue: read pending/approved/skipped touches for the Mission
 // Control approval UI. Auth-gated by middleware.
@@ -165,6 +165,20 @@ export async function PATCH(request: NextRequest) {
             .update({ status: "skipped", error: "stale_after_human_reply" })
             .eq("id", id)
             .eq("status", "pending")
+          // Stamp the cadence clock so the UI forecast doesn't immediately
+          // show the next touch as overdue. The touch number was already
+          // advanced when the row was queued, so without a clock update the
+          // UI sees "touch N done, N+1 due ???h ago" and surfaces it as
+          // immediately due — the Brian Bernasconi pattern.
+          try {
+            await registerManualTouch(sb, {
+              id: queueRow.lead_id,
+              caller_phone: leadRow?.caller_phone ?? null,
+              email: leadRow?.email ?? null,
+            })
+          } catch (e) {
+            console.warn("[drip-queue:PATCH] stale-skip cadence reset failed:", e instanceof Error ? e.message : String(e))
+          }
           return NextResponse.json(
             { error: "Stale draft — human contact happened since this was queued. Auto-skipped; the engine will regenerate next pass." },
             { status: 409 }
