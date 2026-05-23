@@ -1113,6 +1113,47 @@ function dedupeByCluster(leads) {
   return winners
 }
 
+// Near-term recommended_followup_date across the lead's cluster.
+// Returns YYYY-MM-DD or null. Used to hold drips when Ryan has a call
+// scheduled in the next ~2 weeks — firing a drip text right before is
+// awkward. The date may live on any cluster sibling, so we query by
+// cluster key not by lead id. Window is intentionally tight: LTN and
+// cold-no-signal leads both auto-stamp ~180d-out dates that aren't real
+// scheduled calls — wider window would suppress those drips forever.
+const UPCOMING_FOLLOWUP_WINDOW_DAYS = 14
+async function getClusterUpcomingFollowup(sb, lead) {
+  const today = new Date().toISOString().slice(0, 10)
+  const windowEnd = new Date(Date.now() + UPCOMING_FOLLOWUP_WINDOW_DAYS * 86400000)
+    .toISOString()
+    .slice(0, 10)
+  let q = sb
+    .from("leads")
+    .select("recommended_followup_date")
+    .gte("recommended_followup_date", today)
+    .lte("recommended_followup_date", windowEnd)
+    .order("recommended_followup_date", { ascending: true })
+    .limit(1)
+  if (lead.caller_phone && lead.caller_phone !== "Anonymous") {
+    q = q.eq("caller_phone", lead.caller_phone)
+  } else if (lead.gmail_thread_id) {
+    q = q.eq("gmail_thread_id", lead.gmail_thread_id)
+  } else if (lead.email) {
+    q = q.eq("email", lead.email)
+  } else {
+    return lead.recommended_followup_date
+      && lead.recommended_followup_date >= today
+      && lead.recommended_followup_date <= windowEnd
+      ? lead.recommended_followup_date
+      : null
+  }
+  const { data, error } = await q
+  if (error) {
+    console.warn(`[drip] follow-up lookup failed for ${lead.id}:`, error.message)
+    return null
+  }
+  return data?.[0]?.recommended_followup_date ?? null
+}
+
 // Has this lead got a queued (pending) drip already? If yes we don't queue
 // another touch — the previous one is awaiting Ryan's approval.
 async function hasPendingQueueRow(sb, leadId) {
@@ -1231,6 +1272,14 @@ async function processLead(sb, lead) {
     : entryHoldMs
   if (sinceLast < effectiveHoldMs) {
     return { skipped: `not_due (need ${(effectiveHoldMs - sinceLast) / 3600000 | 0}h more)` }
+  }
+
+  // HOLD if Ryan has a scheduled call follow-up coming up — firing a drip
+  // text right before the call is awkward. The follow-up date may live on
+  // any cluster sibling, not necessarily this row.
+  const upcomingFollowup = await getClusterUpcomingFollowup(sb, lead)
+  if (upcomingFollowup) {
+    return { skipped: `upcoming_call_followup:${upcomingFollowup}` }
   }
 
   // HOLD if there's been activity in the conversation since last touch.
