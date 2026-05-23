@@ -1216,8 +1216,21 @@ async function processLead(sb, lead) {
     && nextTouch.touchNumber === 1
     ? Math.max(requiredMs, campaign.entryDelayHours * 3600 * 1000)
     : requiredMs
-  if (sinceLast < entryHoldMs) {
-    return { skipped: `not_due (need ${(entryHoldMs - sinceLast) / 3600000 | 0}h more)` }
+
+  // 14-day floor for leads who've genuinely replied (engaged / gone_quiet).
+  // Cold cadence is too aggressive once a real conversation has started.
+  // never_responded + first_contact stay on the cold schedule; LTN already
+  // uses 60-180d intervals so the floor doesn't apply.
+  const responsiveness = await extractResponsivenessSignals(lead, sb)
+  const ENGAGED_MIN_DELAY_MS = 14 * 24 * 3600 * 1000
+  const effectiveHoldMs = (
+    lead.drip_campaign !== "long_term_nurture" &&
+    (responsiveness.state === "engaged" || responsiveness.state === "gone_quiet")
+  )
+    ? Math.max(entryHoldMs, ENGAGED_MIN_DELAY_MS)
+    : entryHoldMs
+  if (sinceLast < effectiveHoldMs) {
+    return { skipped: `not_due (need ${(effectiveHoldMs - sinceLast) / 3600000 | 0}h more)` }
   }
 
   // HOLD if there's been activity in the conversation since last touch.
@@ -1229,7 +1242,6 @@ async function processLead(sb, lead) {
   }
 
   const history = await buildConversationHistory(lead, sb)
-  const responsiveness = await extractResponsivenessSignals(lead, sb)
   const hardStop = detectHardStop(history)
   if (hardStop) {
     console.log(`[drip] HARD STOP lead ${lead.id}: matched "${hardStop}" — flagging DNC + dead`)
