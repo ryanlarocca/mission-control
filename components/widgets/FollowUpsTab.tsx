@@ -181,7 +181,13 @@ export function FollowUpsTab() {
       const res = await fetch("/api/follow-ups", { cache: "no-store" })
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
       setData(await res.json() as FollowUpsPayload)
-      setErr(null)
+      // Only clear the error banner on an explicit (non-silent) load —
+      // initial mount or a manual Refresh. A SILENT refetch (the 30s poll,
+      // or the refetch fired right after a send) must NOT wipe an action
+      // error: that was the "blink, no message sent" bug — a stale-drip 409
+      // set the banner, the immediate silent refetch cleared it a split
+      // second later, so Ryan saw a flash and no explanation.
+      if (!silent) setErr(null)
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e))
     } finally {
@@ -236,13 +242,34 @@ export function FollowUpsTab() {
       // anyway / Skip; this catches the race where stale flips true between
       // fetch and click on a row the badge didn't cover yet.
       if (res.status === 409 && (body as { stale?: boolean })?.stale) {
+        // Stale draft. Mark the row stale IN PLACE so the DripBlock shows the
+        // Regenerate / Send anyway / Skip controls and the error banner stays
+        // put. We deliberately do NOT refetch here — the old code fired a
+        // silent refetch that immediately cleared this very banner, producing
+        // the "blink with no explanation".
         setErr((body as { error?: string })?.error || "Contact had activity since this was drafted — pick Regenerate / Send anyway / Skip.")
-        void fetchData(true)
+        setData(prev => prev ? {
+          ...prev,
+          rows: prev.rows.map(r => {
+            if (r.clusterKey !== row.clusterKey) return r
+            const mark = (t: NextTouch | null) =>
+              t && t.queueId === queueId ? { ...t, stale: true } : t
+            return { ...r, primary: mark(r.primary)!, secondary: mark(r.secondary) }
+          }),
+        } : prev)
         return
       }
       if (!res.ok && res.status !== 202) throw new Error((body as { error?: string })?.error || `HTTP ${res.status}`)
-      showToast(force ? "Sending anyway ✓" : "Sent ✓")
-      dropRow(row.clusterKey)
+      // The route returns `triggered:false` when it couldn't reach the send
+      // engine right now — the row is approved and the hourly pass will send
+      // it, so say so honestly instead of a false "Sent ✓".
+      const triggered = (body as { triggered?: boolean })?.triggered !== false
+      if (triggered) {
+        showToast(force ? "Sending anyway ✓" : "Sent ✓")
+        dropRow(row.clusterKey)
+      } else {
+        showToast("Queued — sends within the hour (send engine wasn't reachable just now)")
+      }
       setTimeout(() => void fetchData(true), 6000)
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e))
@@ -931,15 +958,18 @@ function CallBlock({
             Call
           </button>
         )}
-        {row.email && (
-          <button
-            onClick={onEmail}
-            disabled={acting}
-            className="inline-flex items-center gap-1.5 px-2.5 py-1.5 min-h-[34px] rounded bg-emerald-900/30 border border-emerald-800/60 text-emerald-200 hover:bg-emerald-900/50 text-xs font-medium transition-colors disabled:opacity-60"
-          >
-            <Mail className="w-3.5 h-3.5" /> Email
-          </button>
-        )}
+        {/* Email is always offered — even when no address is on file yet, the
+            compose modal lets Ryan type one (and persists it to the lead).
+            Previously this was gated on `row.email`, so phone-only leads (most
+            inbound SMS/call leads) showed Call + Text but never Email. */}
+        <button
+          onClick={onEmail}
+          disabled={acting}
+          title={row.email ? `Email ${row.email}` : "Email — no address on file yet; you can add one"}
+          className="inline-flex items-center gap-1.5 px-2.5 py-1.5 min-h-[34px] rounded bg-emerald-900/30 border border-emerald-800/60 text-emerald-200 hover:bg-emerald-900/50 text-xs font-medium transition-colors disabled:opacity-60"
+        >
+          <Mail className="w-3.5 h-3.5" /> Email
+        </button>
         {row.phone && (
           <button
             onClick={onText}
@@ -1328,6 +1358,10 @@ function ComposeModal({
   const threaded = isEmail && !!row.emailReplyLeadId
   const [subject, setSubject] = useState("")
   const [body, setBody] = useState("")
+  // Recipient address. Prefilled from the lead when known; editable, and the
+  // only way to email a phone-only lead that has no address on file yet.
+  const [to, setTo] = useState(row.email ?? "")
+  const needsRecipient = isEmail && !threaded && !row.email
   const [drafting, setDrafting] = useState(false)
   const [sending, setSending] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -1365,6 +1399,11 @@ function ComposeModal({
       setError("Subject is required for a new email.")
       return
     }
+    const recipient = to.trim()
+    if (needsRecipient && !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(recipient)) {
+      setError("Enter a valid recipient email address.")
+      return
+    }
     setSending(true)
     setError(null)
     try {
@@ -1385,7 +1424,11 @@ function ComposeModal({
         res = await fetch(`/api/leads/${row.leadId}/send-email`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ subject: subject.trim(), body: text }),
+          // `to` is sent only when the lead has no stored address — the route
+          // uses it as the recipient and saves it back to the lead so future
+          // touches know it. When the lead already has an email, omit it and
+          // let the route resolve it server-side (handles cluster siblings).
+          body: JSON.stringify({ subject: subject.trim(), body: text, ...(needsRecipient ? { to: recipient } : {}) }),
         })
       }
       const data = await res.json().catch(() => ({}))
@@ -1433,6 +1476,15 @@ function ComposeModal({
             <div className="text-xs text-zinc-400 bg-zinc-900/60 rounded px-2.5 py-1.5">
               <span className="text-zinc-500">📝 Notes:</span> {row.notes}
             </div>
+          )}
+          {needsRecipient && (
+            <input
+              type="email"
+              value={to}
+              onChange={e => setTo(e.target.value)}
+              placeholder="Recipient email (no address on file — add one)"
+              className="w-full text-sm bg-zinc-900 border border-amber-800/60 rounded px-2.5 py-2 text-zinc-100 placeholder-amber-200/40 focus:outline-none focus:border-amber-600"
+            />
           )}
           {isEmail && !threaded && (
             <input

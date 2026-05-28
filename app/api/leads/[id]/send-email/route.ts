@@ -39,7 +39,7 @@ export async function POST(
   const { id } = await ctx.params
   if (!id) return NextResponse.json({ error: "id required" }, { status: 400 })
 
-  let body: { subject?: unknown; body?: unknown }
+  let body: { subject?: unknown; body?: unknown; to?: unknown }
   try {
     body = await request.json()
   } catch {
@@ -47,6 +47,14 @@ export async function POST(
   }
   const subject = typeof body.subject === "string" ? body.subject.trim() : ""
   const text = typeof body.body === "string" ? body.body.trim() : ""
+  // Optional recipient override — supplied by the Follow Ups composer when the
+  // lead has no email on file yet. Lets Ryan email a phone-only lead by typing
+  // an address; we use it as the recipient AND persist it to the lead below so
+  // future touches know it.
+  const toOverride =
+    typeof body.to === "string" && /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(body.to.trim())
+      ? body.to.trim()
+      : null
   if (!subject) return NextResponse.json({ error: "subject required" }, { status: 400 })
   if (!text) return NextResponse.json({ error: "body required" }, { status: 400 })
 
@@ -76,6 +84,13 @@ export async function POST(
       else sibQ = sibQ.eq("id", id) // no cluster key — this just re-checks the row
       const { data: sib } = await sibQ
       recipientEmail = (sib?.[0]?.email as string | undefined) ?? null
+    }
+    // Caller-supplied address is the last resort — but it's also a real signal
+    // (Ryan typed it), so stamp it onto the target row for future touches.
+    if (!recipientEmail && toOverride) {
+      recipientEmail = toOverride
+      const { error: stampErr } = await sb.from("leads").update({ email: toOverride }).eq("id", id)
+      if (stampErr) console.warn(`[send-email] couldn't persist typed email on ${id}:`, stampErr.message)
     }
     if (!recipientEmail) {
       return NextResponse.json({ error: "lead has no email address" }, { status: 400 })

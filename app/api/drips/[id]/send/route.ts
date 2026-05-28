@@ -81,19 +81,33 @@ export async function POST(request: NextRequest, { params }: { params: { id: str
       if (upErr) return NextResponse.json({ error: upErr.message }, { status: 500 })
     }
 
-    // Kick the engine. Fire-and-forget — engine writes results to Supabase.
+    // Kick the engine to drain NOW. The row is already flipped to `approved`
+    // above, so even if this kick fails the hourly engine pass still sends it
+    // — the message is queued, never lost. But we must report the truth: the
+    // old code swallowed the kick error and ALWAYS returned `triggered: true`,
+    // so the UI showed "Sent ✓", dropped the row, then the 6s refetch
+    // resurrected the still-pending row — the "blink, no message sent". Now we
+    // tell the client whether the immediate send actually fired.
+    let triggered = false
     try {
-      await fetch(`${SIDECAR_URL}/drip-trigger-drain`, {
+      const kick = await fetch(`${SIDECAR_URL}/drip-trigger-drain`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({}),
         signal: AbortSignal.timeout(5000),
       })
+      triggered = kick.ok
+      if (!kick.ok) {
+        console.warn(`[drips:send] sidecar drain returned ${kick.status} (row approved; hourly engine will send it)`)
+      }
     } catch (e) {
       console.warn("[drips:send] sidecar trigger failed (row remains approved, engine will pick it up next hour):", e instanceof Error ? e.message : String(e))
     }
 
-    return NextResponse.json({ ok: true, triggered: true }, { status: 202 })
+    // 202 either way — the row is approved and WILL send. `triggered` tells the
+    // UI whether it went out now (toast "Sent ✓") or is queued for the hourly
+    // pass (toast "Queued — sends within the hour") instead of a false success.
+    return NextResponse.json({ ok: true, triggered, queued: !triggered }, { status: 202 })
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e)
     return NextResponse.json({ error: msg }, { status: 500 })

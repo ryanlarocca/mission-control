@@ -1171,26 +1171,35 @@ export async function transcribeAudio(
     console.warn("[whisper] OPENAI_API_KEY not set; skipping transcription")
     return null
   }
-  try {
-    const form = new FormData()
-    form.append("file", new Blob([new Uint8Array(audioBuffer)], { type: "audio/mpeg" }), filename)
-    form.append("model", "whisper-1")
-    const res = await fetch("https://api.openai.com/v1/audio/transcriptions", {
-      method: "POST",
-      headers: { Authorization: `Bearer ${apiKey}` },
-      body: form,
-    })
-    if (!res.ok) {
+  // Retry transient failures (5xx / network blips / rate limits). A single
+  // transient Whisper error used to silently lose the whole transcript — that
+  // was how a real 23-min seller call got mislabeled "cold, no message".
+  // A 4xx (bad request) won't get better on retry, so we stop on those.
+  const MAX_ATTEMPTS = 3
+  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+    try {
+      const form = new FormData()
+      form.append("file", new Blob([new Uint8Array(audioBuffer)], { type: "audio/mpeg" }), filename)
+      form.append("model", "whisper-1")
+      const res = await fetch("https://api.openai.com/v1/audio/transcriptions", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${apiKey}` },
+        body: form,
+      })
+      if (res.ok) {
+        const json = await res.json() as { text?: string }
+        return (json.text ?? "").trim() || null
+      }
       const errText = await res.text()
-      console.error(`[whisper] Transcription failed ${res.status}: ${errText.slice(0, 300)}`)
-      return null
+      const retryable = res.status === 429 || res.status >= 500
+      console.error(`[whisper] Transcription failed ${res.status} (attempt ${attempt}/${MAX_ATTEMPTS}): ${errText.slice(0, 300)}`)
+      if (!retryable) return null
+    } catch (e) {
+      console.error(`[whisper] Threw (attempt ${attempt}/${MAX_ATTEMPTS}):`, e)
     }
-    const json = await res.json() as { text?: string }
-    return (json.text ?? "").trim() || null
-  } catch (e) {
-    console.error("[whisper] Threw:", e)
-    return null
+    if (attempt < MAX_ATTEMPTS) await new Promise(r => setTimeout(r, 1500 * attempt))
   }
+  return null
 }
 
 export function parseTwilioBody(body: string): URLSearchParams {
@@ -1317,8 +1326,21 @@ export async function processRecordingBackground(args: {
         }
       }
       if (!analysis) {
-        await applyColdNoSignalDefault(leadId)
-        console.log(`[analyze-call] Lead ${leadId} → cold (no-signal default: ${transcription ? "analysis failed" : "no transcript"})`)
+        // Distinguish a genuine no-message (caller hung up → little/no audio)
+        // from a TRANSCRIPTION FAILURE on a real call (substantial audio, but
+        // Whisper returned nothing). Stamping the latter "cold — left no
+        // message" is exactly the bug that buried Jesus's 23-min seller call.
+        // Only apply the cold default when there was no real conversation to
+        // lose; otherwise leave it untouched for the reconciliation pass
+        // (scripts/retranscribe-missing.mjs) to recover.
+        const audioBytes = audio?.length ?? 0
+        const transcriptionFailedOnRealAudio = !!audio && !transcription && audioBytes > 300_000
+        if (transcriptionFailedOnRealAudio) {
+          console.error(`[analyze-call] Lead ${leadId} → transcription FAILED on ${audioBytes} bytes of audio — NOT stamping cold; left for re-transcription.`)
+        } else {
+          await applyColdNoSignalDefault(leadId)
+          console.log(`[analyze-call] Lead ${leadId} → cold (no-signal default: ${transcription ? "analysis failed" : "no transcript"})`)
+        }
       }
 
       // Anonymous-caller promotion. Blocked-ID callers start is_junk=true at
