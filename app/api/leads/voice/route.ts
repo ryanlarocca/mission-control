@@ -6,6 +6,7 @@ import {
   getCampaignSource,
   getLeadsClient,
   type LeadStatus,
+  lookupLeadName,
   parseTwilioBody,
   sendTelegramAlert,
 } from "@/lib/leads"
@@ -69,6 +70,9 @@ export async function POST(request: Request) {
     // known, and read again at the Telegram alert below (outside the try),
     // so it has to be declared out here.
     let spam: SpamScore | null = null
+    // Lead name for the Telegram alert label — resolved inside the try once
+    // we have a client; null for an unknown / anonymous caller.
+    let leadName: string | null = null
     // AWAIT the insert — must complete before the function exits.
     try {
       const sb = getLeadsClient()
@@ -94,6 +98,8 @@ export async function POST(request: Request) {
             .order("created_at", { ascending: false })
             .limit(1)
       const existingRow = existingRows?.[0] ?? null
+      // Best-effort name for the alert — only for known callers with a prior row.
+      if (!isAnon && existingRow) leadName = await lookupLeadName(sb, callerPhone)
       const inheritedStatus: LeadStatus =
         (existingRow?.status as LeadStatus | undefined) ?? "new"
 
@@ -185,7 +191,8 @@ export async function POST(request: Request) {
       console.error("[voice] Supabase insert threw:", e)
     }
     // Await so Vercel doesn't kill the in-flight fetch when the response returns.
-    const callAlert = [`📞 New lead call — <b>${source}</b> — ${callerPhone}`]
+    const callWho = leadName ? `<b>${leadName}</b> — ${callerPhone}` : callerPhone
+    const callAlert = [`📞 New lead call — <b>${source}</b> — ${callWho}`]
     // Append the fake-lead warning to the same note — no-op when clean.
     if (spam) callAlert.push(...spamAlertLines(spam))
     await sendTelegramAlert(callAlert.join("\n"))

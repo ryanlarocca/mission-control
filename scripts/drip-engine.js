@@ -895,25 +895,12 @@ async function sendDripEmail({ lead, body, subject }) {
 }
 
 // ─── telegram ───────────────────────────────────────────────────────────────
-
-async function sendTelegram(text) {
-  const token = process.env.TELEGRAM_BOT_TOKEN
-  const chatId = process.env.TELEGRAM_CHAT_ID
-  if (!token || !chatId) return
-  try {
-    await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ chat_id: chatId, text, parse_mode: "HTML" }),
-    })
-  } catch (e) {
-    console.warn("[drip] telegram failed:", e.message)
-  }
-}
-
-function escapeHtml(s) {
-  return String(s).replace(/[<>&]/g, (c) => (c === "<" ? "&lt;" : c === ">" ? "&gt;" : "&amp;"))
-}
+//
+// The drip engine no longer sends ANY Telegram messages (queue approvals, DNC
+// auto-stops, send failures). Per Ryan's request the Telegram channel is
+// reserved for live lead activity (new leads / inbound texts / calls) — drip
+// status is visible in Mission Control → /leads instead. Drip outcomes are
+// still logged to stdout (captured by launchd) for debugging.
 
 // ─── main passes ────────────────────────────────────────────────────────────
 
@@ -1307,7 +1294,6 @@ async function processLead(sb, lead) {
       added_by: "system",
     })
     if (dncErr) console.warn(`[drip] dnc_list insert failed:`, dncErr.message)
-    await sendTelegram(`🛑 Drip auto-stopped — lead <code>${escapeHtml(lead.id)}</code> hit DNC trigger: <i>${escapeHtml(hardStop)}</i>`)
     return { skipped: "hard_stop" }
   }
   const softReasons = detectSoftSignals(lead, history)
@@ -1389,7 +1375,6 @@ async function processLead(sb, lead) {
       return { processed: true, autoSent: true }
     } catch (e) {
       console.error(`[drip] auto-send failed for ${lead.id}:`, e.message)
-      await sendTelegram(`⚠️ Drip auto-send FAILED — lead <code>${escapeHtml(lead.id)}</code>: ${escapeHtml(e.message)}`)
       return { error: e.message }
     }
   }
@@ -1413,19 +1398,6 @@ async function processLead(sb, lead) {
     return { error: qErr.message }
   }
 
-  const preview = messageBody.length > 600 ? messageBody.slice(0, 600) + "…" : messageBody
-  const channelLabel = channel === "imessage" ? "iMessage" : "Email"
-  const recipient = lead.name || lead.caller_phone || lead.email || lead.id
-  const lines = [
-    `🔄 Drip #${activeTouch.touchNumber} — <b>${escapeHtml(campaign.type)}</b>`,
-    `Lead: ${escapeHtml(recipient)}`,
-    `Channel: ${channelLabel}${clarify ? " · clarifying" : ""}`,
-    "",
-    `<i>${escapeHtml(preview)}</i>`,
-    "",
-    `Approve in Mission Control → /leads`,
-  ]
-  await sendTelegram(lines.join("\n"))
   console.log(`[drip] QUEUED lead ${lead.id} touch #${activeTouch.touchNumber} (${channel}) queue=${queued.id}`)
   return { processed: true, queued: queued.id }
 }

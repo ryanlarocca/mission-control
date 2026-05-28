@@ -789,6 +789,237 @@ export function getCampaignSource(twilioNumber: string | null | undefined): stri
   return CAMPAIGN_MAP[twilioNumber] || "Unknown"
 }
 
+// Best-effort lead name for a phone number, used to label Telegram alerts.
+// A fresh inbound text only carries a phone, but a returning lead's cluster
+// usually has a name on an earlier row — pull the most recent usable one.
+// "Anonymous" is Twilio's literal payload for blocked caller-ID and is
+// skipped (same rule as /api/leads/names-by-phone). Returns null when no
+// real name is known yet. Never throws — alerting must not be blocked by a
+// name lookup.
+export async function lookupLeadName(
+  sb: SupabaseClient,
+  phone: string | null | undefined
+): Promise<string | null> {
+  if (!phone) return null
+  try {
+    const { data, error } = await sb
+      .from("leads")
+      .select("name")
+      .eq("caller_phone", phone)
+      .not("name", "is", null)
+      .neq("name", "Anonymous")
+      .order("created_at", { ascending: false })
+      .limit(1)
+    if (error) {
+      console.warn("[leads] lookupLeadName failed:", error.message)
+      return null
+    }
+    const name = data?.[0]?.name as string | null | undefined
+    return name && name.trim() ? name.trim() : null
+  } catch (e) {
+    console.warn("[leads] lookupLeadName threw:", e instanceof Error ? e.message : String(e))
+    return null
+  }
+}
+
+// Twilio requires strict E.164. DB caller_phone is already E.164 (it comes
+// from Twilio webhooks), so this is mostly defensive — but a malformed input
+// would otherwise be rejected by Twilio with an opaque 21211.
+export function normalizeE164(raw: string): string | null {
+  const trimmed = raw.trim()
+  if (trimmed.startsWith("+") && /^\+\d{10,15}$/.test(trimmed)) return trimmed
+  const digits = trimmed.replace(/\D/g, "")
+  if (digits.length === 10) return `+1${digits}`
+  if (digits.length === 11 && digits.startsWith("1")) return `+${digits}`
+  return null
+}
+
+export type SendLeadSmsResult = {
+  success: boolean
+  status: number
+  messageSid?: string | null
+  leadId?: string | null
+  logError?: string | null
+  error?: string
+}
+
+// Outbound lead SMS — the single source of truth for sending a text to a
+// lead. Used by /api/leads/send (Leads + Follow Ups tabs) AND the Telegram
+// reply webhook, so a reply from your phone behaves exactly like a Send
+// click: same DNC guard, same Twilio A2P path, same outbound timeline row,
+// same offer auto-detection, same new→contacted promotion, same cadence
+// reset. `status` is an HTTP-style code the route can pass straight through.
+export async function sendLeadSms(input: {
+  phone: string
+  message: string
+  source?: string | null
+}): Promise<SendLeadSmsResult> {
+  const source = input.source ?? null
+
+  if (!input.phone || typeof input.phone !== "string") {
+    return { success: false, status: 400, error: "phone is required" }
+  }
+  if (!input.message || typeof input.message !== "string" || !input.message.trim()) {
+    return { success: false, status: 400, error: "message is required" }
+  }
+  const message = input.message
+  const phone = normalizeE164(input.phone)
+  if (!phone) {
+    return { success: false, status: 400, error: `Invalid phone: ${input.phone}` }
+  }
+
+  // DNC guard — never text a lead flagged Do-Not-Contact. Fail-safe: if the
+  // check itself errors, block rather than risk a contact.
+  try {
+    const sbDnc = getLeadsClient()
+    const { data: dncRows, error: dncErr } = await sbDnc
+      .from("leads")
+      .select("id")
+      .eq("caller_phone", phone)
+      .eq("is_dnc", true)
+      .limit(1)
+    if (dncErr) {
+      console.error("[sendLeadSms] DNC check failed:", dncErr)
+      return { success: false, status: 503, error: "DNC check failed — send blocked" }
+    }
+    if (dncRows && dncRows.length > 0) {
+      return { success: false, status: 409, error: "lead is DNC" }
+    }
+  } catch (e) {
+    console.error("[sendLeadSms] DNC check threw:", e)
+    return { success: false, status: 503, error: "DNC check failed — send blocked" }
+  }
+
+  // Send via the Twilio Messaging API. fetch + Basic Auth (no twilio SDK).
+  const sid = process.env.TWILIO_ACCOUNT_SID
+  const token = process.env.TWILIO_AUTH_TOKEN
+  if (!sid || !token) {
+    return { success: false, status: 500, error: "TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN must be set" }
+  }
+  let fromNumber: string
+  try {
+    fromNumber = getTwilioNumber()
+  } catch (e) {
+    return { success: false, status: 500, error: e instanceof Error ? e.message : String(e) }
+  }
+
+  // MessagingServiceSid routes through the approved A2P campaign explicitly
+  // and is the carrier-preferred path; if it's not configured we send From
+  // the number directly — attached to the same campaign, equally compliant.
+  const messagingServiceSid = process.env.TWILIO_MESSAGING_SERVICE_SID?.trim()
+  const form = new URLSearchParams({ To: phone, Body: message })
+  if (messagingServiceSid) {
+    form.set("MessagingServiceSid", messagingServiceSid)
+  } else {
+    form.set("From", fromNumber)
+  }
+
+  let messageSid: string | null = null
+  try {
+    const auth = Buffer.from(`${sid}:${token}`).toString("base64")
+    const res = await fetch(
+      `https://api.twilio.com/2010-04-01/Accounts/${sid}/Messages.json`,
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Basic ${auth}`,
+          "Content-Type": "application/x-www-form-urlencoded",
+        },
+        body: form.toString(),
+      }
+    )
+    const json = await res.json().catch(() => ({}))
+    if (!res.ok) {
+      const errMsg = (json as { message?: string })?.message || `HTTP ${res.status}`
+      console.error("[sendLeadSms] Twilio message create failed:", errMsg, json)
+      return { success: false, status: 502, error: errMsg }
+    }
+    messageSid = (json as { sid?: string })?.sid ?? null
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e)
+    console.error("[sendLeadSms] Twilio fetch threw:", msg)
+    return { success: false, status: 503, error: "Twilio unavailable" }
+  }
+
+  // Send succeeded — log the outbound row + downstream bookkeeping. All
+  // best-effort: the message already went out, so we still return success
+  // but surface a logging failure.
+  let loggedId: string | null = null
+  let logError: string | null = null
+  try {
+    const sb = getLeadsClient()
+    // twilio_number=null is the outbound marker (isOutbound() === !twilio_number).
+    const { data, error } = await sb
+      .from("leads")
+      .insert({
+        source,
+        twilio_number: null,
+        caller_phone: phone,
+        lead_type: "sms",
+        message,
+        status: "contacted",
+      })
+      .select("id")
+      .single()
+    if (error) {
+      logError = error.message
+      console.error("[sendLeadSms] Insert failed:", error)
+    } else {
+      loggedId = data?.id ?? null
+    }
+
+    // Auto-detect a verbalized offer in this outbound SMS and stamp the cluster.
+    if (loggedId) {
+      try {
+        const result = await detectOfferFromText(message, { channel: "sms" })
+        if (result?.offer_verbalized && typeof result.offer_amount === "number") {
+          const wrote = await applyDetectedOfferToCluster(sb, {
+            leadId: loggedId,
+            caller_phone: phone,
+            email: null,
+            offer_amount: result.offer_amount,
+          })
+          if (wrote) console.log(`[sendLeadSms] auto-stamped offer $${result.offer_amount} on ${phone}`)
+        }
+      } catch (e) {
+        console.warn(`[sendLeadSms] offer detection failed:`, e instanceof Error ? e.message : String(e))
+      }
+    }
+
+    // Promote the original intake row (twilio_number IS NOT NULL) new→contacted
+    // so the lead card's group status reflects that Ryan reached out.
+    const { data: intake } = await sb
+      .from("leads")
+      .select("id, status")
+      .eq("caller_phone", phone)
+      .not("twilio_number", "is", null)
+      .order("created_at", { ascending: false })
+      .limit(1)
+    const intakeRow = intake?.[0]
+    if (intakeRow && intakeRow.status === "new") {
+      const { error: promoteErr } = await sb
+        .from("leads")
+        .update({ status: "contacted" })
+        .eq("id", intakeRow.id)
+      if (promoteErr) console.error("[sendLeadSms] Status promote failed:", promoteErr)
+    }
+
+    // Reset the drip cadence clock — a manual Send is a real touch.
+    if (loggedId) {
+      try {
+        await registerManualTouch(sb, { id: loggedId, caller_phone: phone, email: null })
+      } catch (e) {
+        console.warn("[sendLeadSms] cadence reset failed:", e instanceof Error ? e.message : String(e))
+      }
+    }
+  } catch (e) {
+    logError = e instanceof Error ? e.message : String(e)
+    console.error("[sendLeadSms] Insert threw:", logError)
+  }
+
+  return { success: true, status: 200, messageSid, leadId: loggedId, logError }
+}
+
 export async function sendTelegramAlert(text: string): Promise<void> {
   const token = process.env.TELEGRAM_BOT_TOKEN
   const chatId = process.env.TELEGRAM_CHAT_ID

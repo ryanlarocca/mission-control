@@ -7,6 +7,7 @@ import {
   isDncMessage,
   isMobileHome,
   type LeadStatus,
+  lookupLeadName,
   parseTwilioBody,
   sendTelegramAlert,
 } from "@/lib/leads"
@@ -55,6 +56,10 @@ export async function POST(request: Request) {
     // Fake-lead score — assigned in the non-DNC path below, read again at
     // the Telegram alert (outside the try), so declared at this scope.
     let spam: SpamScore | null = null
+    // Lead name for the Telegram alert label — resolved inside the try once
+    // we have a Supabase client. Null for a brand-new caller (no prior row
+    // carries a name yet); the alert falls back to the phone number.
+    let leadName: string | null = null
     try {
       const sb = getLeadsClient()
 
@@ -96,7 +101,9 @@ export async function POST(request: Request) {
         })
         if (insertErr) console.error("[sms] DNC insert failed:", insertErr)
 
-        void sendTelegramAlert(`🚫 Lead DNC'd — <b>${source}</b> — ${from}`)
+        const dncName = await lookupLeadName(sb, from)
+        const dncWho = dncName ? `${dncName} — ${from}` : from
+        void sendTelegramAlert(`🚫 Lead DNC'd — <b>${source}</b> — ${dncWho}`)
 
         return new NextResponse(EMPTY_TWIML, {
           headers: { "Content-Type": "text/xml" },
@@ -127,6 +134,11 @@ export async function POST(request: Request) {
       const existingRow = existingRows?.[0] ?? null
       const inheritedStatus: LeadStatus =
         (existingRow?.status as LeadStatus | undefined) ?? "new"
+
+      // Resolve a name for the Telegram alert label (best-effort; null for a
+      // genuinely new caller). Runs only when there's a prior row — a fresh
+      // intake never has a name yet, so skip the query.
+      if (existingRow) leadName = await lookupLeadName(sb, from)
 
       const isJunkAddr = isMobileHome(bodyText)
 
@@ -210,7 +222,11 @@ export async function POST(request: Request) {
 
     const preview = bodyText.length > 300 ? bodyText.slice(0, 300) + "…" : bodyText
     const escaped = preview.replace(/[<>&]/g, c => c === "<" ? "&lt;" : c === ">" ? "&gt;" : "&amp;")
-    const smsAlert = [`💬 New lead text — <b>${source}</b> — ${from}\n"${escaped}"`]
+    // Label with the lead's name when we know it, falling back to the phone.
+    // The phone stays in the alert regardless — the Telegram reply handler
+    // parses it out of this text to know who to SMS back.
+    const who = leadName ? `<b>${leadName}</b> — ${from}` : from
+    const smsAlert = [`💬 New lead text — <b>${source}</b> — ${who}\n"${escaped}"`]
     // Append the fake-lead warning to the same note — no-op when clean.
     if (spam) smsAlert.push(...spamAlertLines(spam))
     void sendTelegramAlert(smsAlert.join("\n"))
