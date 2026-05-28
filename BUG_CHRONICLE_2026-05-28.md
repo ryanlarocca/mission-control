@@ -32,8 +32,8 @@ end-to-end (HTTP 200 + real messageSid). Jesus transcript recovered + re-analyze
 **Symptom:** Spoke with Jesus (79 Union St, San Jose — 5 units, separation/possible sale) on a 23-min call; transcript never uploaded and the lead got auto-stamped "cold, left no message — 6-month nurture."
 **Root cause:** The recording→Whisper→analysis pipeline silently failed to transcribe the 23-min/5.5MB call (likely a transient OpenAI failure or the background time budget). When `transcription` is null, the inbound path calls `applyColdNoSignalDefault()` — which MISLABELS a transcription failure as "called but left no message → cold + 180-day." 7 leads total found in this state (mostly old anon voicemails pre-maxDuration-fix).
 **Fix (Jesus, done):** Re-downloaded the Twilio recording, re-ran Whisper (recovered full 23-min transcript), saved to the lead, re-ran analysis → now WARM, property extracted (79 Union Street, San Jose 95110), follow-up 2026-06-11 (~2 wks, per Ryan), proper summary.
-**Fix (recurrence, pending):** add retry to transcribeAudio; reconciliation script to re-transcribe any call lead with a recording but empty transcript; stop mislabeling transcription failures as cold.
-**Status:** 🟢 Jesus recovered · 🟡 hardening pending
+**Fix (recurrence, done + shipped):** (a) `transcribeAudio` now retries transient Whisper failures (429/5xx) up to 3×; (b) a failed transcription on substantial audio (>300KB) is NO LONGER mislabeled cold — it's left for re-transcription; (c) `scripts/retranscribe-missing.mjs` re-transcribes + re-analyzes any call lead with a recording but empty transcript. Ran the sweep: the other 7 gaps were all genuinely empty hang-ups / one expired recording — Jesus was the only real loss, already recovered.
+**Status:** 🟢 fixed + verified (Jesus recovered; hardening shipped in f3dc07b; sweep clean)
 
 ## Bug 4 — Sending a lead a message fails silently (CRITICAL)
 **Reported:** mid-session.
