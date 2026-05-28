@@ -44,3 +44,10 @@ end-to-end (HTTP 200 + real messageSid). Jesus transcript recovered + re-analyze
 (Backend Twilio send itself is healthy — verified a live send end-to-end, HTTP 200 + real messageSid. Sidecar tunnel reachable; 3 drips sent successfully earlier today.)
 **Fix:** (a) `fetchData` only clears the banner on explicit/manual loads, never on silent refetches — action errors persist until dismissed. (b) stale-409 now marks the row stale *in place* (shows Regenerate/Send-anyway/Skip) instead of refetching into a blink. (c) the send route reports `triggered` honestly; UI shows "Sent ✓" only when it actually fired, else "Queued — sends within the hour."
 **Status:** 🟢 fixed + verified live on prod
+
+## Bug 4b — "Send anyway" never sent (CRITICAL, follow-on)
+**Reported:** mid-session (screenshot: click Send anyway on a stale drip, nothing sends).
+**Root cause:** In `/api/drips/[id]/send`, the flip to `status=approved` was nested INSIDE the `if (pending/failed && !force)` block. So "Send anyway" (`force=true`) skipped the staleness check AND the approval. The engine's `drainApprovedQueue` only sends `status=approved` rows (drip-engine.js:912), so a force-sent row stayed `pending` forever — kicked but never drained. Distinct from Bug 4: that was the *blink/false-success*; this is *force never approving*.
+**Fix (b38e319):** staleness CHECK stays gated on `!force`, but the approve flip now always runs for pending/failed rows. The drain sends `imessage`-channel drips via Twilio (`sendSms`).
+**Verified END-TO-END on prod:** queued a stale pending drip to a test lead on Ryan's own cell → normal Send returned 409 stale → **Send anyway flipped the row to `sent` (no error) → real SMS dispatched via Twilio to +14085006293.** Test row cleaned up after.
+**Status:** 🟢 fixed + verified with a real send
