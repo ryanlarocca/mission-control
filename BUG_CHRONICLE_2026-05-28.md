@@ -3,6 +3,14 @@
 Running log of bugs reported in this session + their root cause + fix + verification.
 Owner: agent (Claude). Status legend: 🔴 open · 🟡 in progress · 🟢 fixed+verified · ⚪ deployed
 
+**Shipped:** mission-control `f3dc07b` (main → Vercel). Bug 1 tooling in the
+openclaw workspace (`scripts/text-lead.mjs`, `TOOLS.md`).
+**Live verification (headless Chrome via CDP against prod):** Follow-Ups
+worklist now renders Call:17 / Text:17 / **Email:17** — the Email button shows
+on every contact (was gated before), with the new title
+"Email — no address on file yet; you can add one". Backend Twilio send verified
+end-to-end (HTTP 200 + real messageSid). Jesus transcript recovered + re-analyzed.
+
 ---
 
 ## Bug 1 — Telegram reply-to-lead sends via iPhone (imsg) instead of Twilio
@@ -17,7 +25,7 @@ Owner: agent (Claude). Status legend: 🔴 open · 🟡 in progress · 🟢 fixe
 **Symptom:** Follow-Ups cards show Call + Text but no Email button.
 **Root cause:** The Email button existed but was gated on `row.email` (`{row.email && ...}`), while Call/Text are gated on `row.phone`. Most inbound SMS/call leads have a phone but no email on file, so the button was invisible for them.
 **Fix:** Email button now always renders in the CallBlock (FollowUpsTab.tsx). The ComposeModal shows a recipient-email input when the lead has no address on file; `/api/leads/[id]/send-email` accepts an optional validated `to` override and persists it onto the lead for future touches.
-**Status:** 🟢 fixed (UI verify post-deploy)
+**Status:** 🟢 fixed + verified live on prod
 
 ## Bug 3 — Jesus call transcript didn't upload + follow-up not set
 **Reported:** mid-session.
@@ -35,4 +43,4 @@ Owner: agent (Claude). Status legend: 🔴 open · 🟡 in progress · 🟢 fixe
   2. **False success:** `/api/drips/[id]/send` kicks the Mac-mini sidecar to send, but swallowed the kick error and ALWAYS returned `triggered:true`. UI showed "Sent ✓", dropped the row, then the 6s refetch resurrected the still-pending row.
 (Backend Twilio send itself is healthy — verified a live send end-to-end, HTTP 200 + real messageSid. Sidecar tunnel reachable; 3 drips sent successfully earlier today.)
 **Fix:** (a) `fetchData` only clears the banner on explicit/manual loads, never on silent refetches — action errors persist until dismissed. (b) stale-409 now marks the row stale *in place* (shows Regenerate/Send-anyway/Skip) instead of refetching into a blink. (c) the send route reports `triggered` honestly; UI shows "Sent ✓" only when it actually fired, else "Queued — sends within the hour."
-**Status:** 🟢 fixed (UI verify post-deploy)
+**Status:** 🟢 fixed + verified live on prod
