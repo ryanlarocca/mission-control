@@ -673,10 +673,16 @@ export async function haltOutreachForCluster(
 // whatever the manual outreach replaced. This generalises the existing Skip
 // behaviour (drip-queue Skip for a queued touch, forecast-skip for a
 // forecast) so it fires automatically on Done / Email / Text.
+//
+// It ALSO consumes the contact's follow-up CALL reminder (step 3 below) when
+// one is due/overdue — the manual outreach stands in for that too. This used
+// to live only in the Follow Ups compose popup, so a send from the Leads tab
+// reset the drip but left an overdue reminder pinning the contact to the top
+// of the worklist. Owning both touches here is the durable fix.
 export async function registerManualTouch(
   sb: SupabaseClient,
   lead: { id: string; caller_phone: string | null; email: string | null },
-): Promise<{ clockReset: number; advanced: number; skippedDrips: number }> {
+): Promise<{ clockReset: number; advanced: number; skippedDrips: number; followupsConsumed: number }> {
   // Resolve the cluster — same phone OR same email — so the reset lands on
   // whichever sibling row actually carries the drip campaign.
   const orParts: string[] = []
@@ -737,10 +743,60 @@ export async function registerManualTouch(
     else clockReset++
   }
 
-  if (clockReset > 0 || skippedDrips > 0) {
-    console.log(`[manual-touch] cluster of ${lead.id}: reset ${clockReset} cadence clock(s) (${advanced} advanced), skipped ${skippedDrips} queued drip(s)`)
+  // (3) Consume the cluster's follow-up CALL reminder too. A manual outreach
+  // IS the touch — but until now this only reset the drip clock, so a contact
+  // with an overdue `recommended_followup_date` bounced straight back to the
+  // top of the worklist the moment Ryan texted them (the chronic Raymond bug:
+  // the drip side reset, the call reminder didn't). The follow-up roll lived
+  // only in the Follow Ups compose popup, so any send from the Leads tab /
+  // Telegram / API skipped it. Owning it here makes the invariant hold on
+  // EVERY send path.
+  //
+  //   · Only DUE/overdue reminders (date ≤ today) are consumed — a deliberate
+  //     future reminder ("call back in 3 months") is left exactly as set.
+  //   · Active drip campaign → the drip cadence is now the next touch, so we
+  //     clear the date (no double-surfacing).
+  //   · Follow-up-only contact → roll a single reminder ~1 week out so they
+  //     stay on the radar.
+  // Compare in Ryan's wall clock (Pacific): the engine runs in UTC and a bare
+  // calendar date near midnight would otherwise mis-bucket by a day.
+  const todayLocal = new Date().toLocaleDateString("en-CA", { timeZone: "America/Los_Angeles" })
+  const { data: dueFollowups, error: fuErr } = await sb
+    .from("leads")
+    .select("id")
+    .in("id", clusterIds)
+    .not("recommended_followup_date", "is", null)
+    .lte("recommended_followup_date", todayLocal)
+  if (fuErr) console.warn(`[manual-touch] follow-up lookup failed:`, fuErr.message)
+  let followupsConsumed = 0
+  const dueIds = (dueFollowups ?? []).map((r) => r.id as string)
+  if (dueIds.length > 0) {
+    // Clear every due/overdue reminder in the cluster first (keeps "one
+    // reminder per contact" — no duplicate dates left behind).
+    const { error: clrErr } = await sb
+      .from("leads")
+      .update({ recommended_followup_date: null, followup_reason: null })
+      .in("id", dueIds)
+    if (clrErr) console.warn(`[manual-touch] follow-up clear failed:`, clrErr.message)
+    else followupsConsumed = dueIds.length
+
+    const hasActiveDrip = (dripRows ?? []).length > 0
+    if (!hasActiveDrip) {
+      const inAWeek = new Date(Date.now() + 7 * 86_400_000).toLocaleDateString("en-CA", {
+        timeZone: "America/Los_Angeles",
+      })
+      const { error: rollErr } = await sb
+        .from("leads")
+        .update({ recommended_followup_date: inAWeek, followup_reason: "Followed up manually" })
+        .eq("id", dueIds[0])
+      if (rollErr) console.warn(`[manual-touch] follow-up roll-forward failed:`, rollErr.message)
+    }
   }
-  return { clockReset, advanced, skippedDrips }
+
+  if (clockReset > 0 || skippedDrips > 0 || followupsConsumed > 0) {
+    console.log(`[manual-touch] cluster of ${lead.id}: reset ${clockReset} cadence clock(s) (${advanced} advanced), skipped ${skippedDrips} queued drip(s), consumed ${followupsConsumed} follow-up reminder(s)`)
+  }
+  return { clockReset, advanced, skippedDrips, followupsConsumed }
 }
 
 // Display label for a lead. Prefers campaign_label (Phase 7C overlay) over

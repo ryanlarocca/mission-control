@@ -1391,30 +1391,14 @@ function ComposeModal({
       const data = await res.json().catch(() => ({}))
       // /send returns {success}; /email-reply + /send-email return {ok}.
       if (!res.ok || !(data.success || data.ok)) throw new Error(data.error || `HTTP ${res.status}`)
-      // Manual outreach is a touch: reset the drip cadence + skip queued
-      // drips (manual_touch) so the contact isn't dragged back to the top by
-      // a stale drip. Fires even with no existing follow-up row — a drip-only
-      // contact still needs the reset. When a follow-up date does exist, roll
-      // it forward a week too. Best-effort — the message has already sent.
-      try {
-        await fetch("/api/leads", {
-          method: "PATCH",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            id: row.followupLeadId ?? row.leadId,
-            manual_touch: true,
-            ...(row.followupLeadId
-              ? {
-                  recommended_followup_date: dateFromInterval({ days: 7 }),
-                  followup_reason: `Followed up via ${isEmail ? "email" : "text"}`,
-                }
-              : {}),
-          }),
-        })
-      } catch {
-        /* message already sent — a stale follow-up just stays put */
-      }
-      onSent(isEmail ? "Email sent — next follow-up in 1 week" : "Text sent — next follow-up in 1 week")
+      // The send routes (/api/leads/send, /send-email, /email-reply) each call
+      // registerManualTouch server-side, which now owns BOTH sides of "this
+      // outreach is the touch": it resets the drip cadence AND consumes any
+      // due/overdue follow-up reminder for the cluster (clear when a drip
+      // campaign carries the next touch, else roll ~1wk). So there's no extra
+      // PATCH here — the old one double-advanced the drip counter and only
+      // handled follow-ups on this one UI path.
+      onSent(isEmail ? "Email sent" : "Text sent")
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
       setSending(false)

@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server"
-import { getGmailClient, getLeadsClient, encodeEmailHeader } from "@/lib/leads"
+import { getGmailClient, getLeadsClient, encodeEmailHeader, registerManualTouch } from "@/lib/leads"
 
 // Send an email reply to an inbound lead from the mailbox that received it.
 //
@@ -200,6 +200,20 @@ export async function POST(request: NextRequest) {
     }
   } catch (e) {
     console.error("[email-reply] Status promote threw:", e)
+  }
+
+  // Manual outreach is a touch: reset the drip cadence + consume any
+  // due/overdue follow-up reminder for the cluster (matches /api/leads/send
+  // and /send-email). Without this, replying from the Follow Ups thread reset
+  // nothing and the contact bounced straight back to the top of the worklist.
+  try {
+    await registerManualTouch(sb, {
+      id: inserted?.id ?? lead.id,
+      caller_phone: lead.caller_phone,
+      email: lead.email,
+    })
+  } catch (e) {
+    console.warn("[email-reply] manual-touch cadence reset failed:", e instanceof Error ? e.message : String(e))
   }
 
   return NextResponse.json({ ok: true, sentMessageId, leadId: inserted?.id })
