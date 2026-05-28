@@ -18,6 +18,10 @@ const PUBLIC_PATHS = [
   // a session cookie. Auth on this path is enforced by Pub/Sub itself
   // (subscription origin) — see scripts/setup-gmail-watch.js.
   "/api/leads/email",
+  // Telegram delivers bot updates (lead-alert replies) here with no session
+  // cookie. Auth on this path is the X-Telegram-Bot-Api-Secret-Token header,
+  // verified inside the route against TELEGRAM_WEBHOOK_SECRET.
+  "/api/telegram/webhook",
 ]
 
 export async function middleware(request: NextRequest) {

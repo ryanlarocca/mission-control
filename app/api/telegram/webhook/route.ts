@@ -50,14 +50,19 @@ async function tgSend(chatId: number, text: string, replyTo?: number): Promise<v
 }
 
 export async function POST(request: Request) {
-  // Auth: Telegram echoes the secret token we set at registration time.
+  // Auth: Telegram echoes the secret token we set at registration time. This
+  // route is public at the middleware layer, so this check is the ONLY gate —
+  // fail closed if the secret isn't configured, otherwise a forged POST could
+  // drive outbound SMS. (The chat-id check below is spoofable on its own.)
   const secret = process.env.TELEGRAM_WEBHOOK_SECRET
-  if (secret) {
-    const got = request.headers.get("x-telegram-bot-api-secret-token")
-    if (got !== secret) {
-      console.warn("[telegram/webhook] rejected — bad secret token")
-      return new NextResponse("forbidden", { status: 401 })
-    }
+  if (!secret) {
+    console.error("[telegram/webhook] TELEGRAM_WEBHOOK_SECRET not set — rejecting")
+    return new NextResponse("not configured", { status: 503 })
+  }
+  const got = request.headers.get("x-telegram-bot-api-secret-token")
+  if (got !== secret) {
+    console.warn("[telegram/webhook] rejected — bad secret token")
+    return new NextResponse("forbidden", { status: 401 })
   }
 
   let update: TgUpdate
