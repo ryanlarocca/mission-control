@@ -49,30 +49,39 @@ export async function POST(request: NextRequest, { params }: { params: { id: str
     // (Approved rows already passed this check when Ryan approved them.)
     // `force=true` lets the UI bypass this when Ryan explicitly picks "Send
     // anyway" on the stale-drip prompt.
-    if ((row.status === "pending" || row.status === "failed") && !force) {
-      const { data: lead } = await sb
-        .from("leads")
-        .select("caller_phone, email")
-        .eq("id", row.lead_id)
-        .maybeSingle()
-      if (lead?.caller_phone || lead?.email) {
-        let q = sb.from("leads").select("id, lead_type").gt("created_at", row.created_at).limit(5)
-        if (lead.caller_phone) q = q.eq("caller_phone", lead.caller_phone)
-        else q = q.eq("email", lead.email!)
-        const { data: newer } = await q
-        const stale = (newer || []).some(r => r.lead_type && !(r.lead_type as string).startsWith("drip_"))
-        if (stale) {
-          // 409 + `stale: true` so the client can show the Regenerate /
-          // Send anyway / Skip prompt instead of just dropping the row.
-          return NextResponse.json(
-            { error: "Stale draft — contact had activity since this was drafted.", stale: true },
-            { status: 409 }
-          )
+    if (row.status === "pending" || row.status === "failed") {
+      // Staleness GATE — only for a normal Send (not "Send anyway"). `force`
+      // means Ryan already saw the stale prompt and chose to send regardless,
+      // so we skip the gate but STILL approve the row below.
+      if (!force) {
+        const { data: lead } = await sb
+          .from("leads")
+          .select("caller_phone, email")
+          .eq("id", row.lead_id)
+          .maybeSingle()
+        if (lead?.caller_phone || lead?.email) {
+          let q = sb.from("leads").select("id, lead_type").gt("created_at", row.created_at).limit(5)
+          if (lead.caller_phone) q = q.eq("caller_phone", lead.caller_phone)
+          else q = q.eq("email", lead.email!)
+          const { data: newer } = await q
+          const stale = (newer || []).some(r => r.lead_type && !(r.lead_type as string).startsWith("drip_"))
+          if (stale) {
+            // 409 + `stale: true` so the client can show the Regenerate /
+            // Send anyway / Skip prompt instead of just dropping the row.
+            return NextResponse.json(
+              { error: "Stale draft — contact had activity since this was drafted.", stale: true },
+              { status: 409 }
+            )
+          }
         }
       }
 
-      // Flip to approved + clear any prior error so a retried failed row
-      // gets a clean slate for the engine's next drain pass.
+      // Flip to approved + clear any prior error. This MUST run for BOTH a
+      // normal send AND "Send anyway" (force) — the engine's drainApprovedQueue
+      // only sends rows with status="approved". The old code nested this flip
+      // inside the `!force` branch, so "Send anyway" left the row `pending`
+      // forever: the engine got kicked but had nothing approved to drain, so it
+      // never sent. That was the "I click Send anyway and it never sends" bug.
       const { error: upErr } = await sb
         .from("drip_queue")
         .update({ status: "approved", approved_at: new Date().toISOString(), error: null })
