@@ -198,9 +198,11 @@ async function handleAppsScript(payload: AppsScriptPayload): Promise<NextRespons
   // self-identification phrase.
   const name = extractNameFromBody(bodyText) || headerName
 
-  // Don't ingest mail from the mailbox owner
-  if (senderEmail === mailbox) {
-    console.log(`[email] Skipping — sender is mailbox owner`)
+  // Don't ingest mail sent from any of our own mailboxes — the receiving
+  // inbox itself or a reply Ryan sent from a different LRG mailbox. See
+  // isOwnAddress.
+  if (isOwnAddress(senderEmail)) {
+    console.log(`[email] Skipping — sent from an LRG mailbox (${senderEmail})`)
     return NextResponse.json({ ok: true })
   }
 
@@ -412,9 +414,12 @@ async function processSingleMessage(args: {
     console.warn(`[email] ${messageId} missing usable From header: ${fromHeader}`)
     return
   }
-  // Don't ingest mail we sent to ourselves (e.g. Ryan testing).
-  if (senderEmail === emailAddress) {
-    console.log(`[email] Skipping ${messageId} — sender is mailbox owner`)
+  // Don't ingest mail sent from any of our own mailboxes — the receiving
+  // inbox itself (Ryan testing) or a reply Ryan sent to a lead from a
+  // different LRG mailbox (which would otherwise be born as a bogus inbound
+  // lead named after the From display name). See isOwnAddress.
+  if (isOwnAddress(senderEmail)) {
+    console.log(`[email] Skipping ${messageId} — sent from an LRG mailbox (${senderEmail})`)
     return
   }
 
@@ -651,6 +656,20 @@ function isBounceEmail(senderEmail: string, subject: string): boolean {
     sub.includes("returned mail") ||
     sub.startsWith("failure notice")
   )
+}
+
+// True when the sender is one of our own Workspace mailboxes. The exact
+// receiving-mailbox check (senderEmail === emailAddress) only caught replies
+// sent from the *same* inbox that received them; it missed the common case of
+// Ryan replying to a lead from a *different* LRG mailbox (e.g. answering a
+// ryansvj@ thread from info@ or ryan@). Those self-sends were ingested as
+// brand-new inbound leads named after the From display name ("Info Info").
+// Matching the whole lrghomes.com domain covers every campaign mailbox plus
+// info@/ryan@ and any future internal address. The reply still lives in the
+// Gmail thread and surfaces in the Leads-tab card via /api/leads/sync-email,
+// so skipping ingestion loses nothing.
+function isOwnAddress(addr: string): boolean {
+  return addr.toLowerCase().endsWith("@lrghomes.com")
 }
 
 function parseFromHeader(value: string): { name: string | null; email: string | null } {
