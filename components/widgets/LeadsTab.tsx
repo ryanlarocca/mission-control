@@ -2908,7 +2908,7 @@ function TimelineEvent({ ev }: { ev: Lead }) {
           {isOutboundCall ? (
             <>
               {ev.message && (
-                <div className="text-sm text-zinc-100 whitespace-pre-wrap break-words">
+                <div className="text-sm text-zinc-100 whitespace-pre-wrap break-words max-h-48 overflow-y-auto pr-1">
                   {ev.message}
                 </div>
               )}
@@ -2953,7 +2953,7 @@ function TimelineEvent({ ev }: { ev: Lead }) {
           <div className="space-y-2">
             {/* `message` holds the Whisper transcription for voicemail rows */}
             {ev.message && (
-              <div className="text-sm text-zinc-200 bg-zinc-900 rounded px-3 py-2 whitespace-pre-wrap break-words">
+              <div className="text-sm text-zinc-200 bg-zinc-900 rounded px-3 py-2 whitespace-pre-wrap break-words max-h-48 overflow-y-auto">
                 {ev.message}
               </div>
             )}
@@ -2976,7 +2976,7 @@ function TimelineEvent({ ev }: { ev: Lead }) {
         {ev.lead_type === "call" && (ev.message || ev.recording_url) && (
           <div className="space-y-2">
             {ev.message && (
-              <div className="text-sm text-zinc-200 bg-zinc-900 rounded px-3 py-2 whitespace-pre-wrap break-words">
+              <div className="text-sm text-zinc-200 bg-zinc-900 rounded px-3 py-2 whitespace-pre-wrap break-words max-h-48 overflow-y-auto">
                 {ev.message}
               </div>
             )}
