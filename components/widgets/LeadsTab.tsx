@@ -13,7 +13,7 @@ import {
   type NextTouch, type NextTouchSummary,
 } from "@/lib/next-touch"
 import { isAnonymousCaller } from "@/lib/anonymous"
-import type { LeadStatus } from "@/lib/leads"
+import type { LeadStatus, PropertyDetail } from "@/lib/leads"
 import { formatPhone } from "@/lib/utils"
 import {
   type RelationshipCategory,
@@ -53,6 +53,9 @@ interface Lead {
   name: string | null
   email: string | null
   property_address: string | null
+  // Structured per-property specs (units, unit mix, rents, sqft, …). One entry
+  // per property the seller owns. AI-populated + Ryan-editable on the card.
+  property_details?: PropertyDetail[] | null
   suggested_reply: string | null
   // Set on email leads at insertion (route.ts) so /api/leads/sync-email can
   // look up the full Gmail thread on card expand. Null on call/sms/form rows.
@@ -117,6 +120,9 @@ interface LeadGroup {
   name: string | null
   email: string | null
   propertyAddress: string | null
+  // Derived from whichever row in the group carries property_details (the
+  // status-driving row is preferred — that's the PATCH target). Editable.
+  propertyDetails: PropertyDetail[]
   mostRecentId: string             // id of the row whose status drives the group
   mostRecentEvent: Lead             // for header display
   mostRecentInbound: Lead | null   // most recent INBOUND event (for source/contact info)
@@ -345,6 +351,13 @@ function groupLeads(leads: Lead[]): LeadGroup[] {
     const temperatureRow = newestFirst.find(e => e.temperature)
     const temperature: Temperature | null =
       (temperatureRow?.temperature as Temperature | null) ?? null
+    // Property details — prefer the status-driving row (that's the PATCH
+    // target for edits) so a hand-edit always wins; otherwise the newest row
+    // that has any. The merge in the API keeps these consistent across rows.
+    const propertyDetails: PropertyDetail[] =
+      (Array.isArray(statusSource.property_details) && statusSource.property_details.length > 0
+        ? statusSource.property_details
+        : newestFirst.map(e => e.property_details).find(d => Array.isArray(d) && d.length > 0)) || []
     groups.push({
       phone: key,
       contactPhone,
@@ -357,6 +370,7 @@ function groupLeads(leads: Lead[]): LeadGroup[] {
       name,
       email,
       propertyAddress,
+      propertyDetails,
       mostRecentId: statusSource.id,
       mostRecentEvent: mostRecent,
       mostRecentInbound,
@@ -791,6 +805,12 @@ export function LeadsTab() {
         if (data.name) next.name = data.name
         if (data.property_address) next.property_address = data.property_address
         if (data.email) next.email = data.email
+        // Property details — the endpoint returns the EFFECTIVE merged array
+        // (post sticky-merge), so stamp it whenever present. This is what makes
+        // the Property block fill in live as Ryan expands each card.
+        if (Array.isArray(data.property_details)) {
+          next.property_details = data.property_details as PropertyDetail[]
+        }
         return next
       }))
     } catch (e) {
@@ -1562,6 +1582,7 @@ export function LeadsTab() {
               draftError={expandedPhone === group.phone ? draftError : null}
               onPatchField={(field, value) => patchFlagOnGroup(group, { [field]: value || null } as Partial<Lead>)}
               onSaveOffer={(amount) => patchFlagOnGroup(group, { offer_amount: amount } as Partial<Lead>)}
+              onSaveProperties={(details) => patchFlagOnGroup(group, { property_details: details } as Partial<Lead>)}
               onSetStatus={(s) => setGroupStatus(group, s)}
               pendingStatus={pendingStatus}
               draftNote={draftNotes[group.phone]}
@@ -1708,6 +1729,8 @@ interface LeadCardProps {
   // Offer amount edit — separate from onPatchField because the value is a
   // number (or null to clear), not a string. PATCH /api/leads coerces.
   onSaveOffer: (amount: number | null) => void
+  // Persist the full property_details array after an add / edit / remove.
+  onSaveProperties: (details: PropertyDetail[]) => void
 }
 
 // Unified "next touch" indicator — the single line on a lead card that
@@ -2036,6 +2059,11 @@ function LeadCard(p: LeadCardProps) {
             onRefreshAi={p.onRefreshSummary}
             onRefreshMessages={group.contactPhone ? p.onRefreshMessages : undefined}
             refreshingMessages={p.refreshingMessages}
+          />
+
+          <PropertyBlock
+            details={group.propertyDetails}
+            onSave={p.onSaveProperties}
           />
 
           <div>
@@ -2768,6 +2796,152 @@ function EditableInlineField(props: {
         style={{ fontSize: 16 }}
         placeholder={props.placeholder}
       />
+    </div>
+  )
+}
+
+// Field order + labels + placeholders for the editable Property block. `label`
+// (address/tag) doubles as the per-property heading in the read view, so it's
+// excluded from the scannable spec rows there but is the first field in edit
+// mode.
+const PROPERTY_FIELD_DEFS: { key: keyof PropertyDetail; label: string; placeholder: string }[] = [
+  { key: "label",          label: "Address / tag", placeholder: "e.g. 2127 Los Gatos Rd" },
+  { key: "property_type",  label: "Type",          placeholder: "Duplex, single-family…" },
+  { key: "units",          label: "Units",         placeholder: "2" },
+  { key: "unit_mix",       label: "Unit mix",      placeholder: "1× 3bd/2ba · 1× 2bd/1ba" },
+  { key: "rents",          label: "Rents",         placeholder: "$2,800 + $2,100/mo" },
+  { key: "occupancy",      label: "Occupancy",     placeholder: "Both occupied, MTM" },
+  { key: "square_footage", label: "Sq ft",         placeholder: "~2,400" },
+  { key: "lot_size",       label: "Lot size",      placeholder: "6,000 sqft lot" },
+  { key: "year_built",     label: "Year built",    placeholder: "1978" },
+  { key: "notes",          label: "Notes",         placeholder: "Condition, ADU potential…" },
+]
+
+function emptyProperty(): PropertyDetail {
+  return {
+    label: null, property_type: null, units: null, unit_mix: null, rents: null,
+    occupancy: null, square_footage: null, lot_size: null, year_built: null, notes: null,
+  }
+}
+
+// Scannable + editable per-property spec block, rendered under the AI summary.
+// Read view: each property shows only its filled fields as label→value rows
+// (the whole point — Ryan glances and sees units / mix / rents without reading
+// prose). Edit view (✎): all fields become inline inputs + a Remove button. A
+// single contact can own several properties, so this is a list with + Add.
+//
+// Persistence model: editing/removing a field calls onSave with the full array
+// (PATCH /api/leads replaces property_details). Adding a property is LOCAL only
+// until a field is filled — an entirely-empty property is stripped server-side,
+// so persisting it on add would make the new form vanish on the next refetch.
+function PropertyBlock({
+  details,
+  onSave,
+}: {
+  details: PropertyDetail[]
+  onSave: (details: PropertyDetail[]) => void
+}) {
+  const [items, setItems] = useState<PropertyDetail[]>(details)
+  const [editingIdx, setEditingIdx] = useState<number | null>(null)
+  // Re-sync from props when the derived group data changes (AI fill, refetch).
+  useEffect(() => { setItems(details) }, [details])
+
+  const commit = (next: PropertyDetail[]) => {
+    setItems(next)
+    onSave(next)
+  }
+  const setField = (idx: number, key: keyof PropertyDetail, value: string) => {
+    const v = value.trim()
+    commit(items.map((p, i) => (i === idx ? { ...p, [key]: v || null } : p)))
+  }
+  const addProperty = () => {
+    // Local-only — see note above. Open it straight into edit mode.
+    setItems((prev) => [...prev, emptyProperty()])
+    setEditingIdx(items.length)
+  }
+  const removeProperty = (idx: number) => {
+    commit(items.filter((_, i) => i !== idx))
+    setEditingIdx(null)
+  }
+
+  return (
+    <div>
+      <div className="flex items-center justify-between mb-1.5">
+        <div className="text-xs text-zinc-500">
+          Property details{items.length > 1 ? ` · ${items.length}` : ""}
+        </div>
+        <button
+          type="button"
+          onClick={addProperty}
+          className="inline-flex items-center gap-1 text-[11px] text-zinc-500 hover:text-zinc-200 px-2 py-0.5 rounded hover:bg-zinc-900 transition-colors"
+        >
+          <span className="text-sm leading-none">+</span> Add property
+        </button>
+      </div>
+
+      {items.length === 0 ? (
+        <div className="text-[11px] text-zinc-600 italic">
+          No property details yet — they fill in automatically from calls, or add one.
+        </div>
+      ) : (
+        <div className="space-y-2">
+          {items.map((prop, idx) => {
+            const isEditing = editingIdx === idx
+            const heading = prop.label || prop.property_type || `Property ${idx + 1}`
+            const filled = PROPERTY_FIELD_DEFS.filter((d) => d.key !== "label" && prop[d.key])
+            return (
+              <div key={idx} className="rounded border border-zinc-800 bg-zinc-900/40 px-3 py-2">
+                <div className="flex items-center gap-2 mb-1">
+                  <span className="text-sm leading-5">🏘️</span>
+                  <span className="text-sm font-medium text-zinc-200 truncate">{heading}</span>
+                  <button
+                    type="button"
+                    onClick={() => setEditingIdx(isEditing ? null : idx)}
+                    className="ml-auto text-zinc-500 hover:text-zinc-300 inline-flex items-center"
+                    title={isEditing ? "Done editing" : "Edit property"}
+                  >
+                    {isEditing ? <Check className="w-3.5 h-3.5" /> : <Pencil className="w-3 h-3" />}
+                  </button>
+                </div>
+
+                {isEditing ? (
+                  <div className="space-y-1">
+                    {PROPERTY_FIELD_DEFS.map((def) => (
+                      <div key={def.key} className="flex items-baseline gap-2">
+                        <span className="text-[11px] text-zinc-500 w-24 shrink-0">{def.label}</span>
+                        <EditableInlineField
+                          value={prop[def.key]}
+                          placeholder={def.placeholder}
+                          icon=""
+                          onSave={(v) => setField(idx, def.key, v)}
+                        />
+                      </div>
+                    ))}
+                    <button
+                      type="button"
+                      onClick={() => removeProperty(idx)}
+                      className="mt-1 inline-flex items-center gap-1 text-[11px] text-red-400/80 hover:text-red-300"
+                    >
+                      <Trash2 className="w-3 h-3" /> Remove property
+                    </button>
+                  </div>
+                ) : filled.length > 0 ? (
+                  <div className="space-y-0.5">
+                    {filled.map((def) => (
+                      <div key={def.key} className="flex items-baseline gap-2 text-xs">
+                        <span className="text-[11px] text-zinc-500 w-24 shrink-0">{def.label}</span>
+                        <span className="text-zinc-200 break-words min-w-0">{prop[def.key]}</span>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="text-[11px] text-zinc-600 italic">No details yet — tap ✎ to add.</div>
+                )}
+              </div>
+            )
+          })}
+        </div>
+      )}
     </div>
   )
 }

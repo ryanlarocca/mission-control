@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server"
-import { getLeadsClient } from "@/lib/leads"
+import { getLeadsClient, mergePropertyDetails, parsePropertyDetails } from "@/lib/leads"
 
 // Phase 7D — cached lead summary, multi-event variant.
 //
@@ -76,7 +76,7 @@ export async function POST(
     const { data: anchor, error } = await sb
       .from("leads")
       .select(
-        "id, name, email, caller_phone, source, campaign_label, property_address, ai_summary, ai_summary_generated_at"
+        "id, name, email, caller_phone, source, campaign_label, property_address, property_details, ai_summary, ai_summary_generated_at"
       )
       .eq("id", id)
       .maybeSingle()
@@ -122,6 +122,7 @@ export async function POST(
         name: anchor.name ?? null,
         property_address: anchor.property_address ?? null,
         email: anchor.email ?? null,
+        property_details: parsePropertyDetails(anchor.property_details),
       })
     }
 
@@ -162,10 +163,29 @@ Produce a JSON object:
       • If the latest event is a hostile pass or opt-out, the summary
         should say so as the headline, even if earlier rows were warmer.
 
-    PROPERTY SPECIFICS — capture bed/bath count, multi-unit mix per unit
-    (e.g. "duplex: 1x 3bd/2ba + 1x 2bd/1ba"), per-unit or total monthly
-    rents, vacancy status, square footage / lot / year built when stated.
-    These are load-bearing details Ryan revisits later.
+    Keep this NARRATIVE — who, what, where it stands, urgency. Hard property
+    SPECS go in the structured property_details field below, not in spec-heavy
+    sentences here.
+
+- property_details: an ARRAY of property objects — the concrete specs of the
+    real estate discussed, the facts Ryan revisits before every callback. ONE
+    OBJECT PER DISTINCT PROPERTY (a seller may own several — e.g. a duplex AND
+    a single-family; emit one object each). Each object's string fields (null
+    for anything not stated — never guess):
+      • label: the property's address or a short distinguishing tag — how it's
+          told apart from the seller's other properties. Set it whenever an
+          address/identifier is given.
+      • property_type: "Single-family" | "Duplex" | "Triplex" | "4-plex" |
+          "Multifamily" | "Condo" | "Land" | ...
+      • units: door count as stated ("2", "4 units").
+      • unit_mix: per-unit bed/bath ("1x 3bd/2ba · 1x 2bd/1ba"); single-family
+          → just "4bd/2ba".
+      • rents: per-unit or total monthly ("$2,800 + $2,100/mo", "~$8k/mo").
+      • occupancy: "both occupied, month-to-month", "1 vacant", "owner-occupied".
+      • square_footage ("~2,400 sqft"), lot_size ("6,000 sqft lot"),
+          year_built ("1978").
+      • notes: other pertinent physical detail (condition, reno, ADU potential).
+    Return [] when no property specifics were discussed. Don't fabricate.
 
 - name: the lead's stated name from anywhere in the conversation
     history. Best-effort: pick the most confident mention, not a partial
@@ -180,7 +200,7 @@ Produce a JSON object:
 
 Respond with ONLY the JSON — no markdown fences, no explanation.
 
-{ "summary": "...", "name": "..." | null, "property_address": "..." | null, "email": "..." | null }
+{ "summary": "...", "name": "..." | null, "property_address": "..." | null, "email": "..." | null, "property_details": [ { "label": "..."|null, "property_type": "..."|null, "units": "..."|null, "unit_mix": "..."|null, "rents": "..."|null, "occupancy": "..."|null, "square_footage": "..."|null, "lot_size": "..."|null, "year_built": "..."|null, "notes": "..."|null } ] }
 
 LEAD DATA:
 - Name: ${anchor.name || "(unknown)"}
@@ -198,7 +218,9 @@ ${transcript}`
       headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
       body: JSON.stringify({
         model: HAIKU_MODEL,
-        max_tokens: 400,
+        // 400 → 700 to fit the property_details array (a seller with two
+        // multi-unit properties can otherwise truncate the JSON mid-object).
+        max_tokens: 700,
         messages: [{ role: "user", content: prompt }],
       }),
     })
@@ -219,12 +241,14 @@ ${transcript}`
     let extractedName: string | null = null
     let extractedAddress: string | null = null
     let extractedEmail: string | null = null
+    let extractedDetails: ReturnType<typeof parsePropertyDetails> = []
     try {
       const parsed = JSON.parse(cleaned) as {
         summary?: string
         name?: unknown
         property_address?: unknown
         email?: unknown
+        property_details?: unknown
       }
       if (parsed.summary && typeof parsed.summary === "string") {
         summary = parsed.summary.trim()
@@ -238,6 +262,7 @@ ${transcript}`
       if (typeof parsed.email === "string" && /\S+@\S+\.\S+/.test(parsed.email.trim())) {
         extractedEmail = parsed.email.trim().toLowerCase()
       }
+      extractedDetails = parsePropertyDetails(parsed.property_details)
     } catch {
       // Fall back: treat the whole cleaned response as the paragraph if it's
       // free text rather than JSON. Better to show a summary than nothing.
@@ -264,6 +289,13 @@ ${transcript}`
       update.property_address = extractedAddress
     }
     if (extractedEmail && !anchor.email) update.email = extractedEmail
+    // Property details — sticky per-property merge (fill-if-empty, append new,
+    // never drop). This is the path that fires on every card expand, so it's
+    // what populates the Property block "as Ryan goes through" his leads. Only
+    // write when the merge yields something so a property-less refresh doesn't
+    // clobber details Ryan hand-entered.
+    const mergedDetails = mergePropertyDetails(anchor.property_details, extractedDetails)
+    if (mergedDetails.length > 0) update.property_details = mergedDetails
     await sb.from("leads").update(update).eq("id", id)
 
     // Return the row's CURRENT effective values (post-update) so the UI
@@ -277,6 +309,11 @@ ${transcript}`
       name: (update.name as string | undefined) ?? anchor.name ?? null,
       property_address: (update.property_address as string | undefined) ?? anchor.property_address ?? null,
       email: (update.email as string | undefined) ?? anchor.email ?? null,
+      // Effective details post-merge: the merged array if we wrote one, else
+      // whatever the row already had (parsed for shape safety).
+      property_details:
+        (update.property_details as ReturnType<typeof parsePropertyDetails> | undefined) ??
+        parsePropertyDetails(anchor.property_details),
     })
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e)

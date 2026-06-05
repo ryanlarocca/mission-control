@@ -1517,6 +1517,113 @@ TRANSCRIPT:
 // Used by /api/leads/[id]/analyze-call (manual / Ryan-driven) and
 // processRecordingBackground (auto on every inbound recording).
 
+// A single property a seller owns. One contact (cluster) can own several —
+// a duplex AND a single-family, etc. — so leads.property_details is an ARRAY
+// of these. Every field is a free-form nullable string: real-world transcript
+// language is messy ("2-3 units", "duplex + ADU", "approx 2,400 sqft") and we
+// want to surface it verbatim, not force it through numeric parsing. `label`
+// is the address (or a short tag) that distinguishes one property from another
+// on the card and is the key the sticky merge matches on across calls.
+export interface PropertyDetail {
+  label: string | null            // address / short tag — distinguishes properties
+  property_type: string | null    // "Duplex" | "Single-family" | "Triplex" | ...
+  units: string | null            // "2", "4 units" — how many doors
+  unit_mix: string | null         // "1× 3bd/2ba · 1× 2bd/1ba", or single "3bd/2ba"
+  rents: string | null            // "$2,800 + $2,100/mo", "grossing ~$8k/mo"
+  occupancy: string | null        // "both occupied, MTM", "1 vacant"
+  square_footage: string | null   // "~2,400 sqft"
+  lot_size: string | null         // "6,000 sqft lot", "0.25 ac"
+  year_built: string | null       // "1978"
+  notes: string | null            // anything else pertinent the others don't cover
+}
+
+const PROPERTY_DETAIL_FIELDS: (keyof PropertyDetail)[] = [
+  "label", "property_type", "units", "unit_mix", "rents",
+  "occupancy", "square_footage", "lot_size", "year_built", "notes",
+]
+
+// Coerce an arbitrary value (AI output, DB JSONB, or PATCH body) into a clean
+// PropertyDetail[]. Drops non-object entries, keeps only known string fields,
+// trims, and discards any property that ended up entirely empty. Returns []
+// for anything unusable so callers never have to null-check the array shape.
+export function parsePropertyDetails(raw: unknown): PropertyDetail[] {
+  if (!Array.isArray(raw)) return []
+  const out: PropertyDetail[] = []
+  for (const item of raw) {
+    if (!item || typeof item !== "object") continue
+    const src = item as Record<string, unknown>
+    const prop = {} as PropertyDetail
+    let hasAny = false
+    for (const f of PROPERTY_DETAIL_FIELDS) {
+      const v = src[f]
+      if (typeof v === "string" && v.trim()) {
+        prop[f] = v.trim()
+        hasAny = true
+      } else if (typeof v === "number" && Number.isFinite(v)) {
+        prop[f] = String(v)
+        hasAny = true
+      } else {
+        prop[f] = null
+      }
+    }
+    if (hasAny) out.push(prop)
+  }
+  return out
+}
+
+// Normalize a property label/address for fuzzy matching across calls: lowercase,
+// strip everything but letters+digits. "2127 Los Gatos Rd." and "2127 los gatos
+// road" won't be identical, but the leading street number + name overlap is
+// enough for the substring test in mergePropertyDetails to tie them together.
+function normPropLabel(label: string | null): string {
+  return (label || "").toLowerCase().replace(/[^a-z0-9]/g, "")
+}
+
+// Sticky per-property merge. `existing` is what's already on the lead row;
+// `incoming` is what the AI just extracted from the latest transcript. Rules:
+//   • Match an incoming property to an existing one by label similarity
+//     (normalized equality or substring either way). On a match, fill ONLY the
+//     existing property's empty fields from the incoming one — a value Ryan (or
+//     an earlier richer call) already captured is never overwritten by a later
+//     vaguer mention.
+//   • An incoming property with no existing match is appended.
+//   • Existing properties the AI didn't mention this round are KEPT untouched —
+//     a 20-second "call me back" voicemail must not wipe Steve's second property.
+// This mirrors the fill-if-empty hands-off rule used for name/property_address.
+export function mergePropertyDetails(
+  existing: unknown,
+  incoming: unknown
+): PropertyDetail[] {
+  const base = parsePropertyDetails(existing)
+  const fresh = parsePropertyDetails(incoming)
+  for (const inc of fresh) {
+    const incKey = normPropLabel(inc.label)
+    const match =
+      incKey.length >= 4
+        ? base.find((b) => {
+            const bKey = normPropLabel(b.label)
+            return (
+              bKey.length >= 4 &&
+              (bKey === incKey || bKey.includes(incKey) || incKey.includes(bKey))
+            )
+          })
+        : // Unlabeled incoming property: only auto-merge when there's exactly
+          // one existing property to merge into, otherwise we'd risk folding a
+          // genuinely-new second property into the wrong one. Else append.
+          base.length === 1
+          ? base[0]
+          : undefined
+    if (match) {
+      for (const f of PROPERTY_DETAIL_FIELDS) {
+        if (!match[f] && inc[f]) match[f] = inc[f]
+      }
+    } else {
+      base.push(inc)
+    }
+  }
+  return base
+}
+
 export interface AnalyzeCallResult {
   temperature: Temperature
   summary: string
@@ -1539,6 +1646,11 @@ export interface AnalyzeCallResult {
   // count, but a seller-stated price alone does not.
   offer_amount: number | null
   offer_verbalized: boolean
+  // Structured, scannable property specs the AI extracted this pass. One entry
+  // per distinct property the seller owns. Merged stickily into the lead row's
+  // existing property_details (see mergePropertyDetails) so facts accumulate
+  // across calls. [] when nothing property-specific was discussed.
+  property_details: PropertyDetail[]
 }
 
 // Build a short prose timeline of every prior event in the contact's cluster
@@ -1632,24 +1744,15 @@ ${TEMPERATURE_RUBRIC}
     call ended with a stall or rejection, the summary should reflect that
     as the current state, not the conversational warmth that preceded it.
 
-    PROPERTY SPECIFICS — if the caller and Ryan discuss any of the following,
-    capture them EXPLICITLY and concretely in the summary (don't paraphrase
-    them away). These are load-bearing details Ryan revisits later:
-      • bed/bath count (e.g. "3bd/2ba")
-      • multi-unit mix on a duplex / triplex / 4-plex / small MFR — list each
-        unit's size when stated (e.g. "duplex: 1x 3bd/2ba + 1x 2bd/1ba",
-        "4-plex with two 2bd/1ba and two 1bd/1ba")
-      • monthly rents per unit or in total (e.g. "rents \$2,400 and \$1,800",
-        "grossing ~\$8k/mo")
-      • vacancy / occupancy status (which units are occupied, month-to-month
-        vs lease, problem tenants)
-      • square footage, lot size, or year built if stated
+    Keep the summary itself NARRATIVE — who called, what they want, where it
+    stands, urgency. Put the hard property SPECS in the structured
+    property_details field below, not in long spec-laden sentences here. A one-
+    line nod is fine ("owns a duplex he's open to selling"); the numbers live
+    in property_details.
 
     Example: "Brian called about a duplex he owns at 2127 Los Gatos Almaden
-    Rd — 1x 3bd/2ba renting for \$2,800 and 1x 2bd/1ba renting for \$2,100,
-    both month-to-month. He didn't share a timeline but sounded open to
-    exploring options and wants a callback. Worth a quick follow-up
-    tomorrow morning."
+    Rd and sounded open to exploring options — no timeline yet, wants a
+    callback. Worth a quick follow-up tomorrow morning."
 
 - name: the SELLER caller's stated name (best-effort, even if audio was
     unclear). Null only if no seller name is present.
@@ -1681,6 +1784,39 @@ ${TEMPERATURE_RUBRIC}
     say it aloud ("john smith at gmail dot com", "j-s-m-i-t-h") — normalize
     those spoken forms to a standard address (johnsmith@gmail.com). Null only
     if no email was mentioned.
+
+- property_details: an ARRAY of property objects — the concrete specs of the
+    real estate being discussed. These are load-bearing facts Ryan revisits
+    before every callback, so capture them precisely.
+
+    ONE OBJECT PER DISTINCT PROPERTY. A seller may own more than one (e.g. "I've
+    got a duplex on Oak and also a single-family on Elm") — emit one object for
+    each. If only one property is discussed, the array has one object.
+
+    Each object has these string fields (use null for anything not stated — do
+    NOT guess or infer):
+      • label: the property's address or a short distinguishing tag ("2127 Los
+          Gatos Rd", "the Elm St single-family"). This is how the property is
+          told apart from the seller's other properties — always set it when an
+          address or clear identifier is given.
+      • property_type: "Single-family" | "Duplex" | "Triplex" | "4-plex" |
+          "Multifamily" | "Condo" | "Land" | etc.
+      • units: how many doors, as stated ("2", "4 units").
+      • unit_mix: per-unit bed/bath. Multi-unit → list each ("1x 3bd/2ba · 1x
+          2bd/1ba", "two 2bd/1ba + two 1bd/1ba"). Single-family → just "4bd/2ba".
+      • rents: per-unit or total monthly rent ("\$2,800 + \$2,100/mo",
+          "grossing ~\$8k/mo").
+      • occupancy: who's in it ("both occupied, month-to-month", "1 unit vacant",
+          "owner-occupied", "problem tenant downstairs").
+      • square_footage: e.g. "~2,400 sqft".
+      • lot_size: e.g. "6,000 sqft lot", "0.25 acre".
+      • year_built: e.g. "1978".
+      • notes: any other pertinent physical detail (condition, recent reno,
+          garage, ADU potential) that none of the above capture.
+
+    Return an empty array [] when no property specifics were discussed (a pure
+    voicemail greeting, a wrong number, an opt-out). Don't fabricate a property
+    just to fill the field.
 
 - recommended_followup_date: ISO date YYYY-MM-DD ≥ today. Reason the follow-up
     timing from what was actually said — EVERY genuine seller lead gets a date.
@@ -1789,7 +1925,21 @@ Respond with ONLY the JSON object — no markdown fences, no explanation.
   "followup_reason": "..." | null,
   "is_dnc": true | false,
   "offer_amount": number | null,
-  "offer_verbalized": true | false
+  "offer_verbalized": true | false,
+  "property_details": [
+    {
+      "label": "..." | null,
+      "property_type": "..." | null,
+      "units": "..." | null,
+      "unit_mix": "..." | null,
+      "rents": "..." | null,
+      "occupancy": "..." | null,
+      "square_footage": "..." | null,
+      "lot_size": "..." | null,
+      "year_built": "..." | null,
+      "notes": "..." | null
+    }
+  ]
 }
 
 ${historyBlock}FRESH TRANSCRIPT (this is the current call):
@@ -1801,7 +1951,10 @@ ${historyBlock}FRESH TRANSCRIPT (this is the current call):
       headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
       body: JSON.stringify({
         model: "anthropic/claude-haiku-4-5",
-        max_tokens: 400,
+        // Bumped 400 → 700 for the property_details array — a seller with two
+        // multi-unit properties can push the JSON past the old ceiling and
+        // truncate mid-object, failing the parse.
+        max_tokens: 700,
         messages: [{ role: "user", content: prompt }],
       }),
     })
@@ -1853,6 +2006,7 @@ ${historyBlock}FRESH TRANSCRIPT (this is the current call):
           ? parsed.offer_amount
           : null,
       offer_verbalized: parsed.offer_verbalized === true,
+      property_details: parsePropertyDetails(parsed.property_details),
     }
   } catch (e) {
     console.error("[analyze-call] threw:", e)
@@ -1918,7 +2072,7 @@ export async function applyFollowupOnlyResult(
 
   const { data: existing } = await sb
     .from("leads")
-    .select("name, property_address, caller_phone, email, offer_amount, offer_verbalized_at, created_at")
+    .select("name, property_address, caller_phone, email, offer_amount, offer_verbalized_at, created_at, property_details")
     .eq("id", leadId)
     .maybeSingle()
 
@@ -1932,6 +2086,12 @@ export async function applyFollowupOnlyResult(
     update.property_address = result.property_address
   }
   if (result.email && !existing?.email) update.email = result.email
+
+  // Property details — same sticky merge as the inbound path. Ryan's own
+  // outbound calls are where a lot of spec-gathering actually happens, so this
+  // path must accumulate property facts too (factual, like name/address).
+  const mergedDetails = mergePropertyDetails(existing?.property_details, result.property_details)
+  if (mergedDetails.length > 0) update.property_details = mergedDetails
 
   // Offer detection — same hands-off rule as applyAnalyzeCallResult.
   // Outbound calls are the canonical "Ryan stated a number" path, so
@@ -2026,7 +2186,7 @@ export async function applyAnalyzeCallResult(
   // across the full contact cluster (Fix 1 below).
   const { data: existing } = await sb
     .from("leads")
-    .select("name, property_address, caller_phone, email, offer_amount, offer_verbalized_at, created_at")
+    .select("name, property_address, caller_phone, email, offer_amount, offer_verbalized_at, created_at, property_details")
     .eq("id", leadId)
     .maybeSingle()
 
@@ -2055,6 +2215,14 @@ export async function applyAnalyzeCallResult(
   // hand-corrected address is never clobbered. This is what makes the
   // send-email path light up for a call-only lead (e.g. Mike Cummings).
   if (result.email && !existing?.email) update.email = result.email
+
+  // Property details — sticky per-property merge. Fills empty fields on
+  // already-captured properties, appends genuinely new ones, never drops a
+  // property the AI didn't mention this pass. Only write when the merge
+  // actually produced something, so a property-less call doesn't clobber a
+  // row that already has details (e.g. Ryan hand-entered them).
+  const mergedDetails = mergePropertyDetails(existing?.property_details, result.property_details)
+  if (mergedDetails.length > 0) update.property_details = mergedDetails
 
   // Offer detection — hands-off rule. Only write the amount + timestamp
   // when the row's current values are null, so Ryan's manual pencil edits

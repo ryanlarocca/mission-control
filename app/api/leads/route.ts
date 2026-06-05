@@ -6,6 +6,7 @@ import {
   LEAD_FLAG_FIELDS,
   haltOutreachForCluster,
   registerManualTouch,
+  parsePropertyDetails,
   type LeadStatus,
   type LeadFlagField,
 } from "@/lib/leads"
@@ -128,6 +129,21 @@ export async function PATCH(request: NextRequest) {
     const v = body.offer_verbalized_at
     if (v === null || typeof v === "string") update.offer_verbalized_at = v
     else return NextResponse.json({ error: "offer_verbalized_at must be ISO string or null" }, { status: 400 })
+  }
+
+  // Property details — the lead card sends the FULL array (it manages add /
+  // edit / remove client-side). Validate + normalize through the shared parser;
+  // an empty array clears the block. null also clears.
+  if (body.property_details !== undefined) {
+    const v = body.property_details
+    if (v === null) {
+      update.property_details = null
+    } else if (Array.isArray(v)) {
+      const cleaned = parsePropertyDetails(v)
+      update.property_details = cleaned.length > 0 ? cleaned : null
+    } else {
+      return NextResponse.json({ error: "property_details must be an array or null" }, { status: 400 })
+    }
   }
 
   for (const flag of LEAD_FLAG_FIELDS) {
