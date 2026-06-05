@@ -25,7 +25,22 @@ type TgMessage = {
   text?: string
   reply_to_message?: { text?: string; caption?: string }
 }
-type TgUpdate = { message?: TgMessage; edited_message?: TgMessage }
+type TgUpdate = { update_id?: number; message?: TgMessage; edited_message?: TgMessage }
+
+// In-process dedup: Telegram can redeliver the same update_id on network
+// hiccups. Track seen update_ids for 5 minutes — enough to catch any retry
+// storm. Not 100% cross-instance safe but handles 99%+ of real-world cases;
+// the 60-second dedup inside sendLeadSms is the backstop for the rest.
+const seenUpdateIds = new Map<number, number>() // update_id → timestamp ms
+function isDuplicateUpdate(id: number): boolean {
+  const now = Date.now()
+  for (const uid of Array.from(seenUpdateIds.keys())) {
+    if (now - (seenUpdateIds.get(uid) ?? 0) > 5 * 60_000) seenUpdateIds.delete(uid)
+  }
+  if (seenUpdateIds.has(id)) return true
+  seenUpdateIds.set(id, now)
+  return false
+}
 
 // Post a message back into the Telegram chat, optionally as a reply. Inline
 // (not sendTelegramAlert) so we can thread the confirmation under Ryan's
@@ -69,6 +84,12 @@ export async function POST(request: Request) {
   try {
     update = (await request.json()) as TgUpdate
   } catch {
+    return NextResponse.json({ ok: true })
+  }
+
+  // Drop duplicate deliveries — Telegram retries if it doesn't hear back fast.
+  if (typeof update.update_id === "number" && isDuplicateUpdate(update.update_id)) {
+    console.warn(`[telegram/webhook] duplicate update_id ${update.update_id} — dropping`)
     return NextResponse.json({ ok: true })
   }
 

@@ -924,6 +924,30 @@ export async function sendLeadSms(input: {
     return { success: false, status: 400, error: `Invalid phone: ${input.phone}` }
   }
 
+  // Dedup guard — if the exact same message was already sent to this phone
+  // in the last 60 seconds, drop silently. Prevents double-sends when two
+  // systems (e.g., the Telegram webhook AND a manual agent action) both try
+  // to forward the same reply to a lead at the same time.
+  try {
+    const sbDedup = getLeadsClient()
+    const sixtySecAgo = new Date(Date.now() - 60_000).toISOString()
+    const { data: recent } = await sbDedup
+      .from("leads")
+      .select("id")
+      .eq("caller_phone", phone)
+      .is("twilio_number", null) // outbound marker
+      .eq("message", message)
+      .gte("created_at", sixtySecAgo)
+      .limit(1)
+    if (recent && recent.length > 0) {
+      console.warn(`[sendLeadSms] Dedup: identical message to ${phone} already sent within 60s — dropping`)
+      return { success: true, status: 200, messageSid: null, leadId: recent[0].id, logError: null }
+    }
+  } catch (e) {
+    // Best-effort — never block a send on a dedup check failure.
+    console.error("[sendLeadSms] Dedup check threw:", e)
+  }
+
   // DNC guard — never text a lead flagged Do-Not-Contact. Fail-safe: if the
   // check itself errors, block rather than risk a contact.
   try {
@@ -1143,22 +1167,29 @@ export async function fetchTwilioAudio(url: string): Promise<Buffer | null> {
     return null
   }
   const auth = Buffer.from(`${sid}:${token}`).toString("base64")
-  try {
-    // Defensive cache: no-store. Twilio recording URLs are unique per
-    // recording so cache hits would return the same audio (not stale
-    // data), but the audio buffers can be multi-MB — letting Next.js
-    // hold them in its fetch cache would waste serverless memory.
-    const res = await fetch(url, { headers: { Authorization: `Basic ${auth}` }, cache: "no-store" })
-    if (!res.ok) {
-      console.error(`[twilio-audio] Fetch failed ${res.status}: ${url}`)
-      return null
+  // Retry transient CDN errors — same failure class as Whisper 5xx. A single
+  // network blip silently stamps Cold with no orphan row to recover from
+  // (recording_url IS set, so retranscribe-missing won't find it unless
+  // message remains null after the cold default fires).
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      // Defensive cache: no-store. Twilio recording URLs are unique per
+      // recording so cache hits would return the same audio (not stale
+      // data), but the audio buffers can be multi-MB — letting Next.js
+      // hold them in its fetch cache would waste serverless memory.
+      const res = await fetch(url, { headers: { Authorization: `Basic ${auth}` }, cache: "no-store" })
+      if (res.ok) {
+        const ab = await res.arrayBuffer()
+        return Buffer.from(ab)
+      }
+      console.error(`[twilio-audio] Fetch failed ${res.status} (attempt ${attempt}/3): ${url}`)
+      if (res.status < 500) return null // 4xx won't improve on retry
+    } catch (e) {
+      console.error(`[twilio-audio] Fetch threw (attempt ${attempt}/3):`, e)
     }
-    const ab = await res.arrayBuffer()
-    return Buffer.from(ab)
-  } catch (e) {
-    console.error("[twilio-audio] Fetch threw:", e)
-    return null
+    if (attempt < 3) await new Promise(r => setTimeout(r, 2000 * attempt))
   }
+  return null
 }
 
 // OpenAI Whisper transcription. Returns the text or null on failure.
@@ -1226,6 +1257,12 @@ export async function processRecordingBackground(args: {
   const { fullUrl, callerPhone, source, leadId } = args
   const direction = args.direction ?? "inbound"
   try {
+    // Twilio fires the recording status callback the moment the recording
+    // resource is created, but the MP3 at RecordingUrl may not be fully
+    // encoded yet — especially on longer calls. Downloading immediately
+    // returns a partial or empty file, causing Whisper to return null.
+    // 10 seconds covers encoding lag for any realistic call length.
+    await new Promise(r => setTimeout(r, 10_000))
     const audio = await fetchTwilioAudio(fullUrl)
 
     let transcription: string | null = null
@@ -1334,12 +1371,21 @@ export async function processRecordingBackground(args: {
         // lose; otherwise leave it untouched for the reconciliation pass
         // (scripts/retranscribe-missing.mjs) to recover.
         const audioBytes = audio?.length ?? 0
-        const transcriptionFailedOnRealAudio = !!audio && !transcription && audioBytes > 300_000
+        // 50 KB ≈ 12 seconds at Twilio's 32 kbps — anything above that is a
+        // real voicemail worth preserving. Previous threshold (300 KB) missed
+        // short but genuine voicemails (~30s = 120 KB) and stamped them cold.
+        const transcriptionFailedOnRealAudio = !!audio && !transcription && audioBytes > 50_000
         if (transcriptionFailedOnRealAudio) {
           console.error(`[analyze-call] Lead ${leadId} → transcription FAILED on ${audioBytes} bytes of audio — NOT stamping cold; left for re-transcription.`)
+          sendTelegramAlert(`⚠️ Transcription failed — lead ${leadId} (${callerPhone}) has a real recording (${Math.round(audioBytes / 1024)} KB) but Whisper returned nothing. Run retranscribe-missing.mjs to recover.`).catch(() => {})
+        } else if (transcription) {
+          // Transcript exists but analyzer returned null (AI 500, JSON parse
+          // failure, etc.). The transcript IS saved so the lead is recoverable
+          // — leave temperature untouched rather than stamping cold incorrectly.
+          console.error(`[analyze-call] Lead ${leadId} → analyzer failed on real transcript; temperature left untouched.`)
         } else {
           await applyColdNoSignalDefault(leadId)
-          console.log(`[analyze-call] Lead ${leadId} → cold (no-signal default: ${transcription ? "analysis failed" : "no transcript"})`)
+          console.log(`[analyze-call] Lead ${leadId} → cold (no-signal default: no transcript, ${audioBytes} bytes)`)
         }
       }
 
