@@ -1,10 +1,10 @@
 "use client"
 
-import { useCallback, useEffect, useMemo, useState } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import {
   Phone, PhoneOutgoing, Bot, Mail, MessageSquare, Send, Pencil, X, Check,
   Clock, Loader2, RefreshCw, AlertTriangle, ChevronDown, ChevronRight,
-  Sparkles, SkipForward, Eye, ExternalLink, CalendarClock,
+  Sparkles, SkipForward, Eye, ExternalLink, CalendarClock, Ban, ShieldOff,
 } from "lucide-react"
 import { formatPhone } from "@/lib/utils"
 import {
@@ -38,6 +38,7 @@ interface ContactRow {
   status: string
   temperature: "hot" | "warm" | "cold" | null
   notes: string | null
+  aiSummary: string | null
   emailReplyLeadId: string | null
   primary: NextTouch
   secondary: NextTouch | null
@@ -552,6 +553,79 @@ export function FollowUpsTab() {
     }
   }
 
+  // Change a lead's lifecycle status, or flag it junk / DNC, straight from
+  // the worklist card. Lifecycle relabels (contacted/active/nurture/new) keep
+  // the contact in the queue and just update the badge; the "exit" choices
+  // (dead, junk, DNC) run the PATCH route's haltOutreachForCluster — which
+  // skips every queued drip + clears the follow-up date across the cluster —
+  // so the card drops off the list entirely. Writes to the representative row
+  // (row.leadId), the same row status edits target elsewhere.
+  async function changeStatus(
+    row: ContactRow,
+    choice: { status?: string; flag?: "is_junk" | "is_dnc" }
+  ) {
+    const halts = choice.flag != null || choice.status === "dead"
+    setActingOn(row.clusterKey)
+    if (halts) {
+      dropRow(row.clusterKey)
+    } else if (choice.status) {
+      // Optimistic relabel — the badge flips immediately, refetch confirms.
+      setData(prev => prev ? {
+        ...prev,
+        rows: prev.rows.map(r => r.clusterKey === row.clusterKey ? { ...r, status: choice.status! } : r),
+      } : prev)
+    }
+    const payload: Record<string, unknown> = { id: row.leadId }
+    if (choice.flag) payload[choice.flag] = true
+    if (choice.status) payload.status = choice.status
+    try {
+      const res = await fetch("/api/leads", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      })
+      const body = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error((body as { error?: string })?.error || `HTTP ${res.status}`)
+      const label =
+        choice.flag === "is_junk" ? "Marked junk"
+          : choice.flag === "is_dnc" ? "Marked Do-Not-Contact"
+            : choice.status === "dead" ? "Marked dead"
+              : `Status → ${choice.status}`
+      showToast(`${label}${halts ? " — pulled from follow-ups + drips" : ""}`)
+      void fetchData(true)
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e))
+      void fetchData(true)
+    } finally {
+      setActingOn(null)
+    }
+  }
+
+  // Save the card's inline note. Optimistic — the textarea already shows the
+  // text; PATCH persists it to the representative row and a failure refetches
+  // to restore truth. No actingOn flag so saving a note doesn't disable the
+  // card's other buttons.
+  async function saveNotes(row: ContactRow, notes: string) {
+    setData(prev => prev ? {
+      ...prev,
+      rows: prev.rows.map(r => r.clusterKey === row.clusterKey ? { ...r, notes: notes || null } : r),
+    } : prev)
+    try {
+      const res = await fetch("/api/leads", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: row.leadId, notes: notes || null }),
+      })
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}))
+        throw new Error((body as { error?: string })?.error || `HTTP ${res.status}`)
+      }
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e))
+      void fetchData(true)
+    }
+  }
+
   // ---- failed-section actions --------------------------------------------
 
   async function retryFailed(id: string) {
@@ -647,6 +721,8 @@ export function FollowUpsTab() {
     onEmail: (row: ContactRow) => setComposeFor({ row, channel: "email" }),
     onText: (row: ContactRow) => setComposeFor({ row, channel: "text" }),
     onLongTermNurture: longTermNurture,
+    onChangeStatus: changeStatus,
+    onSaveNotes: saveNotes,
   }
 
   const isEmpty =
@@ -838,6 +914,183 @@ interface CardHandlers {
   onEmail: (row: ContactRow) => void
   onText: (row: ContactRow) => void
   onLongTermNurture: (row: ContactRow) => void
+  onChangeStatus: (row: ContactRow, choice: { status?: string; flag?: "is_junk" | "is_dnc" }) => void
+  onSaveNotes: (row: ContactRow, notes: string) => void
+}
+
+// Lifecycle statuses Ryan owns (the AI never writes these). Order matches the
+// pipeline progression; "dead" is the only one of these that halts outreach.
+const LIFECYCLE_OPTIONS: { key: string; label: string }[] = [
+  { key: "new", label: "New" },
+  { key: "contacted", label: "Contacted" },
+  { key: "active", label: "Active" },
+  { key: "nurture", label: "Nurture" },
+  { key: "dead", label: "Dead" },
+]
+const STATUS_DOT: Record<string, string> = {
+  new: "bg-zinc-400", contacted: "bg-blue-400", active: "bg-sky-400",
+  nurture: "bg-amber-400", dead: "bg-zinc-600",
+}
+
+// Status changer on the worklist card. Lifecycle relabels + the two exit
+// flags (junk / DNC). Dismissal follows the iOS-safe pattern (ref + document
+// pointerdown added on a setTimeout(0), NOT a full-screen overlay) so an
+// outside tap closes it without a fixed inset-0 layer eating scroll/taps.
+function StatusMenu({
+  status,
+  disabled,
+  onPick,
+}: {
+  status: string
+  disabled: boolean
+  onPick: (choice: { status?: string; flag?: "is_junk" | "is_dnc" }) => void
+}) {
+  const [open, setOpen] = useState(false)
+  const ref = useRef<HTMLDivElement | null>(null)
+  useEffect(() => {
+    if (!open) return
+    let cleanup = () => {}
+    // setTimeout(0): let the click that opened the menu finish before we start
+    // listening, otherwise that same click closes it immediately.
+    const t = setTimeout(() => {
+      const onDown = (e: PointerEvent) => {
+        if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false)
+      }
+      document.addEventListener("pointerdown", onDown)
+      cleanup = () => document.removeEventListener("pointerdown", onDown)
+    }, 0)
+    return () => { clearTimeout(t); cleanup() }
+  }, [open])
+
+  const pick = (choice: { status?: string; flag?: "is_junk" | "is_dnc" }) => {
+    setOpen(false)
+    onPick(choice)
+  }
+
+  return (
+    <div className="relative" ref={ref}>
+      <button
+        type="button"
+        onClick={() => setOpen(o => !o)}
+        disabled={disabled}
+        title="Change lead status"
+        className="inline-flex items-center gap-1 px-2 py-1 rounded text-zinc-400 hover:text-zinc-100 hover:bg-zinc-900 transition-colors disabled:opacity-60"
+      >
+        <span className={`w-1.5 h-1.5 rounded-full ${STATUS_DOT[status] ?? "bg-zinc-400"}`} />
+        <span className="capitalize">{status}</span>
+        <ChevronDown className="w-3 h-3" />
+      </button>
+      {open && (
+        <div className="absolute right-0 top-full mt-1 z-20 w-48 rounded-md border border-zinc-700 bg-zinc-900 shadow-xl py-1 text-xs">
+          {LIFECYCLE_OPTIONS.map(o => (
+            <button
+              key={o.key}
+              type="button"
+              onClick={() => pick({ status: o.key })}
+              className={`w-full flex items-center gap-2 px-3 py-1.5 hover:bg-zinc-800 text-left ${o.key === status ? "text-zinc-100" : "text-zinc-300"}`}
+            >
+              <span className={`w-1.5 h-1.5 rounded-full ${STATUS_DOT[o.key]}`} />
+              {o.label}
+              {o.key === status && <Check className="w-3 h-3 ml-auto text-emerald-400" />}
+            </button>
+          ))}
+          <div className="my-1 border-t border-zinc-800" />
+          <button
+            type="button"
+            onClick={() => pick({ flag: "is_junk" })}
+            className="w-full flex items-center gap-2 px-3 py-1.5 hover:bg-zinc-800 text-left text-amber-300/90"
+          >
+            <Ban className="w-3 h-3" /> Mark junk
+          </button>
+          <button
+            type="button"
+            onClick={() => pick({ flag: "is_dnc" })}
+            className="w-full flex items-center gap-2 px-3 py-1.5 hover:bg-zinc-800 text-left text-red-300/90"
+          >
+            <ShieldOff className="w-3 h-3" /> Mark Do-Not-Contact
+          </button>
+        </div>
+      )}
+    </div>
+  )
+}
+
+// "Where it stands" context, shown under the card header so Ryan doesn't have
+// to expand the full lead card to remember where a relationship left off. The
+// AI summary (auto, reflects the latest call) is clamped to 2 lines and
+// expands on tap; the note below it is inline-editable so he can jot an update
+// after a call without leaving the queue.
+function ContextBlock({
+  aiSummary,
+  notes,
+  onSaveNotes,
+}: {
+  aiSummary: string | null
+  notes: string | null
+  onSaveNotes: (value: string) => void
+}) {
+  const [expanded, setExpanded] = useState(false)
+  const [editingNotes, setEditingNotes] = useState(false)
+  const [draft, setDraft] = useState(notes ?? "")
+  // Re-sync from props only while not editing, so a 30s background refetch
+  // can't wipe an in-progress note (same guard as the lead-card field editor).
+  useEffect(() => { if (!editingNotes) setDraft(notes ?? "") }, [notes, editingNotes])
+
+  const commitNotes = () => {
+    setEditingNotes(false)
+    const t = draft.trim()
+    if (t !== (notes ?? "").trim()) onSaveNotes(t)
+  }
+
+  // Nothing to show and nothing being added → just the faint "Add note" link.
+  return (
+    <div className="px-3 pb-2 space-y-1.5">
+      {aiSummary && (
+        <button
+          type="button"
+          onClick={() => setExpanded(e => !e)}
+          title={expanded ? "Collapse" : "Expand"}
+          className="w-full text-left text-xs text-zinc-400 hover:text-zinc-300 flex gap-1.5"
+        >
+          <span className="text-zinc-500 shrink-0">🤖</span>
+          <span className={expanded ? "" : "line-clamp-2"}>{aiSummary}</span>
+        </button>
+      )}
+      {editingNotes ? (
+        <textarea
+          autoFocus
+          value={draft}
+          onChange={e => setDraft(e.target.value)}
+          onBlur={commitNotes}
+          onKeyDown={e => {
+            if (e.key === "Escape") { setDraft(notes ?? ""); setEditingNotes(false) }
+          }}
+          rows={2}
+          placeholder="Where did this leave off? Add a note…"
+          className="w-full text-xs bg-zinc-900 border border-zinc-700 rounded px-2 py-1.5 text-zinc-100 placeholder-zinc-600 focus:outline-none focus:border-zinc-500 resize-y"
+          style={{ fontSize: 16 }}
+        />
+      ) : notes ? (
+        <button
+          type="button"
+          onClick={() => setEditingNotes(true)}
+          className="group w-full text-left text-xs text-zinc-300 bg-zinc-900/60 rounded px-2 py-1.5 hover:bg-zinc-900 flex gap-1.5"
+        >
+          <span className="text-zinc-500 shrink-0">📝</span>
+          <span className="flex-1 whitespace-pre-wrap break-words">{notes}</span>
+          <Pencil className="w-3 h-3 opacity-0 group-hover:opacity-60 shrink-0 mt-0.5" />
+        </button>
+      ) : (
+        <button
+          type="button"
+          onClick={() => setEditingNotes(true)}
+          className="inline-flex items-center gap-1 text-[11px] text-zinc-500 hover:text-zinc-300"
+        >
+          <Pencil className="w-3 h-3" /> Add note
+        </button>
+      )}
+    </div>
+  )
 }
 
 function ContactCard({ row, ...h }: { row: ContactRow } & CardHandlers) {
@@ -869,15 +1122,29 @@ function ContactCard({ row, ...h }: { row: ContactRow } & CardHandlers) {
         {row.propertyAddress && (
           <span className="text-zinc-500 truncate max-w-[200px]" title={row.propertyAddress}>🏠 {row.propertyAddress}</span>
         )}
-        <button
-          onClick={() => h.onLongTermNurture(row)}
-          disabled={acting}
-          title="Park this lead — switch to the slow long-term-nurture cadence"
-          className="ml-auto inline-flex items-center gap-1 px-2 py-1 rounded text-zinc-500 hover:text-zinc-200 hover:bg-zinc-900 transition-colors disabled:opacity-60 shrink-0"
-        >
-          <CalendarClock className="w-3.5 h-3.5" /> Long-term nurture
-        </button>
+        <div className="ml-auto flex items-center gap-1 shrink-0">
+          <StatusMenu
+            status={row.status}
+            disabled={acting}
+            onPick={(choice) => h.onChangeStatus(row, choice)}
+          />
+          <button
+            onClick={() => h.onLongTermNurture(row)}
+            disabled={acting}
+            title="Park this lead — switch to the slow long-term-nurture cadence"
+            className="inline-flex items-center gap-1 px-2 py-1 rounded text-zinc-500 hover:text-zinc-200 hover:bg-zinc-900 transition-colors disabled:opacity-60 shrink-0"
+          >
+            <CalendarClock className="w-3.5 h-3.5" /> Long-term nurture
+          </button>
+        </div>
       </div>
+
+      {/* context — where the relationship stands + inline-editable notes */}
+      <ContextBlock
+        aiSummary={row.aiSummary}
+        notes={row.notes}
+        onSaveNotes={(v) => h.onSaveNotes(row, v)}
+      />
 
       {/* call block */}
       {callTouch && (

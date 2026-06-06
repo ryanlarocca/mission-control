@@ -50,12 +50,13 @@ interface CandidateLead {
   lead_type: string | null
   twilio_number: string | null
   notes: string | null
+  ai_summary: string | null
 }
 
 const LEAD_COLS =
   "id, caller_phone, email, gmail_thread_id, source, source_type, name, status, created_at, " +
   "property_address, temperature, drip_campaign_type, drip_touch_number, last_drip_sent_at, " +
-  "is_dnc, is_junk, recommended_followup_date, followup_reason, lead_type, twilio_number, notes"
+  "is_dnc, is_junk, recommended_followup_date, followup_reason, lead_type, twilio_number, notes, ai_summary"
 
 interface ContactRow {
   clusterKey: string
@@ -76,8 +77,13 @@ interface ContactRow {
   propertyAddress: string | null
   status: string
   temperature: "hot" | "warm" | "cold" | null
-  // Ryan's notes — shown as guidance in the manual-compose popup.
+  // Ryan's notes — shown as guidance in the manual-compose popup AND now as
+  // an inline-editable context line on the worklist card.
   notes: string | null
+  // AI "where it stands" summary (prose paragraph from analyzeCallTranscript /
+  // the on-expand summary route). Surfaced on the card so Ryan can see where
+  // the relationship left off without expanding the full lead card.
+  aiSummary: string | null
   // Id of an inbound email row in the cluster, if any — lets a manual email
   // thread the existing Gmail conversation instead of starting fresh.
   emailReplyLeadId: string | null
@@ -362,6 +368,9 @@ export async function GET(_request: NextRequest) {
         status: rep.status ?? "new",
         temperature: temp === "hot" || temp === "warm" || temp === "cold" ? temp : null,
         notes: byRecent.find((l) => l.notes && l.notes.trim())?.notes ?? null,
+        // Newest non-empty AI summary across the cluster — same "freshest
+        // wins" rule as notes/temperature.
+        aiSummary: byRecent.find((l) => l.ai_summary && l.ai_summary.trim())?.ai_summary ?? null,
         emailReplyLeadId: emailReplyLead?.id ?? null,
         primary: summary.primary,
         secondary: summary.secondary,
