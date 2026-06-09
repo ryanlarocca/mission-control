@@ -117,6 +117,230 @@ async function lookupEmailCluster(args: {
   return null
 }
 
+// ─── Google Voice forwards ──────────────────────────────────────────────
+// The legacy Google Voice line (an old direct-mail callback number) forwards
+// every missed call / voicemail / text to a campaign mailbox as an email from
+// voice-noreply@google.com. These are NOT direct-mail email replies:
+//   • the real contact is the *caller* named in the GV body, not the sender;
+//   • the body is wrapped in Google Voice chrome (voice.google.com links,
+//     account URLs, "play message");
+//   • a steady fraction are marketing / political SMS blasts from 5–6 digit
+//     shortcodes (Sierra Club, etc.) that are never real sellers.
+// Treating them as generic email leads merged every GV forward under the one
+// shared voice-noreply@ identity (the email-key cluster fallback), which bled
+// one lead's address onto all of them — e.g. Chris Bola's "618 Beta Court"
+// landing on unrelated GV rows. We instead parse the forward into the
+// underlying call/text, cluster on the *caller's* phone, label it "Legacy DM",
+// and drop shortcode spam entirely.
+const GOOGLE_VOICE_SENDER = "voice-noreply@google.com"
+
+function isGoogleVoice(senderEmail: string): boolean {
+  return senderEmail.toLowerCase() === GOOGLE_VOICE_SENDER
+}
+
+interface GoogleVoiceParse {
+  kind: "text" | "voicemail" | "missed_call" | "unknown"
+  // E.164 caller — only when the "from" token is a real 10-digit US number.
+  // null for shortcode senders (69866) and anything unresolvable; those are
+  // treated as spam and not ingested.
+  callerPhone: string | null
+  // Underlying message — SMS text or voicemail transcript, GV chrome stripped.
+  // Empty for a bare missed call.
+  content: string
+}
+
+// Lines that are pure Google Voice chrome, not lead content.
+function isGvChromeLine(line: string): boolean {
+  const t = line.trim()
+  if (!t) return true
+  if (/^<?https?:\/\//i.test(t)) return true
+  if (/voice\.google\.com|accounts\.google\.com/i.test(t)) return true
+  if (/^play message$/i.test(t)) return true
+  if (/^call back$/i.test(t)) return true
+  if (/^your account\b/i.test(t) || /help center/i.test(t)) return true
+  if (/to respond to this message/i.test(t)) return true
+  if (/launch google voice/i.test(t)) return true
+  if (/to avoid missing calls/i.test(t)) return true
+  if (/keep google voice/i.test(t)) return true
+  if (/^hello .+,$/i.test(t)) return true // "Hello Ryan SVJ,"
+  return false
+}
+
+function parseGoogleVoiceForward(subject: string, body: string): GoogleVoiceParse {
+  const lines = body.split(/\r?\n/)
+  const headerLine = lines.find((l) => l.trim()) || subject || ""
+  const header = headerLine.trim()
+
+  let kind: GoogleVoiceParse["kind"] = "unknown"
+  if (/new text message/i.test(header)) kind = "text"
+  else if (/new voicemail/i.test(header)) kind = "voicemail"
+  else if (/new missed call|missed a call/i.test(header)) kind = "missed_call"
+
+  // Caller token after "from". A real number → E.164; a shortcode (69866) or
+  // anything non-numeric → null (spam, skip ingestion).
+  let callerPhone: string | null = null
+  const phoneMatch = header.match(
+    /from\s+\+?1?[\s.]*\(?(\d{3})\)?[\s.\-]*(\d{3})[\s.\-]*(\d{4})/i
+  )
+  if (phoneMatch) {
+    const n = normalizePhone(`${phoneMatch[1]}${phoneMatch[2]}${phoneMatch[3]}`)
+    if (/^\+\d{10,15}$/.test(n)) callerPhone = n
+  }
+
+  // Content = body minus the header line minus GV chrome.
+  const startIdx = lines.indexOf(headerLine)
+  const content = lines
+    .slice(startIdx >= 0 ? startIdx + 1 : 0)
+    .filter((l) => !isGvChromeLine(l))
+    .join("\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim()
+
+  return { kind, callerPhone, content }
+}
+
+// Ingest a Google Voice forward as a Legacy-DM call/text lead. Returns a
+// status object the two POST entry points can fold into their own response.
+async function ingestGoogleVoice(args: {
+  sb: ReturnType<typeof getLeadsClient>
+  subject: string
+  body: string
+  mailbox: string
+  threadId: string | null
+}): Promise<{ skipped?: string; leadId?: string }> {
+  const { sb, subject, body, mailbox, threadId } = args
+  const parsed = parseGoogleVoiceForward(subject, body)
+
+  // Shortcode / unresolvable sender → marketing or political SMS blast, never
+  // a real seller. Don't ingest (product decision). Log so we still see what
+  // hit the line.
+  if (!parsed.callerPhone) {
+    console.log(
+      `[email][gv] Skipping GV forward — no real caller phone (kind=${parsed.kind}) subject="${subject.slice(0, 80)}"`
+    )
+    return { skipped: "gv_shortcode_spam" }
+  }
+
+  const phone = parsed.callerPhone
+  const kindLabel =
+    parsed.kind === "text"
+      ? "Text message"
+      : parsed.kind === "voicemail"
+      ? "Voicemail"
+      : parsed.kind === "missed_call"
+      ? "Missed call"
+      : "Message"
+  // Name: self-identification in a voicemail transcript wins ("hi, this is
+  // John"); otherwise the formatted phone stands in. NEVER "Google Voice".
+  const name = extractNameFromBody(parsed.content) || formatPhoneForAlert(phone)
+  const content = parsed.content || `${kindLabel} — no message left.`
+  const messageText = `${kindLabel} (Google Voice)\n\n${content}`.slice(0, 2000)
+
+  // Dedup on the *caller* (not the shared voice-noreply@ address) + message.
+  const oneHourAgo = new Date(Date.now() - 60 * 60 * 1000).toISOString()
+  const { data: existing } = await sb
+    .from("leads")
+    .select("id, message")
+    .eq("caller_phone", phone)
+    .not("twilio_number", "is", null)
+    .gte("created_at", oneHourAgo)
+    .limit(50)
+  if (
+    existing &&
+    existing.some((r) => (r.message || "").slice(0, 200) === messageText.slice(0, 200))
+  ) {
+    console.log(`[email][gv] Skipping duplicate GV ${parsed.kind} from ${phone}`)
+    return { skipped: "duplicate" }
+  }
+
+  // Cluster on the caller's phone so repeat GV callers share one card and
+  // unrelated callers never merge. GV rows carry email=null, so the email
+  // branch of lookupEmailCluster is a no-op for them.
+  const cluster = await lookupEmailCluster({
+    sb, phone, threadId, senderEmail: GOOGLE_VOICE_SENDER,
+  })
+  const inheritedStatus = cluster?.status ?? "new"
+
+  // Real caller w/ phone, no email → direct_mail_call: same drip + follow-up
+  // as any other direct-mail call lead. Re-engagements carry the cluster's
+  // existing clock without resetting it.
+  const dripFields: Record<string, unknown> = !cluster
+    ? {
+        drip_campaign_type: "direct_mail_call",
+        drip_touch_number: 0,
+        last_drip_sent_at: new Date().toISOString(),
+      }
+    : cluster.dripCampaignType
+    ? { drip_campaign_type: cluster.dripCampaignType }
+    : {}
+
+  // Triage the spoken/written content; a bare missed call has nothing to read.
+  const triage =
+    parsed.kind === "missed_call" && !parsed.content
+      ? null
+      : await triageEmailLead(subject, content)
+
+  const { data: inserted, error: insertErr } = await sb
+    .from("leads")
+    .insert({
+      lead_type: "email",
+      source_type: "direct_mail",
+      source: "Legacy DM",
+      twilio_number: `email:${mailbox}`,
+      caller_phone: phone,
+      name,
+      email: null,
+      message: messageText,
+      ai_notes: triage?.summary ?? null,
+      suggested_reply: triage?.suggestedReply ?? null,
+      status: triage?.is_dead ? "dead" : inheritedStatus,
+      temperature: triage?.temperature ?? null,
+      gmail_thread_id: threadId,
+      ...dripFields,
+    })
+    .select("id")
+    .single()
+  if (insertErr) {
+    console.error(`[email][gv] Insert failed:`, insertErr)
+    return { skipped: "insert_failed" }
+  }
+  console.log(`[email][gv] Inserted Legacy DM lead ${inserted?.id} — ${parsed.kind} from ${phone}`)
+
+  if (cluster?.dripCampaignType) {
+    try {
+      await dedupeClusterStamps(sb, { caller_phone: phone, gmail_thread_id: threadId })
+    } catch (e) {
+      console.warn("[email][gv] cluster dedupe failed:", e instanceof Error ? e.message : String(e))
+    }
+  }
+
+  if (inserted?.id) {
+    try {
+      const { resolveCampaignId } = await import("@/lib/campaigns")
+      const campaignId = await resolveCampaignId({
+        source: "Legacy DM", source_type: "direct_mail", created_at: new Date(),
+      })
+      if (campaignId) await sb.from("leads").update({ campaign_id: campaignId }).eq("id", inserted.id)
+    } catch (e) {
+      console.warn("[email][gv] campaign attribution failed:", e instanceof Error ? e.message : String(e))
+    }
+  }
+
+  const lines = [
+    "📞 New Legacy DM lead (Google Voice)",
+    `👤 ${name}`,
+    `📞 ${formatPhoneForAlert(phone)}`,
+    `✉️ ${kindLabel}`,
+  ]
+  if (triage) {
+    const tempLabel = triage.is_dead ? "DEAD" : triage.temperature.toUpperCase()
+    lines.push(`🤖 AI: <b>${tempLabel}</b> — ${escapeHtml(triage.summary)}`)
+  }
+  await sendTelegramAlert(lines.join("\n"))
+
+  return { leadId: inserted?.id }
+}
+
 export async function POST(request: Request) {
   let rawBody: any
   try {
@@ -210,6 +434,16 @@ async function handleAppsScript(payload: AppsScriptPayload): Promise<NextRespons
   if (isBounceEmail(senderEmail, subject)) {
     console.log(`[email] Skipping bounce from ${senderEmail} — ${subject}`)
     return NextResponse.json({ ok: true, skipped: "bounce" })
+  }
+
+  // Google Voice forwards (legacy DM line) get their own parse/cluster/spam
+  // path — see ingestGoogleVoice. The generic email-lead flow below would
+  // merge them all under voice-noreply@ and bleed addresses across callers.
+  if (isGoogleVoice(senderEmail)) {
+    const res = await ingestGoogleVoice({
+      sb: getLeadsClient(), subject, body: bodyText, mailbox, threadId: null,
+    })
+    return NextResponse.json({ ok: true, ...res })
   }
 
   // Extracted as 10 raw digits; normalize to E.164 so the `caller_phone`
@@ -430,6 +664,17 @@ async function processSingleMessage(args: {
   }
 
   const bodyText = extractPlainBody(message.payload)
+
+  // Google Voice forwards (legacy DM line) — dedicated parse/cluster/spam
+  // path. See ingestGoogleVoice + the handleAppsScript call site.
+  if (isGoogleVoice(senderEmail)) {
+    await ingestGoogleVoice({
+      sb: getLeadsClient(), subject, body: bodyText,
+      mailbox: emailAddress, threadId: message.threadId || null,
+    })
+    return
+  }
+
   // Self-identification in the body wins over the From-header display name
   // (covers Google Voice forwarded voicemails + any lead whose header name
   // is generic/missing/wrong). Header is the safety net.
