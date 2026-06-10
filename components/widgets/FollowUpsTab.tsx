@@ -156,6 +156,25 @@ function dripOverlayKey(card: { caller_phone: string | null; email: string | nul
   return null
 }
 
+// Engine skip reasons (drip-engine.js processLead) → human-readable toast.
+// Scheduling skips (not_due / upcoming_call_followup) can't occur on a manual
+// Prepare — the engine's --now override bypasses them — so these are the
+// safety-check reasons that legitimately survive an explicit click.
+function prepareSkipLabel(body: { outcome?: string; reason?: string }): string {
+  if (body.outcome === "not_eligible") return "No draft — lead is no longer drip-eligible"
+  const reason = body.reason || ""
+  if (reason.startsWith("hold:")) return "No draft — recent conversation activity, drip held"
+  if (reason === "pending_queued") return "A draft is already queued for this lead"
+  if (reason === "hard_stop") return "Lead asked to stop — flagged DNC, no draft"
+  if (reason === "stop_status") return "No draft — lead status halts drips"
+  if (reason === "no_more_touches") return "Campaign finished — no touches left"
+  if (reason === "generation_failed") return "Draft generation failed — try again"
+  if (reason === "channel_email_no_address") return "Next touch is email but the lead has no email address"
+  if (reason === "channel_imessage_no_phone") return "Next touch is a text but the lead has no phone"
+  if (reason === "bad_number_no_email_remaining") return "Number flagged bad and no email touches remain"
+  return reason ? `No draft — engine skipped (${reason})` : "No draft — engine skipped this lead"
+}
+
 export function FollowUpsTab() {
   const [data, setData] = useState<FollowUpsPayload | null>(null)
   const [loading, setLoading] = useState(false)
@@ -303,8 +322,7 @@ export function FollowUpsTab() {
       })
       const body = await prepRes.json().catch(() => ({}))
       if (!prepRes.ok && prepRes.status !== 202) throw new Error((body as { error?: string })?.error || `HTTP ${prepRes.status}`)
-      showToast("Regenerating drip with the latest context")
-      setTimeout(() => void fetchData(true), 8000)
+      handlePrepareOutcome(body as { outcome?: string; reason?: string }, "Fresh draft ready — review and send")
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e))
     } finally {
@@ -368,6 +386,24 @@ export function FollowUpsTab() {
     }
   }
 
+  // The prepare route waits for the engine (can take ~10-60s while Haiku
+  // writes the draft) and returns the engine's outcome, so a skip is never
+  // silent. The button spinner (actingOn) covers the wait.
+  function handlePrepareOutcome(body: { outcome?: string; reason?: string }, readyMsg: string) {
+    if (body.outcome === "queued") {
+      showToast(readyMsg)
+      void fetchData(true)
+    } else if (body.outcome === "skipped" || body.outcome === "not_eligible") {
+      showToast(prepareSkipLabel(body))
+      void fetchData(true)
+    } else {
+      // Old sidecar build (fire-and-forget 202) or unparseable outcome —
+      // assume the engine is still drafting in the background.
+      showToast("Drafting drip — it'll appear ready to send")
+      setTimeout(() => void fetchData(true), 8000)
+    }
+  }
+
   async function prepareForecast(row: ContactRow) {
     if (!row.dripLeadId) return
     setActingOn(row.clusterKey)
@@ -379,8 +415,7 @@ export function FollowUpsTab() {
       })
       const body = await res.json().catch(() => ({}))
       if (!res.ok && res.status !== 202) throw new Error(body?.error || `HTTP ${res.status}`)
-      showToast("Drafting drip — it'll appear ready to send")
-      setTimeout(() => void fetchData(true), 8000)
+      handlePrepareOutcome(body, "Draft ready — review and send")
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e))
     } finally {

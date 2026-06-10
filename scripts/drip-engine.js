@@ -54,6 +54,11 @@ const LEAD_FILTER_ID = (() => {
   const i = args.indexOf("--lead")
   return i >= 0 ? args[i + 1] : null
 })()
+// --now (only with --lead): manual trigger from the Prepare button. Bypasses
+// the scheduling deferrals (cadence not-due, upcoming call follow-up) but
+// keeps every safety check — DNC/stop status, pending row, active-conversation
+// hold, hard stop. The draft is still approval-gated.
+const MANUAL_NOW = args.includes("--now") && LEAD_FILTER_ID !== null
 const AUTO_SEND = (process.env.DRIP_AUTO_SEND || "false").toLowerCase() === "true"
 const SIDECAR_URL = process.env.SIDECAR_URL || "http://localhost:5799"
 const APPLE_EPOCH_OFFSET_MS = 978307200000
@@ -1257,14 +1262,15 @@ async function processLead(sb, lead) {
   )
     ? Math.max(entryHoldMs, ENGAGED_MIN_DELAY_MS)
     : entryHoldMs
-  if (sinceLast < effectiveHoldMs) {
+  if (sinceLast < effectiveHoldMs && !MANUAL_NOW) {
     return { skipped: `not_due (need ${(effectiveHoldMs - sinceLast) / 3600000 | 0}h more)` }
   }
 
   // HOLD if Ryan has a scheduled call follow-up coming up — firing a drip
   // text right before the call is awkward. The follow-up date may live on
-  // any cluster sibling, not necessarily this row.
-  const upcomingFollowup = await getClusterUpcomingFollowup(sb, lead)
+  // any cluster sibling, not necessarily this row. A manual Prepare click
+  // overrides this: Ryan is the one with the follow-up scheduled.
+  const upcomingFollowup = MANUAL_NOW ? null : await getClusterUpcomingFollowup(sb, lead)
   if (upcomingFollowup) {
     return { skipped: `upcoming_call_followup:${upcomingFollowup}` }
   }
@@ -1420,9 +1426,11 @@ async function main() {
   let skipped = 0
   let errored = 0
   const skipReasons = {}
+  let lastResult = null
   for (const lead of leads) {
     try {
       const result = await processLead(sb, lead)
+      lastResult = result
       if (result.error) {
         errored++
       } else if (result.processed) {
@@ -1433,6 +1441,7 @@ async function main() {
       }
     } catch (e) {
       errored++
+      lastResult = { error: e.message }
       console.error(`[drip] lead ${lead.id} threw:`, e.message)
     }
   }
@@ -1441,6 +1450,17 @@ async function main() {
   console.log(`[drip] === pass done in ${elapsed}s — processed=${processed} skipped=${skipped} errored=${errored} ===`)
   if (skipped > 0) {
     console.log(`[drip] skip reasons:`, skipReasons)
+  }
+
+  // Single-lead runs emit a machine-readable outcome line so the sidecar's
+  // /drip-trigger-lead endpoint can relay what happened back to the UI.
+  if (LEAD_FILTER_ID) {
+    const outcome =
+      leads.length === 0 ? { outcome: "not_eligible" }
+      : lastResult?.processed ? { outcome: "queued", queueId: lastResult.queued ?? null }
+      : lastResult?.skipped ? { outcome: "skipped", reason: lastResult.skipped }
+      : { outcome: "error", reason: lastResult?.error || "unknown" }
+    console.log(`[drip-result] ${JSON.stringify({ leadId: LEAD_FILTER_ID, ...outcome })}`)
   }
 }
 

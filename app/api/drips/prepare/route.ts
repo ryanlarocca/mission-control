@@ -1,8 +1,13 @@
 import { NextRequest, NextResponse } from "next/server"
 
-// Forecast → pending: kick the engine for a single lead so it generates the
-// next touch via Haiku and writes a pending drip_queue row. The UI's next
-// /api/drips refresh will surface the row in Due.
+// Forecast → pending: kick the engine for a single lead (manual --now
+// override) so it generates the next touch via Haiku and writes a pending
+// drip_queue row. The sidecar waits for the engine and relays its outcome
+// ({outcome: "queued" | "skipped" | "not_eligible" | "error", reason}) so the
+// UI can surface skips instead of silently no-op'ing.
+
+// Engine runs up to 90s (sidecar execFile timeout) — mostly the Haiku call.
+export const maxDuration = 120
 
 const SIDECAR_URL = (process.env.SIDECAR_URL || "http://localhost:5799").trim()
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
@@ -20,11 +25,11 @@ export async function POST(request: NextRequest) {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ leadId }),
-      signal: AbortSignal.timeout(5000),
+      signal: AbortSignal.timeout(95_000),
     })
     const body = await res.json().catch(() => ({}))
     if (!res.ok) return NextResponse.json({ error: body?.error || `sidecar HTTP ${res.status}` }, { status: 502 })
-    return NextResponse.json({ ok: true, leadId, sidecar: body }, { status: 202 })
+    return NextResponse.json({ ok: true, leadId, ...body }, { status: 200 })
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e)
     return NextResponse.json({ error: `sidecar unreachable: ${msg}` }, { status: 502 })
