@@ -233,9 +233,9 @@ export function FollowUpsTab() {
     return () => window.removeEventListener("message", onMessage)
   }, [fetchData])
 
-  function showToast(text: string) {
+  function showToast(text: string, ms = 3500) {
     setToast(text)
-    window.setTimeout(() => setToast(prev => (prev === text ? null : prev)), 3500)
+    window.setTimeout(() => setToast(prev => (prev === text ? null : prev)), ms)
   }
 
   // Drop a row from the visible list immediately; the next refetch is the
@@ -394,7 +394,8 @@ export function FollowUpsTab() {
       showToast(readyMsg)
       void fetchData(true)
     } else if (body.outcome === "skipped" || body.outcome === "not_eligible") {
-      showToast(prepareSkipLabel(body))
+      // A skip means the click produced nothing — give the reason time to read.
+      showToast(prepareSkipLabel(body), 8000)
       void fetchData(true)
     } else {
       // Old sidecar build (fire-and-forget 202) or unparseable outcome —

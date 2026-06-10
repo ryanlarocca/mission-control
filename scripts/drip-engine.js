@@ -55,9 +55,10 @@ const LEAD_FILTER_ID = (() => {
   return i >= 0 ? args[i + 1] : null
 })()
 // --now (only with --lead): manual trigger from the Prepare button. Bypasses
-// the scheduling deferrals (cadence not-due, upcoming call follow-up) but
-// keeps every safety check — DNC/stop status, pending row, active-conversation
-// hold, hard stop. The draft is still approval-gated.
+// the deferrals that exist for the unattended hourly pass (cadence not-due,
+// upcoming call follow-up, active-conversation hold + its clock reset) but
+// keeps the hard safety checks — DNC/stop status, pending row, hard stop.
+// The draft is still approval-gated.
 const MANUAL_NOW = args.includes("--now") && LEAD_FILTER_ID !== null
 const AUTO_SEND = (process.env.DRIP_AUTO_SEND || "false").toLowerCase() === "true"
 const SIDECAR_URL = process.env.SIDECAR_URL || "http://localhost:5799"
@@ -1276,11 +1277,17 @@ async function processLead(sb, lead) {
   }
 
   // HOLD if there's been activity in the conversation since last touch.
-  const activity = await hasActiveConversation(lead, sb)
-  if (activity.hold) {
-    // Reset clock so subsequent touches give the human conversation space.
-    await sb.from("leads").update({ last_drip_sent_at: new Date().toISOString() }).eq("id", lead.id)
-    return { skipped: `hold:${activity.reason}` }
+  // A manual Prepare click overrides this too — the draft is generated FROM
+  // the conversation history and stays approval-gated, and skipping the
+  // branch avoids its clock reset (which silently pushed the lead's next
+  // touch out and made them vanish from the Follow Ups worklist).
+  if (!MANUAL_NOW) {
+    const activity = await hasActiveConversation(lead, sb)
+    if (activity.hold) {
+      // Reset clock so subsequent touches give the human conversation space.
+      await sb.from("leads").update({ last_drip_sent_at: new Date().toISOString() }).eq("id", lead.id)
+      return { skipped: `hold:${activity.reason}` }
+    }
   }
 
   const history = await buildConversationHistory(lead, sb)
