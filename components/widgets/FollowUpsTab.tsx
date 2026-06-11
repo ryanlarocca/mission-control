@@ -322,7 +322,7 @@ export function FollowUpsTab() {
       })
       const body = await prepRes.json().catch(() => ({}))
       if (!prepRes.ok && prepRes.status !== 202) throw new Error((body as { error?: string })?.error || `HTTP ${prepRes.status}`)
-      handlePrepareOutcome(body as { outcome?: string; reason?: string }, "Fresh draft ready — review and send")
+      handlePrepareOutcome(body as { outcome?: string; reason?: string }, "Fresh draft ready — card is in “Ready to send” at the top")
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e))
     } finally {
@@ -416,7 +416,7 @@ export function FollowUpsTab() {
       })
       const body = await res.json().catch(() => ({}))
       if (!res.ok && res.status !== 202) throw new Error(body?.error || `HTTP ${res.status}`)
-      handlePrepareOutcome(body, "Draft ready — review and send")
+      handlePrepareOutcome(body, "Draft ready — card moved to “Ready to send” at the top")
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e))
     } finally {
@@ -705,8 +705,19 @@ export function FollowUpsTab() {
   const buckets = useMemo(() => {
     const now = new Date()
     const out: Record<NextTouchUrgency, ContactRow[]> = { overdue: [], today: [], soon: [], future: [] }
-    for (const r of data?.rows ?? []) out[classifyUrgency(r.primary, now)].push(r)
+    // Queued drafts get their own pinned section instead of urgency
+    // bucketing. A queued drip's `due` is the moment the engine wrote it,
+    // so an overdue forecast that Ryan clicks Prepare on would otherwise
+    // jump from Overdue down into Today mid-workflow — the card "vanishes"
+    // from where he was looking. Ready-to-send is also the highest-value
+    // pile (one click each), so it always renders first.
+    const ready: ContactRow[] = []
+    for (const r of data?.rows ?? []) {
+      if (r.primary.kind === "drip" && r.primary.isQueued) ready.push(r)
+      else out[classifyUrgency(r.primary, now)].push(r)
+    }
     return {
+      ready: sortWorklist(ready),
       overdue: sortWorklist(out.overdue),
       today: sortWorklist(out.today),
       soon: sortWorklist(out.soon),
@@ -725,7 +736,7 @@ export function FollowUpsTab() {
     return <div className="text-sm text-red-300 py-12">{err ?? "Failed to load follow-ups."}</div>
   }
 
-  const dueCount = buckets.overdue.length + buckets.today.length
+  const dueCount = buckets.ready.length + buckets.overdue.length + buckets.today.length
   const cardProps = {
     actingOn, editing, intervalOpenFor,
     onOpenLead: (row: ContactRow) => { const k = leadOverlayKey(row); if (k) setLeadOverlay(k) },
@@ -806,6 +817,14 @@ export function FollowUpsTab() {
       )}
 
       {/* Today's work — always expanded. */}
+      {buckets.ready.length > 0 && (
+        <section>
+          <SectionHeader label="Ready to send" count={buckets.ready.length} tone="ready" />
+          <div className="space-y-2">
+            {buckets.ready.map(row => <ContactCard key={row.clusterKey} row={row} {...cardProps} />)}
+          </div>
+        </section>
+      )}
       {buckets.overdue.length > 0 && (
         <section>
           <SectionHeader label="Overdue" count={buckets.overdue.length} tone="overdue" />
@@ -891,8 +910,8 @@ export function FollowUpsTab() {
 
 // ---- section chrome -------------------------------------------------------
 
-function SectionHeader({ label, count, tone }: { label: string; count: number; tone: "overdue" | "today" }) {
-  const cls = tone === "overdue" ? "text-red-300" : "text-amber-300"
+function SectionHeader({ label, count, tone }: { label: string; count: number; tone: "overdue" | "today" | "ready" }) {
+  const cls = tone === "overdue" ? "text-red-300" : tone === "ready" ? "text-emerald-300" : "text-amber-300"
   return (
     <div className={`text-sm font-semibold mb-2 ${cls}`}>
       {label} <span className="text-zinc-500 font-normal">· {count}</span>
