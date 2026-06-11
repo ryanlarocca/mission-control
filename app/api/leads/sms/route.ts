@@ -103,7 +103,7 @@ export async function POST(request: Request) {
 
         const dncName = await lookupLeadName(sb, from)
         const dncWho = dncName ? `${dncName} — ${from}` : from
-        void sendTelegramAlert(`🚫 Lead DNC'd — <b>${source}</b> — ${dncWho}`)
+        await sendTelegramAlert(`🚫 Lead DNC'd — <b>${source}</b> — ${dncWho}`)
 
         return new NextResponse(EMPTY_TWIML, {
           headers: { "Content-Type": "text/xml" },
@@ -229,7 +229,7 @@ export async function POST(request: Request) {
     const smsAlert = [`💬 New lead text — <b>${source}</b> — ${who}\n"${escaped}"`]
     // Append the fake-lead warning to the same note — no-op when clean.
     if (spam) smsAlert.push(...spamAlertLines(spam))
-    void sendTelegramAlert(smsAlert.join("\n"))
+    await sendTelegramAlert(smsAlert.join("\n"))
   }
 
   return new NextResponse(EMPTY_TWIML, {
