@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Personal-cell cadence heartbeat — runs hourly. For each lead flagged
+  use_personal_cell, reads chat.db (via the sidecar) for the latest message in
+  either direction and bumps last_drip_sent_at to match, so native texts from
+  Ryan's phone keep the Follow-Ups clock honest (no perpetual-overdue).
+
+  Reads .env.local relative to WorkingDirectory; needs the sidecar reachable
+  on SIDECAR_URL (default localhost:5799).
+
+  Install (Mac mini):
+    cp infrastructure/launchd/com.lrghomes.personal-cell-heartbeat.plist \
+       ~/Library/LaunchAgents/
+    launchctl load ~/Library/LaunchAgents/com.lrghomes.personal-cell-heartbeat.plist
+
+  Trigger once manually:
+    launchctl start com.lrghomes.personal-cell-heartbeat
+
+  Tail logs:
+    tail -f /tmp/lrg-personal-cell-heartbeat.log /tmp/lrg-personal-cell-heartbeat-err.log
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.lrghomes.personal-cell-heartbeat</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/opt/homebrew/bin/node</string>
+    <string>scripts/personal-cell-heartbeat.js</string>
+  </array>
+  <key>WorkingDirectory</key>
+  <string>/Users/ryanlarocca/.openclaw/workspace/PROJECTS/mission-control</string>
+  <key>StartInterval</key>
+  <integer>3600</integer>
+  <key>StandardOutPath</key>
+  <string>/tmp/lrg-personal-cell-heartbeat.log</string>
+  <key>StandardErrorPath</key>
+  <string>/tmp/lrg-personal-cell-heartbeat-err.log</string>
+  <key>RunAtLoad</key>
+  <false/>
+</dict>
+</plist>
