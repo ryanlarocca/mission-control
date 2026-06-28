@@ -304,6 +304,10 @@ export interface Lead {
   campaign_label?: string | null
   // Phase 7D — AI-driven temperature, separate axis from lifecycle status.
   temperature?: Temperature | null
+  // Personal-cell channel: when true, texts route through the iMessage
+  // sidecar (Ryan's personal cell) instead of Twilio, and the lead is
+  // excluded from the automated drip engine (assisted-manual).
+  use_personal_cell?: boolean | null
 }
 
 // Lifecycle statuses — must match the lib/leads.ts LeadStatus union.
@@ -899,12 +903,49 @@ export type SendLeadSmsResult = {
   error?: string
 }
 
+// Personal-cell send path: route a text through the Mac-mini iMessage
+// sidecar (the same daemon the Relationships tab uses) so it goes out from
+// Ryan's personal cell with the iMessage→SMS fallback. The sidecar expects a
+// 10-digit number. Returns a Twilio-shaped result so sendLeadSms can branch
+// transparently. Unlike Twilio, this depends on the sidecar/tunnel being up —
+// a failure here is surfaced, not silently dropped.
+async function sendLeadViaSidecar(
+  phone: string,
+  message: string,
+): Promise<{ ok: boolean; status: number; service?: string; error?: string }> {
+  const sidecarUrl = process.env.SIDECAR_URL || "http://localhost:5799"
+  const ten = phone.replace(/\D/g, "").slice(-10)
+  const controller = new AbortController()
+  const timeout = setTimeout(() => controller.abort(), 35_000) // iMessage send + 5s error probe + SMS fallback
+  try {
+    const res = await fetch(`${sidecarUrl}/send`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ phone: ten, message }),
+      signal: controller.signal,
+    })
+    clearTimeout(timeout)
+    const data = (await res.json().catch(() => ({}))) as { success?: boolean; service?: string; error?: string }
+    if (!res.ok || data?.success === false) {
+      return { ok: false, status: 502, error: data?.error || `sidecar HTTP ${res.status}` }
+    }
+    return { ok: true, status: 200, service: data?.service }
+  } catch (e) {
+    clearTimeout(timeout)
+    const isAbort = e instanceof Error && e.name === "AbortError"
+    return { ok: false, status: 503, error: isAbort ? "sidecar timeout" : "sidecar unavailable" }
+  }
+}
+
 // Outbound lead SMS — the single source of truth for sending a text to a
 // lead. Used by /api/leads/send (Leads + Follow Ups tabs) AND the Telegram
 // reply webhook, so a reply from your phone behaves exactly like a Send
-// click: same DNC guard, same Twilio A2P path, same outbound timeline row,
-// same offer auto-detection, same new→contacted promotion, same cadence
-// reset. `status` is an HTTP-style code the route can pass straight through.
+// click: same DNC guard, same outbound timeline row, same offer
+// auto-detection, same new→contacted promotion, same cadence reset. The
+// transport is the only thing that varies: a lead flagged use_personal_cell
+// goes out through the iMessage sidecar (Ryan's personal cell); everyone
+// else goes through the Twilio A2P business line. `status` is an HTTP-style
+// code the route can pass straight through.
 export async function sendLeadSms(input: {
   phone: string
   message: string
@@ -970,55 +1011,84 @@ export async function sendLeadSms(input: {
     return { success: false, status: 503, error: "DNC check failed — send blocked" }
   }
 
-  // Send via the Twilio Messaging API. fetch + Basic Auth (no twilio SDK).
-  const sid = process.env.TWILIO_ACCOUNT_SID
-  const token = process.env.TWILIO_AUTH_TOKEN
-  if (!sid || !token) {
-    return { success: false, status: 500, error: "TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN must be set" }
-  }
-  let fromNumber: string
+  // Pick the transport. A lead flagged use_personal_cell (any row in its
+  // phone cluster) is texted from Ryan's personal cell via the iMessage
+  // sidecar; everyone else goes through Twilio. The check is by phone so it
+  // matches the same cluster the DNC guard above does.
+  let usePersonalCell = false
   try {
-    fromNumber = getTwilioNumber()
+    const sbCh = getLeadsClient()
+    const { data: pcRows } = await sbCh
+      .from("leads")
+      .select("id")
+      .eq("caller_phone", phone)
+      .eq("use_personal_cell", true)
+      .limit(1)
+    usePersonalCell = !!(pcRows && pcRows.length > 0)
   } catch (e) {
-    return { success: false, status: 500, error: e instanceof Error ? e.message : String(e) }
-  }
-
-  // MessagingServiceSid routes through the approved A2P campaign explicitly
-  // and is the carrier-preferred path; if it's not configured we send From
-  // the number directly — attached to the same campaign, equally compliant.
-  const messagingServiceSid = process.env.TWILIO_MESSAGING_SERVICE_SID?.trim()
-  const form = new URLSearchParams({ To: phone, Body: message })
-  if (messagingServiceSid) {
-    form.set("MessagingServiceSid", messagingServiceSid)
-  } else {
-    form.set("From", fromNumber)
+    // Best-effort — default to the Twilio path rather than block a send.
+    console.error("[sendLeadSms] personal-cell check threw:", e)
   }
 
   let messageSid: string | null = null
-  try {
-    const auth = Buffer.from(`${sid}:${token}`).toString("base64")
-    const res = await fetch(
-      `https://api.twilio.com/2010-04-01/Accounts/${sid}/Messages.json`,
-      {
-        method: "POST",
-        headers: {
-          Authorization: `Basic ${auth}`,
-          "Content-Type": "application/x-www-form-urlencoded",
-        },
-        body: form.toString(),
-      }
-    )
-    const json = await res.json().catch(() => ({}))
-    if (!res.ok) {
-      const errMsg = (json as { message?: string })?.message || `HTTP ${res.status}`
-      console.error("[sendLeadSms] Twilio message create failed:", errMsg, json)
-      return { success: false, status: 502, error: errMsg }
+
+  if (usePersonalCell) {
+    // Personal cell → iMessage sidecar (Ryan's number, iMessage→SMS fallback).
+    const sc = await sendLeadViaSidecar(phone, message)
+    if (!sc.ok) {
+      return { success: false, status: sc.status, error: `personal-cell send failed: ${sc.error}` }
     }
-    messageSid = (json as { sid?: string })?.sid ?? null
-  } catch (e) {
-    const msg = e instanceof Error ? e.message : String(e)
-    console.error("[sendLeadSms] Twilio fetch threw:", msg)
-    return { success: false, status: 503, error: "Twilio unavailable" }
+    // The sidecar returns no message SID; the outbound row below is the record.
+  } else {
+    // Send via the Twilio Messaging API. fetch + Basic Auth (no twilio SDK).
+    const sid = process.env.TWILIO_ACCOUNT_SID
+    const token = process.env.TWILIO_AUTH_TOKEN
+    if (!sid || !token) {
+      return { success: false, status: 500, error: "TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN must be set" }
+    }
+    let fromNumber: string
+    try {
+      fromNumber = getTwilioNumber()
+    } catch (e) {
+      return { success: false, status: 500, error: e instanceof Error ? e.message : String(e) }
+    }
+
+    // MessagingServiceSid routes through the approved A2P campaign explicitly
+    // and is the carrier-preferred path; if it's not configured we send From
+    // the number directly — attached to the same campaign, equally compliant.
+    const messagingServiceSid = process.env.TWILIO_MESSAGING_SERVICE_SID?.trim()
+    const form = new URLSearchParams({ To: phone, Body: message })
+    if (messagingServiceSid) {
+      form.set("MessagingServiceSid", messagingServiceSid)
+    } else {
+      form.set("From", fromNumber)
+    }
+
+    try {
+      const auth = Buffer.from(`${sid}:${token}`).toString("base64")
+      const res = await fetch(
+        `https://api.twilio.com/2010-04-01/Accounts/${sid}/Messages.json`,
+        {
+          method: "POST",
+          headers: {
+            Authorization: `Basic ${auth}`,
+            "Content-Type": "application/x-www-form-urlencoded",
+          },
+          body: form.toString(),
+        }
+      )
+      const json = await res.json().catch(() => ({}))
+      if (!res.ok) {
+        const errMsg = (json as { message?: string })?.message || `HTTP ${res.status}`
+        console.error("[sendLeadSms] Twilio message create failed:", errMsg, json)
+        return { success: false, status: 502, error: errMsg }
+      }
+      messageSid = (json as { sid?: string })?.sid ?? null
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e)
+      console.error("[sendLeadSms] Twilio fetch threw:", msg)
+      return { success: false, status: 503, error: "Twilio unavailable" }
+    }
   }
 
   // Send succeeded — log the outbound row + downstream bookkeeping. All

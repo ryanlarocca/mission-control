@@ -1024,6 +1024,9 @@ async function fetchEligibleLeads(sb) {
     // false on these columns is what keeps legacy rows in scope.
     .eq("is_dnc", false)
     .eq("is_junk", false)
+    // Personal-cell leads are handled manually from Ryan's phone — the engine
+    // never auto-sends to them (same NULL-vs-false semantics as is_dnc above).
+    .eq("use_personal_cell", false)
     .order("last_drip_sent_at", { ascending: true })
     .limit(500)
   if (LEAD_FILTER_ID) q = q.eq("id", LEAD_FILTER_ID)

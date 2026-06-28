@@ -6,7 +6,7 @@ import {
   Phone, PhoneOutgoing, Voicemail, MessageSquare, ClipboardList, ChevronDown, ChevronRight,
   Loader2, RefreshCw, Send, Check, Mail, Trash2, Bot, Clock, X,
   Sparkles, PhoneOff, Ban, ShieldOff, Zap, Wand2, Pencil, Search, SlidersHorizontal,
-  Maximize2, Hourglass,
+  Maximize2, Hourglass, Smartphone,
 } from "lucide-react"
 import {
   resolveNextTouch, describeTouchWhen, classifyUrgency,
@@ -67,6 +67,7 @@ interface Lead {
   is_dnc?: boolean | null
   is_junk?: boolean | null
   is_bad_number?: boolean | null
+  use_personal_cell?: boolean | null
   ai_summary?: string | null
   ai_summary_generated_at?: string | null
   recommended_followup_date?: string | null
@@ -134,6 +135,7 @@ interface LeadGroup {
   isDnc: boolean
   isJunk: boolean
   isBadNumber: boolean
+  usePersonalCell: boolean
   campaignLabel: string | null
   aiSummary: string | null
   aiSummaryAt: string | null
@@ -336,6 +338,7 @@ function groupLeads(leads: Lead[]): LeadGroup[] {
     const isDnc = !!statusSource.is_dnc
     const isJunk = !!statusSource.is_junk
     const isBadNumber = !!statusSource.is_bad_number
+    const usePersonalCell = !!statusSource.use_personal_cell
     const campaignLabel =
       ascending.map(e => e.campaign_label).find(v => v && v.trim()) || null
     const aiSummaryRow = newestFirst
@@ -379,6 +382,7 @@ function groupLeads(leads: Lead[]): LeadGroup[] {
       isDnc,
       isJunk,
       isBadNumber,
+      usePersonalCell,
       campaignLabel,
       aiSummary: aiSummaryRow?.ai_summary || null,
       aiSummaryAt: aiSummaryRow?.ai_summary_generated_at || null,
@@ -1201,6 +1205,32 @@ export function LeadsTab() {
     }
   }
 
+  // Personal-cell toggle: flip the lead between the Twilio business line and
+  // Ryan's personal cell (iMessage sidecar). Turning it ON also drops the lead
+  // from the automated drip engine — it becomes assisted-manual (still shows in
+  // Follow-Ups with an AI draft, but nothing auto-sends). See
+  // app/api/leads/[id]/personal-cell.
+  async function togglePersonalCell(group: LeadGroup) {
+    const turnOn = !group.usePersonalCell
+    if (turnOn && !confirm(`Text ${group.name || group.contactPhone || "this lead"} from your personal cell?\n\nOutbound texts will go through your phone instead of the business line, and automated drips will stop for this lead — it stays in Follow-Ups for you to handle manually.`)) return
+    applyLeadEdit(prev => prev.map(l => l.caller_phone && l.caller_phone === group.contactPhone ? { ...l, use_personal_cell: turnOn } : l))
+    try {
+      const res = await fetch(`/api/leads/${group.mostRecentId}/personal-cell`, {
+        method: turnOn ? "POST" : "DELETE",
+      })
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}))
+        throw new Error(err.error || `HTTP ${res.status}`)
+      }
+      notifyLeadChangedToParent(group.mostRecentId, ["use_personal_cell", "drip_campaign_type"])
+      void fetchLeads(true)
+    } catch (e) {
+      console.error("personal-cell toggle failed:", e)
+      alert(`Couldn't switch channel: ${e instanceof Error ? e.message : String(e)}`)
+      void fetchLeads(true)
+    }
+  }
+
   // Promote a lead to the Relationships (BoB) sheet. Used when the caller
   // turns out to be a referral source — agent, vendor, etc. — not a seller.
   // Sets status=dead on the lead so it leaves the active queue; the
@@ -1640,6 +1670,7 @@ export function LeadsTab() {
               }}
               onFlagDnc={() => flagDnc(group)}
               onClearDnc={() => clearDnc(group)}
+              onTogglePersonalCell={() => togglePersonalCell(group)}
               onAcceptSuggestion={() => acceptSuggestedStatus(group)}
               onDismissSuggestion={() => dismissSuggestedStatus(group)}
               promoteOpen={promoteOpenFor === group.phone}
@@ -1705,6 +1736,7 @@ interface LeadCardProps {
   onMarkJunk: () => void
   onFlagDnc: () => void
   onClearDnc: () => void
+  onTogglePersonalCell: () => void
   onAcceptSuggestion: () => void
   onDismissSuggestion: () => void
   // Promote → Relationships (Google Sheet / BoB)
@@ -1890,6 +1922,15 @@ function LeadCard(p: LeadCardProps) {
               {group.isBadNumber && (
                 <span className="px-1.5 py-0.5 text-[9px] font-semibold rounded uppercase tracking-wider bg-amber-950 text-amber-300 border border-amber-900 shrink-0">
                   Bad #
+                </span>
+              )}
+              {group.usePersonalCell && (
+                <span
+                  className="inline-flex items-center gap-1 px-1.5 py-0.5 text-[9px] font-semibold rounded uppercase tracking-wider bg-sky-950 text-sky-300 border border-sky-900 shrink-0"
+                  title="Texts go out from your personal cell (iMessage sidecar); automated drips are paused"
+                >
+                  <Smartphone className="w-2.5 h-2.5" />
+                  My Cell
                 </span>
               )}
             </div>
@@ -2342,6 +2383,22 @@ function LeadCard(p: LeadCardProps) {
                   >
                     <PhoneOff className="w-3.5 h-3.5" />
                     {group.isBadNumber ? "Bad # ✓" : "Bad Number"}
+                  </button>
+                )}
+                {group.contactPhone && (
+                  <button
+                    onClick={p.onTogglePersonalCell}
+                    className={`inline-flex items-center gap-1.5 px-3 py-1.5 min-h-[36px] rounded text-xs font-medium transition-colors ${
+                      group.usePersonalCell
+                        ? "bg-sky-900/40 border border-sky-900 text-sky-200"
+                        : "bg-zinc-900 border border-zinc-800 hover:border-sky-900/60 text-zinc-300 hover:text-sky-200"
+                    }`}
+                    title={group.usePersonalCell
+                      ? "Texting from your personal cell — click to switch back to the business line + drips"
+                      : "Text from your personal cell (iMessage) — pauses automated drips, handle manually"}
+                  >
+                    <Smartphone className="w-3.5 h-3.5" />
+                    {group.usePersonalCell ? "My Cell ✓" : "My Cell"}
                   </button>
                 )}
                 <button
