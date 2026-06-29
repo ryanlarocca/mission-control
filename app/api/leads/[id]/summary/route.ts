@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server"
-import { getLeadsClient, mergePropertyDetails, parsePropertyDetails } from "@/lib/leads"
+import { getLeadsClient, mergePropertyDetails, parsePropertyDetails, isPlaceholderName } from "@/lib/leads"
 
 // Phase 7D — cached lead summary, multi-event variant.
 //
@@ -284,7 +284,7 @@ ${transcript}`
     // workflow fluid: opening a card auto-backfills identity without needing
     // to call anyone back to "trigger" extraction. (temperature is NOT
     // written here — see the file header.)
-    if (extractedName && !anchor.name) update.name = extractedName
+    if (extractedName && isPlaceholderName(anchor.name)) update.name = extractedName
     if (extractedAddress && !anchor.property_address) {
       update.property_address = extractedAddress
     }

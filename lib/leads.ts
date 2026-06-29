@@ -894,6 +894,20 @@ export function normalizeE164(raw: string): string | null {
   return null
 }
 
+// A lead "name" that is really just a phone number — the fallback the Google
+// Voice / phone intake paths use when no name is known (e.g. "(415) 555-0143").
+// Treat it as a placeholder the AI MAY overwrite once a real name shows up in a
+// transcript: the analyze passes fill name if it's empty OR a placeholder, but
+// never clobber a real (alphabetic) name a human or earlier call established.
+export function isPlaceholderName(name: string | null | undefined): boolean {
+  if (!name || !name.trim()) return true
+  const t = name.trim()
+  // Only phone-ish characters AND a 10–11 digit count → it's a phone number,
+  // not a real name. Any letter (a real name) makes this false.
+  const digits = t.replace(/\D/g, "")
+  return /^[\d\s().+-]+$/.test(t) && digits.length >= 10 && digits.length <= 11
+}
+
 export type SendLeadSmsResult = {
   success: boolean
   status: number
@@ -2151,7 +2165,7 @@ export async function applyFollowupOnlyResult(
     followup_reason: followupReason,
     followup_generated_at: new Date().toISOString(),
   }
-  if (result.name && !existing?.name) update.name = result.name
+  if (result.name && isPlaceholderName(existing?.name)) update.name = result.name
   if (result.property_address && !existing?.property_address) {
     update.property_address = result.property_address
   }
@@ -2277,7 +2291,7 @@ export async function applyAnalyzeCallResult(
     suggested_status: null,
     suggested_status_reason: null,
   }
-  if (result.name && !existing?.name) update.name = result.name
+  if (result.name && isPlaceholderName(existing?.name)) update.name = result.name
   if (result.property_address && !existing?.property_address) {
     update.property_address = result.property_address
   }
