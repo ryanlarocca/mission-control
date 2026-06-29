@@ -277,11 +277,16 @@ async function ingestGoogleVoice(args: {
     return { skipped: "duplicate" }
   }
 
-  // Cluster on the caller's phone so repeat GV callers share one card and
-  // unrelated callers never merge. GV rows carry email=null, so the email
-  // branch of lookupEmailCluster is a no-op for them.
+  // Cluster on the caller's phone (or thread) ONLY. We must NOT pass the
+  // shared voice-noreply@ address into lookupEmailCluster's email fallback:
+  // every GV forward carries that same sender, so the fallback would latch a
+  // brand-new caller onto whatever stale voice-noreply@ row sorts newest and
+  // inherit its campaign + status — the exact identity/status bleed the
+  // 2026-06-09 fix set out to kill (it bit a real prospect 2026-06-29: a new
+  // GV text lead inherited a dead row's status + direct_mail_email drip).
+  // Passing "" makes the email branch a guaranteed no-op.
   const cluster = await lookupEmailCluster({
-    sb, phone, threadId, senderEmail: GOOGLE_VOICE_SENDER,
+    sb, phone, threadId, senderEmail: "",
   })
   const inheritedStatus = cluster?.status ?? "new"
 
