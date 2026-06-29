@@ -134,8 +134,21 @@ async function lookupEmailCluster(args: {
 // and drop shortcode spam entirely.
 const GOOGLE_VOICE_SENDER = "voice-noreply@google.com"
 
+// Google Voice forwards arrive from two sender families:
+//   • voice-noreply@google.com — calls / voicemails
+//   • <gv-line>.<correspondent>.<hash>@txt.voice.google.com — text messages
+// All of Ryan's ~8 GV numbers are antiquated legacy-campaign lines, so EVERY
+// GV forward — whichever line, whichever sender — is a Legacy DM lead. We key
+// off the correspondent named in the body (never the GV line), so it doesn't
+// matter how many lines exist or which one a text came through. Match the
+// whole voice.google.com domain family, not a single address — otherwise text
+// notifications slip past into the generic email path and become junk leads
+// with a google-gateway "email" (the bug Ryan hit 2026-06-29).
 function isGoogleVoice(senderEmail: string): boolean {
-  return senderEmail.toLowerCase() === GOOGLE_VOICE_SENDER
+  const s = senderEmail.toLowerCase().trim()
+  if (s === GOOGLE_VOICE_SENDER) return true
+  const domain = s.split("@")[1] || ""
+  return domain === "voice.google.com" || domain.endsWith(".voice.google.com")
 }
 
 interface GoogleVoiceParse {
@@ -222,6 +235,17 @@ async function ingestGoogleVoice(args: {
   }
 
   const phone = parsed.callerPhone
+
+  // The body's correspondent is one of OUR OWN lines — a Twilio campaign /
+  // outbound number, or Ryan's forward-to cell texting his own GV line (e.g.
+  // during testing). That's not a prospect. Skip. (LRG_OWN_NUMBERS is defined
+  // lower in the module but only read here at request time, so the reference
+  // is safe.)
+  if (LRG_OWN_NUMBERS.has(phone.replace(/\D/g, "").slice(-10))) {
+    console.log(`[email][gv] Skipping — body number ${phone} is one of our own lines`)
+    return { skipped: "gv_own_number" }
+  }
+
   const kindLabel =
     parsed.kind === "text"
       ? "Text message"
