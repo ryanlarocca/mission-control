@@ -11,6 +11,7 @@ export interface TouchesSummary {
   count: number
   lastSentAt: string | null
   lastMessagePreview: string | null
+  hasReply: boolean
 }
 
 interface InteractionEntry {
