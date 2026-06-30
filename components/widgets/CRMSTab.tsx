@@ -20,16 +20,6 @@ type Modality =
   | "Familiar" | "Reconnect" | "ColdReintro"
   | "Portfolio" | "CatchUp" | "CheckIn" | "Referral"
 
-const MODALITY_LABEL: Record<Modality, string> = {
-  Familiar:    "Familiar",
-  Reconnect:   "Reconnect",
-  ColdReintro: "Cold Reintro",
-  Portfolio:   "Portfolio",
-  CatchUp:     "Catch Up",
-  CheckIn:     "Check In",
-  Referral:    "Referral",
-}
-
 const MODALITIES_BY_TYPE: Record<ContactType, Modality[]> = {
   Agent:    ["Familiar", "Reconnect", "ColdReintro"],
   Vendor:   ["Referral", "Familiar", "Reconnect", "ColdReintro"],
@@ -48,6 +38,62 @@ const DEFAULT_MODALITY: Record<ContactType, Modality> = {
   Seller:   "Reconnect",
   PM:       "Portfolio",
   Personal: "CheckIn",
+}
+
+// ── Intent × Familiarity — the two-knob picker that replaces the 3 near-
+// identical modalities. Intent = what Ryan wants from the message; Familiarity
+// = does the contact know him (controls the opener / self-intro). These map to
+// the internal Modality, which stays the canonical key for messages + logging.
+type Intent = "CatchUp" | "Deal" | "Referral" | "Portfolio"
+type Familiarity = "Knows" | "Reintro"
+
+const INTENT_LABEL: Record<Intent, string> = {
+  CatchUp: "Catch up", Deal: "Looking for deals", Referral: "Referral", Portfolio: "Portfolio",
+}
+const INTENTS_BY_TYPE: Record<ContactType, Intent[]> = {
+  Agent:        ["Deal", "CatchUp"],
+  Investor:     ["Deal", "CatchUp"],
+  Seller:       ["Deal", "CatchUp"],
+  PrivateMoney: ["Deal", "CatchUp"],
+  Vendor:       ["Referral", "CatchUp"],
+  PM:           ["Portfolio", "CatchUp"],
+  Personal:     ["CatchUp"],
+}
+const FAMILIARITY_LABEL: Record<Familiarity, string> = { Knows: "Knows me", Reintro: "Reintro" }
+
+// (type, intent, familiarity) → canonical Modality. MUST match the server's
+// resolveModality in app/api/crms/generate/route.ts.
+function resolveModality(type: ContactType, intent: Intent, familiarity: Familiarity): Modality {
+  if (type === "Personal") return "CatchUp"
+  if (type === "Vendor") return intent === "Referral" ? "Referral" : "Familiar"
+  if (type === "PM") return intent === "CatchUp" ? "CatchUp" : "Portfolio"
+  if (intent === "CatchUp") return "CatchUp"
+  return familiarity === "Knows" ? "Familiar" : "ColdReintro"
+}
+
+// Reverse: which Intent does a stored/canonical Modality represent (for the
+// picker's highlighted state when modality is set by selection/advance/prefs).
+function modalityToIntent(m: Modality): Intent {
+  if (m === "Referral") return "Referral"
+  if (m === "Portfolio") return "Portfolio"
+  if (m === "CatchUp" || m === "CheckIn") return "CatchUp"
+  return "Deal" // Familiar | Reconnect | ColdReintro
+}
+
+// Familiarity is shown only when it changes the opener (Deal + CatchUp). For
+// Referral / Portfolio the template owns the opener, so the knob is hidden.
+function familiarityApplies(intent: Intent): boolean {
+  return intent === "Deal" || intent === "CatchUp"
+}
+
+// Default the familiarity knob from contact history: recently-in-touch contacts
+// know Ryan (no self-intro); never/long-ago default to a reintro opener.
+function deriveFamiliarity(contact: { lastContact?: string; lastContacted?: string } | null): Familiarity {
+  if (!contact || contact.lastContact === "never" || !contact.lastContacted) return "Reintro"
+  const t = new Date(contact.lastContacted).getTime()
+  if (!Number.isFinite(t)) return "Reintro"
+  const days = (Date.now() - t) / 86_400_000
+  return days <= 120 ? "Knows" : "Reintro"
 }
 
 const TIERS: Tier[] = ["A", "B", "C", "D", "E"]
@@ -145,16 +191,6 @@ const categoryBadge: Record<ContactType, string> = {
   PrivateMoney: "bg-lime-500/15 text-lime-300 border-lime-500/30",
   Seller:   "bg-emerald-500/15 text-emerald-300 border-emerald-500/30",
   PM:       "bg-teal-500/15 text-teal-300 border-teal-500/30",
-}
-
-const modalityActive: Record<Modality, string> = {
-  Familiar:    "bg-emerald-500/10 text-emerald-400 border-emerald-500/40",
-  Reconnect:   "bg-blue-500/10 text-blue-400 border-blue-500/40",
-  ColdReintro: "bg-amber-500/10 text-amber-400 border-amber-500/40",
-  Portfolio:   "bg-teal-500/10 text-teal-400 border-teal-500/40",
-  CatchUp:     "bg-pink-500/10 text-pink-400 border-pink-500/40",
-  CheckIn:     "bg-violet-500/10 text-violet-400 border-violet-500/40",
-  Referral:    "bg-orange-500/10 text-orange-400 border-orange-500/40",
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -285,6 +321,7 @@ function CRMSTabInner() {
   // ── Session state ──
   const [selectedId, setSelectedId]   = useState<string>("")
   const [modality, setModality]       = useState<Modality>("Reconnect")
+  const [familiarity, setFamiliarity] = useState<Familiarity>("Reintro")
   const [sent, setSent]               = useState<Set<string>>(() => new Set(loadSession().sent))
   const [skipped, setSkipped]         = useState<Set<string>>(() => new Set(loadSession().skipped))
   const [mobileView, setMobileView]   = useState<"list" | "compose">("list")
@@ -347,6 +384,7 @@ function CRMSTabInner() {
           count: data.count ?? 0,
           lastSentAt: data.lastSentAt ?? null,
           lastMessagePreview: data.lastMessagePreview ?? null,
+          hasReply: data.hasReply ?? false,
         },
       }))
     } catch {}
@@ -423,7 +461,8 @@ function CRMSTabInner() {
   }
 
   // ── Core generate — aborts any prior in-flight request ──
-  async function generate(contact: CRMSContact, mod: Modality, force = false) {
+  async function generate(contact: CRMSContact, mod: Modality, force = false, famOverride?: Familiarity) {
+    const fam = famOverride ?? familiarity
     const msgKey = `${contact.id}::${mod}`
     if (!force && (editedMessages[msgKey] || generatedMessages[msgKey])) return
 
@@ -442,6 +481,8 @@ function CRMSTabInner() {
           tier:          contact.tier,
           category:      contact.type,
           modality:      mod,
+          intent:        modalityToIntent(mod),
+          familiarity:   fam,
           notes:         contact.notes,
           hasNotes:      contact.hasNotes,
           everContacted: contact.lastContact !== "never",
@@ -467,6 +508,7 @@ function CRMSTabInner() {
     setSendError(null)
     setCategoryPickerOpen(false)
     fetchTouches(contact.phone)
+    setFamiliarity(deriveFamiliarity(contact))
 
     // If current modality isn't valid for this type, snap to type's default
     let initialMod: Modality = (MODALITIES_BY_TYPE[contact.type] as string[]).includes(modality)
@@ -488,9 +530,25 @@ function CRMSTabInner() {
     }, GENERATE_DEBOUNCE_MS)
   }
 
-  function handleModalityChange(m: Modality) {
+  // Picker: pick what Ryan wants from the message. Resolves to a canonical
+  // modality (with the current familiarity) and regenerates.
+  function handleIntentChange(nextIntent: Intent) {
+    if (!selectedContact) return
+    const m = resolveModality(selectedContact.type, nextIntent, familiarity)
     setModality(m)
-    if (selectedContact) generate(selectedContact, m)
+    generate(selectedContact, m, true)
+  }
+
+  // Picker: flip the opener (knows-me vs reintro). For Deal this swaps
+  // Familiar↔ColdReintro; for CatchUp the modality is unchanged so we force a
+  // regen, passing the new familiarity explicitly (state update is async).
+  function handleFamiliarityChange(nextFam: Familiarity) {
+    if (!selectedContact) return
+    setFamiliarity(nextFam)
+    const intent = modalityToIntent(modality)
+    const m = resolveModality(selectedContact.type, intent, nextFam)
+    setModality(m)
+    generate(selectedContact, m, true, nextFam)
   }
 
   async function regenerate() {
@@ -730,6 +788,7 @@ function CRMSTabInner() {
     const next = remaining[0]
     if (!next) { setSelectedId(""); setMobileView("list"); return }
     setSelectedId(next.id)
+    setFamiliarity(deriveFamiliarity(next))
     const nextMod: Modality = (MODALITIES_BY_TYPE[next.type] as string[]).includes(modality)
       ? modality
       : DEFAULT_MODALITY[next.type]
@@ -809,9 +868,10 @@ function CRMSTabInner() {
       .slice(0, 40)
   }, [searchQuery, allContacts])
 
-  const availableModalities: Modality[] = selectedContact
-    ? MODALITIES_BY_TYPE[selectedContact.type]
-    : MODALITIES_BY_TYPE.Agent
+  const availableIntents: Intent[] = selectedContact
+    ? INTENTS_BY_TYPE[selectedContact.type]
+    : INTENTS_BY_TYPE.Agent
+  const currentIntent: Intent = modalityToIntent(modality)
 
   if (loadingContacts) {
     return (
@@ -973,6 +1033,14 @@ function CRMSTabInner() {
                     {contact.notesStale && (
                       <span className="w-1.5 h-1.5 rounded-full bg-amber-400 shrink-0 ml-auto" title="Notes stale" />
                     )}
+                    {(() => {
+                      const t = touchesByPhone[contact.phone]
+                      return t && t.count > 0 && !t.hasReply ? (
+                        <span className="text-[9px] font-bold px-1 py-0.5 rounded bg-zinc-700 text-zinc-400 border border-zinc-600 shrink-0 ml-auto leading-none" title="No reply yet — consider downgrading">
+                          no reply
+                        </span>
+                      ) : null
+                    })()}
                   </div>
                   <button
                     type="button"
@@ -1134,23 +1202,44 @@ function CRMSTabInner() {
                 )}
               </div>
 
-              {/* Modality selector */}
-              <div className="px-4 py-2.5 border-b border-zinc-800">
-                <div className="flex gap-2 flex-wrap">
-                  {availableModalities.map(m => (
+              {/* Intent + Familiarity selector */}
+              <div className="px-4 py-2.5 border-b border-zinc-800 space-y-2">
+                {/* Intent — what Ryan wants from the message */}
+                <div className="flex gap-2 flex-wrap items-center">
+                  <span className="text-[10px] uppercase tracking-wide text-zinc-600 w-14 shrink-0">Intent</span>
+                  {availableIntents.map(it => (
                     <button
-                      key={m}
-                      onClick={() => handleModalityChange(m)}
+                      key={it}
+                      onClick={() => handleIntentChange(it)}
                       className={`text-xs px-3 py-1.5 rounded border transition-colors ${
-                        modality === m
-                          ? modalityActive[m]
+                        currentIntent === it
+                          ? "bg-blue-500/10 text-blue-400 border-blue-500/40"
                           : "border-zinc-700 text-zinc-500 hover:text-zinc-300 hover:border-zinc-600"
                       }`}
                     >
-                      {MODALITY_LABEL[m]}
+                      {INTENT_LABEL[it]}
                     </button>
                   ))}
                 </div>
+                {/* Familiarity — controls the opener (self-intro or not) */}
+                {familiarityApplies(currentIntent) && (
+                  <div className="flex gap-2 flex-wrap items-center">
+                    <span className="text-[10px] uppercase tracking-wide text-zinc-600 w-14 shrink-0">They</span>
+                    {(["Knows", "Reintro"] as Familiarity[]).map(f => (
+                      <button
+                        key={f}
+                        onClick={() => handleFamiliarityChange(f)}
+                        className={`text-xs px-3 py-1.5 rounded border transition-colors ${
+                          familiarity === f
+                            ? "bg-emerald-500/10 text-emerald-400 border-emerald-500/40"
+                            : "border-zinc-700 text-zinc-500 hover:text-zinc-300 hover:border-zinc-600"
+                        }`}
+                      >
+                        {FAMILIARITY_LABEL[f]}
+                      </button>
+                    ))}
+                  </div>
+                )}
               </div>
 
               {/* Message */}

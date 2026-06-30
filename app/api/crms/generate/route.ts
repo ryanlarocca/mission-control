@@ -13,12 +13,12 @@ type ContactType = "Agent" | "Personal" | "Vendor" | "PM" | "Investor" | "Privat
 type Modality = "Familiar" | "Reconnect" | "ColdReintro" | "Portfolio" | "CatchUp" | "CheckIn" | "Referral"
 
 const MODALITIES_BY_TYPE: Record<ContactType, Modality[]> = {
-  Agent:    ["Familiar", "Reconnect", "ColdReintro"],
-  Vendor:   ["Referral", "Familiar", "Reconnect", "ColdReintro"],
-  Investor: ["Familiar", "Reconnect", "ColdReintro"],
-  PrivateMoney: ["Familiar", "Reconnect", "ColdReintro"],
-  Seller:   ["Familiar", "Reconnect", "ColdReintro"],
-  PM:       ["Portfolio", "Reconnect", "ColdReintro"],
+  Agent:    ["Familiar", "Reconnect", "ColdReintro", "CatchUp"],
+  Vendor:   ["Referral", "Familiar", "Reconnect", "ColdReintro", "CatchUp"],
+  Investor: ["Familiar", "Reconnect", "ColdReintro", "CatchUp"],
+  PrivateMoney: ["Familiar", "Reconnect", "ColdReintro", "CatchUp"],
+  Seller:   ["Familiar", "Reconnect", "ColdReintro", "CatchUp"],
+  PM:       ["Portfolio", "Reconnect", "ColdReintro", "CatchUp"],
   Personal: ["CatchUp", "CheckIn", "Reconnect"],
 }
 
@@ -57,6 +57,52 @@ function normalizeModality(m: unknown, type: ContactType): Modality {
   return DEFAULT_MODALITY[type]
 }
 
+// ── Intent × Familiarity (the new two-knob model) ───────────────────────────
+// The UI used to offer 3 near-identical modalities (Familiar/Reconnect/
+// ColdReintro) that all produced the same message. They collapse into two
+// orthogonal choices:
+//   Intent      — what Ryan wants from the message (just catching up vs
+//                 working a deal vs a referral ask).
+//   Familiarity — does the contact know Ryan? Controls only the OPENER
+//                 (self-intro or not). Defaults are derived from contact
+//                 history in the UI; Ryan can override.
+// These map onto the existing internal Modality enum so voice-narrowing,
+// logging, and prefs keep working unchanged.
+type Intent = "CatchUp" | "Deal" | "Referral" | "Portfolio"
+type Familiarity = "Knows" | "Reintro"
+
+function normalizeIntent(v: unknown): Intent | null {
+  return v === "CatchUp" || v === "Deal" || v === "Referral" || v === "Portfolio" ? v : null
+}
+function normalizeFamiliarity(v: unknown, everContacted: boolean): Familiarity {
+  if (v === "Knows" || v === "Reintro") return v
+  return everContacted ? "Knows" : "Reintro" // sensible default; UI normally sends an explicit value
+}
+
+// (type, intent, familiarity) → canonical Modality used for prompt lookup,
+// voice few-shot, and logging.
+function resolveModality(type: ContactType, intent: Intent, familiarity: Familiarity): Modality {
+  if (type === "Personal") return "CatchUp"
+  if (type === "Vendor") return intent === "Referral" ? "Referral" : "Familiar"
+  if (type === "PM") return intent === "CatchUp" ? "CatchUp" : "Portfolio"
+  // Business types (Agent, Investor, Seller, PrivateMoney):
+  if (intent === "CatchUp") return "CatchUp"
+  return familiarity === "Knows" ? "Familiar" : "ColdReintro" // Deal: warm vs reintro opener
+}
+
+// Authoritative opener directive injected into every prompt. This is what lets
+// the single "Deal/Reintro" path cover both the old Reconnect and ColdReintro
+// cases — the model decides "been a while" vs "saved your contact" from the
+// notes, instead of us maintaining two separate templates.
+const FAMILIARITY_RULE: Record<Familiarity, string> = {
+  Knows: `RELATIONSHIP: {name} knows Ryan. Do NOT introduce him or explain who he is ("this is Ryan LaRocca", "I'm an investor in the Bay Area") — open warm, first name only, like texting someone you already know.
+
+`,
+  Reintro: `RELATIONSHIP: {name} may not remember Ryan. Open with "Hey {name}, this is Ryan LaRocca." If the notes show genuine prior history, it's fine to note it's been a while; otherwise just say you had their contact saved. One short line of reintroduction — no long backstory.
+
+`,
+}
+
 // ── Prompts ────────────────────────────────────────────────────────────────
 
 // Keyed by `${type}_${modality}`. Lookup falls back to Agent_<modality> for
@@ -68,18 +114,28 @@ Use these notes if anything is current and relevant: {notes}
 Start with a genuine check-in — ask how they're doing, reference something from the notes if relevant. Then naturally work in that Ryan is an investor looking for a project or deal they could work on together. This is a warm message to someone Ryan has a real relationship with — it should sound like texting a colleague you like.
 2-4 sentences. No sign-off, no emojis. Sound exactly like the voice examples above.`,
 
-  Agent_Reconnect: `Write a short iMessage from Ryan LaRocca (Bay Area real estate investor) to {name}, an agent Ryan has spoken to before but it's been a while.
-Open with "Hey {name}, it's Ryan LaRocca" or similar.
-Use these notes for context on how they connected: {notes}
-Ryan is still actively buying investment properties (fixers, value-add) in the Bay Area — work that in naturally so the agent knows exactly what Ryan is looking for.
+  Agent_Reconnect: `Write a short iMessage from Ryan LaRocca to {name}, an agent Ryan has spoken to before but it's been a while.
+Open with "Hey {name}, this is Ryan LaRocca" or "Hey {name}, it's Ryan" depending on how familiar they are.
+Use these notes if relevant: {notes}
+Ryan is looking for properties to buy. Say it the plain, casual way he does in the voice examples — e.g. "looking to buy some homes around the South Bay", "looking for a project right now". Keep it short and human; do not dress it up into an investor pitch.
+2-3 sentences max. No sign-off, no emojis. The voice examples are your style guide — match them exactly.`,
+
+  Agent_ColdReintro: `Write a short iMessage from Ryan LaRocca to {name}. This is a cold reintroduction — Ryan has their contact saved but they don't really know each other.
+Open with "Hey {name}, this is Ryan LaRocca."
+Ryan is an investor looking to buy homes — describe it the plain, casual way the voice examples do ("an investor in the area looking to buy some homes"), not as an investor pitch.
+Notes (use only if relevant): {notes}
+End with a soft question like "Are you still active in real estate?" or similar.
 2-3 sentences. No sign-off, no emojis. Match the voice examples exactly.`,
 
-  Agent_ColdReintro: `Write a short iMessage from Ryan LaRocca (Bay Area real estate investor) to {name}. Ryan doesn't really know this person — this is a reintroduction.
-Open with "Hey {name}, this is Ryan LaRocca."
-Briefly establish: investor, buys fixers/value-add.
+  Agent_CatchUp: `Write a short iMessage from Ryan LaRocca to {name}, someone in Ryan's real-estate network.
+This is a genuine check-in — NOT a prospecting message. Ask how they're doing or how business is going; reference something current from the notes if there's anything good. Do NOT pitch, do NOT ask about deals or properties, do NOT mention that Ryan is buying. Just reconnect like a person.
 Notes (use only if relevant): {notes}
-Soft ask: "are you still active in real estate?" or similar.
-2-3 sentences. No sign-off, no emojis. Match the voice examples exactly.`,
+1-3 sentences. No sign-off, no emojis. The voice examples are your style guide — match them exactly.`,
+
+  PrivateMoney_CatchUp: `Write a short iMessage from Ryan LaRocca to {name}, a capital partner Ryan knows.
+This is a genuine check-in — NOT a pitch. Ask how they're doing or what they've been up to. Do NOT bring up deals, partnering, or capital. Just reconnect warmly.
+Notes (use only if relevant): {notes}
+1-3 sentences. No sign-off, no emojis. The voice examples are your style guide — match them exactly.`,
 
   PrivateMoney_Familiar: `Write a short iMessage from Ryan LaRocca (Bay Area real estate investor) to {name}, a capital partner Ryan knows well — someone who has partnered with Ryan on real estate deals, or could. They know who Ryan is — do NOT open with "it's Ryan LaRocca" or any self-introduction.
 Use these notes if anything is current and relevant: {notes}
@@ -147,11 +203,9 @@ Genuine, forward-looking. No business talk. No "I know it's been a while."
 }
 
 const FALLBACKS: Record<string, string> = {
-  Agent_Familiar: `Hey {first}, how are you? I've been ramping up on the investment side and looking for my next project — would love to work on something together if you come across anything.`,
-  Agent_Reconnect: `Hey {first}, it's Ryan LaRocca — it's been a minute. I'm still actively buying investment properties in the Bay Area — fixers, value-add, that kind of thing. If anything crosses your desk, I'd love to hear about it.`,
-  Agent_ColdReintro: `Hey {first}, this is Ryan LaRocca — I had your contact saved from a while back and wanted to reintroduce myself.
-
-I'm an investor in the Bay Area buying fixers and value-add properties. Are you still active in real estate?`,
+  Agent_Familiar: `Hey {first}, how are you? Was going through my phone and noticed we hadn't connected in a while — looking for a project right now, let me know if you come across anything.`,
+  Agent_Reconnect: `Hey {first}, this is Ryan LaRocca — been a while since we last connected. I've been looking to buy some homes around the South Bay, wondering if you've seen anything worth looking at?`,
+  Agent_ColdReintro: `Hey {first}, this is Ryan LaRocca — I had your contact saved from a while back and wanted to reintroduce myself. I'm an investor in the area looking to buy properties. Are you still active in real estate?`,
   PrivateMoney_Familiar: `Hey {first}, how have you been? I've been ramping up on the acquisition side and have a few deals in the works — would love to partner up on a project if the timing's right for you.`,
   PrivateMoney_Reconnect: `Hey {first}, it's Ryan LaRocca — it's been a minute. I'm actively buying investment properties in the Bay Area (fixers, value-add) and looking for capital partners on deals. Would love to catch up and see if there's a fit.`,
   PrivateMoney_ColdReintro: `Hey {first}, this is Ryan LaRocca — I had your contact saved from a while back and wanted to reintroduce myself.
@@ -162,6 +216,9 @@ I'm an investor in the Bay Area buying fixers and value-add properties, and I pa
   Vendor_ColdReintro: `Hey {first}, this is Ryan LaRocca — I have your contact saved from a while back. Are you still taking on work these days?`,
   Vendor_Referral: `Hey {first}, it's Ryan LaRocca — I'm a real estate investor here in the Bay Area. I'll be straight with you: I'm actively buying properties, and I pay a share of the profit on any referral that closes. If you ever hear of an owner looking to sell — a fixer, a tired rental, an estate — send them my way. I'll make it worth your while.`,
   PM_Portfolio: `Hey {first}, it's Ryan LaRocca — I'm an investor in the Bay Area and I wanted to reach out. Do you have any properties in your portfolio where the owner might be looking to sell? Always looking for my next project.`,
+  Agent_CatchUp: `Hey {first}, how are you? Been a minute — was thinking about you and figured I'd check in. How's everything going?`,
+  PrivateMoney_CatchUp: `Hey {first}, how have you been? Been a while — just wanted to check in and see how everything's going on your end.`,
+  PM_CatchUp: `Hey {first}, how are you? Been a minute — just checking in to see how things are going.`,
   Personal_CatchUp: `Hey {first}, been a minute — how have you been? We need to catch up soon.`,
   Personal_CheckIn: `Hey {first}, was just thinking about you — hope you're doing well. What have you been up to?`,
   Personal_Reconnect: `Hey {first}, it's Ryan — it's been way too long. Hope life has been treating you well. We should grab coffee or something and catch up.`,
@@ -224,6 +281,8 @@ type LogRow = {
   action: string
   category: string
   message: string
+  generatedMessage: string
+  wasEdited: boolean | null
   replied: boolean
 }
 
@@ -239,7 +298,7 @@ async function loadLogRows(): Promise<LogRow[]> {
     const supabase = getLeadsClient()
     const { data, error } = await supabase
       .from("relationship_touches")
-      .select("occurred_at, modality, action, category_at_touch, message, replied_at")
+      .select("occurred_at, modality, action, category_at_touch, message, generated_message, was_edited, replied_at")
       .order("occurred_at", { ascending: false })
       .limit(1000)
     if (error) throw error
@@ -249,6 +308,8 @@ async function loadLogRows(): Promise<LogRow[]> {
       action: r.action ?? "",
       category: r.category_at_touch ?? "",
       message: r.message ?? "",
+      generatedMessage: r.generated_message ?? "",
+      wasEdited: r.was_edited ?? null,
       replied: r.replied_at != null,
     }))
     voiceCache = { data: rows, fetchedAt: now }
@@ -277,36 +338,104 @@ function narrowExamples(pool: LogRow[], type: ContactType, modality: Modality): 
   return pool.filter(r => rowMatchesType(r, type))
 }
 
+// Safety net for the one phrase Ryan reliably deletes: "fixers and value-add".
+// The voice pool is now built from messages Ryan actually EDITED (see
+// fetchVoiceExamples), but a few edited rows still left this phrase in (he was
+// fixing something else), so we strip it belt-and-suspenders. Deliberately
+// narrow: it does NOT ban "actively buying homes", which Ryan does say in his
+// own edited messages — only the value-add investor-pitch phrasing.
+// Few-shot EXAMPLES only; the PrivateMoney/Vendor_Referral prompts inject this
+// language intentionally and don't depend on these examples.
+const VOICE_BANNED = [
+  /fixers?\s+and\s+value-?add/i,
+  /value-?add\s+(deals?|properties|prop)/i,
+]
+
+function isCleanVoiceExample(msg: string): boolean {
+  return !VOICE_BANNED.some((re) => re.test(msg))
+}
+
+// ── Static voice examples ────────────────────────────────────────────────
+// Real messages Ryan actually sent (edited from AI drafts). Baked in so the
+// AI always has his voice to copy from, regardless of DB data volume.
+// Key format: `${type}_${modality}`. Add more as they accumulate.
+// Keep these in Ryan's plain, casual style — no "fixers and value-add" /
+// "actively buying" investor-pitch language (see VOICE_BANNED above).
+const STATIC_VOICE: Record<string, string[]> = {
+  Agent_Familiar: [
+    "Carlton! Whats up man, how are you? I haven't heard from you in a minute",
+    "Hey Awne, it's Ryan. How's business? Was going through my phone and noticed we hadn't connected in a while. Congrats on the big sale with Rosie!",
+    "Hey Hiljin, hope you're doing well. Been a minute since we last connected — are you still working the South Bay? I'm looking for a project right now, let me know if you come across any fixers or off-market stuff.",
+  ],
+  Agent_Reconnect: [
+    "Hey Rob, this is Ryan LaRocca — been a while since we last connected. I've been looking to buy some homes around the South Bay and was wondering if you had seen anything worth looking at?",
+    "Hey Michelle, this is Ryan LaRocca. I had saved your number from a while back. Are you still doing real estate? I have been looking for some homes to buy and was wondering if you've seen anything recently?",
+    "Hey Penni, it's Ryan LaRocca — been a while since we last caught up. Are you still an agent? I am looking for a new project right now...",
+    "Hey Albert! This is Ryan - hope you've been well. Im looking for a project now if you have anything...",
+    "Hey Pam, it's Ryan LaRocca — been a while since we last connected. Im not sure if you were aware but I've switched over to investing full time for the last 5 years or so (wow the time flies).\n\nHave you seen any new projects out there that we could work on together?",
+  ],
+  Agent_ColdReintro: [
+    "Hey Shaun, this is Ryan LaRocca — I had your contact saved from a while back and wanted to reintroduce myself. I'm an investor in the area looking to buy some homes. Are you still active in real estate?",
+    "Hey Shaherazade, this is Ryan LaRocca — I had your contact info saved from before. I'm currently looking to buy some homes around the South Bay and was wondering if you had seen anything worth looking at?",
+    "Hey Stephen, this is Ryan LaRocca — I had your contact saved from a while back and wanted to reintroduce myself. I'm looking to buy something in the south bay or peninsula right now — are you still doing real estate?",
+  ],
+  Vendor_Referral: [
+    "Hey Alma, it's Ryan LaRocca — been a while, hope cleaning's been keeping you busy. I'm actively buying houses all over the Bay Area right now, paying cash and closing fast. Last time we talked you mentioned spotting a couple of homes that looked like they might be hitting the market — that's exactly the kind of thing I'd love to hear about.\n\nIf you ever come across a homeowner thinking about selling — tired landlord, inherited place, somewhere that needs a lot of work, anyone who just wants out — send them my way. I pay a generous referral fee on anything that closes, so it's well worth your while. Good to reconnect either way.",
+    "Hey Jose, it's Ryan LaRocca. I'm actively buying properties in the Bay Area right now — fixers, tired rentals, estates, whatever. If you run into any owners looking to sell, send them my way — I pay a referral fee on anything that closes. Let me know if you hear of anything.",
+  ],
+  Vendor_Reconnect: [
+    "Hey Alice, it's Ryan LaRocca — been a while, hope business has been good. I run LRG Homes; we buy houses for cash in the South Bay, often the ones in rough shape that need a lot of work. Figured you and I are looking at a lot of the same properties.\n\nIf you ever come across a homeowner who's overwhelmed by a place — hoarder situation, deferred maintenance, inherited property, anything that needs more than a cleanout — I'd love to be a resource for them. I pay cash, close fast, and buy as-is, so it can be a clean exit for someone who just wants out. And if a referral turns into a deal, I pay out a generous referral fee — happy to make it worth your while.\n\nI'll send junk removal jobs your way whenever they come up too. Good to reconnect either way.",
+  ],
+}
+
 async function fetchVoiceExamples(
   type: ContactType,
   modality: Modality,
   limit = 5
 ): Promise<string[]> {
   const rows = await loadLogRows()
-  if (rows.length === 0) return []
 
-  const sent = rows.filter(r => (r.action || "").toLowerCase() === "sent" && r.message && r.message.trim())
+  // VOICE = WHAT RYAN EDITED. The only trustworthy signal of his real style is
+  // a draft he changed before sending: the sent text differs from the AI's
+  // `generated_message`. Drafts sent untouched are excluded — they may just be
+  // boilerplate he didn't bother fixing, and feeding them back is exactly the
+  // self-training loop that produced "fixers and value-add" in the first place.
+  const edits = rows.filter(r => {
+    if ((r.action || "").toLowerCase() !== "sent") return false
+    const sent = (r.message || "").trim()
+    const draft = (r.generatedMessage || "").trim()
+    if (!sent || sent.startsWith("[")) return false   // skip placeholders
+    if (!draft) return false                            // no draft to diff against
+    return sent !== draft                               // a genuine human edit
+  })
 
-  // Prefer messages that actually got a reply — the AI should mimic what
-  // works, not just what's most recent. Cold-start fallback: if there are
-  // fewer than 3 replied-to examples for this contact type, use all sent.
-  let matched = narrowExamples(sent.filter(r => r.replied), type, modality)
-  if (matched.length < 3) matched = narrowExamples(sent, type, modality)
-
-  // Most recent first, capped at `limit`.
-  matched.sort((a, b) => {
+  // Most relevant edits for this (type, modality), most recent first.
+  const matched = narrowExamples(edits, type, modality).sort((a, b) => {
     const ta = new Date(a.timestamp).getTime() || 0
     const tb = new Date(b.timestamp).getTime() || 0
     return tb - ta
   })
+  const dynamic = matched.slice(0, limit).map(r => r.message.trim()).filter(Boolean)
 
-  return matched.slice(0, limit).map(r => r.message.trim()).filter(Boolean)
+  // Cold-start seeds: hand-curated real messages of Ryan's, used to fill in
+  // when there aren't enough edited examples yet for this type/modality. Edited
+  // DB examples lead (freshest real corrections); seeds backfill.
+  const key = `${type}_${modality}`
+  const statics = STATIC_VOICE[key] ?? STATIC_VOICE[`Agent_${modality}`] ?? []
+  const seen = new Set<string>()
+  const combined: string[] = []
+  for (const m of [...dynamic, ...statics]) {
+    if (!isCleanVoiceExample(m)) continue // safety net: never surface the value-add phrase
+    const k = m.slice(0, 40)
+    if (!seen.has(k)) { seen.add(k); combined.push(m) }
+  }
+  return combined.slice(0, limit + 2)
 }
 
 function buildVoiceBlock(examples: string[], firstName: string): string {
   if (!examples.length) return ""
   const lines = examples.map((ex, i) => `Example ${i + 1}: "${ex}"`).join("\n")
-  return `RYAN'S VOICE — study these real messages Ryan sent to similar contacts. Match his exact tone, vocabulary, sentence length, and phrasing. Do NOT add formality, filler phrases, or AI-isms he doesn't use:
+  return `RYAN'S VOICE — these are messages Ryan personally wrote or rewrote before sending. They are the gold standard for his style. Match their exact tone, vocabulary, sentence length, and phrasing. Write the way HE writes, not the way an AI would — no added formality, filler, or pitch language he doesn't use:
 
 ${lines}
 
@@ -328,13 +457,17 @@ function buildPrompt(
   firstName: string,
   notes: string,
   voiceExamples: string[] = [],
-  everContacted = true
+  everContacted = true,
+  familiarity: Familiarity = "Reintro"
 ): string {
   const base = lookupPrompt(PROMPTS, type, modality)
   const currentYear = String(new Date().getFullYear())
   const voiceBlock = buildVoiceBlock(voiceExamples, firstName)
   const newContactRule = everContacted ? "" : NEW_CONTACT_RULE
-  return (newContactRule + CONTEXT_FILTER_PREAMBLE + voiceBlock + base)
+  // The opener directive is authoritative over whatever the base template says
+  // about introducing Ryan — that's how one Deal template covers warm + reintro.
+  const familiarityRule = FAMILIARITY_RULE[familiarity]
+  return (newContactRule + CONTEXT_FILTER_PREAMBLE + familiarityRule + voiceBlock + base)
     .replace(/{currentYear}/g, currentYear)
     .replace(/{name}/g, firstName)
     .replace(/{notes}/g, notes || "No notes available.")
@@ -401,7 +534,15 @@ export async function POST(request: Request) {
     const everContacted = body.everContacted !== false
 
     const type = normalizeType(body.category ?? body.contactType ?? body.type)
-    const modality = normalizeModality(body.modality, type)
+
+    // New two-knob model: the UI sends `intent` + `familiarity`. If `intent` is
+    // present we resolve the canonical modality from it; otherwise we honor a
+    // legacy `modality` field (back-compat). `familiarity` controls the opener.
+    const familiarity = normalizeFamiliarity(body.familiarity, everContacted)
+    const intent = normalizeIntent(body.intent)
+    const modality = intent
+      ? resolveModality(type, intent, familiarity)
+      : normalizeModality(body.modality, type)
 
     const firstName = extractFirstName(name)
     if (isBadFirstName(firstName)) {
@@ -424,13 +565,14 @@ export async function POST(request: Request) {
       const template = lookupPrompt(FALLBACKS, type, modality)
       return NextResponse.json({
         message: template.replace(/{first}/g, firstName),
+        modality,
         isFallback: true,
       })
     }
 
     // Voice few-shot examples (dynamic — from Log tab, 5-min cache)
     const voiceExamples = await fetchVoiceExamples(type, modality, 5)
-    const prompt = buildPrompt(type, modality, firstName, notes, voiceExamples, everContacted)
+    const prompt = buildPrompt(type, modality, firstName, notes, voiceExamples, everContacted, familiarity)
 
     const reqBody = JSON.stringify({
       model: MODEL,
@@ -455,7 +597,7 @@ export async function POST(request: Request) {
     if (!res.ok) {
       const errText = await res.text().catch(() => "")
       console.error(`crms/generate: OpenRouter ${res.status}`, errText.slice(0, 300))
-      return NextResponse.json({ message: fallbackMessage(), isFallback: true })
+      return NextResponse.json({ message: fallbackMessage(), modality, isFallback: true })
     }
 
     const data = await res.json().catch(() => null)
@@ -468,10 +610,10 @@ export async function POST(request: Request) {
 
     if (!message) {
       console.error("crms/generate: OpenRouter returned an empty message")
-      return NextResponse.json({ message: fallbackMessage(), isFallback: true })
+      return NextResponse.json({ message: fallbackMessage(), modality, isFallback: true })
     }
 
-    return NextResponse.json({ message, isFallback: false })
+    return NextResponse.json({ message, modality, isFallback: false })
   } catch (err) {
     console.error("crms/generate error:", err)
     return NextResponse.json({ error: "Failed to generate message" }, { status: 500 })
