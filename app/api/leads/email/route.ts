@@ -179,35 +179,68 @@ function isGvChromeLine(line: string): boolean {
   return false
 }
 
-function parseGoogleVoiceForward(subject: string, body: string): GoogleVoiceParse {
-  const lines = body.split(/\r?\n/)
-  const headerLine = lines.find((l) => l.trim()) || subject || ""
-  const header = headerLine.trim()
-
-  let kind: GoogleVoiceParse["kind"] = "unknown"
-  if (/new text message/i.test(header)) kind = "text"
-  else if (/new voicemail/i.test(header)) kind = "voicemail"
-  else if (/new missed call|missed a call/i.test(header)) kind = "missed_call"
+// A GV notification header — "New voicemail from (408) 802-9510" etc. Lives
+// in the SUBJECT of real GV emails; real bodies open with a voice.google.com
+// link and never repeat it. (Assuming the body's first line was the header
+// was the 2026-06-09 → 07-03 silent-skip bug: every real forward parsed as
+// kind=unknown / no phone and was dropped as "shortcode spam".)
+function matchGvHeader(text: string): {
+  kind: GoogleVoiceParse["kind"]
+  callerPhone: string | null
+} | null {
+  const t = text.trim()
+  if (!t) return null
+  let kind: GoogleVoiceParse["kind"]
+  if (/new text message/i.test(t)) kind = "text"
+  else if (/new voicemail/i.test(t)) kind = "voicemail"
+  else if (/new missed call|missed a call/i.test(t)) kind = "missed_call"
+  else return null
 
   // Caller token after "from". A real number → E.164; a shortcode (69866) or
   // anything non-numeric → null (spam, skip ingestion).
   let callerPhone: string | null = null
-  const phoneMatch = header.match(
+  const phoneMatch = t.match(
     /from\s+\+?1?[\s.]*\(?(\d{3})\)?[\s.\-]*(\d{3})[\s.\-]*(\d{4})/i
   )
   if (phoneMatch) {
     const n = normalizePhone(`${phoneMatch[1]}${phoneMatch[2]}${phoneMatch[3]}`)
     if (/^\+\d{10,15}$/.test(n)) callerPhone = n
   }
+  return { kind, callerPhone }
+}
 
-  // Content = body minus the header line minus GV chrome.
-  const startIdx = lines.indexOf(headerLine)
-  const content = lines
-    .slice(startIdx >= 0 ? startIdx + 1 : 0)
-    .filter((l) => !isGvChromeLine(l))
-    .join("\n")
-    .replace(/\n{3,}/g, "\n\n")
-    .trim()
+function parseGoogleVoiceForward(subject: string, body: string): GoogleVoiceParse {
+  const lines = body.split(/\r?\n/)
+
+  // Subject first, then every body line — covers the real layout (header in
+  // subject only), the missed-call body phrasing ("You missed a call from
+  // (xxx)"), and synthetic/legacy payloads whose body opens with the header.
+  let kind: GoogleVoiceParse["kind"] = "unknown"
+  let callerPhone: string | null = null
+  for (const cand of [subject || "", ...lines]) {
+    const m = matchGvHeader(cand)
+    if (!m) continue
+    kind = m.kind
+    callerPhone = m.callerPhone
+    break
+  }
+
+  // Content = body minus GV chrome, header echoes, and everything from the
+  // "This email was sent to you because…" notification footer down (the
+  // footer's prose lines aren't individually recognizable as chrome). A
+  // missed call never carries a message — force empty so downstream doesn't
+  // triage boilerplate.
+  const footerIdx = lines.findIndex((l) =>
+    /this email was sent to you because/i.test(l)
+  )
+  const content =
+    kind === "missed_call"
+      ? ""
+      : (footerIdx >= 0 ? lines.slice(0, footerIdx) : lines)
+          .filter((l) => !isGvChromeLine(l) && !matchGvHeader(l))
+          .join("\n")
+          .replace(/\n{3,}/g, "\n\n")
+          .trim()
 
   return { kind, callerPhone, content }
 }
@@ -223,6 +256,25 @@ async function ingestGoogleVoice(args: {
 }): Promise<{ skipped?: string; leadId?: string }> {
   const { sb, subject, body, mailbox, threadId } = args
   const parsed = parseGoogleVoiceForward(subject, body)
+
+  // Parser couldn't even classify the forward — that's breakage (Google
+  // changed the layout, or a payload shape we've never seen), not spam.
+  // Alert loudly: this exact failure mode ran silent for 3+ weeks once
+  // (2026-06-09 → 07-03) and dropped every GV lead, including hot ones.
+  if (parsed.kind === "unknown" && !parsed.callerPhone) {
+    console.error(
+      `[email][gv] UNPARSEABLE GV forward — mailbox=${mailbox} subject="${subject.slice(0, 80)}"`
+    )
+    await sendTelegramAlert(
+      [
+        "⚠️ Google Voice forward could NOT be parsed — lead NOT ingested",
+        `📬 ${mailbox}`,
+        `✉️ ${escapeHtml(subject.slice(0, 120))}`,
+        "Check the GV email layout vs parseGoogleVoiceForward in /api/leads/email.",
+      ].join("\n")
+    )
+    return { skipped: "gv_unparseable" }
+  }
 
   // Shortcode / unresolvable sender → marketing or political SMS blast, never
   // a real seller. Don't ingest (product decision). Log so we still see what
