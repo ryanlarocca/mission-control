@@ -7,13 +7,14 @@ import { cn } from "@/lib/utils"
 import {
   Home, Activity, Calendar, MessageSquare, Terminal, Bot, Monitor,
   FileText, Zap, BarChart2, TrendingUp, Search, Dumbbell, FolderKanban,
-  Brain, Menu, X, Bug, Users, Phone, Megaphone,
+  Brain, Menu, X, Bug, Users, Phone, Megaphone, Target,
 } from "lucide-react"
 
 const navGroups = [
   {
     label: "Command",
     items: [
+      { href: "/board", label: "The Board", icon: Target },
       { href: "/chat", label: "Chat", icon: MessageSquare },
       { href: "/terminal", label: "Terminal", icon: Terminal },
       { href: "/agents", label: "Agents", icon: Bot },
