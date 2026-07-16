@@ -23,7 +23,11 @@ export const RELATIONSHIP_TYPES: readonly RelationshipCategory[] = [
 
 // Column list for `select()` against the relationships table.
 export const REL_COLUMNS =
-  "id, name, phone, email, source, category, tier, notes, enriched_at, last_contacted_at, snooze_until, source_lead_id"
+  "id, name, phone, email, source, category, tier, notes, enriched_at, last_contacted_at, snooze_until, source_lead_id, status, cleanup_verdict, cleanup_reviewed_at"
+
+// Cleanup-mode triage verdicts (2026-07-16): keep = leave as-is, vague =
+// demoted to tier D, never = status set to do_not_contact.
+export type CleanupVerdict = "keep" | "vague" | "never"
 
 // A row as stored in Supabase `relationships`.
 export interface RelationshipRow {
@@ -39,6 +43,9 @@ export interface RelationshipRow {
   last_contacted_at: string | null
   snooze_until: string | null
   source_lead_id: string | null
+  status: string | null
+  cleanup_verdict: string | null
+  cleanup_reviewed_at: string | null
 }
 
 // The shape the Relationships-tab UI consumes. Kept identical to the old
@@ -58,6 +65,11 @@ export interface ApiContact {
   notes: string
   hasNotes: boolean
   notesStale: boolean
+  // `status` above is the cadence status (due/overdue) — the removed-from-
+  // rotation flag gets its own name to avoid colliding with it.
+  dnc: boolean
+  cleanupVerdict: CleanupVerdict | null
+  cleanupReviewedAt: string | null
 }
 
 export function daysSince(date: Date | null): number {
@@ -106,6 +118,12 @@ export function toApiContact(row: RelationshipRow): ApiContact {
     notes,
     hasNotes,
     notesStale,
+    dnc: row.status === "do_not_contact",
+    cleanupVerdict:
+      row.cleanup_verdict === "keep" || row.cleanup_verdict === "vague" || row.cleanup_verdict === "never"
+        ? row.cleanup_verdict
+        : null,
+    cleanupReviewedAt: row.cleanup_reviewed_at,
   }
 }
 

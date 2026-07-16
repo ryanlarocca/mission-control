@@ -5,10 +5,12 @@ import {
   Send, RefreshCw, SkipForward, Phone, Loader2,
   UserCheck, User, Wrench, TrendingUp, Home, Building2,
   MessageSquare, AlertTriangle, CheckCircle2, Check, Search, X, Banknote,
+  ListChecks, Undo2,
 } from "lucide-react"
 import type { LucideIcon } from "lucide-react"
 import { ContactDetailModal } from "./ContactDetailModal"
 import type { TouchesSummary } from "./ContactDetailModal"
+import { CleanupMode } from "./CleanupMode"
 
 // ══════════════════════════════════════════════════════════════════════════════
 // TYPES
@@ -149,6 +151,7 @@ interface CRMSContact {
   notes:         string
   hasNotes:      boolean
   notesStale:    boolean
+  dnc?:          boolean   // removed from rotation (status = do_not_contact)
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -324,6 +327,11 @@ function CRMSTabInner() {
   const [familiarity, setFamiliarity] = useState<Familiarity>("Reintro")
   const [sent, setSent]               = useState<Set<string>>(() => new Set(loadSession().sent))
   const [skipped, setSkipped]         = useState<Set<string>>(() => new Set(loadSession().skipped))
+  // Removed-from-rotation this session — persisted server-side (status =
+  // do_not_contact), the Set just hides them without a queue refetch.
+  const [removed, setRemoved]         = useState<Set<string>>(new Set())
+  const [removeUndo, setRemoveUndo]   = useState<{ id: string; name: string } | null>(null)
+  const [cleanupOpen, setCleanupOpen] = useState(false)
   const [mobileView, setMobileView]   = useState<"list" | "compose">("list")
   const [sendError, setSendError]     = useState<string | null>(null)
   const [sendToast, setSendToast]     = useState<string | null>(null)
@@ -344,6 +352,7 @@ function CRMSTabInner() {
   const generateAbortRef = useRef<AbortController | null>(null)
   const selectDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const removeUndoTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const categoryPickerRef = useRef<HTMLDivElement>(null)
   const textareaRef = useRef<HTMLTextAreaElement | null>(null)
   const allLoadRef = useRef(false)
@@ -400,6 +409,7 @@ function CRMSTabInner() {
     return () => {
       if (selectDebounceRef.current) clearTimeout(selectDebounceRef.current)
       if (toastTimerRef.current) clearTimeout(toastTimerRef.current)
+      if (removeUndoTimerRef.current) clearTimeout(removeUndoTimerRef.current)
       generateAbortRef.current?.abort()
     }
   }, []) // eslint-disable-line react-hooks/exhaustive-deps
@@ -715,6 +725,50 @@ function CRMSTabInner() {
     setActionPending(false)
   }
 
+  // ── Remove from rotation: status → do_not_contact. Unlike Skip (24h snooze)
+  // this is permanent — the contact never surfaces in the queue again. The
+  // toast offers an 8s Undo; after that, restorable from Cleanup mode.
+  async function handleRemove() {
+    if (!selectedContact || actionPending) return
+    const contact = selectedContact
+    setActionPending(true)
+    try {
+      const res = await fetch("/api/crms/cleanup", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: contact.id, verdict: "never" }),
+      })
+      if (!res.ok) throw new Error()
+      setRemoved(prev => new Set(prev).add(contact.id))
+      if (removeUndoTimerRef.current) clearTimeout(removeUndoTimerRef.current)
+      setRemoveUndo({ id: contact.id, name: contact.name })
+      removeUndoTimerRef.current = setTimeout(() => setRemoveUndo(null), 8000)
+      advanceSelection(contact.id)
+    } catch {
+      setSendError("Remove failed — try again")
+    } finally {
+      setActionPending(false)
+    }
+  }
+
+  async function handleUndoRemove() {
+    if (!removeUndo) return
+    const { id, name } = removeUndo
+    setRemoveUndo(null)
+    if (removeUndoTimerRef.current) clearTimeout(removeUndoTimerRef.current)
+    try {
+      const res = await fetch("/api/crms/cleanup", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id, verdict: "undo" }),
+      })
+      if (!res.ok) throw new Error()
+      setRemoved(prev => { const n = new Set(prev); n.delete(id); return n })
+    } catch {
+      showSendToast(`Couldn't restore ${name} — open Cleanup to restore them`)
+    }
+  }
+
   // ── Mark Done: contact was already reached out to (e.g. via Messages directly).
   // Writes a "sent" Log row + LastContacted date without firing iMessage.
   async function handleMarkDone() {
@@ -783,7 +837,7 @@ function CRMSTabInner() {
 
   function advanceSelection(excludeId: string) {
     const remaining = contacts.filter(c =>
-      c.id !== excludeId && !sent.has(c.id) && !skipped.has(c.id)
+      c.id !== excludeId && !sent.has(c.id) && !skipped.has(c.id) && !removed.has(c.id)
     )
     const next = remaining[0]
     if (!next) { setSelectedId(""); setMobileView("list"); return }
@@ -821,7 +875,7 @@ function CRMSTabInner() {
   }
 
   // ── Derived ──
-  const dueContacts     = contacts.filter(c => !sent.has(c.id) && !skipped.has(c.id))
+  const dueContacts     = contacts.filter(c => !sent.has(c.id) && !skipped.has(c.id) && !removed.has(c.id))
   const selectedContact = dueContacts.find(c => c.id === selectedId) ?? null
 
   // Per-type sent counts (for progress bar)
@@ -891,6 +945,44 @@ function CRMSTabInner() {
     )
   }
 
+  // ── Cleanup mode takes over the whole tab. On exit, refetch the queue and
+  // drop the search cache — tiers/statuses likely changed underneath both.
+  if (cleanupOpen) {
+    return (
+      <div className="space-y-3">
+        <div className="flex items-center gap-3">
+          <div>
+            <p className="text-sm font-semibold text-zinc-100">Cleanup</p>
+            <p className="text-xs text-zinc-500">Triage the full book — Keep, Vague (→ tier D), or Never (do not contact)</p>
+          </div>
+          <button
+            onClick={() => {
+              setCleanupOpen(false)
+              fetchContacts()
+              allLoadRef.current = false
+              setAllContacts([])
+              setAllContactsLoaded(false)
+            }}
+            className="ml-auto flex items-center gap-1.5 text-xs text-zinc-300 bg-zinc-800 border border-zinc-700 hover:border-zinc-500 px-3 py-1.5 rounded transition-colors"
+          >
+            <X className="w-3.5 h-3.5" />
+            Exit
+          </button>
+        </div>
+        <CleanupMode onToast={showSendToast} />
+        {sendToast && (
+          <div className="fixed bottom-4 right-4 z-50 bg-red-500/15 border border-red-500/40 text-red-300 text-xs px-3 py-2 rounded shadow-lg flex items-center gap-2 max-w-xs">
+            <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
+            <span className="flex-1">{sendToast}</span>
+            <button onClick={() => setSendToast(null)} className="text-red-400 hover:text-red-200 shrink-0" aria-label="Dismiss">
+              ×
+            </button>
+          </div>
+        )}
+      </div>
+    )
+  }
+
   return (
     <div className="space-y-3">
 
@@ -945,6 +1037,14 @@ function CRMSTabInner() {
             <p className="text-xs text-emerald-400 font-medium">{sent.size} sent this session</p>
           </div>
         )}
+        <button
+          onClick={() => setCleanupOpen(true)}
+          title="Bulk-triage the full book — Keep / Vague / Never"
+          className="ml-auto flex items-center gap-1.5 text-xs font-medium text-purple-300 bg-purple-500/10 border border-purple-500/30 hover:border-purple-500/50 px-3 py-1.5 rounded transition-colors"
+        >
+          <ListChecks className="w-3.5 h-3.5" />
+          Cleanup
+        </button>
       </div>
 
       {/* Relationship search — look up anyone in the BoB sheet, not just today's queue */}
@@ -980,17 +1080,23 @@ function CRMSTabInner() {
             ) : (
               searchResults.map(c => {
                 const Icon = categoryIcon[c.type] ?? User
+                const isRemoved = c.dnc || removed.has(c.id)
                 return (
                   <button
                     key={c.id}
                     onClick={() => setDetailPhone(c.phone)}
-                    className="w-full flex items-center gap-2 px-3 py-2.5 text-left hover:bg-zinc-800 transition-colors"
+                    className={`w-full flex items-center gap-2 px-3 py-2.5 text-left hover:bg-zinc-800 transition-colors ${isRemoved ? "opacity-60" : ""}`}
                   >
                     <span className={`text-xs font-bold px-1 py-0.5 rounded border leading-none shrink-0 ${tierStyle[c.tier] ?? tierStyle.C}`}>
                       {c.tier}
                     </span>
                     <Icon className={`w-3.5 h-3.5 shrink-0 ${categoryColor[c.type] ?? "text-zinc-400"}`} />
-                    <span className="text-xs font-medium text-zinc-200 truncate flex-1 min-w-0">{c.name}</span>
+                    <span className={`text-xs font-medium truncate flex-1 min-w-0 ${isRemoved ? "text-zinc-500 line-through" : "text-zinc-200"}`}>{c.name}</span>
+                    {isRemoved && (
+                      <span className="text-[9px] font-bold px-1 py-0.5 rounded bg-red-500/10 text-red-400 border border-red-500/30 shrink-0 leading-none">
+                        removed
+                      </span>
+                    )}
                     <span className="text-xs text-zinc-600 shrink-0 hidden sm:block">{TYPE_LABEL[c.type]}</span>
                     <span className="text-xs text-zinc-600 font-mono shrink-0">{c.phone}</span>
                   </button>
@@ -1305,10 +1411,20 @@ function CRMSTabInner() {
                 <button
                   onClick={handleSkip}
                   disabled={actionPending}
+                  title="Not today — snoozes 24h"
                   className="flex items-center gap-1.5 text-xs text-zinc-400 hover:text-zinc-200 bg-zinc-800 border border-zinc-700 px-3 py-1.5 rounded transition-colors disabled:opacity-50"
                 >
                   <SkipForward className="w-3.5 h-3.5" />
                   Skip
+                </button>
+                <button
+                  onClick={handleRemove}
+                  disabled={actionPending}
+                  title="Remove from rotation — never surfaces in the queue again"
+                  className="flex items-center gap-1.5 text-xs text-red-400 hover:text-red-300 bg-red-500/10 border border-red-500/30 hover:border-red-500/50 px-3 py-1.5 rounded transition-colors disabled:opacity-50"
+                >
+                  <X className="w-3.5 h-3.5" />
+                  Remove
                 </button>
                 <button
                   onClick={handleMarkDone}
@@ -1344,6 +1460,20 @@ function CRMSTabInner() {
               <p className="text-sm text-zinc-600">Select a contact</p>
             </div>
           )}
+        </div>
+      )}
+
+      {removeUndo && (
+        <div className="fixed bottom-16 right-4 z-50 bg-zinc-900 border border-red-500/40 text-zinc-200 text-xs px-3 py-2.5 rounded shadow-lg flex items-center gap-2 max-w-xs">
+          <X className="w-3.5 h-3.5 text-red-400 shrink-0" />
+          <span className="flex-1"><span className="font-medium">{removeUndo.name}</span> removed from rotation</span>
+          <button
+            onClick={handleUndoRemove}
+            className="flex items-center gap-1 text-blue-400 hover:text-blue-300 font-semibold shrink-0"
+          >
+            <Undo2 className="w-3.5 h-3.5" />
+            Undo
+          </button>
         </div>
       )}
 

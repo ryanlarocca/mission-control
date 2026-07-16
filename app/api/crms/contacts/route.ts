@@ -26,6 +26,7 @@ export async function GET() {
 
     for (const row of rows) {
       if (!row.phone) continue                       // phoneless contacts can't be queued
+      if (row.status === "do_not_contact") continue  // removed from rotation
       const tier = (row.tier || "C").trim().toUpperCase()
       if (tier === "E") continue                     // tier E = excluded from queue
       if (row.snooze_until && new Date(row.snooze_until) > now) continue
