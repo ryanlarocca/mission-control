@@ -11,9 +11,12 @@ import type { CleanupVerdict } from "@/lib/relationships"
 //        most-avoided-first so the worst offenders surface immediately.
 // POST → record a verdict for one contact:
 //        keep  = leave as-is           (stamps reviewed)
-//        vague = demote to tier D      (one light reintro per year)
+//        vague = demote to tier D + snooze 365d — WITHOUT the snooze a vague
+//                contact whose last touch predates the tier-D cadence (most
+//                of them) would be due again immediately, defeating the
+//                one-time-triage intent. The clock starts at the verdict.
 //        never = status do_not_contact (out of the queue for good)
-//        undo  = back to active, verdict cleared (for the queue's Undo toast)
+//        undo  = back to active, verdict + snooze cleared (queue Undo toast)
 export const dynamic = "force-dynamic"
 export const revalidate = 0
 
@@ -101,12 +104,14 @@ export async function POST(request: Request) {
 
     const patch: Record<string, unknown> =
       verdict === "undo"
-        ? { status: "active", cleanup_verdict: null, cleanup_reviewed_at: null }
+        ? { status: "active", cleanup_verdict: null, cleanup_reviewed_at: null, snooze_until: null }
         : {
             status: verdict === "never" ? "do_not_contact" : "active",
             cleanup_verdict: verdict as CleanupVerdict,
             cleanup_reviewed_at: new Date().toISOString(),
-            ...(verdict === "vague" ? { tier: "D" } : {}),
+            ...(verdict === "vague"
+              ? { tier: "D", snooze_until: new Date(Date.now() + 365 * 86400000).toISOString() }
+              : {}),
           }
 
     const supabase = getLeadsClient()

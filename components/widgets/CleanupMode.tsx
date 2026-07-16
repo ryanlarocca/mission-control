@@ -254,7 +254,7 @@ export function CleanupMode({ onToast }: { onToast: (msg: string) => void }) {
                 )}
                 {c.cleanupVerdict === "vague" && (
                   <p className="text-[11px] text-zinc-600">
-                    <span className="text-purple-400 font-medium">&rarr; Tier D</span> — one light reintro per year
+                    <span className="text-purple-400 font-medium">&rarr; Tier D</span> — asleep for a year, then one light reintro
                   </p>
                 )}
               </div>
