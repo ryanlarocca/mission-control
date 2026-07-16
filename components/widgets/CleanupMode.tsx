@@ -70,8 +70,13 @@ export function CleanupMode({ onToast }: { onToast: (msg: string) => void }) {
   const [error, setError]       = useState<string | null>(null)
   const [savingIds, setSavingIds] = useState<Set<string>>(new Set())
   const [typeFilter, setTypeFilter] = useState<ContactType | "All">("All")
-  const [hideReviewed, setHideReviewed] = useState(false)
+  const [hideReviewed, setHideReviewed] = useState(true)
   const [visibleCount, setVisibleCount] = useState(PAGE_SIZE)
+  // Ids that were already reviewed when the list loaded. "Hide reviewed"
+  // filters on THIS set, not the live verdict, so a row tapped during the
+  // session stays visible (mis-taps stay fixable) while prior sessions'
+  // rows are hidden by default.
+  const [reviewedAtLoad, setReviewedAtLoad] = useState<Set<string>>(new Set())
 
   useEffect(() => { load() }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -82,10 +87,13 @@ export function CleanupMode({ onToast }: { onToast: (msg: string) => void }) {
       const res = await fetch("/api/crms/cleanup", { cache: "no-store" })
       if (!res.ok) throw new Error()
       const data = await res.json()
-      setContacts((data.contacts || []).map((c: CleanupContact & { category?: string }) => ({
+      const loaded = (data.contacts || []).map((c: CleanupContact & { category?: string }) => ({
         ...c,
         type: coerceType(c.type ?? c.category),
-      })))
+      })) as CleanupContact[]
+      setContacts(loaded)
+      setReviewedAtLoad(new Set(loaded.filter(c => c.cleanupVerdict).map(c => c.id)))
+      setVisibleCount(PAGE_SIZE)
     } catch {
       setError("Could not load the cleanup list — check the database connection.")
     } finally {
@@ -130,9 +138,9 @@ export function CleanupMode({ onToast }: { onToast: (msg: string) => void }) {
 
   const filtered = useMemo(() => contacts.filter(c => {
     if (typeFilter !== "All" && c.type !== typeFilter) return false
-    if (hideReviewed && c.cleanupVerdict) return false
+    if (hideReviewed && reviewedAtLoad.has(c.id)) return false
     return true
-  }), [contacts, typeFilter, hideReviewed])
+  }), [contacts, typeFilter, hideReviewed, reviewedAtLoad])
 
   const visible = filtered.slice(0, visibleCount)
   const progressPct = contacts.length > 0 ? Math.round((reviewed / contacts.length) * 100) : 0
@@ -268,7 +276,7 @@ export function CleanupMode({ onToast }: { onToast: (msg: string) => void }) {
           onClick={() => setVisibleCount(n => n + PAGE_SIZE)}
           className="w-full text-xs text-zinc-400 hover:text-zinc-200 bg-zinc-900 border border-zinc-800 hover:border-zinc-600 rounded-lg py-2.5 transition-colors"
         >
-          Show more ({filtered.length - visibleCount} remaining)
+          Show {Math.min(PAGE_SIZE, filtered.length - visibleCount)} more rows
         </button>
       )}
     </div>
