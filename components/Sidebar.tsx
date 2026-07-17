@@ -28,6 +28,7 @@ const navGroups = [
       { href: "/relationships", label: "Relationships", icon: Users },
       { href: "/leads", label: "Leads", icon: Phone },
       { href: "/campaigns", label: "Campaigns", icon: Megaphone },
+      { href: "/email-campaign", label: "Email Drip", icon: Zap },
       { href: "/redfin", label: "Redfin Search", icon: Search },
     ],
   },
