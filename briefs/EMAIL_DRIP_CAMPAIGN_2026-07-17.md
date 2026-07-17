@@ -25,6 +25,14 @@
   the line, Telegram ring alert, no whisper, no live-call recording),
   voicemail record + Telegram link, SMS → event + Telegram + STOP handling.
 
+**⏸ WEEKEND LOCKDOWN (2026-07-17, Ryan: start Monday):** the
+`com.lrghomes.campaign-engine` launchd job is **unloaded** — no drafting,
+no sending, nothing fires over the weekend. **First step Monday:**
+`launchctl load ~/Library/LaunchAgents/com.lrghomes.campaign-engine.plist`.
+Also inert regardless: zero approved sends, `CAMPAIGN_POSTAL_ADDRESS`
+unset (send hard-refuses), agents line unpublished, inbox pipeline is
+receive-only. The 199 batch-1 drafts keep — reviewable all weekend.
+
 **Blocked on Ryan (before batch 1 can send):**
 - [ ] `CAMPAIGN_POSTAL_ADDRESS` in mission-control `.env.local` (CAN-SPAM
   postal address — send pass hard-refuses without it).
