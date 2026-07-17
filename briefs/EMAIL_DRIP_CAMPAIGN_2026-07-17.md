@@ -1,6 +1,44 @@
 # Execution brief — 12-month email drip + master DNC
 
-> **Date:** 2026-07-17 · **Status:** OUTLINE — approved scope, build not started
+> **Date:** 2026-07-17 · **Status:** BUILT + LIVE (same day) — batch 1 of
+> 200 drafts awaiting Ryan's review at /email-campaign. See BUILD STATE.
+
+## BUILD STATE (end of 2026-07-17 build session)
+
+**Shipped & verified live** (commits `62d895e` → `4fb128c` → `67ccf12` → agents-line webhooks):
+- Master DNC `suppression` (68 rows / 5 sources) + DB-trigger write-through
+  (verified both directions) + vendor export refactor.
+- `campaign_contacts` 2,392 imported (2,348 active) + `campaign_sends` +
+  `campaign_events`. Import idempotent, re-run = no-op.
+- Engine (`scripts/campaign-engine.mjs`) on launchd every 20 min
+  (`com.lrghomes.campaign-engine`): draft pass (200/day cap, suppression
+  re-check) + send pass (Gmail as info@, 9:00–16:30 PT, 200/day, jitter,
+  send-time re-checks). Verified: real Gmail send end-to-end (redirected).
+- `/email-campaign` UI (Review queue + Contacts w/ timeline) deployed.
+  **Batch 1 = 200 T1 drafts waiting for review.** Everything approval-gated.
+- info@ inbox pipeline: bounce parse (VERIFIED with a real send→bounce
+  round-trip in prod: hard bounce → contact bounced + sends cancelled +
+  Telegram), reply → drip pause + Telegram alert, "remove"-style reply →
+  auto-suppression. Privacy: non-campaign mail skipped before content.
+  info@ watch registered (label AGENT-DRIP, daily renewal covers it).
+- Agents line (650) 910-4007 webhooks live: call relay to cell (caller ID =
+  the line, Telegram ring alert, no whisper, no live-call recording),
+  voicemail record + Telegram link, SMS → event + Telegram + STOP handling.
+
+**Blocked on Ryan (before batch 1 can send):**
+- [ ] `CAMPAIGN_POSTAL_ADDRESS` in mission-control `.env.local` (CAN-SPAM
+  postal address — send pass hard-refuses without it).
+- [ ] Review/approve drafts at /email-campaign (start small ~50 per plan).
+- [ ] Kelly Ray is the one active-lead flag in the import.
+
+**Still to build (next session):**
+- AI-drafted replies + interactive Telegram loop (dictate-summary →
+  compose → approve buttons) — replies currently alert w/ manual reply.
+- Voicemail Whisper transcription (URLs stored for retro-transcribe).
+- Unsubscribe confirmation email (currently: suppress + stop, no confirm).
+- Phase 6 dashboard (queue header shows core counts meanwhile).
+- Unknown-caller name matching (Twilio Lookup / AI transcript match).
+- Touch 10 copy (engine enforces the placeholder refusal).
 > **Owner project:** lead-pipeline (this is effectively Phase 7.5 stale-lead
 > re-engagement, email edition — confirm routing at first wrap)
 > **Driver:** Ryan wants a 12-month auto email drip to a ~2,000-contact
