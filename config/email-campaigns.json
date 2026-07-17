@@ -1,4 +1,8 @@
 {
+  "info@lrghomes.com": {
+    "source": "AGENT-DRIP",
+    "source_type": "direct_mail"
+  },
   "ryansva@lrghomes.com": {
     "source": "Legacy DM",
     "source_type": "direct_mail"

@@ -4,6 +4,7 @@ import { gmail_v1 } from "googleapis"
 // Pub/Sub push ack timeout is 10s by default; Gmail history.list + message.get
 // + Haiku triage + Supabase insert can blow past Vercel's 10s default. Bump it.
 export const maxDuration = 30
+import { CAMPAIGN_INBOX, processCampaignInbox } from "@/lib/campaignInbox"
 import {
   CAMPAIGN_MAP,
   EMAIL_CAMPAIGN_MAP,
@@ -457,6 +458,15 @@ export async function POST(request: Request) {
   const historyId = notification.historyId
   if (!emailAddress || !historyId) {
     console.warn(`[email] Notification missing fields — emailAddress:${!!emailAddress} historyId:${!!historyId}`)
+    return NextResponse.json({ ok: true })
+  }
+
+  // info@ is the agent email-drip campaign inbox (2026-07-17 brief) — it
+  // must NEVER flow into lead ingest. Route to the campaign pipeline, which
+  // drops non-campaign mail before touching content (it's Ryan's primary
+  // business mailbox).
+  if (emailAddress === CAMPAIGN_INBOX) {
+    await processCampaignInbox()
     return NextResponse.json({ ok: true })
   }
 
