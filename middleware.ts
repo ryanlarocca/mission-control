@@ -22,6 +22,11 @@ const PUBLIC_PATHS = [
   // cookie. Auth on this path is the X-Telegram-Bot-Api-Secret-Token header,
   // verified inside the route against TELEGRAM_WEBHOOK_SECRET.
   "/api/telegram/webhook",
+  // Agents-line Twilio webhooks (email-campaign brief 2026-07-17): inbound
+  // call relay + dial-status/voicemail callbacks (trailing-slash rule covers
+  // /voice/status + /voice/recording) and inbound SMS.
+  "/api/campaign/voice",
+  "/api/campaign/sms",
 ]
 
 export async function middleware(request: NextRequest) {
