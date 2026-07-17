@@ -42,6 +42,7 @@ export function ScoreboardView({
       <SectionCard title="This week vs targets" accent="border-t-amber-500/70">
         <StatRow label="Contacts" value={weekContacts.total} target={QUOTAS.contactsPerWeek} />
         <StatRow label="Offers written" value={count(week, "offer")} target={QUOTAS.offersPerWeek} />
+        <StatRow label="Appointments" value={count(week, "appointment")} target={QUOTAS.appointmentsPerWeek} />
         <StatRow label="MTG drafts" value={count(week, "draft")} target={QUOTAS.draftsPerWeek} />
         <StatRow label="Disc golf rounds" value={count(week, "dg_round")} target={QUOTAS.dgRoundsPerWeek} />
         <StatRow label="Practice sessions" value={count(week, "dg_practice")} target={QUOTAS.dgPracticesPerWeek} />
@@ -51,6 +52,7 @@ export function ScoreboardView({
 
       <SectionCard title="90-day cumulative" accent="border-t-sky-500/70">
         <StatRow label="Offers written" value={count(events, "offer")} target={QUOTAS.offersPer90} />
+        <StatRow label="Appointments" value={count(events, "appointment")} />
         <StatRow label="Contacts — total" value={allContacts.total} />
         <StatRow label="Agent" value={allContacts.agent} />
         <StatRow label="Seller" value={allContacts.seller} />

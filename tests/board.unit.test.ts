@@ -176,10 +176,11 @@ describe("contacts + quota chip states", () => {
 
   it("quota thresholds: chip flips green exactly at quota", () => {
     // Chip renders green when n >= target — verify the constants the chips use
-    expect(QUOTAS.contactsPerDay).toBe(10)
-    expect(9 >= QUOTAS.contactsPerDay).toBe(false)
-    expect(10 >= QUOTAS.contactsPerDay).toBe(true)
-    expect(QUOTAS.contactsPerWeek).toBe(50)
+    expect(QUOTAS.contactsPerDay).toBe(5)
+    expect(4 >= QUOTAS.contactsPerDay).toBe(false)
+    expect(5 >= QUOTAS.contactsPerDay).toBe(true)
+    expect(QUOTAS.contactsPerWeek).toBe(25)
+    expect(QUOTAS.appointmentsPerWeek).toBe(2)
     expect(QUOTAS.offersPerWeek).toBe(1)
     expect(QUOTAS.offersPer90).toBe(12)
     expect(QUOTAS.offersFloor).toBe(7)

@@ -13,8 +13,10 @@ export const CADENCE: Record<string, number> = { A: 30, B: 45, C: 60, D: 365 }
 
 // Per-category daily queue targets. PM/Investor/Seller never surface
 // proactively (target 0); Agent backfills any shortfall.
+// 2026-07-17: total 18 → 5 to match the Board's 5-solid-contacts/day goal —
+// post-Cleanup the queue is only people Ryan actually wants to talk to.
 export const DAILY_TARGETS: Record<RelationshipCategory, number> = {
-  Agent: 10, Vendor: 3, Personal: 2, PM: 0, Investor: 0, PrivateMoney: 3, Seller: 0,
+  Agent: 2, Vendor: 1, Personal: 1, PM: 0, Investor: 0, PrivateMoney: 1, Seller: 0,
 }
 
 export const RELATIONSHIP_TYPES: readonly RelationshipCategory[] = [

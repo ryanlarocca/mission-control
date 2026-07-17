@@ -115,6 +115,7 @@ describe("event writes — every type round-trips", () => {
       ["contact_touch", { bucket: "seller" }],
       ["contact_touch", { bucket: "referral_partner" }],
       ["offer", {}],
+      ["appointment", {}],
       ["draft", { wins: 3, losses: 1 }],
       ["dg_round", { over_par: -2 }],
       ["dg_practice", {}],
@@ -134,7 +135,7 @@ describe("event writes — every type round-trips", () => {
     const data = await res.json()
     expect(data.events).toHaveLength(writes.length)
     const types = data.events.map((e: { event_type: string }) => e.event_type)
-    expect(new Set(types).size).toBe(7)
+    expect(new Set(types).size).toBe(8)
   })
 
   it("midnight boundary: consecutive days stay distinct through the round-trip", async () => {

@@ -277,8 +277,10 @@ class CRMSErrorBoundary extends Component<{ children: ReactNode }, { hasError: b
 const SEND_TIMEOUT_MS = 30000
 const GENERATE_DEBOUNCE_MS = 300
 
+// Pre-fetch fallback only — the API's dailyTarget (lib/relationships
+// DAILY_TARGETS) overwrites this on load. Keep the two in sync.
 const DEFAULT_DAILY_TARGET: Record<ContactType, number> = {
-  Agent: 20, Vendor: 5, Personal: 5, PM: 2, Investor: 2, PrivateMoney: 5, Seller: 1,
+  Agent: 2, Vendor: 1, Personal: 1, PM: 0, Investor: 0, PrivateMoney: 1, Seller: 0,
 }
 
 function formatAbsoluteDate(iso: string | null): string {

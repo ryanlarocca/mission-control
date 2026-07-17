@@ -9,6 +9,7 @@ export type PaOutcome = "1B" | "2B" | "3B" | "HR" | "BB" | "SF" | "K" | "OUT"
 export type BoardEventType =
   | "contact_touch"
   | "offer"
+  | "appointment"
   | "draft"
   | "dg_round"
   | "dg_practice"
@@ -18,7 +19,7 @@ export type BoardEventType =
 export const BUCKETS: Bucket[] = ["agent", "seller", "referral_partner"]
 export const PA_OUTCOMES: PaOutcome[] = ["1B", "2B", "3B", "HR", "BB", "SF", "K", "OUT"]
 export const EVENT_TYPES: BoardEventType[] = [
-  "contact_touch", "offer", "draft", "dg_round", "dg_practice", "cage", "softball_game",
+  "contact_touch", "offer", "appointment", "draft", "dg_round", "dg_practice", "cage", "softball_game",
 ]
 
 export interface BoardPeriod {
@@ -39,8 +40,11 @@ export interface BoardEvent {
 }
 
 export const QUOTAS = {
-  contactsPerDay: 10,
-  contactsPerWeek: 50,
+  // 2026-07-17: 10/day → 5/day — five solid conversations beat ten loose
+  // ones (post-Cleanup the queue is only people Ryan chose to keep).
+  contactsPerDay: 5,
+  contactsPerWeek: 25,
+  appointmentsPerWeek: 2,
   offersPerWeek: 1,
   offersPer90: 12,
   offersFloor: 7,
@@ -340,6 +344,7 @@ export function validatePayload(eventType: BoardEventType, payload: unknown): Va
       return { ok: true, payload: { pa } }
     }
     case "offer":
+    case "appointment":
     case "dg_practice":
     case "cage":
       return { ok: true, payload: {} }

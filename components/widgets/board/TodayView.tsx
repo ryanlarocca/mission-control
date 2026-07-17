@@ -50,8 +50,10 @@ export function TodayView({
   // financial
   const contacts = contactCounts(today)
   const offersWeek = week.filter(e => e.event_type === "offer").length
+  const apptsWeek = week.filter(e => e.event_type === "appointment").length
   const lastTouch = lastEvent(eventsOn(confirmed, todayKey), "contact_touch")
   const lastOffer = lastEvent(eventsOn(confirmed, todayKey), "offer")
+  const lastAppt = lastEvent(eventsOn(confirmed, todayKey), "appointment")
 
   // mtg
   const draftsToday = today.filter(e => e.event_type === "draft").length
@@ -81,7 +83,9 @@ export function TodayView({
         accent="border-t-amber-500/70"
         chip={<Chip n={contacts.total} target={QUOTAS.contactsPerDay} label="contacts" />}
       >
-        <p className="mb-2.5 text-xs text-zinc-500">Contacts today — any mix counts toward 10</p>
+        <p className="mb-2.5 text-xs text-zinc-500">
+          Contacts today — any mix counts toward {QUOTAS.contactsPerDay}
+        </p>
         <div className="mb-2.5 grid grid-cols-3 gap-2">
           {BUCKET_LABELS.map(({ key, label }) => (
             <button
@@ -127,6 +131,27 @@ export function TodayView({
               onClick={() => withBusy("offer", () => actions.log("offer", {}))}
             >
               + Log offer
+            </TapButton>
+          </div>
+        </div>
+
+        <div className="mt-3 flex items-center justify-between border-t border-dashed border-zinc-800 pt-3">
+          <div className="flex items-center gap-2">
+            <span className="text-sm text-zinc-300">Appointments</span>
+            <Chip n={apptsWeek} target={QUOTAS.appointmentsPerWeek} label="this wk" />
+          </div>
+          <div className="flex items-center gap-2">
+            {lastAppt && (
+              <TapButton variant="ghost" onClick={() => actions.undo(lastAppt)} className="text-xs">
+                Undo
+              </TapButton>
+            )}
+            <TapButton
+              variant="primary"
+              disabled={busy.has("appointment")}
+              onClick={() => withBusy("appointment", () => actions.log("appointment", {}))}
+            >
+              + Log appt
             </TapButton>
           </div>
         </div>
