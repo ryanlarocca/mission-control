@@ -1,7 +1,21 @@
 # Brief — Migrate LRG work out of `~/.openclaw/workspace` → `~/Projects`
 
+> ## ✅ EXECUTED 2026-07-18 (Ryan: "why wait?")
+> Ran same-day instead of Monday — campaign engine was already unloaded, weekend traffic lowest.
+> **All phases complete except:** campaign engine stays unloaded until Monday per its own
+> weekend-lockdown plan (load it from `~/Library/LaunchAgents/` — plist already repointed);
+> symlink bake until ~2026-08-01 (then Phase 5 removal); Ryan's items: `crontab -r`,
+> Telegram round-trip test with openclaw, one live personal-cell send.
+> **Verified 2026-07-18:** all 13 jobs reloaded from `~/Projects` — Next.js Ready on :3001,
+> sidecar live on :5799, Cloudflare tunnel registered, localtunnel up, sidecar-URL updater
+> pushed to Vercel, gmail watch renewed on all 8 mailboxes (exp 7/25), drip engine ticked
+> (all skips = not_due, correct), reply-detection/sms-sync/orphan-rescue/heartbeat/boot-check
+> all clean, gateway + ngrok untouched. Backups: `~/workspace-pre-migration-2026-07-18.tar.gz`
+> (274 MB), `~/LaunchAgents.bak-2026-07-18/`. Memory dirs copied to `-Users-ryanlarocca-Projects-*`
+> keys. New git repo at `~/Projects` (memos); old workspace repo committed the move.
+
 **Date written:** 2026-07-18 (inventory verified this day)
-**Execute:** Monday 2026-07-21, **before** reloading the campaign engine from weekend lockdown — migrate first, then bring the engine up from the new path.
+**Executed:** same day — see banner above. The plan below is the as-run record.
 **Decisions locked (Ryan, 2026-07-18):** new home is `~/Projects`; scope is **all LRG work + infra** (openclaw keeps only its own agent files and becomes an alert system); plan-first execution.
 
 ---
