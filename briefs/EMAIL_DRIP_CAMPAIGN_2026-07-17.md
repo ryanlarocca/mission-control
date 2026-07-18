@@ -34,8 +34,10 @@ unset (send hard-refuses), agents line unpublished, inbox pipeline is
 receive-only. The 199 batch-1 drafts keep — reviewable all weekend.
 
 **Blocked on Ryan (before batch 1 can send):**
-- [ ] `CAMPAIGN_POSTAL_ADDRESS` in mission-control `.env.local` (CAN-SPAM
-  postal address — send pass hard-refuses without it).
+- ~~postal address~~ — **REMOVED 2026-07-18 by Ryan's explicit call** ("colleagues
+  I already know"). Advised on the record: CAN-SPAM has no acquaintance
+  exemption; Ryan accepts the exposure. Opt-out line stays in every email.
+  First real send went out same day (T1 → Aaron Schubbe, his test approval).
 - [ ] Review/approve drafts at /email-campaign (start small ~50 per plan).
 - [ ] Kelly Ray is the one active-lead flag in the import.
 
