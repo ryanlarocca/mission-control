@@ -28,7 +28,7 @@
  *   live end-to-end test mode from the brief's verification plan.
  *
  * Safety checks (never bypassable): suppression, contact status,
- * CAMPAIGN_POSTAL_ADDRESS present (CAN-SPAM), daily cap, send window
+ * daily cap, send window
  * (--now excepted), touch-10 placeholder refusal.
  */
 
@@ -53,7 +53,6 @@ for (const line of fs.readFileSync(path.join(REPO_ROOT, ".env.local"), "utf-8").
 }
 
 const SEND_AS = process.env.CAMPAIGN_SEND_AS || "info@lrghomes.com"
-const POSTAL = process.env.CAMPAIGN_POSTAL_ADDRESS || ""
 const DRAFT_DAILY_CAP = Number(process.env.CAMPAIGN_DRAFT_CAP || 200)
 const SEND_DAILY_CAP = Number(process.env.CAMPAIGN_SEND_CAP || 200)
 const WINDOW = { startHour: 9, endHour: 16.5 } // America/Los_Angeles
@@ -171,7 +170,7 @@ async function draftPass() {
       continue
     }
     const touch = c.touch_number + 1
-    const rendered = renderTouch(touch, c, POSTAL)
+    const rendered = renderTouch(touch, c)
     if (!rendered) {
       // sequence complete — park the contact
       if (!dryRun) await sb.from("campaign_contacts").update({ status: "paused", next_touch_at: null }).eq("id", c.id)
@@ -235,11 +234,9 @@ async function gmailClient() {
 }
 
 async function sendPass() {
-  if (!POSTAL) {
-    log("REFUSING to send: CAMPAIGN_POSTAL_ADDRESS is not set (CAN-SPAM). Drafting still works.")
-    await telegram("⛔ Campaign send blocked: CAMPAIGN_POSTAL_ADDRESS missing from .env.local")
-    return
-  }
+  // Postal-address gate removed 2026-07-18 by Ryan's explicit call (list is
+  // known colleagues; he accepts the CAN-SPAM exposure — advised, decision
+  // logged in the brief). The opt-out line in every signature stays.
   const hour = laHourNow()
   if (!nowOverride && (hour < WINDOW.startHour || hour > WINDOW.endHour)) {
     log(`outside send window (${hour.toFixed(2)}h PT) — skipping send pass`)

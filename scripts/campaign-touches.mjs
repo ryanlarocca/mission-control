@@ -15,11 +15,12 @@
 
 export const AGENTS_LINE_DISPLAY = "(650) 910-4007"
 
-// CAN-SPAM requires a physical postal address in every commercial email.
-// Comes from CAMPAIGN_POSTAL_ADDRESS in .env.local; the engine's send pass
-// hard-refuses while it's missing (drafting still works).
-export function makeSignature(postalAddress) {
-  return `Ryan LaRocca · LRG Homes\nCall/text: ${AGENTS_LINE_DISPLAY}\nReply "remove" anytime to opt out. ${postalAddress}`
+// Signature: no postal address by Ryan's explicit call (2026-07-18) — the
+// list is professional colleagues he knows, and he accepts the CAN-SPAM
+// exposure (advised: the statute has no acquaintance exemption; the
+// working opt-out line below stays and is the substantive protection).
+export function makeSignature() {
+  return `Ryan LaRocca · LRG Homes\nCall/text: ${AGENTS_LINE_DISPLAY}\nReply "remove" anytime to opt out.`
 }
 
 export const TOUCHES = [
@@ -122,7 +123,7 @@ Have a great holiday season. I'll be buying again in the new year — talk soon.
   },
 ]
 
-export function renderTouch(touchNumber, contact, postalAddress) {
+export function renderTouch(touchNumber, contact) {
   const t = TOUCHES.find((x) => x.touch === touchNumber)
   if (!t) return null
   if (!t.subject || !t.body) return { placeholder: true, label: t.label }
@@ -132,7 +133,7 @@ export function renderTouch(touchNumber, contact, postalAddress) {
     placeholder: false,
     label: t.label,
     subject: fill(t.subject),
-    body: `${fill(t.body)}\n\n${makeSignature(postalAddress ?? "")}`.trimEnd(),
+    body: `${fill(t.body)}\n\n${makeSignature()}`,
   }
 }
 
