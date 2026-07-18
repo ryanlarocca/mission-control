@@ -65,6 +65,18 @@ Path fix for all: `s|/Users/ryanlarocca/.openclaw/workspace|/Users/ryanlarocca/P
 - `PROJECTS/physiq/PROJECT_MEMO.md` — references the PWA's workspace path.
 - Historical mentions in changelogs and old CODY briefs: **leave them** — they're records, not live pointers.
 
+## Openclaw continuity (verified 2026-07-18 — Ryan's explicit requirement: openclaw must keep working)
+
+Ryan's directive: openclaw stays alive as the **alert system**; it may pull moved files "from somewhere else" — that's exactly what the symlinks provide. Audit of openclaw's own brain (`~/.openclaw/` outside the workspace):
+
+- **`openclaw.json` references only the workspace root** (`~/.openclaw/workspace`) — which does not move. No config change needed.
+- **All openclaw cron jobs are `enabled: False`** (Haiku Heartbeat, Agent Email Daily Send, Redfin scans, COI outreach, DM lead ingestion, bug digest — the whole list is dormant, superseded by the launchd/Vercel systems). The paths they reference are in `ACTIVE_SKILLS/` (staying put) or already-deleted folders (`agent-emails/`, `scripts/heartbeat-lead-ingestion.py` — gone). Nothing to migrate; do NOT re-enable any of them.
+- **`ai.openclaw.gateway` launchd job**: untouched by this migration.
+- Session transcripts under `agents/*/sessions/` mention old paths — historical records, harmless.
+- The symlinks (Phase 2) guarantee that anything unaudited inside openclaw that reaches for `workspace/PROJECTS`, `workspace/physiq-app`, or `workspace/lrg-homes-website` still resolves.
+
+**Openclaw verification step (add to Phase 4):** confirm `ai.openclaw.gateway` is still running (`launchctl list | grep gateway`), then message the openclaw agent in Telegram and get a reply; confirm it can read a file through a symlinked path (e.g. ask it to read `~/.openclaw/workspace/PROJECTS/MEMO_INDEX.md`).
+
 ## Execution plan
 
 ### Phase 0 — Prep (~10 min)
