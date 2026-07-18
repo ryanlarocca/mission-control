@@ -28,7 +28,7 @@
     <string>scripts/detect-relationship-replies.mjs</string>
   </array>
   <key>WorkingDirectory</key>
-  <string>/Users/ryanlarocca/.openclaw/workspace/PROJECTS/mission-control</string>
+  <string>/Users/ryanlarocca/Projects/PROJECTS/mission-control</string>
   <key>StartCalendarInterval</key>
   <dict>
     <key>Hour</key>

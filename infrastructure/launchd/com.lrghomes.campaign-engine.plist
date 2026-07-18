@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Agent email-drip campaign engine (briefs/EMAIL_DRIP_CAMPAIGN_2026-07-17.md).
+  Every 20 minutes: draft pass (due contacts → approval-gated drafts, capped
+  200/day) + send pass (Ryan-approved rows via Gmail as info@, only inside
+  the 9:00a–4:30p PT window, 200/day cap, jitter between sends). Outside
+  the window the send pass no-ops, so the all-day cadence is harmless.
+
+  Install (Mac mini):
+    cp infrastructure/launchd/com.lrghomes.campaign-engine.plist \
+       ~/Library/LaunchAgents/
+    launchctl load ~/Library/LaunchAgents/com.lrghomes.campaign-engine.plist
+
+  Trigger once manually:
+    launchctl start com.lrghomes.campaign-engine
+
+  Logs:
+    /tmp/lrg-campaign-engine.log
+    /tmp/lrg-campaign-engine-err.log
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.lrghomes.campaign-engine</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/opt/homebrew/bin/node</string>
+    <string>scripts/campaign-engine.mjs</string>
+  </array>
+  <key>WorkingDirectory</key>
+  <string>/Users/ryanlarocca/Projects/PROJECTS/mission-control</string>
+  <key>StartInterval</key>
+  <integer>1200</integer>
+  <key>StandardOutPath</key>
+  <string>/tmp/lrg-campaign-engine.log</string>
+  <key>StandardErrorPath</key>
+  <string>/tmp/lrg-campaign-engine-err.log</string>
+  <key>RunAtLoad</key>
+  <false/>
+</dict>
+</plist>

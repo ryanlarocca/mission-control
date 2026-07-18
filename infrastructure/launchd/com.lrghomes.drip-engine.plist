@@ -30,7 +30,7 @@
     <string>scripts/drip-engine.js</string>
   </array>
   <key>WorkingDirectory</key>
-  <string>/Users/ryanlarocca/.openclaw/workspace/PROJECTS/mission-control</string>
+  <string>/Users/ryanlarocca/Projects/PROJECTS/mission-control</string>
   <key>StartInterval</key>
   <integer>3600</integer>
   <key>StandardOutPath</key>

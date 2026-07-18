@@ -4,7 +4,7 @@ import { getLeadsClient } from "@/lib/leads"
 
 const OPENROUTER_KEY = process.env.OPENROUTER_API_KEY || ""
 const MODEL = "anthropic/claude-sonnet-4-5"
-const DATA_DIR = "/Users/ryanlarocca/.openclaw/workspace/PROJECTS/comprehensive-relationship-management/data"
+const DATA_DIR = "/Users/ryanlarocca/Projects/PROJECTS/comprehensive-relationship-management/data"
 const PREFS_FILE = `${DATA_DIR}/modality_prefs.json`
 
 // ── Type system ────────────────────────────────────────────────────────────

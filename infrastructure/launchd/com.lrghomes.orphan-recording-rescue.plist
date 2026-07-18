@@ -38,7 +38,7 @@
     <string>--hours=24</string>
   </array>
   <key>WorkingDirectory</key>
-  <string>/Users/ryanlarocca/.openclaw/workspace/PROJECTS/mission-control</string>
+  <string>/Users/ryanlarocca/Projects/PROJECTS/mission-control</string>
   <key>StartInterval</key>
   <integer>900</integer>
   <key>StandardOutPath</key>
