@@ -52,7 +52,7 @@ Path fix for all: `s|/Users/ryanlarocca/.openclaw/workspace|/Users/ryanlarocca/P
 | com.openclaw.crms.cloudflare-tunnel | `workspace/logs/` (log path only) |
 | com.openclaw.localtunnel.missioncontrol | `workspace/logs/` (log path only) |
 
-**Unaffected (do not touch):** `ai.openclaw.gateway` (openclaw itself), `com.lrghomes.ngrok*`, `com.lrghomes.claude-remote*` (uses `~/bin`).
+**Unaffected (do not touch):** `ai.openclaw.gateway` (openclaw itself), `com.lrghomes.claude-remote*` (uses `~/bin`). (`com.lrghomes.ngrok*` was retired same-day post-migration — its only tunnel served the dead lead-webhook.)
 
 ### Broken/zombie things — ✅ RESOLVED 2026-07-18 (ahead of migration)
 
