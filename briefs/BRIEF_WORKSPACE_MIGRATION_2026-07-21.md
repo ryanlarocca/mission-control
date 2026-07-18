@@ -40,12 +40,11 @@ Path fix for all: `s|/Users/ryanlarocca/.openclaw/workspace|/Users/ryanlarocca/P
 
 **Unaffected (do not touch):** `ai.openclaw.gateway` (openclaw itself), `com.lrghomes.ngrok*`, `com.lrghomes.claude-remote*` (uses `~/bin`).
 
-### Broken/zombie things to resolve during execution (found in inventory)
+### Broken/zombie things — ✅ RESOLVED 2026-07-18 (ahead of migration)
 
-1. **com.lrghomes.lead-webhook is loaded and RUNNING (had pid) from `PROJECTS/_archive/lrg-homes-website/scripts/lead-webhook-server.js`** — a live service running out of an archive folder. There's also `com.lrghomes.webhook-manual` (exit 1) pointing at `workspace/lrg-homes-website`. Determine which one the www.lrghomes.com form intake actually depends on, promote the real one to a non-archive path, kill the other.
-2. **Crontab entry is already dead:** `*/5 * * * * python3 …workspace/scripts/physiq-waitlist-notifier.py` — the script no longer exists (only its log remains). Delete the entry (or deliberately restore the script under `~/Projects/scripts/` if the waitlist notifier is still wanted).
-3. **com.openclaw.chatdb.jesus / chatdb.oneshot** — one-shot extraction jobs from the Phase-2 era; almost certainly obsolete. Unload + delete rather than migrate.
-4. **com.openclaw.nightly-bug-sweep** — last exit status 1, points at `workspace/scripts/nightly-bug-sweep-prompt.md`. Decide: migrate it to `~/Projects/scripts/` or retire it.
+All four investigated and retired on 2026-07-18 (Ryan's call — "shut down what we aren't using"); full forensics in `lead-pipeline/CHANGELOG.md` (2026-07-18 entry). Summary: the lead-webhook chain was the landing page's "temp until Twilio A2P approved" AppleScript-SMS side-channel, obsolete since May 21 and serving only spam bots; webhook-manual was a crash-looping duplicate (623 MB log, deleted); nightly-bug-sweep failed nightly on expired OAuth; chatdb one-shots were Phase-2 relics. **Retired: `com.lrghomes.lead-webhook`, `com.lrghomes.webhook-manual`, `com.lrghomes.lead-tunnel`, `com.openclaw.nightly-bug-sweep`, `com.openclaw.chatdb.jesus`, `com.openclaw.chatdb.oneshot`** — plists archived in `~/Library/LaunchAgents-retired-2026-07-18/` (+ crontab backup). These jobs and their rows above/below **no longer need migrating** — skip them in every phase.
+
+Still open for Ryan (TCC blocks agent crontab writes): run `crontab -r` in his own Terminal to drop the dead physiq-waitlist entry. Optional: delete `MAC_MINI_LEAD_WEBHOOK_URL` / `MAC_MINI_WEBHOOK_SECRET` from the lrghomes-landing Vercel project.
 
 ### Runtime code with a hardcoded workspace path
 
