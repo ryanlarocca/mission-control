@@ -2,10 +2,12 @@
 
 > ## ✅ EXECUTED 2026-07-18 (Ryan: "why wait?")
 > Ran same-day instead of Monday — campaign engine was already unloaded, weekend traffic lowest.
-> **All phases complete except:** campaign engine stays unloaded until Monday per its own
-> weekend-lockdown plan (load it from `~/Library/LaunchAgents/` — plist already repointed);
-> symlink bake until ~2026-08-01 (then Phase 5 removal); Ryan's items: `crontab -r`,
-> Telegram round-trip test with openclaw, one live personal-cell send.
+> **Fully closed out same day (Ryan: "finish the job now"):** campaign engine loaded
+> 2026-07-18 (manual tick verified: 200 drafts, send pass hard-refuses without
+> `CAMPAIGN_POSTAL_ADDRESS` — nothing can send until Ryan acts); crontab cleared via
+> Terminal automation; openclaw Telegram round-trip verified (msg 15651); sidecar send
+> verified live (boot-check iMessage); ngrok retired (only tunnel was the dead webhook).
+> **Only remaining task: symlink bake until ~2026-08-01, then Phase 5 removal.**
 > **Verified 2026-07-18:** all 13 jobs reloaded from `~/Projects` — Next.js Ready on :3001,
 > sidecar live on :5799, Cloudflare tunnel registered, localtunnel up, sidecar-URL updater
 > pushed to Vercel, gmail watch renewed on all 8 mailboxes (exp 7/25), drip engine ticked
