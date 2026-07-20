@@ -29,7 +29,13 @@ const BOUNCE_SUBJECT_RE = /delivery status notification|undeliverable|delivery i
 const HARD_DSN_RE = /\b5\.\d+\.\d+\b|\b55[0-9]\b|does not exist|no such user|user unknown|address not found|account.{0,20}disabled/i
 const SOFT_DSN_RE = /\b4\.\d+\.\d+\b|\b4[25][0-9]\b|mailbox full|over quota|temporar/i
 const UNSUB_RE = /unsubscribe|take me off|remove me|opt me out|opt out|stop (emailing|sending|contacting)/i
-const UNSUB_SHORT_RE = /^(please\s+)?(remove|unsubscribe|stop|no thanks?)[.!\s]*$/i
+// Bare opt-out as a whole message OR as the first line above a signature
+// (the Katie-Piro case, 2026-07-20: "Remove" + sig block + Outlook quote).
+const UNSUB_SHORT_RE = /^(please\s+)?(remove(d)?( me)?|unsubscribe|stop|no thanks?|opt (me )?out)[.!\s]*$/i
+// Auto-replies must not pause the drip (out-of-office) — and dead-mailbox
+// auto-replies are effectively bounces.
+const AUTO_REPLY_RE = /out of (the )?office|away from (the )?office|automated (response|reply)|auto-?reply|on vacation|on leave until|limited access to email/i
+const DEAD_MAILBOX_RE = /no longer (in use|monitored|active)|(mailbox|address|email) (is )?(closed|deactivated|discontinued)/i
 
 interface CampaignContact {
   id: string
@@ -81,12 +87,21 @@ function parseSenderEmail(fromHeader: string): string {
   return raw.includes("@") ? raw : ""
 }
 
-/** Strip quoted-reply tails so the unsubscribe check sees only new text. */
+/** Strip quoted-reply tails so the unsubscribe check sees only new text.
+ * Handles Gmail ("On ... wrote:"), ">"-prefixed, and Outlook styles
+ * ("________...", "-----Original Message-----", a bare "From: ..." header). */
 function stripQuoted(body: string): string {
   const lines = body.split(/\r?\n/)
   const out: string[] = []
   for (const line of lines) {
-    if (/^On .{5,80} wrote:$/.test(line.trim()) || line.startsWith(">")) break
+    const t = line.trim()
+    if (
+      /^On .{5,80} wrote:$/.test(t) ||
+      line.startsWith(">") ||
+      /^_{8,}$/.test(t) ||
+      /^-{3,}\s*Original Message\s*-{3,}$/i.test(t) ||
+      /^From:\s.+@.+/i.test(t)
+    ) break
     out.push(line)
   }
   return out.join("\n").trim()
@@ -201,7 +216,9 @@ async function handleContactMessage(
   const fresh = stripQuoted(body)
   const nowIso = new Date().toISOString()
 
-  const isUnsub = UNSUB_SHORT_RE.test(fresh) || UNSUB_RE.test(fresh.slice(0, 400))
+  const firstLine = fresh.split(/\r?\n/).map((l) => l.trim()).find(Boolean) ?? ""
+  const isUnsub =
+    UNSUB_SHORT_RE.test(fresh) || UNSUB_SHORT_RE.test(firstLine) || UNSUB_RE.test(fresh.slice(0, 400))
   if (isUnsub) {
     await addSuppression(sb, {
       email: contact.email,
@@ -224,6 +241,38 @@ async function handleContactMessage(
       raw: { gmail_id: gmailId, thread_id: threadId },
     })
     await sendTelegramAlert(`🚫 Campaign unsubscribe — <b>${contact.name ?? contact.email}</b> ("${fresh.slice(0, 60)}") — handled automatically, drip stopped`)
+    return
+  }
+
+  // Dead-mailbox auto-responder ("this address is no longer in use") —
+  // treat like a bounce: bad_email, stop emailing, FYI alert.
+  if (DEAD_MAILBOX_RE.test(fresh)) {
+    await sb
+      .from("campaign_contacts")
+      .update({ status: "bad_email", next_touch_at: null, updated_at: nowIso })
+      .eq("id", contact.id)
+    await cancelQueuedSends(sb, contact.id, "dead-mailbox auto-reply")
+    await sb.from("campaign_events").insert({
+      contact_id: contact.id,
+      kind: "email_reply",
+      body: fresh.slice(0, 500),
+      triage: "dead_mailbox",
+      raw: { gmail_id: gmailId, thread_id: threadId },
+    })
+    await sendTelegramAlert(`📪 Campaign: ${contact.name ?? contact.email} auto-replied that the mailbox is dead — marked bad_email`)
+    return
+  }
+
+  // Out-of-office: log it, but do NOT pause the drip and do NOT wake Ryan —
+  // the locked design says auto-replies are ignored.
+  if (AUTO_REPLY_RE.test(fresh.slice(0, 300))) {
+    await sb.from("campaign_events").insert({
+      contact_id: contact.id,
+      kind: "email_reply",
+      body: fresh.slice(0, 500),
+      triage: "auto_reply",
+      raw: { gmail_id: gmailId, thread_id: threadId },
+    })
     return
   }
 
