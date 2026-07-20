@@ -41,6 +41,20 @@ receive-only. The 199 batch-1 drafts keep — reviewable all weekend.
 - [ ] Review/approve drafts at /email-campaign (start small ~50 per plan).
 - [ ] Kelly Ray is the one active-lead flag in the import.
 
+**2026-07-20 updates (Ryan's test-send feedback):**
+- Copy de-AI-ified: every em dash + middle dot stripped from all touches
+  (19 instances — the "super AI" tell), human subject lines, comma
+  signature. 400 stale drafts purged + regenerated clean. RULE GOING
+  FORWARD: no em dashes or typographic ornaments in any campaign copy.
+- **Remove-from-list = master DNC** (Ryan: "anybody I take off the list is
+  added into the DNC going forward"): per-row + bulk remove write a
+  suppression entry (source `ryan_removed_from_campaign`, channel EMAIL —
+  scoped so a removed agent stays reachable as a future seller lead; the
+  full-channel DNC button remains separate). Re-add deletes exactly that
+  entry. Contacts tab has checkboxes + sticky bulk bar + per-row ⏸/▶.
+- Aaron Schubbe (the one old-copy test send) reset to touch 0 per Ryan —
+  fresh clean T1 draft queued; no touch 2 for him.
+
 **Still to build (next session):**
 - AI-drafted replies + interactive Telegram loop (dictate-summary →
   compose → approve buttons) — replies currently alert w/ manual reply.
