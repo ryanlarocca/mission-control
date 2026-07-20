@@ -210,21 +210,45 @@ export function EmailCampaignTab() {
   const [detail, setDetail] = useState<ContactDetail | null>(null)
   const [loadingContacts, setLoadingContacts] = useState(false)
 
-  const loadContacts = useCallback(async (query: string) => {
+  const PAGE_SIZE = 500
+  const loadContacts = useCallback(async (query: string, page = 0, append = false) => {
     setLoadingContacts(true)
     try {
-      const res = await fetch(`/api/campaign/contacts?q=${encodeURIComponent(query)}`, { cache: "no-store" })
+      const res = await fetch(
+        `/api/campaign/contacts?q=${encodeURIComponent(query)}&page=${page}&limit=${PAGE_SIZE}`,
+        { cache: "no-store" }
+      )
       if (!res.ok) throw new Error(`${res.status}`)
       const data = await res.json()
-      setContacts(data.contacts ?? [])
+      setContacts((prev) => (append ? [...prev, ...(data.contacts ?? [])] : data.contacts ?? []))
       setBuckets(data.buckets ?? {})
       setTotal(data.total ?? 0)
+      return (data.contacts ?? []).length
     } catch {
       ping("Couldn't load contacts")
+      return 0
     } finally {
       setLoadingContacts(false)
     }
   }, [ping])
+
+  // Fetch every remaining page sequentially — 2,400 dense rows render fine
+  // and Ryan wants the whole list scannable in one pass.
+  const loadingAllRef = useRef(false)
+  const loadAll = useCallback(async () => {
+    if (loadingAllRef.current) return
+    loadingAllRef.current = true
+    try {
+      let page = Math.ceil(contacts.length / PAGE_SIZE)
+      for (;;) {
+        const got = await loadContacts(q, page, true)
+        if (got < PAGE_SIZE) break
+        page++
+      }
+    } finally {
+      loadingAllRef.current = false
+    }
+  }, [contacts.length, q, loadContacts])
 
   useEffect(() => {
     if (view !== "contacts") return
@@ -473,7 +497,7 @@ export function EmailCampaignTab() {
             {contacts.map((c) => (
               <div key={c.id} className="rounded-lg border border-zinc-800 bg-zinc-900">
                 <div
-                  className="flex cursor-pointer items-center gap-3 px-3 py-2.5 hover:bg-zinc-800/50"
+                  className="flex cursor-pointer items-center gap-2.5 px-3 py-1 hover:bg-zinc-800/50"
                   onClick={() => (detail?.contact.id === c.id ? setDetail(null) : void openContact(c.id))}
                 >
                   {togglable(c.status) ? (
@@ -488,12 +512,12 @@ export function EmailCampaignTab() {
                   ) : (
                     <span className="w-4 shrink-0" />
                   )}
-                  <div className="min-w-0 flex-1">
-                    <div className="truncate text-sm font-semibold">{c.name ?? "(no name)"}</div>
-                    <div className="truncate font-mono text-[11px] text-zinc-500">
+                  <div className="flex min-w-0 flex-1 items-baseline gap-2">
+                    <span className="shrink-0 truncate text-[13px] font-semibold">{c.name ?? "(no name)"}</span>
+                    <span className="truncate font-mono text-[11px] text-zinc-500">
                       {c.email ?? "—"}
                       {c.phone ? ` · ${c.phone}${c.phone_bad ? " ⚠" : ""}` : ""}
-                    </div>
+                    </span>
                   </div>
                   <Badge tone="sent">T{c.touch_number} of 11</Badge>
                   <Badge tone={c.status}>{c.status.replace("_", " ")}</Badge>
@@ -557,6 +581,29 @@ export function EmailCampaignTab() {
                 )}
               </div>
             ))}
+          </div>
+          <div className="mt-3 flex items-center justify-center gap-3 pb-4">
+            <span className="text-xs text-zinc-500">
+              Showing {contacts.length} of {total}
+            </span>
+            {contacts.length < total && (
+              <>
+                <button
+                  onClick={() => void loadContacts(q, Math.ceil(contacts.length / PAGE_SIZE), true)}
+                  disabled={loadingContacts}
+                  className="rounded-md border border-zinc-700 px-3 py-1.5 text-sm font-medium disabled:opacity-40"
+                >
+                  Load {Math.min(PAGE_SIZE, total - contacts.length)} more
+                </button>
+                <button
+                  onClick={() => void loadAll()}
+                  disabled={loadingContacts}
+                  className="rounded-md bg-zinc-100 px-3 py-1.5 text-sm font-semibold text-zinc-900 disabled:opacity-40"
+                >
+                  Load all {total}
+                </button>
+              </>
+            )}
           </div>
         </div>
       )}

@@ -2,7 +2,8 @@ import { NextRequest, NextResponse } from "next/server"
 import { getLeadsClient } from "@/lib/leads"
 
 // Campaign contacts list — powers the /email-campaign Contacts tab.
-// ?q= searches name/email/phone, ?status= filters, paged 50.
+// ?q= searches name/email/phone, ?status= filters. Fast-review mode
+// (2026-07-20): 500/page default, UI appends pages to reach the full list.
 
 export const dynamic = "force-dynamic"
 
@@ -11,6 +12,7 @@ export async function GET(request: NextRequest) {
   const q = (url.searchParams.get("q") ?? "").trim()
   const status = url.searchParams.get("status") ?? ""
   const page = Math.max(0, Number(url.searchParams.get("page") ?? 0))
+  const limit = Math.min(500, Math.max(1, Number(url.searchParams.get("limit") ?? 500)))
 
   try {
     const sb = getLeadsClient()
@@ -21,7 +23,7 @@ export async function GET(request: NextRequest) {
         { count: "exact" }
       )
       .order("name", { ascending: true })
-      .range(page * 50, page * 50 + 49)
+      .range(page * limit, page * limit + limit - 1)
     if (status) query = query.eq("status", status)
     if (q) {
       const like = `%${q.replace(/[%_]/g, "")}%`
