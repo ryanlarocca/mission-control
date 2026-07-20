@@ -55,7 +55,7 @@ for (const line of fs.readFileSync(path.join(REPO_ROOT, ".env.local"), "utf-8").
 const SEND_AS = process.env.CAMPAIGN_SEND_AS || "info@lrghomes.com"
 const DRAFT_DAILY_CAP = Number(process.env.CAMPAIGN_DRAFT_CAP || 200)
 const SEND_DAILY_CAP = Number(process.env.CAMPAIGN_SEND_CAP || 200)
-const WINDOW = { startHour: 9, endHour: 16.5 } // America/Los_Angeles
+const WINDOW = { startHour: 9, endHour: 16.5 } // America/Los_Angeles, Mon-Fri (Ryan 2026-07-20)
 
 const sb = createClient(process.env.LRG_SUPABASE_URL, process.env.LRG_SUPABASE_SERVICE_KEY, {
   auth: { persistSession: false },
@@ -90,6 +90,10 @@ async function telegram(text) {
   } catch (e) {
     console.warn("[campaign] telegram alert failed:", e?.message)
   }
+}
+
+function laWeekdayNow() {
+  return new Intl.DateTimeFormat("en-US", { timeZone: "America/Los_Angeles", weekday: "short" }).format(new Date())
 }
 
 function laHourNow() {
@@ -237,6 +241,11 @@ async function sendPass() {
   // Postal-address gate removed 2026-07-18 by Ryan's explicit call (list is
   // known colleagues; he accepts the CAN-SPAM exposure — advised, decision
   // logged in the brief). The opt-out line in every signature stays.
+  const weekday = laWeekdayNow()
+  if (!nowOverride && (weekday === "Sat" || weekday === "Sun")) {
+    log(`weekend (${weekday}) — sends hold until Monday 9:00a PT`)
+    return
+  }
   const hour = laHourNow()
   if (!nowOverride && (hour < WINDOW.startHour || hour > WINDOW.endHour)) {
     log(`outside send window (${hour.toFixed(2)}h PT) — skipping send pass`)
