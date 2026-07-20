@@ -63,8 +63,30 @@ export async function PATCH(
 
     const nowIso = new Date().toISOString()
     if (body.action === "pause") {
+      // Ryan 2026-07-20: removing someone from the list ALSO adds them to
+      // the master DNC (email channel — a removed agent stays reachable as
+      // a future seller lead). Re-add deletes exactly this entry.
+      await addSuppression(sb, {
+        email: contact.email,
+        phone: contact.phone,
+        name: contact.name,
+        reason: "removed from campaign list",
+        source: "ryan_removed_from_campaign",
+        source_ref: `campaign_contact:${contact.id}:removed`,
+        channel: "email",
+        audience: "agent",
+      })
       await sb.from("campaign_contacts").update({ status: "paused", updated_at: nowIso }).eq("id", id)
+      await sb.from("campaign_sends").update({ status: "skipped", error: "removed from list" }).eq("contact_id", id).in("status", ["draft", "approved"])
     } else if (body.action === "resume") {
+      // Undo of a removal: delete the removal's DNC entry (and only that
+      // one — other suppression sources are untouched and self-heal via the
+      // engine's suppression re-check).
+      await sb
+        .from("suppression")
+        .delete()
+        .eq("source", "ryan_removed_from_campaign")
+        .eq("source_ref", `campaign_contact:${contact.id}:removed`)
       await sb
         .from("campaign_contacts")
         .update({ status: "active", next_touch_at: nowIso, updated_at: nowIso })

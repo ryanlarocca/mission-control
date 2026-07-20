@@ -251,7 +251,7 @@ export function EmailCampaignTab() {
         body: JSON.stringify({ action }),
       })
       if (!res.ok) throw new Error(`${res.status}`)
-      ping(action === "dnc" ? "Added to master DNC — all outreach stopped" : action === "pause" ? "Removed from drip" : "Back on the drip")
+      ping(action === "dnc" ? "Added to master DNC — all outreach stopped" : action === "pause" ? "Removed from list + added to DNC" : "Back on the drip — DNC entry cleared")
       setDetail(null)
       await loadContacts(q)
     } catch {
@@ -279,7 +279,7 @@ export function EmailCampaignTab() {
       })
       const data = await res.json()
       if (!res.ok) throw new Error(data.error ?? `${res.status}`)
-      ping(action === "pause" ? `Removed ${data.changed} from the drip` : `Re-added ${data.changed} to the drip`)
+      ping(action === "pause" ? `Removed ${data.changed} from the list + added to DNC` : `Re-added ${data.changed} — DNC entries cleared`)
       setCsel(new Set())
       await loadContacts(q)
     } catch (e) {
