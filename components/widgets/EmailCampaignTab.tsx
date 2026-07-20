@@ -251,13 +251,42 @@ export function EmailCampaignTab() {
         body: JSON.stringify({ action }),
       })
       if (!res.ok) throw new Error(`${res.status}`)
-      ping(action === "dnc" ? "Added to master DNC — all outreach stopped" : action === "pause" ? "Drip paused" : "Drip resumed")
+      ping(action === "dnc" ? "Added to master DNC — all outreach stopped" : action === "pause" ? "Removed from drip" : "Back on the drip")
       setDetail(null)
       await loadContacts(q)
     } catch {
       ping("Action failed — retry")
     }
   }
+
+  // ---------- bulk list management (2026-07-20) ----------
+  const [csel, setCsel] = useState<Set<string>>(new Set())
+  const toggleCsel = (id: string) => {
+    setCsel((prev) => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  }
+  const bulkAction = async (action: "pause" | "resume") => {
+    if (csel.size === 0) return
+    try {
+      const res = await fetch("/api/campaign/contacts/bulk", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ids: Array.from(csel), action }),
+      })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error ?? `${res.status}`)
+      ping(action === "pause" ? `Removed ${data.changed} from the drip` : `Re-added ${data.changed} to the drip`)
+      setCsel(new Set())
+      await loadContacts(q)
+    } catch (e) {
+      ping(`Bulk action failed: ${e instanceof Error ? e.message : e}`)
+    }
+  }
+  const togglable = (s: string) => s === "active" || s === "replied" || s === "paused"
 
   return (
     <div className="mx-auto max-w-5xl px-4 py-6 text-zinc-100">
@@ -425,6 +454,20 @@ export function EmailCampaignTab() {
                 </span>
               ))}
           </div>
+          {csel.size > 0 && (
+            <div className="sticky top-2 z-10 mb-2 flex flex-wrap items-center gap-2 rounded-lg border border-zinc-700 bg-zinc-900 p-2.5 shadow-lg">
+              <span className="px-1 text-sm font-semibold">{csel.size} selected</span>
+              <button onClick={() => void bulkAction("pause")} className="rounded-md bg-amber-500 px-3 py-1.5 text-sm font-semibold text-amber-950">
+                ⏸ Remove from drip
+              </button>
+              <button onClick={() => void bulkAction("resume")} className="rounded-md bg-emerald-500 px-3 py-1.5 text-sm font-semibold text-emerald-950">
+                ▶ Re-add to drip
+              </button>
+              <button onClick={() => setCsel(new Set())} className="rounded-md border border-zinc-700 px-3 py-1.5 text-sm text-zinc-400">
+                Clear
+              </button>
+            </div>
+          )}
           {loadingContacts && <div className="py-8 text-center text-sm text-zinc-500">Loading…</div>}
           <div className="flex flex-col gap-1.5">
             {contacts.map((c) => (
@@ -433,6 +476,18 @@ export function EmailCampaignTab() {
                   className="flex cursor-pointer items-center gap-3 px-3 py-2.5 hover:bg-zinc-800/50"
                   onClick={() => (detail?.contact.id === c.id ? setDetail(null) : void openContact(c.id))}
                 >
+                  {togglable(c.status) ? (
+                    <input
+                      type="checkbox"
+                      checked={csel.has(c.id)}
+                      onChange={() => toggleCsel(c.id)}
+                      onClick={(e) => e.stopPropagation()}
+                      className="h-4 w-4 shrink-0 accent-emerald-500"
+                      aria-label={`Select ${c.name ?? c.email}`}
+                    />
+                  ) : (
+                    <span className="w-4 shrink-0" />
+                  )}
                   <div className="min-w-0 flex-1">
                     <div className="truncate text-sm font-semibold">{c.name ?? "(no name)"}</div>
                     <div className="truncate font-mono text-[11px] text-zinc-500">
@@ -442,6 +497,20 @@ export function EmailCampaignTab() {
                   </div>
                   <Badge tone="sent">T{c.touch_number} of 11</Badge>
                   <Badge tone={c.status}>{c.status.replace("_", " ")}</Badge>
+                  {(c.status === "active" || c.status === "replied") && (
+                    <button
+                      onClick={(e) => { e.stopPropagation(); void contactAction(c.id, "pause") }}
+                      title="Remove from drip"
+                      className="rounded-md border border-zinc-700 px-2 py-1 text-xs text-amber-300 hover:bg-zinc-800"
+                    >⏸</button>
+                  )}
+                  {c.status === "paused" && (
+                    <button
+                      onClick={(e) => { e.stopPropagation(); void contactAction(c.id, "resume") }}
+                      title="Re-add to drip"
+                      className="rounded-md border border-zinc-700 px-2 py-1 text-xs text-emerald-300 hover:bg-zinc-800"
+                    >▶</button>
+                  )}
                 </div>
                 {detail?.contact.id === c.id && (
                   <div className="border-t border-zinc-800 px-4 py-3">
