@@ -41,14 +41,8 @@ export async function POST(request: NextRequest) {
       raw: { from, dial_status: dialStatus },
     })
     await sendTelegramAlert(
-      `📞 Talked to <b>${who}</b> — ${Math.round(duration / 60)}m${duration % 60}s on the agents line. Timeline updated${contact ? "; drip paused" : ""}.`
+      `📞 Talked to <b>${who}</b> — ${Math.round(duration / 60)}m${duration % 60}s on the agents line. Timeline updated; drip continues as scheduled.`
     )
-    if (contact) {
-      await sb
-        .from("campaign_contacts")
-        .update({ status: "replied", updated_at: new Date().toISOString() })
-        .eq("id", contact.id)
-    }
     return new NextResponse('<?xml version="1.0" encoding="UTF-8"?><Response/>', {
       headers: { "Content-Type": "text/xml" },
     })

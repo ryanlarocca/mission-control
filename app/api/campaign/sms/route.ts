@@ -66,11 +66,8 @@ export async function POST(request: NextRequest) {
     body,
     raw: { from },
   })
-  if (contact && contact.status === "active") {
-    await sb.from("campaign_contacts").update({ status: "replied", updated_at: nowIso }).eq("id", contact.id)
-  }
   await sendTelegramAlert(
-    `💬 <b>Agents line text</b> — <b>${who}</b>${contact ? ` (after T${contact.touch_number})` : " (not in campaign)"}\n"${body.slice(0, 250)}"\n\n${contact ? "Drip paused. " : ""}Reply from your phone — texts to the agents line reach you here.`
+    `💬 <b>Agents line text</b> — <b>${who}</b>${contact ? ` (after T${contact.touch_number})` : " (not in campaign)"}\n"${body.slice(0, 250)}"\n\nReply from your phone — texts to the agents line reach you here.`
   )
   return new NextResponse(EMPTY_TWIML, { headers: { "Content-Type": "text/xml" } })
 }

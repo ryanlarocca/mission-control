@@ -276,12 +276,9 @@ async function handleContactMessage(
     return
   }
 
-  // Genuine reply: pause the drip, log, alert Ryan immediately.
-  await sb
-    .from("campaign_contacts")
-    .update({ status: "replied", updated_at: nowIso })
-    .eq("id", contact.id)
-  await cancelQueuedSends(sb, contact.id, "superseded by reply")
+  // Genuine reply: log + alert Ryan immediately. Ryan 2026-07-20: replies
+  // do NOT pause the drip (next touch is ~2 weeks out; he curates manually
+  // from the alerts). Only bounce/unsubscribe/removal stop the cadence.
   await sb.from("campaign_events").insert({
     contact_id: contact.id,
     kind: "email_reply",
@@ -290,7 +287,7 @@ async function handleContactMessage(
   })
   const snippet = (fresh || subject).slice(0, 220)
   await sendTelegramAlert(
-    `✉️ <b>AGENT REPLY</b> — <b>${contact.name ?? contact.email}</b> (after T${contact.touch_number})\n"${snippet}"\n\nDrip paused. Reply from Gmail or /email-campaign.`
+    `✉️ <b>AGENT REPLY</b> — <b>${contact.name ?? contact.email}</b> (after T${contact.touch_number})\n"${snippet}"\n\nDrip continues as scheduled. Reply from Gmail or /email-campaign.`
   )
 }
 
