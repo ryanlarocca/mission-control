@@ -13,6 +13,11 @@ export const dynamic = "force-dynamic"
 const EMPTY_TWIML = '<?xml version="1.0" encoding="UTF-8"?><Response/>'
 const STOP_RE = /^\s*(stop|unsubscribe|remove( me)?|quit|cancel|end)\s*[.!]?\s*$/i
 
+// Telegram parse_mode:HTML rejects raw <, >, & in user-written text.
+function esc(s: string): string {
+  return s.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;")
+}
+
 export async function POST(request: NextRequest) {
   let params: URLSearchParams
   try {
@@ -55,7 +60,7 @@ export async function POST(request: NextRequest) {
       triage: "remove_me",
       raw: { from },
     })
-    await sendTelegramAlert(`🚫 Agents line STOP from ${who} — sms suppression added`)
+    await sendTelegramAlert(`🚫 Agents line STOP from ${esc(who)} — sms suppression added`)
     return new NextResponse(EMPTY_TWIML, { headers: { "Content-Type": "text/xml" } })
   }
 
@@ -67,7 +72,7 @@ export async function POST(request: NextRequest) {
     raw: { from },
   })
   await sendTelegramAlert(
-    `💬 <b>Agents line text</b> — <b>${who}</b>${contact ? ` (after T${contact.touch_number})` : " (not in campaign)"}\n"${body.slice(0, 250)}"\n\nReply from your phone — texts to the agents line reach you here.`
+    `💬 <b>Agents line text</b> — <b>${esc(who)}</b>${contact ? ` (after T${contact.touch_number})` : " (not in campaign)"}\n"${esc(body.slice(0, 250))}"\n\nReply from your phone — texts to the agents line reach you here.`
   )
   return new NextResponse(EMPTY_TWIML, { headers: { "Content-Type": "text/xml" } })
 }

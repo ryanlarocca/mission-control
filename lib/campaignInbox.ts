@@ -81,6 +81,13 @@ function extractText(payload: gmail_v1.Schema$MessagePart | undefined): string {
   return chunks.join("\n")
 }
 
+/** Telegram parse_mode:HTML rejects raw <, >, & — agent signatures full of
+ * "<mailto:...>" killed Asha Raghupathy's alert silently (2026-07-21). Every
+ * user-written string interpolated into an alert goes through this. */
+function esc(s: string): string {
+  return s.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;")
+}
+
 function parseSenderEmail(fromHeader: string): string {
   const angled = /<([^>]+)>/.exec(fromHeader)
   const raw = (angled ? angled[1] : fromHeader).trim().toLowerCase()
@@ -235,13 +242,7 @@ async function handleContactMessage(
       .update({ status: "unsubscribed", next_touch_at: null, updated_at: nowIso })
       .eq("id", contact.id)
     await cancelQueuedSends(sb, contact.id, "unsubscribed")
-    await sb.from("campaign_events").insert({
-      contact_id: contact.id,
-      kind: "unsubscribe",
-      body: fresh.slice(0, 500),
-      raw: { gmail_id: gmailId, thread_id: threadId },
-    })
-    await sendTelegramAlert(`🚫 Campaign unsubscribe — <b>${contact.name ?? contact.email}</b> ("${fresh.slice(0, 60)}") — handled automatically, drip stopped`)
+    await sendTelegramAlert(`🚫 Campaign unsubscribe — <b>${esc(contact.name ?? contact.email ?? "")}</b> ("${esc(fresh.slice(0, 60))}") — handled automatically, drip stopped`)
     return
   }
 
@@ -260,7 +261,7 @@ async function handleContactMessage(
       triage: "dead_mailbox",
       raw: { gmail_id: gmailId, thread_id: threadId },
     })
-    await sendTelegramAlert(`📪 Campaign: ${contact.name ?? contact.email} auto-replied that the mailbox is dead — marked bad_email`)
+    await sendTelegramAlert(`📪 Campaign: ${esc(contact.name ?? contact.email ?? "")} auto-replied that the mailbox is dead — marked bad_email`)
     return
   }
 
@@ -280,15 +281,19 @@ async function handleContactMessage(
   // Genuine reply: log + alert Ryan immediately. Ryan 2026-07-20: replies
   // do NOT pause the drip (next touch is ~2 weeks out; he curates manually
   // from the alerts). Only bounce/unsubscribe/removal stop the cadence.
-  await sb.from("campaign_events").insert({
+  const { error: evErr } = await sb.from("campaign_events").insert({
     contact_id: contact.id,
     kind: "email_reply",
     body: fresh.slice(0, 2000) || subject,
     raw: { gmail_id: gmailId, thread_id: threadId, subject },
   })
+  if (evErr) {
+    if (/duplicate key/i.test(evErr.message)) return // concurrent notification already handled it
+    throw new Error(`reply event insert: ${evErr.message}`)
+  }
   const snippet = (fresh || subject).slice(0, 220)
   await sendTelegramAlert(
-    `✉️ <b>AGENT REPLY</b> — <b>${contact.name ?? contact.email}</b> (after T${contact.touch_number})\n"${snippet}"\n\nDrip continues as scheduled. Reply from Gmail or /email-campaign.`
+    `✉️ <b>AGENT REPLY</b> — <b>${esc(contact.name ?? contact.email ?? "")}</b> (after T${contact.touch_number})\n"${esc(snippet)}"\n\nDrip continues as scheduled. Reply from Gmail or /email-campaign.`
   )
 }
 
