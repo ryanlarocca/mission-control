@@ -36,7 +36,7 @@ const UNSUB_SHORT_RE = /^(please\s+)?(remove(d)?( me)?|unsubscribe|stop|no thank
 // Auto-replies must not pause the drip (out-of-office) — and dead-mailbox
 // auto-replies are effectively bounces.
 const AUTO_REPLY_RE = /out of (the )?office|away from (the )?office|automated (response|reply)|auto-?reply|on vacation|on leave until|limited access to email/i
-const DEAD_MAILBOX_RE = /no longer (in use|monitored|active)|(mailbox|address|email) (is )?(closed|deactivated|discontinued)/i
+const DEAD_MAILBOX_RE = /no longer (in use|monitored|active)|not actively monitored|does not correspond to a valid address|(mailbox|address|email) (is )?(closed|deactivated|discontinued)/i
 
 interface CampaignContact {
   id: string
