@@ -12,7 +12,7 @@ export async function PATCH(
   const { id } = await ctx.params
   if (!id) return NextResponse.json({ error: "id required" }, { status: 400 })
 
-  let body: { action?: string; subject?: string; body?: string } = {}
+  let body: { action?: string; subject?: string; body?: string; scheduled_for?: string } = {}
   try {
     body = await request.json()
   } catch {
@@ -44,11 +44,20 @@ export async function PATCH(
     if (body.action === "approve") {
       patch.status = "approved"
       patch.approved_at = new Date().toISOString()
+      // Optional "don't send before" time (else send in the next pass).
+      if (typeof body.scheduled_for === "string" && body.scheduled_for.trim()) {
+        const d = new Date(body.scheduled_for)
+        if (Number.isNaN(d.getTime())) {
+          return NextResponse.json({ error: "scheduled_for is not a valid time" }, { status: 400 })
+        }
+        patch.scheduled_for = d.toISOString()
+      }
     } else if (body.action === "skip") {
       patch.status = "skipped"
     } else if (body.action === "unapprove") {
       patch.status = "draft"
       patch.approved_at = null
+      patch.scheduled_for = null // drop the hold when it goes back to draft
     } else if (body.action) {
       return NextResponse.json({ error: `unknown action ${body.action}` }, { status: 400 })
     }

@@ -241,31 +241,38 @@ async function sendPass() {
   // Postal-address gate removed 2026-07-18 by Ryan's explicit call (list is
   // known colleagues; he accepts the CAN-SPAM exposure — advised, decision
   // logged in the brief). The opt-out line in every signature stays.
+  // Weekend is a hard guard for everyone (Ryan: M-F only), --now excepted.
   const weekday = laWeekdayNow()
   if (!nowOverride && (weekday === "Sat" || weekday === "Sun")) {
     log(`weekend (${weekday}) — sends hold until Monday 9:00a PT`)
     return
   }
+  // The 9:00-16:30 window applies to UNSCHEDULED approvals only. A row with
+  // an explicit scheduled_for (Ryan picked the time) sends at that time even
+  // outside the window — an explicit choice beats the default. (2026-07-21)
   const hour = laHourNow()
-  if (!nowOverride && (hour < WINDOW.startHour || hour > WINDOW.endHour)) {
-    log(`outside send window (${hour.toFixed(2)}h PT) — skipping send pass`)
-    return
-  }
+  const inWindow = hour >= WINDOW.startHour && hour <= WINDOW.endHour
+
   const sentToday = await countToday("campaign_sends", "sent_at", { status: ["sent"] })
   let budget = Math.max(0, SEND_DAILY_CAP - sentToday)
   if (limit !== null) budget = Math.min(budget, limit)
-  log(`send pass: ${sentToday} sent today, budget ${budget}`)
+  log(`send pass: ${sentToday} sent today, budget ${budget}, ${inWindow ? "in-window" : "OUT of window"}`)
   if (budget === 0) return
 
-  const { data: approved, error } = await sb
+  const nowIso = new Date().toISOString()
+  // Eligible = approved AND (no schedule OR its scheduled time has arrived).
+  const { data: eligible, error } = await sb
     .from("campaign_sends")
-    .select("id, contact_id, touch_number, subject, body, status")
+    .select("id, contact_id, touch_number, subject, body, status, scheduled_for")
     .eq("status", "approved")
+    .or(`scheduled_for.is.null,scheduled_for.lte.${nowIso}`)
     .order("approved_at", { ascending: true })
     .limit(budget)
   if (error) throw new Error(`approved fetch: ${error.message}`)
+  // Unscheduled rows need the send window; scheduled-due rows bypass it.
+  const approved = (eligible ?? []).filter((r) => nowOverride || r.scheduled_for || inWindow)
   if (approved.length === 0) {
-    log("nothing approved to send")
+    log(inWindow ? "nothing approved + due to send" : "outside window — no scheduled sends due")
     return
   }
 

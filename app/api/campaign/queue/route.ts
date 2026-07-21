@@ -17,7 +17,7 @@ export async function GET(request: NextRequest) {
     let q = sb
       .from("campaign_sends")
       .select(
-        "id, touch_number, subject, body, status, edited, approved_at, sent_at, error, created_at, contact:campaign_contacts (id, name, email, import_flags, property_address)"
+        "id, touch_number, subject, body, status, edited, approved_at, scheduled_for, sent_at, error, created_at, contact:campaign_contacts (id, name, email, import_flags, property_address)"
       )
       .order("created_at", { ascending: true })
       .limit(500)

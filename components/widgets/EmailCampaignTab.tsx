@@ -21,6 +21,7 @@ interface QueueSend {
   edited: boolean
   error: string | null
   created_at: string
+  scheduled_for: string | null
   contact: {
     id: string
     name: string | null
@@ -149,6 +150,10 @@ export function EmailCampaignTab() {
     })
   }
 
+  // "Don't send before" time for the batch (datetime-local, viewer-local).
+  // Empty = send in the next pass (existing behavior).
+  const [scheduleAt, setScheduleAt] = useState("")
+
   const approveSelected = async () => {
     if (selected.size === 0 || busy) return
     setBusy(true)
@@ -156,12 +161,22 @@ export function EmailCampaignTab() {
       const res = await fetch("/api/campaign/approve-batch", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ ids: Array.from(selected) }),
+        body: JSON.stringify({
+          ids: Array.from(selected),
+          // datetime-local has no zone; new Date() reads it as viewer-local,
+          // toISOString() sends UTC so the engine compares correctly.
+          scheduled_for: scheduleAt ? new Date(scheduleAt).toISOString() : null,
+        }),
       })
       const data = await res.json()
       if (!res.ok) throw new Error(data.error ?? `${res.status}`)
-      ping(`✓ ${data.approved} queued — engine sends 9:00a–4:30p with spacing`)
+      ping(
+        scheduleAt
+          ? `✓ ${data.approved} scheduled for ${new Date(scheduleAt).toLocaleString([], { weekday: "short", hour: "numeric", minute: "2-digit" })}`
+          : `✓ ${data.approved} queued — engine sends 9:00a–4:30p with spacing`
+      )
       setSelected(new Set())
+      setScheduleAt("")
       await loadQueue()
     } catch (e) {
       ping(`Approve failed: ${e instanceof Error ? e.message : e}`)
@@ -358,8 +373,21 @@ export function EmailCampaignTab() {
               disabled={selected.size === 0 || busy}
               className="rounded-lg bg-emerald-500 px-4 py-2 text-sm font-semibold text-emerald-950 disabled:opacity-40"
             >
-              Queue {selected.size || ""} selected for send
+              {scheduleAt ? "Schedule" : "Queue"} {selected.size || ""} selected {scheduleAt ? "" : "for send"}
             </button>
+            <label className="flex items-center gap-1.5 text-xs text-zinc-400">
+              <span className="whitespace-nowrap">Hold until</span>
+              <input
+                type="datetime-local"
+                value={scheduleAt}
+                onChange={(e) => setScheduleAt(e.target.value)}
+                className="rounded-md border border-zinc-700 bg-zinc-950 px-2 py-1.5 text-xs text-zinc-100 [color-scheme:dark]"
+                aria-label="Hold approved emails until this time"
+              />
+              {scheduleAt && (
+                <button onClick={() => setScheduleAt("")} className="text-zinc-500 hover:text-zinc-300" title="Clear schedule">✕</button>
+              )}
+            </label>
             <button
               onClick={() => setSelected(new Set(drafts.map((d) => d.id)))}
               disabled={drafts.length === 0}
@@ -368,7 +396,9 @@ export function EmailCampaignTab() {
               Select all {drafts.length}
             </button>
             <span className="text-xs text-zinc-500">
-              Approved emails send automatically 9:00a–4:30p PT, spaced out — capped at 200/day.
+              {scheduleAt
+                ? "Held until your chosen time, then sent (still capped 200/day, Mon–Fri)."
+                : "Approved emails send automatically 9:00a–4:30p PT, spaced out — capped at 200/day."}
               {approved.length > 0 && ` ${approved.length} currently queued.`}
             </span>
           </div>
@@ -409,6 +439,11 @@ export function EmailCampaignTab() {
                   <Badge tone="draft">T{s.touch_number}</Badge>
                   {flagged && <Badge tone="paused">⚠ active lead</Badge>}
                   {s.edited && <Badge tone="sent">edited</Badge>}
+                  {s.scheduled_for && (
+                    <Badge tone="approved">
+                      ⏰ {new Date(s.scheduled_for).toLocaleString([], { weekday: "short", hour: "numeric", minute: "2-digit" })}
+                    </Badge>
+                  )}
                   <Badge tone={s.status}>{s.status}</Badge>
                   <span className={`text-xs text-zinc-600 transition-transform ${open ? "rotate-90" : ""}`}>▶</span>
                 </div>
