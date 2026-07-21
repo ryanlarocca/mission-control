@@ -202,9 +202,10 @@ async function handleBounce(
     body: `${hard ? "hard" : "soft"} bounce for ${failed}`,
     raw: { gmail_id: gmailId, failed_recipient: failed, hard },
   })
-  await sendTelegramAlert(
-    `↩️ Campaign bounce (${hard ? "hard — removed from drip" : `soft ${contact.soft_bounces + 1}/2`}) — ${contact.name ?? failed}`
-  )
+  // No Telegram for bounces (2026-07-21): 18 bounce pings buried Asha's
+  // reply alert on day one. Bounce handling is fully automated; counts are
+  // on /email-campaign. Telegram stays signal-only: replies, texts, calls,
+  // voicemails, unsubscribes.
 }
 
 async function handleContactMessage(
