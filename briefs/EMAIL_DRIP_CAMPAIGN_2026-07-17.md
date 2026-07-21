@@ -55,6 +55,13 @@ receive-only. The 199 batch-1 drafts keep — reviewable all weekend.
 - Aaron Schubbe (the one old-copy test send) reset to touch 0 per Ryan —
   fresh clean T1 draft queued; no touch 2 for him.
 
+**2026-07-20 (later) — engagement no longer pauses the drip (Ryan):**
+replies/texts/answered calls log + alert only; the cadence keeps running.
+Only bounces, unsubscribes, dead mailboxes, and removals stop it. Ryan
+curates manually from the Telegram alerts (remove/DNC is one tap).
+Supersedes the original stop-on-reply design. Trade-off accepted: T2's
+"quick follow-up" opener ignores what someone replied.
+
 **Still to build (next session):**
 - AI-drafted replies + interactive Telegram loop (dictate-summary →
   compose → approve buttons) — replies currently alert w/ manual reply.
