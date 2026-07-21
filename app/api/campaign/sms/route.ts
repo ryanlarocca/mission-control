@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server"
-import { getLeadsClient, sendTelegramAlert } from "@/lib/leads"
+import { getLeadsClient } from "@/lib/leads"
+import { sendCampaignAlert } from "@/lib/campaignAlerts"
 import { addSuppression } from "@/lib/suppression"
 
 // Agents line — inbound SMS webhook. Every text: contact match (phone →
@@ -60,7 +61,7 @@ export async function POST(request: NextRequest) {
       triage: "remove_me",
       raw: { from },
     })
-    await sendTelegramAlert(`🚫 Agents line STOP from ${esc(who)} — sms suppression added`)
+    await sendCampaignAlert(sb, `🚫 Agents line STOP from ${esc(who)} — sms suppression added`)
     return new NextResponse(EMPTY_TWIML, { headers: { "Content-Type": "text/xml" } })
   }
 
@@ -71,7 +72,7 @@ export async function POST(request: NextRequest) {
     body,
     raw: { from },
   })
-  await sendTelegramAlert(
+  await sendCampaignAlert(sb, 
     `💬 <b>Agents line text</b> — <b>${esc(who)}</b>${contact ? ` (after T${contact.touch_number})` : " (not in campaign)"}\n"${esc(body.slice(0, 250))}"\n\nReply from your phone — texts to the agents line reach you here.`
   )
   return new NextResponse(EMPTY_TWIML, { headers: { "Content-Type": "text/xml" } })

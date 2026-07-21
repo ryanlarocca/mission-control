@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server"
-import { getLeadsClient, sendTelegramAlert } from "@/lib/leads"
+import { getLeadsClient } from "@/lib/leads"
+import { sendCampaignAlert } from "@/lib/campaignAlerts"
 
 // Agents line — post-<Dial> action. Answered → log metadata (no recording,
 // CA two-party) + Telegram follow-up. No answer / busy / failed → take a
@@ -40,7 +41,7 @@ export async function POST(request: NextRequest) {
       body: `answered call, ${duration}s`,
       raw: { from, dial_status: dialStatus },
     })
-    await sendTelegramAlert(
+    await sendCampaignAlert(sb, 
       `📞 Talked to <b>${who}</b> — ${Math.round(duration / 60)}m${duration % 60}s on the agents line. Timeline updated; drip continues as scheduled.`
     )
     return new NextResponse('<?xml version="1.0" encoding="UTF-8"?><Response/>', {

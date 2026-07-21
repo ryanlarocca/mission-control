@@ -1,6 +1,7 @@
 import type { gmail_v1 } from "googleapis"
 import type { SupabaseClient } from "@supabase/supabase-js"
-import { getGmailClient, getLeadsClient, sendTelegramAlert } from "@/lib/leads"
+import { getGmailClient, getLeadsClient } from "@/lib/leads"
+import { sendCampaignAlert } from "@/lib/campaignAlerts"
 import { addSuppression } from "@/lib/suppression"
 
 // info@lrghomes.com inbox pipeline for the agent email-drip campaign
@@ -242,7 +243,7 @@ async function handleContactMessage(
       .update({ status: "unsubscribed", next_touch_at: null, updated_at: nowIso })
       .eq("id", contact.id)
     await cancelQueuedSends(sb, contact.id, "unsubscribed")
-    await sendTelegramAlert(`🚫 Campaign unsubscribe — <b>${esc(contact.name ?? contact.email ?? "")}</b> ("${esc(fresh.slice(0, 60))}") — handled automatically, drip stopped`)
+    await sendCampaignAlert(sb, `🚫 Campaign unsubscribe — <b>${esc(contact.name ?? contact.email ?? "")}</b> ("${esc(fresh.slice(0, 60))}") — handled automatically, drip stopped`)
     return
   }
 
@@ -261,7 +262,7 @@ async function handleContactMessage(
       triage: "dead_mailbox",
       raw: { gmail_id: gmailId, thread_id: threadId },
     })
-    await sendTelegramAlert(`📪 Campaign: ${esc(contact.name ?? contact.email ?? "")} auto-replied that the mailbox is dead — marked bad_email`)
+    await sendCampaignAlert(sb, `📪 Campaign: ${esc(contact.name ?? contact.email ?? "")} auto-replied that the mailbox is dead — marked bad_email`)
     return
   }
 
@@ -292,7 +293,7 @@ async function handleContactMessage(
     throw new Error(`reply event insert: ${evErr.message}`)
   }
   const snippet = (fresh || subject).slice(0, 220)
-  await sendTelegramAlert(
+  await sendCampaignAlert(sb, 
     `✉️ <b>AGENT REPLY</b> — <b>${esc(contact.name ?? contact.email ?? "")}</b> (after T${contact.touch_number})\n"${esc(snippet)}"\n\nDrip continues as scheduled. Reply from Gmail or /email-campaign.`
   )
 }
@@ -352,7 +353,7 @@ export async function processCampaignInbox(): Promise<void> {
       await handleContactMessage(sb, contact, { gmailId, threadId, subject, body })
     } catch (e) {
       console.error(`[campaign-inbox] failed on ${gmailId}:`, e)
-      await sendTelegramAlert(`⚠️ Campaign inbox processing failed on a message — check Vercel logs (${gmailId})`)
+      await sendCampaignAlert(sb, `⚠️ Campaign inbox processing failed on a message — check Vercel logs (${gmailId})`)
     }
   }
 }

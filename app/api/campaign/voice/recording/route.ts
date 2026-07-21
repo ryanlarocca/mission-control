@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server"
-import { getLeadsClient, sendTelegramAlert } from "@/lib/leads"
+import { getLeadsClient } from "@/lib/leads"
+import { sendCampaignAlert } from "@/lib/campaignAlerts"
 
 // Agents line — voicemail recording callback. Logs the voicemail on the
 // contact timeline + Telegram alert with the recording link. (Whisper
@@ -49,7 +50,7 @@ export async function POST(request: NextRequest) {
     body: `voicemail (${duration}s): ${recordingUrl}`,
     raw: { recording_url: recordingUrl, call_sid: callSid },
   })
-  await sendTelegramAlert(
+  await sendCampaignAlert(sb, 
     `🎙 <b>Voicemail on the agents line</b> — ${who} (${duration}s)\n${recordingUrl}.mp3`
   )
   return NextResponse.json({ ok: true })

@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server"
-import { FORWARD_TO, getLeadsClient, sendTelegramAlert } from "@/lib/leads"
+import { FORWARD_TO, getLeadsClient } from "@/lib/leads"
+import { sendCampaignAlert } from "@/lib/campaignAlerts"
 
 // Agents line (650) 910-4007 — inbound call webhook (Phase 5b of
 // briefs/EMAIL_DRIP_CAMPAIGN_2026-07-17.md).
@@ -37,13 +38,14 @@ export async function POST(request: NextRequest) {
   // Fire-and-await the ring alert (void'd sends get killed on Vercel — the
   // June 11 lesson), but never let alert failure break call routing.
   try {
+    const sb = getLeadsClient()
     const contact = digits.length === 10 ? await lookupContact(digits) : null
     if (contact) {
-      await sendTelegramAlert(
+      await sendCampaignAlert(sb, 
         `📞 <b>Agents line ringing</b> — <b>${contact.name ?? from}</b> (after T${contact.touch_number}) — relaying to your cell`
       )
     } else {
-      await sendTelegramAlert(`📞 Agents line ringing — unknown caller ${from} — relaying to your cell`)
+      await sendCampaignAlert(sb, `📞 Agents line ringing — unknown caller ${from} — relaying to your cell`)
     }
   } catch (e) {
     console.error("[campaign-voice] ring alert failed:", e)
