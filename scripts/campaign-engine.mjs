@@ -345,10 +345,53 @@ async function markFailed(row, err) {
   if (!dryRun) await sb.from("campaign_sends").update({ status: "failed", error: err }).eq("id", row.id)
 }
 
+// ---------- DIGEST pass ----------
+// One visible receipt per batch instead of silence (Ryan, 2026-07-22:
+// "bounces + no Telegram = looks broken every day"). Any bounce events
+// since the last digest → ONE summary message. Watermark lives in a
+// local state file so the 20-min launchd cadence can't double-report.
+const DIGEST_STATE = path.join(__dirname, ".campaign-digest-state.json")
+
+function escHtml(t) {
+  return String(t).replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;")
+}
+
+async function digestPass() {
+  let since = new Date(Date.now() - 24 * 3600_000).toISOString()
+  try {
+    since = JSON.parse(fs.readFileSync(DIGEST_STATE, "utf-8")).last
+  } catch {
+    // first run — default to 24h back
+  }
+  const nowIso = new Date().toISOString()
+  const { data: bounces, error } = await sb
+    .from("campaign_events")
+    .select("body, contact:campaign_contacts (name, email)")
+    .eq("kind", "bounce")
+    .gt("occurred_at", since)
+    .order("occurred_at", { ascending: true })
+  if (error) throw new Error(`digest fetch: ${error.message}`)
+  if (!bounces || bounces.length === 0) {
+    fs.writeFileSync(DIGEST_STATE, JSON.stringify({ last: nowIso }))
+    return
+  }
+  const names = bounces
+    .map((b) => escHtml(b.contact?.name ?? b.contact?.email ?? "unknown"))
+    .join(", ")
+  const sentToday = await countToday("campaign_sends", "sent_at", { status: ["sent"] })
+  await telegram(
+    `↩️ <b>${bounces.length} bounce${bounces.length === 1 ? "" : "s"}</b> from the latest batch — caught and removed automatically: ${names}\n\n📤 ${sentToday} sent today. Replies always alert individually the moment they arrive.`
+  )
+  fs.writeFileSync(DIGEST_STATE, JSON.stringify({ last: nowIso }))
+  log(`digest sent: ${bounces.length} bounces`)
+}
+
 // ---------- main ----------
+const digestOnly = args.includes("--digest")
 try {
-  if (doDraft) await draftPass()
-  if (doSend) await sendPass()
+  if (!digestOnly && doDraft) await draftPass()
+  if (!digestOnly && doSend) await sendPass()
+  await digestPass()
 } catch (e) {
   console.error("[campaign] engine error:", e?.message ?? e)
   await telegram(`🔥 Campaign engine crashed: ${e?.message ?? e}`)
