@@ -379,8 +379,12 @@ async function digestPass() {
     .map((b) => escHtml(b.contact?.name ?? b.contact?.email ?? "unknown"))
     .join(", ")
   const sentToday = await countToday("campaign_sends", "sent_at", { status: ["sent"] })
+  const { count: stillQueued } = await sb
+    .from("campaign_sends")
+    .select("id", { count: "exact", head: true })
+    .eq("status", "approved")
   await telegram(
-    `↩️ <b>${bounces.length} bounce${bounces.length === 1 ? "" : "s"}</b> from the latest batch — caught and removed automatically: ${names}\n\n📤 ${sentToday} sent today. Replies always alert individually the moment they arrive.`
+    `↩️ <b>${bounces.length} bounce${bounces.length === 1 ? "" : "s"}</b> from the latest batch — caught and removed automatically: ${names}\n\n📤 ${sentToday} sent today.${(stillQueued ?? 0) > 0 ? ` ⏳ ${stillQueued} still sending this batch.` : ""} Replies always alert individually the moment they arrive.`
   )
   fs.writeFileSync(DIGEST_STATE, JSON.stringify({ last: nowIso }))
   log(`digest sent: ${bounces.length} bounces`)
