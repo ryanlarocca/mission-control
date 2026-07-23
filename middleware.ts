@@ -27,6 +27,8 @@ const PUBLIC_PATHS = [
   // /voice/status + /voice/recording) and inbound SMS.
   "/api/campaign/voice",
   "/api/campaign/sms",
+  // Campaign-bot webhook (auth = secret token verified inside the route).
+  "/api/campaign/telegram",
 ]
 
 export async function middleware(request: NextRequest) {

@@ -51,7 +51,8 @@ export async function POST(request: NextRequest) {
     raw: { recording_url: recordingUrl, call_sid: callSid },
   })
   await sendCampaignAlert(sb, 
-    `🎙 <b>Voicemail on the agents line</b> — ${who} (${duration}s)\n${recordingUrl}.mp3`
+    `🎙 <b>Voicemail on the agents line</b> — ${who} (${duration}s)\n${recordingUrl}.mp3`,
+    { buttons: num.length === 10 ? [{ text: "📞 Call back", data: `call:${num}` }] : undefined }
   )
   return NextResponse.json({ ok: true })
 }

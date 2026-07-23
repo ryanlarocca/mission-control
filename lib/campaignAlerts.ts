@@ -11,8 +11,19 @@ import type { SupabaseClient } from "@supabase/supabase-js"
 //      formatting — degraded but DELIVERED), or
 //   3. a campaign_events row (kind 'note', triage 'alert_failure') holding
 //      Telegram's exact error — visible in the DB, not a console.
-export async function sendCampaignAlert(sb: SupabaseClient, text: string): Promise<void> {
-  const token = process.env.TELEGRAM_BOT_TOKEN
+export interface AlertButton {
+  text: string
+  data: string // callback_data delivered to /api/campaign/telegram
+}
+
+export async function sendCampaignAlert(
+  sb: SupabaseClient,
+  text: string,
+  opts?: { buttons?: AlertButton[] }
+): Promise<void> {
+  // Dedicated campaign bot when configured (zero-token button actions);
+  // falls back to the shared Thadius bot until Ryan creates it.
+  const token = process.env.CAMPAIGN_BOT_TOKEN || process.env.TELEGRAM_BOT_TOKEN
   const chatId = process.env.TELEGRAM_CHAT_ID
 
   const recordFailure = async (detail: string) => {
@@ -39,12 +50,16 @@ export async function sendCampaignAlert(sb: SupabaseClient, text: string): Promi
       body: JSON.stringify(body),
     })
 
+  const markup = opts?.buttons?.length
+    ? { reply_markup: { inline_keyboard: [opts.buttons.map((b) => ({ text: b.text, callback_data: b.data }))] } }
+    : {}
+
   try {
-    const res = await post({ chat_id: chatId, text, parse_mode: "HTML" })
+    const res = await post({ chat_id: chatId, text, parse_mode: "HTML", ...markup })
     if (res.ok) return
     const detail = await res.text()
     // Formatting rejection → strip tags, resend plain. Degraded > lost.
-    const plain = await post({ chat_id: chatId, text: text.replace(/<[^>]+>/g, "") })
+    const plain = await post({ chat_id: chatId, text: text.replace(/<[^>]+>/g, ""), ...markup })
     if (plain.ok) {
       await recordFailure(`HTML rejected (${res.status}: ${detail.slice(0, 200)}) — delivered as plain text instead`)
       return

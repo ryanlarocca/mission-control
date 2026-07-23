@@ -6,6 +6,47 @@ import { getLeadsClient } from "@/lib/leads"
 // (campaign_events, not lead rows), different suppression semantics.
 
 const AGENTS_LINE = "+16509104007"
+const RYAN_CELL = "+14085006293"
+
+/** Mission-Control-style relay: ring Ryan's cell from the agents line,
+ * announce the contact, then connect to them (their caller ID shows the
+ * agents line). Returns the human label of who we're connecting to. */
+export async function startAgentsLineRelayCall(to10: string): Promise<{ success: boolean; error?: string; label?: string }> {
+  if (!/^\d{10}$/.test(to10)) return { success: false, error: `bad number: ${to10}` }
+  const sid = process.env.TWILIO_ACCOUNT_SID
+  const token = process.env.TWILIO_AUTH_TOKEN
+  if (!sid || !token) return { success: false, error: "Twilio env missing" }
+
+  const sb = getLeadsClient()
+  const { data: contacts } = await sb
+    .from("campaign_contacts")
+    .select("id, name")
+    .or(`phone.eq.${to10},alt_phones.cs.{${to10}}`)
+    .limit(1)
+  const contact = contacts?.[0] ?? null
+  const fmt = `(${to10.slice(0, 3)}) ${to10.slice(3, 6)}-${to10.slice(6)}`
+  const label = contact?.name ? `${contact.name} ${fmt}` : fmt
+  const say = contact?.name ? `Connecting you to ${contact.name}` : `Connecting you to ${to10.split("").join(" ")}`
+
+  const twiml = `<Response><Say voice="Polly.Matthew">${say}</Say><Dial callerId="${AGENTS_LINE}"><Number>+1${to10}</Number></Dial></Response>`
+  const form = new URLSearchParams({ To: RYAN_CELL, From: AGENTS_LINE, Twiml: twiml })
+  const res = await fetch(`https://api.twilio.com/2010-04-01/Accounts/${sid}/Calls.json`, {
+    method: "POST",
+    headers: {
+      Authorization: `Basic ${Buffer.from(`${sid}:${token}`).toString("base64")}`,
+      "Content-Type": "application/x-www-form-urlencoded",
+    },
+    body: form.toString(),
+  })
+  if (!res.ok) return { success: false, error: `Twilio ${res.status}: ${(await res.text()).slice(0, 160)}` }
+  await sb.from("campaign_events").insert({
+    contact_id: contact?.id ?? null,
+    kind: "note",
+    caller_number: to10,
+    body: `relay call started to ${label}`,
+  })
+  return { success: true, label }
+}
 
 export async function sendAgentsLineText(args: {
   to10: string // 10-digit US number

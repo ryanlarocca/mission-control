@@ -60,7 +60,8 @@ export async function POST(request: NextRequest) {
     raw: { from, dial_status: dialStatus },
   })
   await sendCampaignAlert(sb,
-    `📵 <b>Missed call on the agents line</b> — <b>${who}</b>${contact ? ` (after T${contact.touch_number})` : ""} — sent to voicemail; recording will follow if they leave one. Call back: ${fmt}`
+    `📵 <b>Missed call on the agents line</b> — <b>${who}</b>${contact ? ` (after T${contact.touch_number})` : ""} — sent to voicemail; recording will follow if they leave one. Call back: ${fmt}`,
+    { buttons: digits.length === 10 ? [{ text: "📞 Call back", data: `call:${digits}` }] : undefined }
   )
   // Ryan's own recorded greeting (reused from the MFM mailer campaign —
   // his call, 2026-07-23). Hosted in /public. If the asset ever fails to

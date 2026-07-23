@@ -74,7 +74,8 @@ export async function POST(request: NextRequest) {
     raw: { from },
   })
   await sendCampaignAlert(sb, 
-    `💬 <b>Agents line text</b> — <b>${esc(who)}</b>${contact ? ` (after T${contact.touch_number})` : " (not in campaign)"}\n"${esc(body.slice(0, 250))}"\n\nReply from your phone — texts to the agents line reach you here.`
+    `💬 <b>Agents line text</b> — <b>${esc(who)}</b>${contact ? ` (after T${contact.touch_number})` : " (not in campaign)"}\n"${esc(body.slice(0, 250))}"\n\nReply to this message to text back from the agents line.`,
+    { buttons: digits.length === 10 ? [{ text: "📞 Call them", data: `call:${digits}` }] : undefined }
   )
   return new NextResponse(EMPTY_TWIML, { headers: { "Content-Type": "text/xml" } })
 }
