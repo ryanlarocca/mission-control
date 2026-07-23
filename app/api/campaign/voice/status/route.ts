@@ -62,9 +62,12 @@ export async function POST(request: NextRequest) {
   await sendCampaignAlert(sb,
     `📵 <b>Missed call on the agents line</b> — <b>${who}</b>${contact ? ` (after T${contact.touch_number})` : ""} — sent to voicemail; recording will follow if they leave one. Call back: ${fmt}`
   )
+  // Ryan's own recorded greeting (reused from the MFM mailer campaign —
+  // his call, 2026-07-23). Hosted in /public. If the asset ever fails to
+  // load, Twilio skips the <Play> and still records after the beep.
   const twiml = `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-  <Say voice="Polly.Matthew">You've reached Ryan LaRocca with L R G Homes. Leave a message and I'll get right back to you.</Say>
+  <Play>https://mission-control-three-chi.vercel.app/voicemail-greeting.mp3</Play>
   <Record maxLength="120" playBeep="true" recordingStatusCallback="${RECORDING_CALLBACK}" recordingStatusCallbackMethod="POST"/>
 </Response>`
   return new NextResponse(twiml, { headers: { "Content-Type": "text/xml" } })
