@@ -78,7 +78,9 @@ function log(msg) {
 }
 
 async function telegram(text) {
-  const token = process.env.TELEGRAM_BOT_TOKEN
+  // Campaign traffic lives on the dedicated campaign bot (2026-07-23);
+  // Thadius's bot is only the fallback if it's ever unset.
+  const token = process.env.CAMPAIGN_BOT_TOKEN || process.env.TELEGRAM_BOT_TOKEN
   const chatId = process.env.TELEGRAM_CHAT_ID
   if (!token || !chatId) return
   try {
