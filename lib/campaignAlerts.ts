@@ -50,7 +50,10 @@ export async function sendCampaignAlert(
       body: JSON.stringify(body),
     })
 
-  const markup = opts?.buttons?.length
+  // Buttons only work once the dedicated campaign bot owns the traffic —
+  // on the fallback (Thadius) bot, taps would go to OpenClaw's poller and
+  // die. Suppress them until CAMPAIGN_BOT_TOKEN exists.
+  const markup = opts?.buttons?.length && process.env.CAMPAIGN_BOT_TOKEN
     ? { reply_markup: { inline_keyboard: [opts.buttons.map((b) => ({ text: b.text, callback_data: b.data }))] } }
     : {}
 
