@@ -1,4 +1,5 @@
 import { getLeadsClient } from "@/lib/leads"
+import { sendCampaignAlert } from "@/lib/campaignAlerts"
 
 // Outbound texting from the agents line (650) 910-4007 — used by the
 // Telegram webhook when Ryan replies to an agents-line alert. Separate
@@ -26,9 +27,10 @@ export async function startAgentsLineRelayCall(to10: string): Promise<{ success:
   const contact = contacts?.[0] ?? null
   const fmt = `(${to10.slice(0, 3)}) ${to10.slice(3, 6)}-${to10.slice(6)}`
   const label = contact?.name ? `${contact.name} ${fmt}` : fmt
-  const say = contact?.name ? `Connecting you to ${contact.name}` : `Connecting you to ${to10.split("").join(" ")}`
 
-  const twiml = `<Response><Say voice="Polly.Matthew">${say}</Say><Dial callerId="${AGENTS_LINE}"><Number>+1${to10}</Number></Dial></Response>`
+  // No announcement (Ryan, 2026-07-23): answering connects straight to
+  // ringing; identity arrives as a Telegram message at the same moment.
+  const twiml = `<Response><Dial callerId="${AGENTS_LINE}"><Number>+1${to10}</Number></Dial></Response>`
   const form = new URLSearchParams({ To: RYAN_CELL, From: AGENTS_LINE, Twiml: twiml })
   const res = await fetch(`https://api.twilio.com/2010-04-01/Accounts/${sid}/Calls.json`, {
     method: "POST",
@@ -39,6 +41,7 @@ export async function startAgentsLineRelayCall(to10: string): Promise<{ success:
     body: form.toString(),
   })
   if (!res.ok) return { success: false, error: `Twilio ${res.status}: ${(await res.text()).slice(0, 160)}` }
+  await sendCampaignAlert(sb, `📞 Connecting you to <b>${label}</b> — answer your cell (ringing now)`)
   await sb.from("campaign_events").insert({
     contact_id: contact?.id ?? null,
     kind: "note",

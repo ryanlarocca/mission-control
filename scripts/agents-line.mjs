@@ -57,8 +57,16 @@ const contact = contacts?.[0] ?? null
 const label = contact?.name ? `${contact.name} ${fmt}` : fmt
 
 if (cmd === "call") {
-  const say = contact?.name ? `Connecting you to ${contact.name}` : `Connecting you to ${digits.split("").join(" ")}`
-  const twiml = `<Response><Say voice="Polly.Matthew">${say}</Say><Dial callerId="${AGENTS_LINE}"><Number>+1${digits}</Number></Dial></Response>`
+  const twiml = `<Response><Dial callerId="${AGENTS_LINE}"><Number>+1${digits}</Number></Dial></Response>`
+  // identity goes to Telegram instead of a spoken announcement (Ryan 2026-07-23)
+  const tgToken = process.env.CAMPAIGN_BOT_TOKEN || process.env.TELEGRAM_BOT_TOKEN
+  if (tgToken && process.env.TELEGRAM_CHAT_ID) {
+    await fetch(`https://api.telegram.org/bot${tgToken}/sendMessage`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ chat_id: process.env.TELEGRAM_CHAT_ID, text: `📞 Connecting you to ${label} — answer your cell (ringing now)` }),
+    }).catch(() => {})
+  }
   const form = new URLSearchParams({ To: RYAN_CELL, From: AGENTS_LINE, Twiml: twiml })
   const res = await fetch(`https://api.twilio.com/2010-04-01/Accounts/${sid}/Calls.json`, {
     method: "POST",
