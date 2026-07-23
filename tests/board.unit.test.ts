@@ -161,9 +161,10 @@ describe("contacts + quota chip states", () => {
       ev("contact_touch", "2026-07-15", { bucket: "agent" }),
       ev("contact_touch", "2026-07-15", { bucket: "seller" }),
       ev("contact_touch", "2026-07-15", { bucket: "referral_partner" }),
+      ev("contact_touch", "2026-07-15", { bucket: "key_relationship" }),
       ev("offer", "2026-07-15"), // ignored
     ])
-    expect(c).toEqual({ agent: 2, seller: 1, referral_partner: 1, total: 4 })
+    expect(c).toEqual({ agent: 2, seller: 1, referral_partner: 1, key_relationship: 1, total: 5 })
   })
 
   it("ignores malformed buckets instead of crashing", () => {

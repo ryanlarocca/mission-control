@@ -57,6 +57,7 @@ export function ScoreboardView({
         <StatRow label="Agent" value={allContacts.agent} />
         <StatRow label="Seller" value={allContacts.seller} />
         <StatRow label="Referral partner" value={allContacts.referral_partner} />
+        <StatRow label="Key relationship" value={allContacts.key_relationship} />
         <StatRow
           label="Draft record"
           value={`${drafts.wins}–${drafts.losses} (${drafts.drafts} drafts)`}

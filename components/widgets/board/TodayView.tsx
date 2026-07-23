@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useRef, useState } from "react"
+import { useState } from "react"
 import { cn } from "@/lib/utils"
 import {
   QUOTAS,
@@ -23,6 +23,7 @@ const BUCKET_LABELS: { key: Bucket; label: string }[] = [
   { key: "agent", label: "Agent" },
   { key: "seller", label: "Seller" },
   { key: "referral_partner", label: "Referral" },
+  { key: "key_relationship", label: "Key Rel" },
 ]
 
 const PA_BUTTONS: PaOutcome[] = ["1B", "2B", "3B", "HR", "BB", "SF", "K", "OUT"]
@@ -34,7 +35,6 @@ export function TodayView({
   actions,
   busy,
   withBusy,
-  linkedNames,
 }: {
   events: BoardEvent[]    // confirmed + optimistic pending (drives counts)
   confirmed: BoardEvent[] // server-confirmed only (drives undo targets)
@@ -42,7 +42,6 @@ export function TodayView({
   actions: BoardActions
   busy: Set<string>
   withBusy: (key: string, fn: () => Promise<unknown>) => Promise<void>
-  linkedNames: Record<string, string>
 }) {
   const today = eventsOn(events, todayKey)
   const week = eventsInWeekOf(events, todayKey)
@@ -86,7 +85,7 @@ export function TodayView({
         <p className="mb-2.5 text-xs text-zinc-500">
           Contacts today — any mix counts toward {QUOTAS.contactsPerDay}
         </p>
-        <div className="mb-2.5 grid grid-cols-3 gap-2">
+        <div className="mb-2.5 grid grid-cols-2 gap-2">
           {BUCKET_LABELS.map(({ key, label }) => (
             <button
               key={key}
@@ -109,10 +108,6 @@ export function TodayView({
             style={{ width: `${Math.min(100, (contacts.total / QUOTAS.contactsPerDay) * 100)}%` }}
           />
         </div>
-
-        {lastTouch && (
-          <LinkTouchRow key={lastTouch.id} touch={lastTouch} actions={actions} linkedNames={linkedNames} />
-        )}
 
         <div className="mt-1 flex items-center justify-between border-t border-dashed border-zinc-800 pt-3">
           <div className="flex items-center gap-2">
@@ -361,105 +356,6 @@ export function TodayView({
           </div>
         )}
       </SectionCard>
-    </div>
-  )
-}
-
-// Optional link of the most recent contact touch to a relationships row —
-// enables conversation-to-offer ratios later without adding tap friction now.
-// Inline expanding panel, NOT a fixed overlay (iOS Safari dismissal gotcha).
-function LinkTouchRow({
-  touch,
-  actions,
-  linkedNames,
-}: {
-  touch: BoardEvent
-  actions: BoardActions
-  linkedNames: Record<string, string>
-}) {
-  const [open, setOpen] = useState(false)
-  const [query, setQuery] = useState("")
-  const [results, setResults] = useState<{ id: string; name: string; type: string }[]>([])
-  const [searching, setSearching] = useState(false)
-  const debounce = useRef<ReturnType<typeof setTimeout> | null>(null)
-
-  useEffect(() => {
-    if (!open || query.trim().length < 2) {
-      setResults([])
-      return
-    }
-    if (debounce.current) clearTimeout(debounce.current)
-    debounce.current = setTimeout(async () => {
-      try {
-        setSearching(true)
-        const res = await fetch(`/api/relationships?name=${encodeURIComponent(query.trim())}`, {
-          cache: "no-store",
-        })
-        const data = await res.json()
-        setResults((data.matches ?? []).slice(0, 5))
-      } catch {
-        setResults([])
-      } finally {
-        setSearching(false)
-      }
-    }, 300)
-    return () => { if (debounce.current) clearTimeout(debounce.current) }
-  }, [open, query])
-
-  const bucket = String(touch.payload.bucket ?? "").replace("_", " ")
-  const linkedName = touch.relationship_id ? linkedNames[touch.relationship_id] ?? "linked" : null
-
-  return (
-    <div className="rounded-lg bg-zinc-950/60 px-3 py-2 text-xs">
-      <div className="flex items-center justify-between gap-2">
-        <span className="capitalize text-zinc-400">
-          Last: <span className="text-zinc-200">{bucket}</span> touch
-          {linkedName && <span className="text-green-400"> · {linkedName}</span>}
-        </span>
-        {touch.relationship_id ? (
-          <button
-            onClick={() => actions.link(touch.id, null)}
-            className="text-zinc-500 underline-offset-2 hover:text-zinc-300 hover:underline"
-          >
-            Unlink
-          </button>
-        ) : (
-          <button
-            onClick={() => setOpen(o => !o)}
-            className="text-zinc-400 underline-offset-2 hover:text-zinc-200 hover:underline"
-          >
-            {open ? "Cancel" : "Link contact"}
-          </button>
-        )}
-      </div>
-      {open && !touch.relationship_id && (
-        <div className="mt-2">
-          <input
-            value={query}
-            onChange={e => setQuery(e.target.value)}
-            placeholder="Search relationships…"
-            autoFocus
-            className="w-full rounded-lg border border-zinc-700 bg-zinc-900 px-3 py-2 text-sm text-zinc-100 placeholder:text-zinc-600 focus:border-zinc-500 focus:outline-none"
-          />
-          {searching && <p className="mt-1.5 text-zinc-600">Searching…</p>}
-          {results.map(r => (
-            <button
-              key={r.id}
-              onClick={async () => {
-                const ok = await actions.link(touch.id, r.id, r.name)
-                if (ok) { setOpen(false); setQuery("") }
-              }}
-              className="mt-1.5 flex w-full items-center justify-between rounded-lg bg-zinc-800/70 px-3 py-2 text-left text-sm text-zinc-200 hover:bg-zinc-700"
-            >
-              <span>{r.name}</span>
-              <span className="text-xs text-zinc-500">{r.type}</span>
-            </button>
-          ))}
-          {!searching && query.trim().length >= 2 && results.length === 0 && (
-            <p className="mt-1.5 text-zinc-600">No matches</p>
-          )}
-        </div>
-      )}
     </div>
   )
 }

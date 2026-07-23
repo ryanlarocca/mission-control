@@ -4,7 +4,7 @@
 // timezone and to DST transitions; "today" is always the CLIENT's local
 // calendar day (see localDateKey), which the client passes to the API.
 
-export type Bucket = "agent" | "seller" | "referral_partner"
+export type Bucket = "agent" | "seller" | "referral_partner" | "key_relationship"
 export type PaOutcome = "1B" | "2B" | "3B" | "HR" | "BB" | "SF" | "K" | "OUT"
 export type BoardEventType =
   | "contact_touch"
@@ -16,7 +16,7 @@ export type BoardEventType =
   | "cage"
   | "softball_game"
 
-export const BUCKETS: Bucket[] = ["agent", "seller", "referral_partner"]
+export const BUCKETS: Bucket[] = ["agent", "seller", "referral_partner", "key_relationship"]
 export const PA_OUTCOMES: PaOutcome[] = ["1B", "2B", "3B", "HR", "BB", "SF", "K", "OUT"]
 export const EVENT_TYPES: BoardEventType[] = [
   "contact_touch", "offer", "appointment", "draft", "dg_round", "dg_practice", "cage", "softball_game",
@@ -132,15 +132,16 @@ export interface ContactCounts {
   agent: number
   seller: number
   referral_partner: number
+  key_relationship: number
   total: number
 }
 
 export function contactCounts(events: BoardEvent[]): ContactCounts {
-  const c: ContactCounts = { agent: 0, seller: 0, referral_partner: 0, total: 0 }
+  const c: ContactCounts = { agent: 0, seller: 0, referral_partner: 0, key_relationship: 0, total: 0 }
   for (const e of events) {
     if (e.event_type !== "contact_touch") continue
     const bucket = e.payload?.bucket
-    if (bucket === "agent" || bucket === "seller" || bucket === "referral_partner") {
+    if (bucket === "agent" || bucket === "seller" || bucket === "referral_partner" || bucket === "key_relationship") {
       c[bucket] += 1
       c.total += 1
     }
@@ -316,8 +317,8 @@ export function validatePayload(eventType: BoardEventType, payload: unknown): Va
   switch (eventType) {
     case "contact_touch": {
       const bucket = p.bucket
-      if (bucket !== "agent" && bucket !== "seller" && bucket !== "referral_partner") {
-        return { ok: false, error: "contact_touch requires bucket: agent | seller | referral_partner" }
+      if (!(BUCKETS as unknown[]).includes(bucket)) {
+        return { ok: false, error: `contact_touch requires bucket: ${BUCKETS.join(" | ")}` }
       }
       return { ok: true, payload: { bucket } }
     }

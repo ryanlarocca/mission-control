@@ -23,7 +23,6 @@ type View = "today" | "scoreboard"
 export interface BoardActions {
   log: (type: BoardEventType, payload: Record<string, unknown>) => Promise<BoardEvent | null>
   undo: (event: BoardEvent) => Promise<void>
-  link: (eventId: string, relationshipId: string | null, name?: string) => Promise<boolean>
 }
 
 export function BoardTab() {
@@ -35,7 +34,6 @@ export function BoardTab() {
   const [error, setError] = useState<string | null>(null)
   const [view, setView] = useState<View>("today")
   const [busy, setBusy] = useState<Set<string>>(new Set())
-  const [linkedNames, setLinkedNames] = useState<Record<string, string>>({})
   const [toast, setToast] = useState("")
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
 
@@ -130,25 +128,6 @@ export function BoardTab() {
     }
   }, [ping])
 
-  const link = useCallback<BoardActions["link"]>(async (eventId, relationshipId, name) => {
-    try {
-      const res = await fetch("/api/board/events", {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ id: eventId, relationship_id: relationshipId }),
-      })
-      const data = await res.json()
-      if (!res.ok || !data.success) throw new Error(data.error ?? `PATCH ${res.status}`)
-      setEvents(ev => ev.map(e => (e.id === eventId ? data.event : e)))
-      if (relationshipId && name) setLinkedNames(m => ({ ...m, [relationshipId]: name }))
-      return true
-    } catch (err) {
-      console.error("board link error:", err)
-      ping("Link failed")
-      return false
-    }
-  }, [ping])
-
   const withBusy = useCallback(async (key: string, fn: () => Promise<unknown>) => {
     if (busy.has(key)) return
     setBusy(b => new Set(b).add(key))
@@ -189,7 +168,7 @@ export function BoardTab() {
 
   const displayEvents = pending.length ? [...events, ...pending] : events
   const daysLeft = daysRemaining(period, todayKey)
-  const actions: BoardActions = { log, undo, link }
+  const actions: BoardActions = { log, undo }
 
   return (
     <div className="max-w-3xl pb-24 md:pb-6">
@@ -231,7 +210,6 @@ export function BoardTab() {
           actions={actions}
           busy={busy}
           withBusy={withBusy}
-          linkedNames={linkedNames}
         />
       ) : (
         <ScoreboardView events={displayEvents} period={period} todayKey={todayKey} />
