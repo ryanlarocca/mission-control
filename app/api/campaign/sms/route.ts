@@ -37,7 +37,8 @@ export async function POST(request: NextRequest) {
     .or(`phone.eq.${digits},alt_phones.cs.{${digits}}`)
     .limit(1)
   const contact = data?.[0] ?? null
-  const who = contact?.name ?? from
+  const fmt = digits.length === 10 ? `(${digits.slice(0, 3)}) ${digits.slice(3, 6)}-${digits.slice(6)}` : from
+  const who = contact?.name ? `${contact.name} ${fmt}` : fmt
   const nowIso = new Date().toISOString()
 
   if (STOP_RE.test(body)) {

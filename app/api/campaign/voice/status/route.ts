@@ -30,7 +30,8 @@ export async function POST(request: NextRequest) {
     .or(`phone.eq.${digits},alt_phones.cs.{${digits}}`)
     .limit(1)
   const contact = data?.[0] ?? null
-  const who = contact?.name ?? from
+  const fmt = digits.length === 10 ? `(${digits.slice(0, 3)}) ${digits.slice(3, 6)}-${digits.slice(6)}` : from
+  const who = contact?.name ? `${contact.name} ${fmt}` : fmt
 
   if (dialStatus === "completed" && duration > 0) {
     await sb.from("campaign_events").insert({
@@ -49,7 +50,8 @@ export async function POST(request: NextRequest) {
     })
   }
 
-  // Missed — roll to voicemail.
+  // Missed — alert (a ring with no follow-up reads as 'went blank'), then
+  // roll to voicemail. If they leave one, its own alert follows with a link.
   await sb.from("campaign_events").insert({
     contact_id: contact?.id ?? null,
     kind: "call_missed",
@@ -57,6 +59,9 @@ export async function POST(request: NextRequest) {
     body: `missed call (${dialStatus})`,
     raw: { from, dial_status: dialStatus },
   })
+  await sendCampaignAlert(sb,
+    `📵 <b>Missed call on the agents line</b> — <b>${who}</b>${contact ? ` (after T${contact.touch_number})` : ""} — sent to voicemail; recording will follow if they leave one. Call back: ${fmt}`
+  )
   const twiml = `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
   <Say voice="Polly.Matthew">You've reached Ryan LaRocca with L R G Homes. Leave a message and I'll get right back to you.</Say>

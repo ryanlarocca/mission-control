@@ -34,12 +34,12 @@ export async function POST(request: NextRequest) {
   const digitsByCall = missed?.[0] // best-effort: most recent missed call
   const contactId = digitsByCall?.contact_id ?? null
 
-  let who = "unknown caller"
+  const num = digitsByCall?.caller_number ?? ""
+  const fmt = num.length === 10 ? `(${num.slice(0, 3)}) ${num.slice(3, 6)}-${num.slice(6)}` : num || "unknown number"
+  let who = fmt
   if (contactId) {
     const { data: c } = await sb.from("campaign_contacts").select("name").eq("id", contactId).limit(1)
-    who = c?.[0]?.name ?? who
-  } else if (digitsByCall?.caller_number) {
-    who = digitsByCall.caller_number
+    if (c?.[0]?.name) who = `${c[0].name} ${fmt}`
   }
 
   await sb.from("campaign_events").insert({

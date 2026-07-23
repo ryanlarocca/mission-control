@@ -15,6 +15,32 @@ export const dynamic = "force-dynamic"
 
 const AGENTS_LINE = "+16509104007"
 
+function fmtPhone(digits10: string): string {
+  return digits10.length === 10
+    ? `(${digits10.slice(0, 3)}) ${digits10.slice(3, 6)}-${digits10.slice(6)}`
+    : digits10
+}
+
+// Best-effort CNAM lookup for callers we don't know ($0.01/lookup, unknowns
+// only). Twilio needs TwiML back fast, so failures/slowness just degrade to
+// the bare number.
+async function lookupCallerName(digits10: string): Promise<string | null> {
+  const sid = process.env.TWILIO_ACCOUNT_SID
+  const token = process.env.TWILIO_AUTH_TOKEN
+  if (!sid || !token || digits10.length !== 10) return null
+  try {
+    const res = await fetch(
+      `https://lookups.twilio.com/v2/PhoneNumbers/%2B1${digits10}?Fields=caller_name`,
+      { headers: { Authorization: `Basic ${Buffer.from(`${sid}:${token}`).toString("base64")}` } }
+    )
+    if (!res.ok) return null
+    const data = await res.json()
+    return data?.caller_name?.caller_name ?? null
+  } catch {
+    return null
+  }
+}
+
 async function lookupContact(digits10: string) {
   const sb = getLeadsClient()
   const { data } = await sb
@@ -42,10 +68,11 @@ export async function POST(request: NextRequest) {
     const contact = digits.length === 10 ? await lookupContact(digits) : null
     if (contact) {
       await sendCampaignAlert(sb, 
-        `📞 <b>Agents line ringing</b> — <b>${contact.name ?? from}</b> (after T${contact.touch_number}) — relaying to your cell`
+        `📞 <b>Agents line ringing</b> — <b>${contact.name ?? from}</b> ${fmtPhone(digits)} (after T${contact.touch_number}) — relaying to your cell`
       )
     } else {
-      await sendCampaignAlert(sb, `📞 Agents line ringing — unknown caller ${from} — relaying to your cell`)
+      const cnam = await lookupCallerName(digits)
+      await sendCampaignAlert(sb, `📞 <b>Agents line ringing</b> — ${cnam ? `<b>${cnam}</b> ` : ""}${fmtPhone(digits) || from} — not in campaign list — relaying to your cell`)
     }
   } catch (e) {
     console.error("[campaign-voice] ring alert failed:", e)
