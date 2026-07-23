@@ -112,6 +112,31 @@ export async function POST(request: Request) {
   // Not a reply, or the reply has no text body → nothing to send. Stay quiet.
   if (!msg.reply_to_message || !replyBody) return NextResponse.json({ ok: true })
 
+  // Agents-line campaign alerts (calls / texts / voicemails on the email
+  // campaign's line) embed the number as "(xxx) xxx-xxxx" and mention the
+  // agents line. Replying to one sends Ryan's text FROM the agents line —
+  // (650) 910-4007 — via the campaign path (suppression guard + timeline),
+  // never the lead line. (2026-07-23, Ryan: "receive the texts from
+  // Telegram and respond through there".)
+  const campaignPhone = repliedText.match(/\((\d{3})\)\s?(\d{3})-(\d{4})/)
+  if (campaignPhone && /agents line/i.test(repliedText)) {
+    const to10 = `${campaignPhone[1]}${campaignPhone[2]}${campaignPhone[3]}`
+    const { sendAgentsLineText } = await import("@/lib/campaignSms")
+    const out = await sendAgentsLineText({ to10, body: replyBody })
+    if (out.success) {
+      await tgSend(chatId, `✅ Texted ${out.contactName ? `${out.contactName} ` : ""}(${campaignPhone[1]}) ${campaignPhone[2]}-${campaignPhone[3]} from the agents line`, msg.message_id)
+    } else {
+      await tgSend(chatId, `⚠️ Not sent — ${out.error}`, msg.message_id)
+    }
+    return NextResponse.json({ ok: true })
+  }
+
+  // Email-reply alerts have no phone — point Ryan at the right channel.
+  if (/AGENT REPLY/i.test(repliedText)) {
+    await tgSend(chatId, "✉️ That's an email reply — answer it from Gmail (the thread is in info@).", msg.message_id)
+    return NextResponse.json({ ok: true })
+  }
+
   // The alert we're replying to embeds the lead's phone in E.164. Pull the
   // first one out. Telegram strips HTML, so the text is plain.
   const phoneMatch = repliedText.match(/\+\d{10,15}/)

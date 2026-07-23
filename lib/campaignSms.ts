@@ -1,0 +1,64 @@
+import { getLeadsClient } from "@/lib/leads"
+
+// Outbound texting from the agents line (650) 910-4007 — used by the
+// Telegram webhook when Ryan replies to an agents-line alert. Separate
+// from sendLeadSms on purpose: different From number, different logging
+// (campaign_events, not lead rows), different suppression semantics.
+
+const AGENTS_LINE = "+16509104007"
+
+export async function sendAgentsLineText(args: {
+  to10: string // 10-digit US number
+  body: string
+}): Promise<{ success: boolean; error?: string; contactName?: string | null }> {
+  const { to10, body } = args
+  if (!/^\d{10}$/.test(to10)) return { success: false, error: `bad number: ${to10}` }
+  if (!body.trim()) return { success: false, error: "empty message" }
+
+  const sb = getLeadsClient()
+
+  // Respect texted opt-outs (STOP → sms-channel suppression) and full DNC.
+  const { data: supp } = await sb
+    .from("suppression")
+    .select("id")
+    .eq("phone", to10)
+    .in("channel", ["sms", "all"])
+    .limit(1)
+  if ((supp ?? []).length > 0) {
+    return { success: false, error: "that number is on the DNC / texted STOP — not sending" }
+  }
+
+  const sid = process.env.TWILIO_ACCOUNT_SID
+  const token = process.env.TWILIO_AUTH_TOKEN
+  if (!sid || !token) return { success: false, error: "Twilio env missing" }
+
+  const form = new URLSearchParams({ To: `+1${to10}`, From: AGENTS_LINE, Body: body })
+  const res = await fetch(`https://api.twilio.com/2010-04-01/Accounts/${sid}/Messages.json`, {
+    method: "POST",
+    headers: {
+      Authorization: `Basic ${Buffer.from(`${sid}:${token}`).toString("base64")}`,
+      "Content-Type": "application/x-www-form-urlencoded",
+    },
+    body: form.toString(),
+  })
+  if (!res.ok) {
+    const detail = await res.text()
+    return { success: false, error: `Twilio ${res.status}: ${detail.slice(0, 160)}` }
+  }
+
+  // Timeline: find the contact (if any) and log the outbound.
+  const { data: contacts } = await sb
+    .from("campaign_contacts")
+    .select("id, name")
+    .or(`phone.eq.${to10},alt_phones.cs.{${to10}}`)
+    .limit(1)
+  const contact = contacts?.[0] ?? null
+  await sb.from("campaign_events").insert({
+    contact_id: contact?.id ?? null,
+    kind: "sms_out",
+    caller_number: to10,
+    body: body.slice(0, 1000),
+    raw: { via: "telegram_reply", from: AGENTS_LINE },
+  })
+  return { success: true, contactName: contact?.name ?? null }
+}
