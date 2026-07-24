@@ -33,6 +33,7 @@ for (const line of fs.readFileSync(path.join(REPO_ROOT, ".env.local"), "utf-8").
 
 const AGENTS_LINE = "+16509104007"
 const RYAN_CELL = "+14085006293"
+const RELAY_RING_FROM = "+16502043247" // Ryan's leg rings from the trusted lead line (see lib/campaignSms.ts)
 const sb = createClient(process.env.LRG_SUPABASE_URL, process.env.LRG_SUPABASE_SERVICE_KEY, {
   auth: { persistSession: false },
 })
@@ -67,7 +68,7 @@ if (cmd === "call") {
       body: JSON.stringify({ chat_id: process.env.TELEGRAM_CHAT_ID, text: `📞 Connecting you to ${label} — answer your cell (ringing now)` }),
     }).catch(() => {})
   }
-  const form = new URLSearchParams({ To: RYAN_CELL, From: AGENTS_LINE, Twiml: twiml })
+  const form = new URLSearchParams({ To: RYAN_CELL, From: RELAY_RING_FROM, Twiml: twiml })
   const res = await fetch(`https://api.twilio.com/2010-04-01/Accounts/${sid}/Calls.json`, {
     method: "POST",
     headers: { Authorization: twAuth, "Content-Type": "application/x-www-form-urlencoded" },

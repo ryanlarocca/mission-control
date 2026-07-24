@@ -8,6 +8,12 @@ import { sendCampaignAlert } from "@/lib/campaignAlerts"
 
 const AGENTS_LINE = "+16509104007"
 const RYAN_CELL = "+14085006293"
+// Ryan's leg of a relay rings from the LEAD line — a number his phone has
+// trusted for months. After a day of short test calls, his device/carrier
+// began screening the agents line (relay legs "completed" in 1-7s without
+// ringing, 2026-07-23 evening). The AGENT-facing leg still shows the
+// agents line. Revert to AGENTS_LINE once he whitelists the number.
+const RELAY_RING_FROM = "+16502043247"
 
 /** Mission-Control-style relay: ring Ryan's cell from the agents line,
  * announce the contact, then connect to them (their caller ID shows the
@@ -31,7 +37,7 @@ export async function startAgentsLineRelayCall(to10: string): Promise<{ success:
   // No announcement (Ryan, 2026-07-23): answering connects straight to
   // ringing; identity arrives as a Telegram message at the same moment.
   const twiml = `<Response><Dial callerId="${AGENTS_LINE}"><Number>+1${to10}</Number></Dial></Response>`
-  const form = new URLSearchParams({ To: RYAN_CELL, From: AGENTS_LINE, Twiml: twiml })
+  const form = new URLSearchParams({ To: RYAN_CELL, From: RELAY_RING_FROM, Twiml: twiml })
   const res = await fetch(`https://api.twilio.com/2010-04-01/Accounts/${sid}/Calls.json`, {
     method: "POST",
     headers: {
