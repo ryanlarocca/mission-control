@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server"
 import { sendAgentsLineText, startAgentsLineRelayCall } from "@/lib/campaignSms"
+import { contactPhoneByName, sendCampaignEmailReply } from "@/lib/campaignEmail"
 
 // Dedicated campaign-bot webhook — the ZERO-TOKEN action path (2026-07-23,
 // Ryan: "get the thinking time down... maybe even no tokens"). The campaign
@@ -126,11 +127,41 @@ export async function POST(request: Request) {
 
   const to10 = extractPhone(repliedText)
   if (!to10) {
+    // Email AGENT REPLY alerts: typed replies SEND as a threaded email from
+    // info@ (2026-07-27 — "Thank you Mary!" should just go). Call intents
+    // look up the contact's phone and relay instead.
+    const nameMatch = /AGENT REPLY[^—]*—\s*(.+?)\s*\(after T/i.exec(repliedText)
+    if (nameMatch) {
+      const contactName = nameMatch[1].trim()
+      if (CALL_INTENT_RE.test(body)) {
+        const phone = await contactPhoneByName(contactName)
+        if (phone) {
+          const out = await startAgentsLineRelayCall(phone)
+          await tg("sendMessage", {
+            chat_id: chatId,
+            text: out.success
+              ? `📞 Calling your cell now — answer and you'll be connected to ${out.label}.`
+              : `⚠️ Couldn't start the call — ${out.error}`,
+            reply_to_message_id: msg.message_id,
+          })
+        } else {
+          await tg("sendMessage", { chat_id: chatId, text: `⚠️ No phone on file for ${contactName}.`, reply_to_message_id: msg.message_id })
+        }
+        return NextResponse.json({ ok: true })
+      }
+      const out = await sendCampaignEmailReply({ contactName, body })
+      await tg("sendMessage", {
+        chat_id: chatId,
+        text: out.success
+          ? `✅ Emailed ${out.label} — same thread, from info@.`
+          : `⚠️ Not sent — ${out.error}`,
+        reply_to_message_id: msg.message_id,
+      })
+      return NextResponse.json({ ok: true })
+    }
     await tg("sendMessage", {
       chat_id: chatId,
-      text: /AGENT REPLY/i.test(repliedText)
-        ? "✉️ That's an email reply — answer it from Gmail (the thread is in info@)."
-        : "⚠️ No phone number in that alert — reply to a call/text/voicemail alert.",
+      text: "⚠️ No phone number in that alert — reply to a call/text/voicemail/email alert.",
       reply_to_message_id: msg.message_id,
     })
     return NextResponse.json({ ok: true })
