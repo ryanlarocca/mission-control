@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server"
 import { sendAgentsLineText, startAgentsLineRelayCall } from "@/lib/campaignSms"
 import { contactPhoneByName, sendCampaignEmailReply } from "@/lib/campaignEmail"
+import { discardPendingDraft, draftCampaignEmail, sendPendingDraft } from "@/lib/campaignDraft"
 
 // Dedicated campaign-bot webhook — the ZERO-TOKEN action path (2026-07-23,
 // Ryan: "get the thinking time down... maybe even no tokens"). The campaign
@@ -18,6 +19,7 @@ import { contactPhoneByName, sendCampaignEmailReply } from "@/lib/campaignEmail"
 
 export const dynamic = "force-dynamic"
 export const runtime = "nodejs"
+export const maxDuration = 60 // draft: commands wait on a Claude API call
 
 const CALL_INTENT_RE = /^(please\s+)?call(\s+(her|him|them|back))*(\s+back)?[.!\s]*$/i
 
@@ -91,6 +93,8 @@ export async function POST(request: Request) {
     const chatId = cb.message?.chat?.id
     if (allowedChat && String(chatId) !== String(allowedChat)) return NextResponse.json({ ok: true })
     const call = /^call:(\d{10})$/.exec(cb.data)
+    const dsend = /^dsend:([0-9a-f-]{36})$/.exec(cb.data)
+    const ddisc = /^ddisc:([0-9a-f-]{36})$/.exec(cb.data)
     if (call) {
       await tg("answerCallbackQuery", { callback_query_id: cb.id, text: "Calling your cell now — answer to connect." })
       const out = await startAgentsLineRelayCall(call[1])
@@ -99,6 +103,28 @@ export async function POST(request: Request) {
         text: out.success
           ? `📞 Calling your cell now — answer and you'll be connected to ${out.label}.`
           : `⚠️ Couldn't start the call — ${out.error}`,
+      })
+    } else if (dsend) {
+      await tg("answerCallbackQuery", { callback_query_id: cb.id, text: "Sending…" })
+      const out = await sendPendingDraft(dsend[1])
+      if (out.success) {
+        await tg("editMessageReplyMarkup", { chat_id: chatId, message_id: cb.message?.message_id, reply_markup: { inline_keyboard: [] } })
+      }
+      await tg("sendMessage", {
+        chat_id: chatId,
+        text: out.success ? `✅ Emailed ${out.label} — same thread, from info@.` : `⚠️ Not sent — ${out.error}`,
+        reply_to_message_id: cb.message?.message_id,
+      })
+    } else if (ddisc) {
+      await tg("answerCallbackQuery", { callback_query_id: cb.id, text: "Discarding…" })
+      const out = await discardPendingDraft(ddisc[1])
+      if (out.success) {
+        await tg("editMessageReplyMarkup", { chat_id: chatId, message_id: cb.message?.message_id, reply_markup: { inline_keyboard: [] } })
+      }
+      await tg("sendMessage", {
+        chat_id: chatId,
+        text: out.success ? `🗑 Draft discarded — nothing sent.` : `⚠️ ${out.error}`,
+        reply_to_message_id: cb.message?.message_id,
       })
     } else {
       await tg("answerCallbackQuery", { callback_query_id: cb.id, text: "Unknown action" })
@@ -121,6 +147,44 @@ export async function POST(request: Request) {
       chat_id: chatId,
       text: "Reply to a specific alert to act on it (tap-and-reply). Buttons on alerts work too. For questions, ask Thadius.",
       reply_to_message_id: msg.message_id,
+    })
+    return NextResponse.json({ ok: true })
+  }
+
+  // "draft: <guidance>" → Claude composes a full email in Ryan's voice;
+  // posted back with [✅ Send] [❌ Discard]. Only the ✅ tap sends. Checked
+  // BEFORE the phone branch so guidance is never blasted out as a raw SMS.
+  const draftMatch = /^draft:\s*([\s\S]+)$/i.exec(body)
+  if (draftMatch) {
+    const nameMatch = /AGENT REPLY[^—]*—\s*(.+?)\s*\(after T/i.exec(repliedText)
+    if (!nameMatch) {
+      await tg("sendMessage", {
+        chat_id: chatId,
+        text: "⚠️ Drafting works on email AGENT REPLY alerts — reply to one of those with draft: <guidance>.",
+        reply_to_message_id: msg.message_id,
+      })
+      return NextResponse.json({ ok: true })
+    }
+    const contactName = nameMatch[1].trim()
+    const out = await draftCampaignEmail({ contactName, guidance: draftMatch[1] })
+    if (!out.success || !out.eventId) {
+      await tg("sendMessage", {
+        chat_id: chatId,
+        text: `⚠️ Couldn't draft — ${out.error}`,
+        reply_to_message_id: msg.message_id,
+      })
+      return NextResponse.json({ ok: true })
+    }
+    await tg("sendMessage", {
+      chat_id: chatId,
+      text: `📝 Draft for ${out.label}:\n\n${out.draft}\n\nNothing sends until you tap ✅. To redo it, reply to the alert again with draft: <new guidance>.`,
+      reply_to_message_id: msg.message_id,
+      reply_markup: {
+        inline_keyboard: [[
+          { text: "✅ Send", callback_data: `dsend:${out.eventId}` },
+          { text: "❌ Discard", callback_data: `ddisc:${out.eventId}` },
+        ]],
+      },
     })
     return NextResponse.json({ ok: true })
   }
