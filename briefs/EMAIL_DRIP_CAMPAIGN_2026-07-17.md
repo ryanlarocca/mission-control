@@ -62,6 +62,25 @@ curates manually from the Telegram alerts (remove/DNC is one tap).
 Supersedes the original stop-on-reply design. Trade-off accepted: T2's
 "quick follow-up" opener ignores what someone replied.
 
+**2026-07-20 → 27 — the Telegram command layer (current state):**
+Campaign traffic lives on the dedicated bot @Marketing6677bot (webhook →
+`/api/campaign/telegram`, pure code, zero AI tokens). THE CONTRACT — every
+interaction has exactly one of two outcomes, immediately visible:
+✅ a named confirmation of the action taken, or ⚠️ an explained refusal.
+**DESIGN RULE (do not regress): the bot NEVER redirects Ryan to do the
+work elsewhere when it can do the work.** Reply to an email alert →
+threaded email from info@ (In-Reply-To headers). Reply to a call/text/
+voicemail alert → SMS from the agents line (DNC-guarded). "Call them
+back" (typed) or the [📞 Call back] button → relay call: Ryan's cell
+rings FROM THE LEAD LINE +16502043247 (his device screened the agents
+line after test-call bursts; agent-facing leg still shows the agents
+line), identity via Telegram at ring time, no announcement. Bounce
+digests + drafts-ready notices also on the campaign bot. Thadius:
+status questions only (memo + campaign-status.mjs), zero campaign writes.
+The 7/25-27 incident that prompted the email-reply feature: Ryan's typed
+replies got "answer from Gmail" redirects he read as sent — two agent
+replies sat unanswered for days. Redirect behavior deleted.
+
 **Still to build (next session):**
 - AI-drafted replies + interactive Telegram loop (dictate-summary →
   compose → approve buttons) — replies currently alert w/ manual reply.
