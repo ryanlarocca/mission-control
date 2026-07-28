@@ -229,6 +229,21 @@ async function handleContactMessage(
   const isUnsub =
     UNSUB_SHORT_RE.test(fresh) || UNSUB_SHORT_RE.test(firstLine) || UNSUB_RE.test(fresh.slice(0, 400))
   if (isUnsub) {
+    // Insert-as-gatekeeper FIRST (same pattern as genuine replies): this row
+    // is what alreadyProcessed() checks. Without it, the message re-processed
+    // on every Pub/Sub notification for its whole 1h scan-window life and
+    // re-alerted each time (Tony Ventura / Nicole Wallace loop, 2026-07-28).
+    const { error: unsubEvErr } = await sb.from("campaign_events").insert({
+      contact_id: contact.id,
+      kind: "email_reply",
+      triage: "unsubscribe",
+      body: fresh.slice(0, 500),
+      raw: { gmail_id: gmailId, thread_id: threadId },
+    })
+    if (unsubEvErr) {
+      if (/duplicate key/i.test(unsubEvErr.message)) return // concurrent notification already handled it
+      throw new Error(`unsubscribe event insert: ${unsubEvErr.message}`)
+    }
     await addSuppression(sb, {
       email: contact.email,
       name: contact.name,
