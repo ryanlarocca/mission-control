@@ -149,9 +149,19 @@ async function countToday(table, tsCol, filters) {
 async function draftPass() {
   const sets = await fetchSuppressionSets()
   const draftedToday = await countToday("campaign_sends", "created_at")
-  let budget = Math.max(0, DRAFT_DAILY_CAP - draftedToday)
+  // Backlog-aware budget (2026-07-28): only top the pipeline up to the cap.
+  // Before this, the pass minted 200/day unconditionally — including Sat+Sun
+  // while sends held — so Ryan faced a ~400-draft mega-queue Monday and the
+  // send cap spread his one approval across two days of sends he didn't
+  // expect. Invariant now: draft + approved (un-sent) never exceeds the cap.
+  const { count: backlog, error: backlogErr } = await sb
+    .from("campaign_sends")
+    .select("id", { count: "exact", head: true })
+    .in("status", ["draft", "approved"])
+  if (backlogErr) throw new Error(`backlog count: ${backlogErr.message}`)
+  let budget = Math.max(0, Math.min(DRAFT_DAILY_CAP - draftedToday, DRAFT_DAILY_CAP - (backlog ?? 0)))
   if (limit !== null) budget = Math.min(budget, limit)
-  log(`draft pass: ${draftedToday} drafted today, budget ${budget}`)
+  log(`draft pass: ${draftedToday} drafted today, ${backlog ?? 0} in draft/approved backlog, budget ${budget}`)
   if (budget === 0) return
 
   const { data: due, error } = await sb
