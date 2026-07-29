@@ -66,20 +66,47 @@ function decodeBody(data: string | null | undefined): string {
   }
 }
 
-/** Walk MIME parts for text/plain (falls back to any part with a body). */
+/** HTML email → readable plain text. Apple Mail / Outlook replies often have
+ * no text/plain part at all (Michael Orlando, 2026-07-29) — without this the
+ * pipeline stored and alerted raw <html> markup. */
+function htmlToText(html: string): string {
+  return html
+    .replace(/<style[\s\S]*?<\/style>/gi, "")
+    .replace(/<script[\s\S]*?<\/script>/gi, "")
+    .replace(/<head[\s\S]*?<\/head>/gi, "")
+    .replace(/<!--[\s\S]*?-->/g, "")
+    .replace(/<br[^>]*>/gi, "\n")
+    .replace(/<\/(p|div|tr|li|h[1-6]|blockquote|table)>/gi, "\n")
+    .replace(/<[^>]+>/g, "")
+    .replace(/&nbsp;/gi, " ")
+    .replace(/&amp;/gi, "&")
+    .replace(/&lt;/gi, "<")
+    .replace(/&gt;/gi, ">")
+    .replace(/&#39;|&apos;/gi, "'")
+    .replace(/&quot;/gi, '"')
+    .replace(/\r/g, "")
+    .replace(/[ \t]+\n/g, "\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim()
+}
+
+/** Walk MIME parts for text/plain (falls back to any part with a body;
+ * HTML fallbacks are converted to plain text, never passed through raw). */
 function extractText(payload: gmail_v1.Schema$MessagePart | undefined): string {
   if (!payload) return ""
-  const chunks: string[] = []
+  const chunks: { mime: string; text: string }[] = []
   const walk = (part: gmail_v1.Schema$MessagePart, plainOnly: boolean) => {
     const mime = part.mimeType || ""
     if (part.body?.data && (!plainOnly || mime === "text/plain" || mime.startsWith("message/"))) {
-      chunks.push(decodeBody(part.body.data))
+      chunks.push({ mime, text: decodeBody(part.body.data) })
     }
     for (const p of part.parts ?? []) walk(p, plainOnly)
   }
   walk(payload, true)
   if (chunks.length === 0) walk(payload, false)
-  return chunks.join("\n")
+  return chunks
+    .map((c) => (c.mime.includes("html") || /^\s*<(!doctype|html|body|div|meta)/i.test(c.text) ? htmlToText(c.text) : c.text))
+    .join("\n")
 }
 
 /** Telegram parse_mode:HTML rejects raw <, >, & — agent signatures full of
@@ -104,7 +131,7 @@ function stripQuoted(body: string): string {
   for (const line of lines) {
     const t = line.trim()
     if (
-      /^On .{5,80} wrote:$/.test(t) ||
+      /^On .{5,120} wrote:$/.test(t) ||
       line.startsWith(">") ||
       /^_{8,}$/.test(t) ||
       /^-{3,}\s*Original Message\s*-{3,}$/i.test(t) ||
@@ -307,9 +334,13 @@ async function handleContactMessage(
     if (/duplicate key/i.test(evErr.message)) return // concurrent notification already handled it
     throw new Error(`reply event insert: ${evErr.message}`)
   }
-  const snippet = (fresh || subject).slice(0, 220)
-  await sendCampaignAlert(sb, 
-    `✉️ <b>AGENT REPLY</b> — <b>${esc(contact.name ?? contact.email ?? "")}</b> (after T${contact.touch_number})\n"${esc(snippet)}"\n\nDrip continues as scheduled. Reply from Gmail or /email-campaign.`
+  // Full message in the alert (Ryan 2026-07-29: Pamela's cut off at 220
+  // chars). Cap only for Telegram's 4096-char message limit, and say so.
+  let alertBody = (fresh || subject).trim()
+  const truncated = alertBody.length > 3200
+  if (truncated) alertBody = alertBody.slice(0, 3200)
+  await sendCampaignAlert(sb,
+    `✉️ <b>AGENT REPLY</b> — <b>${esc(contact.name ?? contact.email ?? "")}</b> (after T${contact.touch_number})\n"${esc(alertBody)}"${truncated ? "\n… [message truncated — full email in Gmail]" : ""}\n\nDrip continues as scheduled. Reply from Gmail or /email-campaign.`
   )
 }
 
