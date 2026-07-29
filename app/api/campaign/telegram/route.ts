@@ -1,7 +1,15 @@
 import { NextResponse } from "next/server"
 import { sendAgentsLineText, startAgentsLineRelayCall } from "@/lib/campaignSms"
 import { contactPhoneByName, sendCampaignEmailReply } from "@/lib/campaignEmail"
-import { discardPendingDraft, draftCampaignEmail, sendPendingDraft } from "@/lib/campaignDraft"
+import {
+  attachDraftMessageId,
+  discardPendingDraft,
+  draftCampaignEmail,
+  findDraftByTgMessage,
+  reviseCampaignDraft,
+  sendPendingDraft,
+  type DraftResult,
+} from "@/lib/campaignDraft"
 
 // Dedicated campaign-bot webhook — the ZERO-TOKEN action path (2026-07-23,
 // Ryan: "get the thinking time down... maybe even no tokens"). The campaign
@@ -27,7 +35,7 @@ type TgMessage = {
   message_id?: number
   chat?: { id?: number }
   text?: string
-  reply_to_message?: { text?: string; caption?: string }
+  reply_to_message?: { message_id?: number; text?: string; caption?: string }
 }
 type TgUpdate = {
   update_id?: number
@@ -48,18 +56,41 @@ function botToken(): string | undefined {
   return process.env.CAMPAIGN_BOT_TOKEN || process.env.TELEGRAM_BOT_TOKEN
 }
 
-async function tg(method: string, body: Record<string, unknown>): Promise<void> {
+async function tg(
+  method: string,
+  body: Record<string, unknown>
+): Promise<{ ok?: boolean; result?: { message_id?: number } } | null> {
   const token = botToken()
-  if (!token) return
+  if (!token) return null
   try {
-    await fetch(`https://api.telegram.org/bot${token}/${method}`, {
+    const res = await fetch(`https://api.telegram.org/bot${token}/${method}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
     })
+    return (await res.json()) as { ok?: boolean; result?: { message_id?: number } }
   } catch (e) {
     console.error(`[campaign-tg] ${method} failed:`, e instanceof Error ? e.message : String(e))
+    return null
   }
+}
+
+/** Post a draft (new or revised) with its action buttons and link the
+ * Telegram message back to the draft row so reply-to-draft revising works. */
+async function postDraft(chatId: number, replyToMessageId: number | undefined, out: DraftResult): Promise<void> {
+  const sent = await tg("sendMessage", {
+    chat_id: chatId,
+    text: `📝 Draft for ${out.label}:\n\n${out.draft}\n\nReply to THIS message with changes and I'll revise. Nothing sends until you tap ✅.`,
+    ...(replyToMessageId ? { reply_to_message_id: replyToMessageId } : {}),
+    reply_markup: {
+      inline_keyboard: [[
+        { text: "✅ Send", callback_data: `dsend:${out.eventId}` },
+        { text: "❌ Discard", callback_data: `ddisc:${out.eventId}` },
+      ]],
+    },
+  })
+  const tgId = sent?.result?.message_id
+  if (out.eventId && typeof tgId === "number") await attachDraftMessageId(out.eventId, tgId)
 }
 
 function extractPhone(text: string): string | null {
@@ -151,6 +182,39 @@ export async function POST(request: Request) {
     return NextResponse.json({ ok: true })
   }
 
+  // Reply to a posted DRAFT message = revision feedback (2026-07-29, the
+  // Pamela 4plex/8plex fix). Claude rewrites with the old draft + feedback,
+  // the old version is superseded (buttons cleared), v2 posts fresh buttons.
+  const repliedTgId = msg.reply_to_message?.message_id
+  if (typeof repliedTgId === "number") {
+    const known = await findDraftByTgMessage(repliedTgId)
+    if (known) {
+      const out = await reviseCampaignDraft({ eventId: known.eventId, feedback: body })
+      if (!out.success || !out.eventId) {
+        await tg("sendMessage", {
+          chat_id: chatId,
+          text: `⚠️ Couldn't revise — ${out.error}`,
+          reply_to_message_id: msg.message_id,
+        })
+        return NextResponse.json({ ok: true })
+      }
+      if (out.oldTgMessageId) {
+        await tg("editMessageReplyMarkup", { chat_id: chatId, message_id: out.oldTgMessageId, reply_markup: { inline_keyboard: [] } })
+      }
+      await postDraft(chatId, msg.message_id, out)
+      return NextResponse.json({ ok: true })
+    }
+    // Draft posted before revisions shipped (no tg_message_id linkage)
+    if (/^📝 Draft for /.test(repliedText)) {
+      await tg("sendMessage", {
+        chat_id: chatId,
+        text: "⚠️ That draft is from before revisions shipped — reply to the agent's alert with draft: <guidance> for a fresh one.",
+        reply_to_message_id: msg.message_id,
+      })
+      return NextResponse.json({ ok: true })
+    }
+  }
+
   // "draft: <guidance>" → Claude composes a full email in Ryan's voice;
   // posted back with [✅ Send] [❌ Discard]. Only the ✅ tap sends. Checked
   // BEFORE the phone branch so guidance is never blasted out as a raw SMS.
@@ -175,17 +239,7 @@ export async function POST(request: Request) {
       })
       return NextResponse.json({ ok: true })
     }
-    await tg("sendMessage", {
-      chat_id: chatId,
-      text: `📝 Draft for ${out.label}:\n\n${out.draft}\n\nNothing sends until you tap ✅. To redo it, reply to the alert again with draft: <new guidance>.`,
-      reply_to_message_id: msg.message_id,
-      reply_markup: {
-        inline_keyboard: [[
-          { text: "✅ Send", callback_data: `dsend:${out.eventId}` },
-          { text: "❌ Discard", callback_data: `ddisc:${out.eventId}` },
-        ]],
-      },
-    })
+    await postDraft(chatId, msg.message_id, out)
     return NextResponse.json({ ok: true })
   }
 
