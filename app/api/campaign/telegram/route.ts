@@ -78,17 +78,23 @@ async function tg(
 /** Post a draft (new or revised) with its action buttons and link the
  * Telegram message back to the draft row so reply-to-draft revising works. */
 async function postDraft(chatId: number, replyToMessageId: number | undefined, out: DraftResult): Promise<void> {
-  const sent = await tg("sendMessage", {
+  const payload = {
     chat_id: chatId,
     text: `📝 Draft for ${out.label}:\n\n${out.draft}\n\nReply to THIS message with changes and I'll revise. Nothing sends until you tap ✅.`,
-    ...(replyToMessageId ? { reply_to_message_id: replyToMessageId } : {}),
     reply_markup: {
       inline_keyboard: [[
         { text: "✅ Send", callback_data: `dsend:${out.eventId}` },
         { text: "❌ Discard", callback_data: `ddisc:${out.eventId}` },
       ]],
     },
+  }
+  // allow_sending_without_reply: a dead reply target (deleted message, or a
+  // synthetic test update) must never eat the draft — post it standalone.
+  let sent = await tg("sendMessage", {
+    ...payload,
+    ...(replyToMessageId ? { reply_to_message_id: replyToMessageId, allow_sending_without_reply: true } : {}),
   })
+  if (!sent?.ok) sent = await tg("sendMessage", payload) // belt-and-suspenders retry without the reply link
   const tgId = sent?.result?.message_id
   if (out.eventId && typeof tgId === "number") await attachDraftMessageId(out.eventId, tgId)
 }
