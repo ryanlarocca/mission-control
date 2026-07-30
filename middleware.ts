@@ -29,6 +29,9 @@ const PUBLIC_PATHS = [
   "/api/campaign/sms",
   // Campaign-bot webhook (auth = secret token verified inside the route).
   "/api/campaign/telegram",
+  // Playable voicemail-recording proxy (links in Telegram alerts; the only
+  // input is a strictly-validated unguessable RecordingSid).
+  "/api/campaign/vm",
 ]
 
 export async function middleware(request: NextRequest) {

@@ -17,9 +17,15 @@ export async function POST(request: NextRequest) {
     params = new URLSearchParams()
   }
   const recordingUrl = params.get("RecordingUrl") || ""
+  const recordingSid = params.get("RecordingSid") || ""
   const duration = Number(params.get("RecordingDuration") || 0)
   const callSid = params.get("CallSid") || ""
   if (!recordingUrl) return NextResponse.json({ ok: true })
+  // Twilio media URLs 401 without account auth — link the playable proxy
+  // instead (2026-07-30; Ryan's voicemail links never worked when tapped).
+  const playUrl = recordingSid
+    ? `https://mission-control-three-chi.vercel.app/api/campaign/vm/${recordingSid}.mp3`
+    : `${recordingUrl}.mp3`
 
   const sb = getLeadsClient()
   // The recording callback carries no From — match via the call_missed event
@@ -50,8 +56,8 @@ export async function POST(request: NextRequest) {
     body: `voicemail (${duration}s): ${recordingUrl}`,
     raw: { recording_url: recordingUrl, call_sid: callSid },
   })
-  await sendCampaignAlert(sb, 
-    `🎙 <b>Voicemail on the agents line</b> — ${who} (${duration}s)\n${recordingUrl}.mp3`,
+  await sendCampaignAlert(sb,
+    `🎙 <b>Voicemail on the agents line</b> — ${who} (${duration}s)\n▶️ Listen: ${playUrl}\nTranscript follows in ~1 min.`,
     { buttons: num.length === 10 ? [{ text: "📞 Call back", data: `call:${num}` }] : undefined }
   )
   return NextResponse.json({ ok: true })

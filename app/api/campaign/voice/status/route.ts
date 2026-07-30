@@ -69,7 +69,7 @@ export async function POST(request: NextRequest) {
   const twiml = `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
   <Play>https://mission-control-three-chi.vercel.app/voicemail-greeting.mp3</Play>
-  <Record maxLength="120" playBeep="true" recordingStatusCallback="${RECORDING_CALLBACK}" recordingStatusCallbackMethod="POST"/>
+  <Record maxLength="120" playBeep="true" recordingStatusCallback="${RECORDING_CALLBACK}" recordingStatusCallbackMethod="POST" transcribe="true" transcribeCallback="https://mission-control-three-chi.vercel.app/api/campaign/voice/transcription"/>
 </Response>`
   return new NextResponse(twiml, { headers: { "Content-Type": "text/xml" } })
 }
