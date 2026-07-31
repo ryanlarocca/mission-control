@@ -37,8 +37,10 @@ export async function GET() {
     const sends = await pageAll<SendRow>((off) =>
       sb.from("campaign_sends").select("contact_id, touch_number, sent_at").eq("status", "sent").range(off, off + 999)
     )
+    // triage null = genuine replies only (auto_reply / dead_mailbox /
+    // unsubscribe rows are also kind=email_reply and must not count).
     const replies = await pageAll<{ contact_id: string | null; occurred_at: string }>((off) =>
-      sb.from("campaign_events").select("contact_id, occurred_at").eq("kind", "email_reply").range(off, off + 999)
+      sb.from("campaign_events").select("contact_id, occurred_at").eq("kind", "email_reply").is("triage", null).range(off, off + 999)
     )
     const replyTimes = new Map<string, number[]>()
     for (const r of replies) {

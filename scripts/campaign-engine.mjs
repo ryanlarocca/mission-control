@@ -494,6 +494,7 @@ async function scorecardPass() {
       .from("campaign_events")
       .select("contact_id, occurred_at")
       .eq("kind", "email_reply")
+      .is("triage", null) // genuine replies only — not OOO/dead-mailbox/unsub rows
       .gte("occurred_at", EXPERIMENT_START)
       .range(off, off + 999)
     if (error) throw new Error(`scorecard replies: ${error.message}`)
