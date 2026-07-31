@@ -194,6 +194,26 @@ async function countToday(table, tsCol, filters) {
 }
 
 // ---------- DRAFT pass ----------
+// Gated (non-auto) touches mint ONCE per day in a single batch → one review
+// ping, not a drip of them every 20 minutes (Ryan 2026-07-31: T2 approval
+// gate discussion). Auto touches top up continuously and silently.
+const GATED_DRAFT_STATE = path.join(__dirname, ".campaign-gated-draft-state.json")
+
+function gatedMintAllowedToday() {
+  if (laHourNow() < 6) return false // batch mints on the first pass after 6am PT
+  const p = ptDateParts(new Date())
+  const today = `${p.year}-${p.month}-${p.day}`
+  try {
+    if (JSON.parse(fs.readFileSync(GATED_DRAFT_STATE, "utf-8")).last === today) return false
+  } catch { /* first run */ }
+  return true
+}
+
+function markGatedMinted() {
+  const p = ptDateParts(new Date())
+  fs.writeFileSync(GATED_DRAFT_STATE, JSON.stringify({ last: `${p.year}-${p.month}-${p.day}` }))
+}
+
 async function draftPass() {
   const sets = await fetchSuppressionSets()
   const draftedToday = await countToday("campaign_sends", "created_at")
@@ -225,6 +245,8 @@ async function draftPass() {
   let drafted = 0
   let autoApproved = 0
   let skippedSupp = 0
+  const gatedAllowed = gatedMintAllowedToday()
+  const gatedTouches = new Set()
   for (const c of due) {
     if (drafted >= budget) break
     if (isSuppressed(c, sets)) {
@@ -246,6 +268,8 @@ async function draftPass() {
       continue
     }
     const auto = AUTO_SEND_TOUCHES.has(touch)
+    if (!auto && !gatedAllowed) continue // gated touches mint once daily, first pass after 6am PT
+    if (!auto) gatedTouches.add(touch)
     if (dryRun) {
       log(`would draft T${touch}${auto ? " (auto-approved)" : ""} → ${c.name} <${c.email}> "${rendered.subject}"`)
       drafted++
@@ -255,7 +279,7 @@ async function draftPass() {
     const { error: insErr } = await sb.from("campaign_sends").insert({
       contact_id: c.id,
       touch_number: touch,
-      subject: rendered.subject,
+      subject: rendered.subject.trim(),
       body: rendered.body,
       status: auto ? "approved" : "draft",
       ...(auto ? { approved_at: new Date().toISOString(), scheduled_for: randomSendSlot() } : {}),
@@ -268,12 +292,14 @@ async function draftPass() {
     if (auto) autoApproved++
   }
   const needReview = drafted - autoApproved
-  log(`draft pass done: ${drafted} drafted (${autoApproved} auto-approved), ${skippedSupp} newly suppressed`)
-  if (drafted > 0 && !dryRun) {
-    const parts = []
-    if (autoApproved > 0) parts.push(`🚀 <b>${autoApproved}</b> auto-approved (T${[...AUTO_SEND_TOUCHES].join("/T")}) — sending in the next send window`)
-    if (needReview > 0) parts.push(`📝 <b>${needReview}</b> awaiting review in /email-campaign`)
-    await telegram(`Campaign drafts: ${parts.join(" · ")}`)
+  log(`draft pass done: ${drafted} drafted (${autoApproved} auto-approved, ${needReview} gated), ${skippedSupp} newly suppressed`)
+  if (gatedAllowed && !dryRun) markGatedMinted()
+  // Auto-approved minting is silent — the tick is machinery Ryan never
+  // feels; sends show up in the daily digest. Only a GATED batch pings,
+  // once a day, because that one needs his review.
+  if (needReview > 0 && !dryRun) {
+    const touchList = [...gatedTouches].sort((a, b) => a - b).map((t) => `T${t}`).join("/")
+    await telegram(`📝 <b>${needReview}</b> ${touchList} drafts ready for review in /email-campaign — approve when convenient; approved emails send at random experiment slots the next weekday.`)
   }
 }
 
