@@ -1,6 +1,7 @@
 "use client"
 
 import { useCallback, useEffect, useRef, useState } from "react"
+import { CampaignPerformance } from "@/components/widgets/CampaignPerformance"
 
 // Agent email-drip campaign workspace (Phase 3 of
 // briefs/EMAIL_DRIP_CAMPAIGN_2026-07-17.md). Mirrors the mockup Ryan
@@ -98,7 +99,7 @@ const EVENT_ICON: Record<string, string> = {
 }
 
 export function EmailCampaignTab() {
-  const [view, setView] = useState<"queue" | "contacts">("queue")
+  const [view, setView] = useState<"queue" | "contacts" | "performance">("queue")
   const [toast, setToast] = useState("")
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const ping = useCallback((msg: string) => {
@@ -353,16 +354,15 @@ export function EmailCampaignTab() {
       )}
 
       <div className="mb-4 flex gap-1 border-b border-zinc-800">
-        {(["queue", "contacts"] as const).map((v) => (
+        {(["queue", "contacts", "performance"] as const).map((v) => (
           <button
             key={v}
             onClick={() => setView(v)}
             className={`px-3.5 py-2 text-sm font-semibold ${view === v ? "border-b-2 border-emerald-400 text-zinc-100" : "text-zinc-500 hover:text-zinc-300"}`}
           >
-            {v === "queue" ? `Review queue${drafts.length ? ` (${drafts.length})` : ""}` : "Contacts"}
+            {v === "queue" ? `Review queue${drafts.length ? ` (${drafts.length})` : ""}` : v === "contacts" ? "Contacts" : "Performance"}
           </button>
         ))}
-        <span className="ml-auto self-center pb-1 text-[11px] text-zinc-600">Engagement tab arrives with reply tracking (Phase 5)</span>
       </div>
 
       {view === "queue" && (
@@ -494,6 +494,8 @@ export function EmailCampaignTab() {
           })}
         </div>
       )}
+
+      {view === "performance" && <CampaignPerformance />}
 
       {view === "contacts" && (
         <div>

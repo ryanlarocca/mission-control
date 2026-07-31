@@ -1,9 +1,11 @@
 import { NextRequest, NextResponse } from "next/server"
 import { getLeadsClient } from "@/lib/leads"
+import { randomSendSlot } from "@/lib/campaignSlots"
 
 // Batch-approve campaign drafts ("Approve all on page" / "Queue N for
 // send"). Only rows still in 'draft' flip — a concurrent skip or send
-// isn't clobbered.
+// isn't clobbered. Without an explicit hold-until, every row gets its own
+// random send-time-experiment slot (next weekday, 7a-5p PT).
 
 export async function POST(request: NextRequest) {
   let body: { ids?: unknown; scheduled_for?: unknown } = {}
@@ -28,14 +30,29 @@ export async function POST(request: NextRequest) {
 
   try {
     const sb = getLeadsClient()
-    const { data, error } = await sb
-      .from("campaign_sends")
-      .update({ status: "approved", approved_at: new Date().toISOString(), scheduled_for: scheduledFor })
-      .in("id", ids)
-      .eq("status", "draft")
-      .select("id")
-    if (error) return NextResponse.json({ error: error.message }, { status: 500 })
-    return NextResponse.json({ ok: true, approved: (data ?? []).length, scheduled_for: scheduledFor })
+    if (scheduledFor) {
+      const { data, error } = await sb
+        .from("campaign_sends")
+        .update({ status: "approved", approved_at: new Date().toISOString(), scheduled_for: scheduledFor })
+        .in("id", ids)
+        .eq("status", "draft")
+        .select("id")
+      if (error) return NextResponse.json({ error: error.message }, { status: 500 })
+      return NextResponse.json({ ok: true, approved: (data ?? []).length, scheduled_for: scheduledFor })
+    }
+    // No explicit time → per-row random experiment slot.
+    let approved = 0
+    for (const id of ids) {
+      const { data, error } = await sb
+        .from("campaign_sends")
+        .update({ status: "approved", approved_at: new Date().toISOString(), scheduled_for: randomSendSlot() })
+        .eq("id", id)
+        .eq("status", "draft")
+        .select("id")
+      if (error) return NextResponse.json({ error: error.message, approved }, { status: 500 })
+      approved += (data ?? []).length
+    }
+    return NextResponse.json({ ok: true, approved, scheduled_for: "experiment-random" })
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e)
     return NextResponse.json({ error: msg }, { status: 500 })

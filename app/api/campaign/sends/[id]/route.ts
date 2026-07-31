@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server"
 import { getLeadsClient } from "@/lib/leads"
+import { randomSendSlot } from "@/lib/campaignSlots"
 
 // Per-draft actions for the email-campaign approval queue: approve, skip,
 // unapprove, and inline edits (edits flag `edited` — the voice-learning
@@ -44,13 +45,16 @@ export async function PATCH(
     if (body.action === "approve") {
       patch.status = "approved"
       patch.approved_at = new Date().toISOString()
-      // Optional "don't send before" time (else send in the next pass).
+      // Optional "don't send before" time; default = a random send-time-
+      // experiment slot (next weekday, 7a-5p PT — Ryan 2026-07-31).
       if (typeof body.scheduled_for === "string" && body.scheduled_for.trim()) {
         const d = new Date(body.scheduled_for)
         if (Number.isNaN(d.getTime())) {
           return NextResponse.json({ error: "scheduled_for is not a valid time" }, { status: 400 })
         }
         patch.scheduled_for = d.toISOString()
+      } else {
+        patch.scheduled_for = randomSendSlot()
       }
     } else if (body.action === "skip") {
       patch.status = "skipped"

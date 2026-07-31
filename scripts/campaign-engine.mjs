@@ -66,7 +66,44 @@ const AUTO_SEND_TOUCHES = new Set(
     .map((s) => Number.parseInt(s.trim(), 10))
     .filter(Number.isFinite)
 )
-const WINDOW = { startHour: 9, endHour: 16.5 } // America/Los_Angeles, Mon-Fri (Ryan 2026-07-20)
+const WINDOW = { startHour: 7, endHour: 17 } // America/Los_Angeles, Mon-Fri (widened for the send-time experiment, Ryan 2026-07-31)
+
+// ---- Send-time experiment (Ryan 2026-07-31) ----
+// Every auto-approved send gets a uniformly random minute in the 7:00a-4:59p
+// PT window on the NEXT weekday. Next-day assignment (not same-day) keeps
+// hour coverage uniform — drafts minted mid-afternoon would otherwise only
+// ever land in late slots. Replies are analyzed against ACTUAL sent_at hour
+// (Friday scorecard + /email-campaign Performance tab).
+const EXPERIMENT_START = "2026-07-31"
+
+function ptDateParts(date) {
+  const fmt = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "America/Los_Angeles",
+    year: "numeric", month: "2-digit", day: "2-digit", weekday: "short",
+  })
+  return Object.fromEntries(fmt.formatToParts(date).map((p) => [p.type, p.value]))
+}
+
+function ptSlotToUtcIso(y, m, d, hour, minute) {
+  // PT is UTC-7 (PDT) or UTC-8 (PST) — pick the offset that round-trips.
+  for (const off of [7, 8]) {
+    const t = new Date(Date.UTC(y, m - 1, d, hour + off, minute))
+    const got = new Intl.DateTimeFormat("en-US", { timeZone: "America/Los_Angeles", hour: "numeric", hour12: false }).format(t)
+    if (Number(got) % 24 === hour) return t.toISOString()
+  }
+  return new Date(Date.UTC(y, m - 1, d, hour + 7, minute)).toISOString()
+}
+
+function randomSendSlot() {
+  const now = new Date()
+  for (let add = 1; add <= 4; add++) {
+    const parts = ptDateParts(new Date(now.getTime() + add * 86400_000))
+    if (parts.weekday === "Sat" || parts.weekday === "Sun") continue
+    const minuteOfDay = 7 * 60 + Math.floor(Math.random() * 10 * 60) // 7:00a-4:59p PT
+    return ptSlotToUtcIso(Number(parts.year), Number(parts.month), Number(parts.day), Math.floor(minuteOfDay / 60), minuteOfDay % 60)
+  }
+  return null
+}
 
 const sb = createClient(process.env.LRG_SUPABASE_URL, process.env.LRG_SUPABASE_SERVICE_KEY, {
   auth: { persistSession: false },
@@ -221,7 +258,7 @@ async function draftPass() {
       subject: rendered.subject,
       body: rendered.body,
       status: auto ? "approved" : "draft",
-      ...(auto ? { approved_at: new Date().toISOString() } : {}),
+      ...(auto ? { approved_at: new Date().toISOString(), scheduled_for: randomSendSlot() } : {}),
     })
     if (insErr) {
       if (/duplicate key/i.test(insErr.message)) continue // draft already pending — engine re-run
@@ -422,12 +459,82 @@ async function digestPass() {
   log(`digest sent: ${bounces.length} bounces`)
 }
 
+// ---------- Friday send-time scorecard ----------
+const SCORECARD_STATE = path.join(__dirname, ".campaign-scorecard-state.json")
+
+async function scorecardPass() {
+  // Fires once, Fridays after 4pm PT. Reply attribution: a sent email counts
+  // as "replied" if its contact logged an email_reply within 14 days after
+  // that send. Bins by ACTUAL sent_at hour (PT) since EXPERIMENT_START.
+  const parts = ptDateParts(new Date())
+  if (parts.weekday !== "Fri" || laHourNow() < 16) return
+  let lastSent = ""
+  try {
+    lastSent = JSON.parse(fs.readFileSync(SCORECARD_STATE, "utf-8")).last
+  } catch { /* first run */ }
+  const today = `${parts.year}-${parts.month}-${parts.day}`
+  if (lastSent === today) return
+
+  const sends = []
+  for (let off = 0; ; off += 1000) {
+    const { data, error } = await sb
+      .from("campaign_sends")
+      .select("contact_id, sent_at")
+      .eq("status", "sent")
+      .gte("sent_at", EXPERIMENT_START)
+      .range(off, off + 999)
+    if (error) throw new Error(`scorecard sends: ${error.message}`)
+    sends.push(...(data ?? []))
+    if (!data || data.length < 1000) break
+  }
+  if (sends.length === 0) return
+  const replies = new Map() // contact_id -> [reply times]
+  for (let off = 0; ; off += 1000) {
+    const { data, error } = await sb
+      .from("campaign_events")
+      .select("contact_id, occurred_at")
+      .eq("kind", "email_reply")
+      .gte("occurred_at", EXPERIMENT_START)
+      .range(off, off + 999)
+    if (error) throw new Error(`scorecard replies: ${error.message}`)
+    for (const r of data ?? []) {
+      if (!r.contact_id) continue
+      const arr = replies.get(r.contact_id) ?? []
+      arr.push(new Date(r.occurred_at).getTime())
+      replies.set(r.contact_id, arr)
+    }
+    if (!data || data.length < 1000) break
+  }
+  const bins = new Map() // pt hour -> {sent, replied}
+  for (const s of sends) {
+    const t = new Date(s.sent_at)
+    const hour = Number(new Intl.DateTimeFormat("en-US", { timeZone: "America/Los_Angeles", hour: "numeric", hour12: false }).format(t)) % 24
+    const b = bins.get(hour) ?? { sent: 0, replied: 0 }
+    b.sent++
+    const rts = replies.get(s.contact_id) ?? []
+    const sMs = t.getTime()
+    if (rts.some((rt) => rt > sMs && rt - sMs < 14 * 86400_000)) b.replied++
+    bins.set(hour, b)
+  }
+  const lines = [...bins.entries()]
+    .sort((a, b) => a[0] - b[0])
+    .map(([h, b]) => {
+      const label = h < 12 ? `${h}a` : h === 12 ? "12p" : `${h - 12}p`
+      const pct = b.sent ? ((100 * b.replied) / b.sent).toFixed(1) : "0.0"
+      return `${label}: ${b.sent} sent, ${b.replied} replies (${pct}%)`
+    })
+  await telegram(`📊 <b>Send-time scorecard</b> (since ${EXPERIMENT_START}, replies within 14d)\n${lines.join("\n")}\n\nFull chart: /email-campaign → Performance`)
+  fs.writeFileSync(SCORECARD_STATE, JSON.stringify({ last: today }))
+  log(`scorecard sent (${sends.length} sends analyzed)`)
+}
+
 // ---------- main ----------
 const digestOnly = args.includes("--digest")
 try {
   if (!digestOnly && doDraft) await draftPass()
   if (!digestOnly && doSend) await sendPass()
   await digestPass()
+  await scorecardPass()
 } catch (e) {
   console.error("[campaign] engine error:", e?.message ?? e)
   await telegram(`🔥 Campaign engine crashed: ${e?.message ?? e}`)
