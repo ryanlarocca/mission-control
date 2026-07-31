@@ -55,6 +55,17 @@ for (const line of fs.readFileSync(path.join(REPO_ROOT, ".env.local"), "utf-8").
 const SEND_AS = process.env.CAMPAIGN_SEND_AS || "info@lrghomes.com"
 const DRAFT_DAILY_CAP = Number(process.env.CAMPAIGN_DRAFT_CAP || 200)
 const SEND_DAILY_CAP = Number(process.env.CAMPAIGN_SEND_CAP || 200)
+// Per-touch training wheels (Ryan 2026-07-31: "I don't need to approve the
+// 200 batch each day, at least for touch one"). Touches listed here are
+// drafted straight to 'approved' — no review stop. Everything else still
+// waits for Ryan. Send-time safety checks (suppression, status, cap,
+// window) are unchanged and never bypassable. Extend later: "1,2,3".
+const AUTO_SEND_TOUCHES = new Set(
+  (process.env.CAMPAIGN_AUTO_SEND_TOUCHES || "")
+    .split(",")
+    .map((s) => Number.parseInt(s.trim(), 10))
+    .filter(Number.isFinite)
+)
 const WINDOW = { startHour: 9, endHour: 16.5 } // America/Los_Angeles, Mon-Fri (Ryan 2026-07-20)
 
 const sb = createClient(process.env.LRG_SUPABASE_URL, process.env.LRG_SUPABASE_SERVICE_KEY, {
@@ -175,6 +186,7 @@ async function draftPass() {
   if (error) throw new Error(`due fetch: ${error.message}`)
 
   let drafted = 0
+  let autoApproved = 0
   let skippedSupp = 0
   for (const c of due) {
     if (drafted >= budget) break
@@ -196,9 +208,11 @@ async function draftPass() {
       log(`touch ${touch} is a placeholder (${rendered.label}) — skipping ${c.email} until copy is written`)
       continue
     }
+    const auto = AUTO_SEND_TOUCHES.has(touch)
     if (dryRun) {
-      log(`would draft T${touch} → ${c.name} <${c.email}> "${rendered.subject}"`)
+      log(`would draft T${touch}${auto ? " (auto-approved)" : ""} → ${c.name} <${c.email}> "${rendered.subject}"`)
       drafted++
+      if (auto) autoApproved++
       continue
     }
     const { error: insErr } = await sb.from("campaign_sends").insert({
@@ -206,17 +220,23 @@ async function draftPass() {
       touch_number: touch,
       subject: rendered.subject,
       body: rendered.body,
-      status: "draft",
+      status: auto ? "approved" : "draft",
+      ...(auto ? { approved_at: new Date().toISOString() } : {}),
     })
     if (insErr) {
       if (/duplicate key/i.test(insErr.message)) continue // draft already pending — engine re-run
       throw new Error(`draft insert (${c.email}): ${insErr.message}`)
     }
     drafted++
+    if (auto) autoApproved++
   }
-  log(`draft pass done: ${drafted} drafted, ${skippedSupp} newly suppressed`)
+  const needReview = drafted - autoApproved
+  log(`draft pass done: ${drafted} drafted (${autoApproved} auto-approved), ${skippedSupp} newly suppressed`)
   if (drafted > 0 && !dryRun) {
-    await telegram(`📝 Campaign: <b>${drafted}</b> new drafts ready for review in /campaign`)
+    const parts = []
+    if (autoApproved > 0) parts.push(`🚀 <b>${autoApproved}</b> auto-approved (T${[...AUTO_SEND_TOUCHES].join("/T")}) — sending in the next send window`)
+    if (needReview > 0) parts.push(`📝 <b>${needReview}</b> awaiting review in /email-campaign`)
+    await telegram(`Campaign drafts: ${parts.join(" · ")}`)
   }
 }
 
