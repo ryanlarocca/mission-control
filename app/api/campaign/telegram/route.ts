@@ -10,6 +10,13 @@ import {
   sendPendingDraft,
   type DraftResult,
 } from "@/lib/campaignDraft"
+import {
+  applyTemplateCopy,
+  discardTemplateCopy,
+  reviseTemplateCopy,
+  reviseTemplatePending,
+  type CopyResult,
+} from "@/lib/campaignTemplates"
 
 // Dedicated campaign-bot webhook — the ZERO-TOKEN action path (2026-07-23,
 // Ryan: "get the thinking time down... maybe even no tokens"). The campaign
@@ -99,6 +106,27 @@ async function postDraft(chatId: number, replyToMessageId: number | undefined, o
   if (out.eventId && typeof tgId === "number") await attachDraftMessageId(out.eventId, tgId)
 }
 
+/** Post a template-copy preview with Apply/Discard buttons. */
+async function postCopyPreview(chatId: number, replyToMessageId: number | undefined, out: CopyResult): Promise<void> {
+  const payload = {
+    chat_id: chatId,
+    text: `📄 T${out.touch} template rewrite (rendered for "Alex"):\n\n————————————\nSubject: ${out.preview?.subject}\n————————————\n${out.preview?.body}\n————————————\n\n✅ Apply updates the template AND re-renders every un-sent T${out.touch} draft in the queue. Reply to THIS message with tweaks to revise. Nothing changes until you tap ✅.`,
+    reply_markup: {
+      inline_keyboard: [[
+        { text: "✅ Apply", callback_data: `capply:${out.eventId}` },
+        { text: "❌ Discard", callback_data: `cdisc:${out.eventId}` },
+      ]],
+    },
+  }
+  let sent = await tg("sendMessage", {
+    ...payload,
+    ...(replyToMessageId ? { reply_to_message_id: replyToMessageId, allow_sending_without_reply: true } : {}),
+  })
+  if (!sent?.ok) sent = await tg("sendMessage", payload)
+  const tgId = sent?.result?.message_id
+  if (out.eventId && typeof tgId === "number") await attachDraftMessageId(out.eventId, tgId)
+}
+
 function extractPhone(text: string): string | null {
   const m = text.match(/\((\d{3})\)\s?(\d{3})-(\d{4})/)
   return m ? `${m[1]}${m[2]}${m[3]}` : null
@@ -152,6 +180,32 @@ export async function POST(request: Request) {
         text: out.success ? `✅ Emailed ${out.label} — same thread, from info@.` : `⚠️ Not sent — ${out.error}`,
         reply_to_message_id: cb.message?.message_id,
       })
+    } else if (/^capply:/.test(cb.data)) {
+      const id = cb.data.slice(7)
+      await tg("answerCallbackQuery", { callback_query_id: cb.id, text: "Applying…" })
+      const out = await applyTemplateCopy(id)
+      if (out.success) {
+        await tg("editMessageReplyMarkup", { chat_id: chatId, message_id: cb.message?.message_id, reply_markup: { inline_keyboard: [] } })
+      }
+      await tg("sendMessage", {
+        chat_id: chatId,
+        text: out.success
+          ? `✅ T${out.touch} template updated — ${out.redrafted} queued draft${out.redrafted === 1 ? "" : "s"} re-rendered with the new copy. All future T${out.touch} emails use it.`
+          : `⚠️ Not applied — ${out.error}`,
+        reply_to_message_id: cb.message?.message_id,
+      })
+    } else if (/^cdisc:/.test(cb.data)) {
+      const id = cb.data.slice(6)
+      await tg("answerCallbackQuery", { callback_query_id: cb.id, text: "Discarding…" })
+      const out = await discardTemplateCopy(id)
+      if (out.success) {
+        await tg("editMessageReplyMarkup", { chat_id: chatId, message_id: cb.message?.message_id, reply_markup: { inline_keyboard: [] } })
+      }
+      await tg("sendMessage", {
+        chat_id: chatId,
+        text: out.success ? "🗑 Copy edit discarded — template unchanged." : `⚠️ ${out.error}`,
+        reply_to_message_id: cb.message?.message_id,
+      })
     } else if (ddisc) {
       await tg("answerCallbackQuery", { callback_query_id: cb.id, text: "Discarding…" })
       const out = await discardPendingDraft(ddisc[1])
@@ -178,6 +232,30 @@ export async function POST(request: Request) {
   const body = (msg.text || "").trim()
   const repliedText = msg.reply_to_message?.text || msg.reply_to_message?.caption || ""
   if (!body) return NextResponse.json({ ok: true })
+
+  // "copy: T2 <guidance>" — TEMPLATE-level edit (2026-08-06, Ryan: "handle
+  // everything inside Telegram... change the copy... at the template
+  // level"). Standalone command, no reply-to needed. Approval-gated: the
+  // preview posts with [✅ Apply] [❌ Discard]; apply also re-renders the
+  // touch's un-sent queue so nothing sends with stale wording.
+  if (/^copy:?(\s|$)/i.test(body)) {
+    const m = /^copy:?\s*t?\s*(\d{1,2})\s+([\s\S]+)$/i.exec(body)
+    if (!m) {
+      await tg("sendMessage", {
+        chat_id: chatId,
+        text: "⚠️ Nothing changed. Usage: copy: T2 <what to change> — e.g. copy: T2 shorten the middle paragraph and mention 1031 buyers.",
+        reply_to_message_id: msg.message_id,
+      })
+      return NextResponse.json({ ok: true })
+    }
+    const out = await reviseTemplateCopy({ touch: Number(m[1]), guidance: m[2].trim() })
+    if (!out.success || !out.eventId) {
+      await tg("sendMessage", { chat_id: chatId, text: `⚠️ Couldn't rewrite — ${out.error}`, reply_to_message_id: msg.message_id })
+      return NextResponse.json({ ok: true })
+    }
+    await postCopyPreview(chatId, msg.message_id, out)
+    return NextResponse.json({ ok: true })
+  }
 
   if (!msg.reply_to_message) {
     await tg("sendMessage", {
@@ -206,6 +284,19 @@ export async function POST(request: Request) {
   const repliedTgId = msg.reply_to_message?.message_id
   if (typeof repliedTgId === "number") {
     const known = await findDraftByTgMessage(repliedTgId)
+    if (known && (known.triage === "pending_copy" || known.triage.startsWith("copy_"))) {
+      // Reply to a template-copy preview = further template tweaks.
+      const out = await reviseTemplatePending({ eventId: known.eventId, feedback: body })
+      if (!out.success || !out.eventId) {
+        await tg("sendMessage", { chat_id: chatId, text: `⚠️ Couldn't revise — ${out.error}`, reply_to_message_id: msg.message_id })
+        return NextResponse.json({ ok: true })
+      }
+      if (out.oldTgMessageId) {
+        await tg("editMessageReplyMarkup", { chat_id: chatId, message_id: out.oldTgMessageId, reply_markup: { inline_keyboard: [] } })
+      }
+      await postCopyPreview(chatId, msg.message_id, out)
+      return NextResponse.json({ ok: true })
+    }
     if (known) {
       const out = await reviseCampaignDraft({ eventId: known.eventId, feedback: body })
       if (!out.success || !out.eventId) {

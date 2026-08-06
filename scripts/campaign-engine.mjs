@@ -242,6 +242,13 @@ async function draftPass() {
     .limit(budget * 2) // headroom for skips
   if (error) throw new Error(`due fetch: ${error.message}`)
 
+  // Live copy from the DB (Telegram copy: edits land there); file is fallback.
+  const { data: tmplRows, error: tmplErr } = await sb
+    .from("campaign_templates")
+    .select("touch_number, label, subject, body")
+  if (tmplErr) throw new Error(`templates fetch: ${tmplErr.message}`)
+  const templates = new Map((tmplRows ?? []).map((t) => [t.touch_number, t]))
+
   let drafted = 0
   let autoApproved = 0
   let skippedSupp = 0
@@ -257,7 +264,7 @@ async function draftPass() {
       continue
     }
     const touch = c.touch_number + 1
-    const rendered = renderTouch(touch, c)
+    const rendered = renderTouch(touch, c, templates)
     if (!rendered) {
       // sequence complete — park the contact
       if (!dryRun) await sb.from("campaign_contacts").update({ status: "paused", next_touch_at: null }).eq("id", c.id)

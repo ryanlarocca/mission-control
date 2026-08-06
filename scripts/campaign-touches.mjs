@@ -124,8 +124,14 @@ Have a great holiday season. I'll be buying again in the new year. Talk soon.`,
   },
 ]
 
-export function renderTouch(touchNumber, contact) {
-  const t = TOUCHES.find((x) => x.touch === touchNumber)
+// Live copy is in the campaign_templates DB table (editable from Telegram
+// via the copy: command, 2026-08-06); pass its rows as `overrides` (Map of
+// touch_number → {subject, body, label}). The TOUCHES above are the seed
+// and the fallback when no DB row exists.
+export function renderTouch(touchNumber, contact, overrides) {
+  const file = TOUCHES.find((x) => x.touch === touchNumber)
+  const db = overrides?.get?.(touchNumber)
+  const t = db ? { label: db.label ?? file?.label, subject: db.subject, body: db.body } : file
   if (!t) return null
   if (!t.subject || !t.body) return { placeholder: true, label: t.label }
   const first = (contact.first_name || contact.name || "").trim().split(/\s+/)[0] || "there"
