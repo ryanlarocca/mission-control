@@ -3,22 +3,6 @@
     "source": "AGENT-DRIP",
     "source_type": "direct_mail"
   },
-  "ryansva@lrghomes.com": {
-    "source": "Legacy DM",
-    "source_type": "direct_mail"
-  },
-  "ryansvb@lrghomes.com": {
-    "source": "Legacy DM",
-    "source_type": "direct_mail"
-  },
-  "ryansvc@lrghomes.com": {
-    "source": "Legacy DM",
-    "source_type": "direct_mail"
-  },
-  "ryansvd@lrghomes.com": {
-    "source": "Legacy DM",
-    "source_type": "direct_mail"
-  },
   "ryansvg@lrghomes.com": {
     "source": "MFM-A",
     "source_type": "direct_mail"
