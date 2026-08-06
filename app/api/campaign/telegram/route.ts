@@ -188,6 +188,18 @@ export async function POST(request: Request) {
     return NextResponse.json({ ok: true })
   }
 
+  // "draft:" with no guidance must NEVER fall through to the literal-send
+  // paths — Robert Moreno and Marisela Molina both received an email whose
+  // entire body was "draft:" (2026-08-03/06). Catch it before anything else.
+  if (/^draft:?\s*$/i.test(body)) {
+    await tg("sendMessage", {
+      chat_id: chatId,
+      text: "⚠️ Nothing sent. draft: needs guidance — e.g. draft: thank him and ask if the seller has a price in mind.",
+      reply_to_message_id: msg.message_id,
+    })
+    return NextResponse.json({ ok: true })
+  }
+
   // Reply to a posted DRAFT message = revision feedback (2026-07-29, the
   // Pamela 4plex/8plex fix). Claude rewrites with the old draft + feedback,
   // the old version is superseded (buttons cleared), v2 posts fresh buttons.
