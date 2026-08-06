@@ -143,6 +143,8 @@ export interface DraftLookup {
   eventId: string
   triage: string
   contactName: string
+  /** For copy-preview messages: which touch the preview was about. */
+  touch: number | null
 }
 
 /** Is this Telegram message one of our posted drafts? (reply-to-draft routing) */
@@ -154,8 +156,13 @@ export async function findDraftByTgMessage(tgMessageId: number): Promise<DraftLo
     .filter("raw->>tg_message_id", "eq", String(tgMessageId))
     .limit(1)
   if (!data?.length) return null
-  const raw = (data[0].raw ?? {}) as { contact_name?: string }
-  return { eventId: String(data[0].id), triage: data[0].triage ?? "", contactName: raw.contact_name ?? "" }
+  const raw = (data[0].raw ?? {}) as { contact_name?: string; touch?: number }
+  return {
+    eventId: String(data[0].id),
+    triage: data[0].triage ?? "",
+    contactName: raw.contact_name ?? "",
+    touch: typeof raw.touch === "number" ? raw.touch : null,
+  }
 }
 
 /** Rewrite a pending draft from Ryan's feedback; supersedes the old one. */

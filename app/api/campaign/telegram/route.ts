@@ -285,13 +285,22 @@ export async function POST(request: Request) {
   if (typeof repliedTgId === "number") {
     const known = await findDraftByTgMessage(repliedTgId)
     if (known && (known.triage === "pending_copy" || known.triage.startsWith("copy_"))) {
-      // Reply to a template-copy preview = further template tweaks.
-      const out = await reviseTemplatePending({ eventId: known.eventId, feedback: body })
+      // Reply to a template-copy preview = template tweaks. Live pending
+      // edit → revise it. Stale preview (already applied/discarded/
+      // superseded) → start a FRESH edit of that touch's CURRENT template
+      // from the reply (2026-08-06, Ryan: "i just want to be able to reply
+      // to the message instead of copy: as a command").
+      const out =
+        known.triage === "pending_copy"
+          ? await reviseTemplatePending({ eventId: known.eventId, feedback: body })
+          : known.touch
+            ? await reviseTemplateCopy({ touch: known.touch, guidance: body.replace(/^copy:\s*/i, "") })
+            : { success: false as const, error: "couldn't tell which touch that preview was for — use copy: T2 <changes>" }
       if (!out.success || !out.eventId) {
         await tg("sendMessage", { chat_id: chatId, text: `⚠️ Couldn't revise — ${out.error}`, reply_to_message_id: msg.message_id })
         return NextResponse.json({ ok: true })
       }
-      if (out.oldTgMessageId) {
+      if ("oldTgMessageId" in out && out.oldTgMessageId) {
         await tg("editMessageReplyMarkup", { chat_id: chatId, message_id: out.oldTgMessageId, reply_markup: { inline_keyboard: [] } })
       }
       await postCopyPreview(chatId, msg.message_id, out)
