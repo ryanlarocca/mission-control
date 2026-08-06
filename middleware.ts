@@ -32,6 +32,9 @@ const PUBLIC_PATHS = [
   // Playable voicemail-recording proxy (links in Telegram alerts; the only
   // input is a strictly-validated unguessable RecordingSid).
   "/api/campaign/vm",
+  // One-click unsubscribe (RFC 8058) — recipients + mail providers hit this
+  // with no session; token is HMAC-signed per contact.
+  "/api/campaign/unsub",
 ]
 
 export async function middleware(request: NextRequest) {

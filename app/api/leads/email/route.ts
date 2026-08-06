@@ -4,7 +4,7 @@ import { gmail_v1 } from "googleapis"
 // Pub/Sub push ack timeout is 10s by default; Gmail history.list + message.get
 // + Haiku triage + Supabase insert can blow past Vercel's 10s default. Bump it.
 export const maxDuration = 30
-import { CAMPAIGN_INBOX, processCampaignInbox } from "@/lib/campaignInbox"
+import { CAMPAIGN_INBOXES, processCampaignInbox } from "@/lib/campaignInbox"
 import {
   CAMPAIGN_MAP,
   EMAIL_CAMPAIGN_MAP,
@@ -465,8 +465,8 @@ export async function POST(request: Request) {
   // must NEVER flow into lead ingest. Route to the campaign pipeline, which
   // drops non-campaign mail before touching content (it's Ryan's primary
   // business mailbox).
-  if (emailAddress === CAMPAIGN_INBOX) {
-    await processCampaignInbox()
+  if (CAMPAIGN_INBOXES.includes(emailAddress)) {
+    await processCampaignInbox(emailAddress)
     return NextResponse.json({ ok: true })
   }
 

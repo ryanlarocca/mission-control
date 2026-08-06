@@ -23,7 +23,12 @@ import { addSuppression } from "@/lib/suppression"
 //                  queued sends cancelled, immediate Telegram alert
 //                  (locked decision: every reply alerts, from day one).
 
+// Sender migration 2026-08-06 (info@ reputation burned — Ryan's call):
+// ryansvr@ is the campaign's outbound gun going forward; info@ stays
+// watched for replies to pre-migration threads and rests its reputation.
+// BOTH are campaign inboxes: campaign-check-first, never lead ingest.
 export const CAMPAIGN_INBOX = "info@lrghomes.com"
+export const CAMPAIGN_INBOXES = ["ryansvr@lrghomes.com", "info@lrghomes.com"]
 
 const BOUNCE_SENDER_RE = /mailer-daemon@|postmaster@/i
 const BOUNCE_SUBJECT_RE = /delivery status notification|undeliverable|delivery incomplete|failure notice|returned mail/i
@@ -191,9 +196,9 @@ async function cancelQueuedSends(sb: SupabaseClient, contactId: string, why: str
 
 async function handleBounce(
   sb: SupabaseClient,
-  args: { gmailId: string; subject: string; body: string; headers: gmail_v1.Schema$MessagePartHeader[] | undefined }
+  args: { gmailId: string; subject: string; body: string; headers: gmail_v1.Schema$MessagePartHeader[] | undefined; mailbox: string }
 ): Promise<void> {
-  const { gmailId, subject, body, headers } = args
+  const { gmailId, subject, body, headers, mailbox } = args
   // Failed recipient: X-Failed-Recipients header, else Final-Recipient DSN
   // line, else first email in the body that isn't ours.
   let failed = getHeader(headers, "X-Failed-Recipients").toLowerCase().trim()
@@ -235,7 +240,7 @@ async function handleBounce(
     contact_id: contact.id,
     kind: "bounce",
     body: `${hard ? "hard" : "soft"} bounce for ${failed}`,
-    raw: { gmail_id: gmailId, failed_recipient: failed, hard },
+    raw: { gmail_id: gmailId, failed_recipient: failed, hard, mailbox },
   })
   // No Telegram for bounces (2026-07-21): 18 bounce pings buried Asha's
   // reply alert on day one. Bounce handling is fully automated; counts are
@@ -246,9 +251,9 @@ async function handleBounce(
 async function handleContactMessage(
   sb: SupabaseClient,
   contact: CampaignContact,
-  args: { gmailId: string; threadId: string | null; subject: string; body: string }
+  args: { gmailId: string; threadId: string | null; subject: string; body: string; mailbox: string }
 ): Promise<void> {
-  const { gmailId, threadId, subject, body } = args
+  const { gmailId, threadId, subject, body, mailbox } = args
   const fresh = stripQuoted(body)
   const nowIso = new Date().toISOString()
 
@@ -265,7 +270,7 @@ async function handleContactMessage(
       kind: "email_reply",
       triage: "unsubscribe",
       body: fresh.slice(0, 500),
-      raw: { gmail_id: gmailId, thread_id: threadId },
+      raw: { gmail_id: gmailId, thread_id: threadId, mailbox },
     })
     if (unsubEvErr) {
       if (/duplicate key/i.test(unsubEvErr.message)) return // concurrent notification already handled it
@@ -302,7 +307,7 @@ async function handleContactMessage(
       kind: "email_reply",
       body: fresh.slice(0, 500),
       triage: "dead_mailbox",
-      raw: { gmail_id: gmailId, thread_id: threadId },
+      raw: { gmail_id: gmailId, thread_id: threadId, mailbox },
     })
     await sendCampaignAlert(sb, `📪 Campaign: ${esc(contact.name ?? contact.email ?? "")} auto-replied that the mailbox is dead — marked bad_email`)
     return
@@ -316,7 +321,7 @@ async function handleContactMessage(
       kind: "email_reply",
       body: fresh.slice(0, 500),
       triage: "auto_reply",
-      raw: { gmail_id: gmailId, thread_id: threadId },
+      raw: { gmail_id: gmailId, thread_id: threadId, mailbox },
     })
     return
   }
@@ -328,7 +333,7 @@ async function handleContactMessage(
     contact_id: contact.id,
     kind: "email_reply",
     body: fresh.slice(0, 2000) || subject,
-    raw: { gmail_id: gmailId, thread_id: threadId, subject },
+    raw: { gmail_id: gmailId, thread_id: threadId, subject, mailbox },
   })
   if (evErr) {
     if (/duplicate key/i.test(evErr.message)) return // concurrent notification already handled it
@@ -345,14 +350,20 @@ async function handleContactMessage(
 }
 
 /**
- * Process a Gmail Pub/Sub notification for info@. Scans the recent inbox
- * (same recent-window pattern the lead watcher uses), classifies each
- * message, and drops everything that isn't campaign-related before any
- * content handling.
+ * Process a Gmail Pub/Sub notification for a campaign inbox. Scans the
+ * recent inbox (same recent-window pattern the lead watcher uses),
+ * classifies each message, and drops everything that isn't
+ * campaign-related before any content handling. With no argument, scans
+ * every campaign inbox (ryansvr@ new threads + info@ legacy threads).
  */
-export async function processCampaignInbox(): Promise<void> {
+export async function processCampaignInbox(mailbox?: string): Promise<void> {
+  const boxes = mailbox ? [mailbox] : CAMPAIGN_INBOXES
+  for (const box of boxes) await processOneCampaignInbox(box)
+}
+
+async function processOneCampaignInbox(mailbox: string): Promise<void> {
   const sb = getLeadsClient()
-  const gmail = getGmailClient(CAMPAIGN_INBOX)
+  const gmail = getGmailClient(mailbox)
 
   let ids: string[] = []
   try {
@@ -383,7 +394,7 @@ export async function processCampaignInbox(): Promise<void> {
       const isBounce = BOUNCE_SENDER_RE.test(sender) || BOUNCE_SUBJECT_RE.test(subject)
       if (isBounce) {
         const body = extractText(message.payload)
-        await handleBounce(sb, { gmailId, subject, body, headers })
+        await handleBounce(sb, { gmailId, subject, body, headers, mailbox })
         continue
       }
 
@@ -396,7 +407,7 @@ export async function processCampaignInbox(): Promise<void> {
         continue
       }
       const body = extractText(message.payload)
-      await handleContactMessage(sb, contact, { gmailId, threadId, subject, body })
+      await handleContactMessage(sb, contact, { gmailId, threadId, subject, body, mailbox })
     } catch (e) {
       console.error(`[campaign-inbox] failed on ${gmailId}:`, e)
       await sendCampaignAlert(sb, `⚠️ Campaign inbox processing failed on a message — check Vercel logs (${gmailId})`)

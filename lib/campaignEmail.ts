@@ -6,7 +6,12 @@ import { getGmailClient, getLeadsClient } from "@/lib/leads"
 // proper threaded reply from info@ — with In-Reply-To/References so it
 // threads correctly on the agent's side too.
 
-const SEND_AS = "info@lrghomes.com"
+// Sender migration 2026-08-06: new outbound goes out as ryansvr@ (info@'s
+// reputation is resting). Replies to PRE-migration threads still send from
+// info@ — the thread lives in info@'s mailbox and conversation continuity
+// wins; the reply event's raw.mailbox says which box owns the thread.
+const SEND_AS = process.env.CAMPAIGN_SEND_AS || "ryansvr@lrghomes.com"
+const LEGACY_SEND_AS = "info@lrghomes.com"
 
 export async function sendCampaignEmailReply(args: {
   contactName: string
@@ -33,11 +38,14 @@ export async function sendCampaignEmailReply(args: {
     .eq("kind", "email_reply")
     .order("occurred_at", { ascending: false })
     .limit(1)
-  const raw = (events?.[0]?.raw ?? {}) as { gmail_id?: string; thread_id?: string; subject?: string }
+  const raw = (events?.[0]?.raw ?? {}) as { gmail_id?: string; thread_id?: string; subject?: string; mailbox?: string }
   const threadId = raw.thread_id ?? contact.gmail_thread_id
   if (!threadId) return { success: false, error: "no Gmail thread on file — reply from Gmail" }
 
-  const gmail = getGmailClient(SEND_AS)
+  // Which mailbox owns this thread? Post-migration events record it;
+  // anything without the field predates the migration → info@.
+  const sendAs = raw.mailbox ?? LEGACY_SEND_AS
+  const gmail = getGmailClient(sendAs)
 
   // Pull threading headers + the actual sender address off their message.
   let inReplyTo = ""
@@ -67,7 +75,7 @@ export async function sendCampaignEmailReply(args: {
   if (!/^re:/i.test(subject)) subject = `Re: ${subject}`
 
   const mime = [
-    `From: Ryan LaRocca <${SEND_AS}>`,
+    `From: Ryan LaRocca <${sendAs}>`,
     `To: ${toAddr}`,
     `Subject: ${subject}`,
     ...(inReplyTo ? [`In-Reply-To: ${inReplyTo}`] : []),
@@ -89,7 +97,7 @@ export async function sendCampaignEmailReply(args: {
     contact_id: contact.id,
     kind: "email_out",
     body: body.slice(0, 1000),
-    raw: { via: "telegram_reply", thread_id: threadId },
+    raw: { via: "telegram_reply", thread_id: threadId, mailbox: sendAs },
   })
   return { success: true, label: `${contact.name} <${toAddr}>` }
 }

@@ -33,6 +33,7 @@
  */
 
 import fs from "node:fs"
+import { createHmac } from "node:crypto"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
 import { createClient } from "@supabase/supabase-js"
@@ -311,7 +312,15 @@ async function draftPass() {
 }
 
 // ---------- SEND pass ----------
-function buildMime({ from, to, subject, body }) {
+// One-click unsubscribe (RFC 8058, 2026-08-06 deliverability work): Gmail
+// strongly favors bulk mail with these headers; the POST target writes
+// straight to the master DNC.
+function unsubToken(contactId) {
+  const secret = process.env.CAMPAIGN_UNSUB_SECRET || ""
+  return `${contactId}.${createHmac("sha256", secret).update(contactId).digest("hex").slice(0, 32)}`
+}
+
+function buildMime({ from, to, subject, body, contactId }) {
   const headers = [
     `From: Ryan LaRocca <${from}>`,
     `To: ${to}`,
@@ -320,6 +329,11 @@ function buildMime({ from, to, subject, body }) {
     'Content-Type: text/plain; charset="UTF-8"',
     "Content-Transfer-Encoding: 7bit",
   ]
+  if (contactId && process.env.CAMPAIGN_UNSUB_SECRET) {
+    const url = `https://mission-control-three-chi.vercel.app/api/campaign/unsub/${unsubToken(contactId)}`
+    headers.push(`List-Unsubscribe: <mailto:${from}?subject=unsubscribe>, <${url}>`)
+    headers.push("List-Unsubscribe-Post: List-Unsubscribe=One-Click")
+  }
   return `${headers.join("\r\n")}\r\n\r\n${body}`
 }
 
@@ -356,9 +370,17 @@ async function sendPass() {
   const inWindow = hour >= WINDOW.startHour && hour <= WINDOW.endHour
 
   const sentToday = await countToday("campaign_sends", "sent_at", { status: ["sent"] })
-  let budget = Math.max(0, SEND_DAILY_CAP - sentToday)
+  // Warm-up ramp for the ryansvr@ migration (2026-08-06): 75/day week one,
+  // 150 week two, full cap after. Clear CAMPAIGN_RAMP_START to disable.
+  let rampCap = SEND_DAILY_CAP
+  if (process.env.CAMPAIGN_RAMP_START) {
+    const days = Math.floor((Date.now() - new Date(`${process.env.CAMPAIGN_RAMP_START}T00:00:00-07:00`).getTime()) / 86400_000)
+    rampCap = days < 7 ? 75 : days < 14 ? 150 : SEND_DAILY_CAP
+  }
+  const effectiveCap = Math.min(SEND_DAILY_CAP, rampCap)
+  let budget = Math.max(0, effectiveCap - sentToday)
   if (limit !== null) budget = Math.min(budget, limit)
-  log(`send pass: ${sentToday} sent today, budget ${budget}, ${inWindow ? "in-window" : "OUT of window"}`)
+  log(`send pass: ${sentToday} sent today, cap ${effectiveCap}${effectiveCap !== SEND_DAILY_CAP ? " (warm-up ramp)" : ""}, budget ${budget}, ${inWindow ? "in-window" : "OUT of window"}`)
   if (budget === 0) return
 
   const nowIso = new Date().toISOString()
@@ -406,7 +428,7 @@ async function sendPass() {
       continue
     }
     try {
-      const raw = b64url(buildMime({ from: SEND_AS, to, subject: row.subject, body: row.body }))
+      const raw = b64url(buildMime({ from: SEND_AS, to, subject: row.subject, body: row.body, contactId: row.contact_id }))
       const res = await gmail.users.messages.send({ userId: "me", requestBody: { raw } })
       const msg = res.data
       const nowIso = new Date().toISOString()
