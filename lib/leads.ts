@@ -16,10 +16,11 @@ export const CAMPAIGN_MAP: Record<string, string> = {
   // source_type=google_ads and routed to the google_ads_form drip (see
   // voice/sms route handlers).
   "+16506703914": "Google",
-  // Direct-mail response lines ported in from Google Voice 2026-08-03. Long-tail
-  // mailer numbers — a postcard can ring years after the send. Labels are the
-  // number itself until Ryan maps each to its original mailer campaign; when he
-  // does, swap the label here in place (rows already written keep the old label).
+  // Legacy direct-mail response lines ported in from Google Voice 2026-08-03
+  // (ex ryansva–j@ shell seats). Long-tail mailer numbers — a postcard can ring
+  // years after the send. Labels are the number itself until Ryan maps each to
+  // its original mailer campaign; when he does, swap the label here in place
+  // (rows already written keep the old label).
   "+14083372785": "Mailer 337-2785",
   "+14083419402": "Mailer 341-9402",
   "+14083573440": "Mailer 357-3440",
@@ -27,9 +28,19 @@ export const CAMPAIGN_MAP: Record<string, string> = {
   "+14083654925": "Mailer 365-4925",
   "+14084186294": "Mailer 418-6294",
   "+14084188450": "Mailer 418-8450",
-  "+14084585442": "Mailer 458-5442",
-  "+14084930632": "Mailer 493-0632",
+  // Office/administrative lines (also ported 2026-08-03): Ryan's old office
+  // number (ex ryan@ Voice) and the info@ line — used on email campaigns and
+  // website-era materials. See OFFICE_NUMBERS below: callers here are business
+  // contacts / returning outreach, never fresh direct-mail leads.
+  "+14084585442": "Office — Ryan",
+  "+14084930632": "Office — Info",
 }
+
+// Administrative lines: log + forward + voicemail like every other number, but
+// NEVER stamp a fresh drip cadence — a caller to an office line is responding
+// to email outreach or existing business, and auto-enrolling them in the
+// direct-mail drip would text mailer follow-ups at vendors/agents/clients.
+export const OFFICE_NUMBERS = new Set(["+14084585442", "+14084930632"])
 
 // Inbound calls/SMS to this number are almost always a lead returning Ryan's
 // outreach, not a fresh intake. The voice + sms webhooks dedup against the

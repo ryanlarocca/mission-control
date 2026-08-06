@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server"
 import {
+  OFFICE_NUMBERS,
   OUTBOUND_TWILIO_NUMBER,
   dedupeClusterStamps,
   getCampaignSource,
@@ -49,8 +50,9 @@ export async function POST(request: Request) {
   const isGoogleAds = to === "+16506703914"
   // A text to the outbound caller-ID number is a callback against outreach
   // Ryan already started — treat it as a callback, not a fresh intake, and
-  // never start a fresh drip on it.
-  const isOutboundCallback = to === OUTBOUND_TWILIO_NUMBER
+  // never start a fresh drip on it. Office/admin lines (OFFICE_NUMBERS) get
+  // the same treatment.
+  const isOutboundCallback = to === OUTBOUND_TWILIO_NUMBER || OFFICE_NUMBERS.has(to)
 
   if (from) {
     // Fake-lead score — assigned in the non-DNC path below, read again at

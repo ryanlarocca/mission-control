@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server"
 import {
   FORWARD_TO,
+  OFFICE_NUMBERS,
   OUTBOUND_TWILIO_NUMBER,
   dedupeClusterStamps,
   getCampaignSource,
@@ -61,8 +62,10 @@ export async function POST(request: Request) {
     const isGoogleAds = twilioNumber === "+16506703914"
     // A callback to the outbound caller-ID number is a lead responding to
     // outreach Ryan already started by hand — not a fresh direct-mail
-    // lead. It must NOT get a fresh drip stamp.
-    const isOutboundCallback = twilioNumber === OUTBOUND_TWILIO_NUMBER
+    // lead. It must NOT get a fresh drip stamp. Office/admin lines
+    // (OFFICE_NUMBERS) get the same treatment.
+    const isOutboundCallback =
+      twilioNumber === OUTBOUND_TWILIO_NUMBER || OFFICE_NUMBERS.has(twilioNumber)
     // Blocked / withheld caller ID — every such call arrives as the same
     // placeholder ("Anonymous" etc.), so it's NOT a usable contact key.
     const isAnon = isAnonymousCaller(callerPhone)
