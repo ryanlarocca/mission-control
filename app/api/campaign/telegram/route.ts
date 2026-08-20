@@ -17,6 +17,18 @@ import {
   reviseTemplatePending,
   type CopyResult,
 } from "@/lib/campaignTemplates"
+import {
+  extractContactFromImage,
+  findDuplicates,
+  formatPending,
+  insertRelationship,
+  parseCaptionHints,
+  parsePending,
+  retierRelationship,
+  type ExtractedContact,
+  type ImageMediaType,
+  type Tier,
+} from "@/lib/contactIntake"
 
 // Dedicated campaign-bot webhook — the ZERO-TOKEN action path (2026-07-23,
 // Ryan: "get the thinking time down... maybe even no tokens"). The campaign
@@ -34,7 +46,7 @@ import {
 
 export const dynamic = "force-dynamic"
 export const runtime = "nodejs"
-export const maxDuration = 60 // draft: commands wait on a Claude API call
+export const maxDuration = 60 // draft:/photo intake wait on a Claude API call
 
 const CALL_INTENT_RE = /^(please\s+)?call(\s+(her|him|them|back))*(\s+back)?[.!\s]*$/i
 
@@ -42,6 +54,9 @@ type TgMessage = {
   message_id?: number
   chat?: { id?: number }
   text?: string
+  caption?: string
+  photo?: Array<{ file_id: string; file_size?: number; width?: number; height?: number }>
+  document?: { file_id: string; mime_type?: string; file_size?: number }
   reply_to_message?: { message_id?: number; text?: string; caption?: string }
 }
 type TgUpdate = {
@@ -125,6 +140,149 @@ async function postCopyPreview(chatId: number, replyToMessageId: number | undefi
   if (!sent?.ok) sent = await tg("sendMessage", payload)
   const tgId = sent?.result?.message_id
   if (out.eventId && typeof tgId === "number") await attachDraftMessageId(out.eventId, tgId)
+}
+
+/** Download a Telegram file by file_id → base64 + media type. */
+async function tgDownload(fileId: string): Promise<{ base64: string; mediaType: ImageMediaType } | { error: string }> {
+  const token = botToken()
+  if (!token) return { error: "bot token not set" }
+  const meta = (await tg("getFile", { file_id: fileId })) as { ok?: boolean; result?: { file_path?: string } } | null
+  const path = meta?.result?.file_path
+  if (!meta?.ok || !path) return { error: "Telegram getFile failed" }
+  const res = await fetch(`https://api.telegram.org/file/bot${token}/${path}`)
+  if (!res.ok) return { error: `download failed (${res.status})` }
+  const buf = Buffer.from(await res.arrayBuffer())
+  if (buf.length > 15 * 1024 * 1024) return { error: "image too large" }
+  const ext = path.toLowerCase().split(".").pop()
+  const mediaType: ImageMediaType =
+    ext === "png" ? "image/png" : ext === "gif" ? "image/gif" : ext === "webp" ? "image/webp" : "image/jpeg"
+  return { base64: buf.toString("base64"), mediaType }
+}
+
+function fmtPhone(p: string | null): string {
+  return p ? `(${p.slice(0, 3)}) ${p.slice(3, 6)}-${p.slice(6)}` : "no phone"
+}
+
+/** Final step of contact intake: insert + confirm. Assumes required fields present. */
+async function addContactAndReport(chatId: number, replyTo: number | undefined, c: ExtractedContact): Promise<void> {
+  const out = await insertRelationship({
+    name: c.name!,
+    phone: c.phone,
+    email: c.email,
+    category: c.category!,
+    tier: c.tier ?? "C",
+    source: c.source,
+    notes: c.notes,
+  })
+  await tg("sendMessage", {
+    chat_id: chatId,
+    text: out.success
+      ? `✅ Added ${c.name} (${c.category} / Tier ${c.tier ?? "C"}) — ${fmtPhone(c.phone)}${c.email ? `, ${c.email}` : ""}. Live in Mission Control → Relationships.${c.tier ? "" : " Tier defaulted to C — say the word to re-tier."}`
+      : `❌ Add failed — ${out.error}. Nothing was written.`,
+    ...(replyTo ? { reply_to_message_id: replyTo, allow_sending_without_reply: true } : {}),
+  })
+}
+
+/** Photo (+ caption) → Relationships contact. Replaces the old Thadius
+ * mc-relationships skill (2026-08-20). Dedup first, fast-path add when
+ * nothing required is missing, otherwise ask for just the missing field. */
+async function handleContactPhoto(chatId: number, msg: TgMessage): Promise<void> {
+  const caption = msg.caption ?? ""
+  const fileId = msg.photo?.length ? msg.photo[msg.photo.length - 1].file_id : msg.document?.file_id
+  if (!fileId) return
+  const img = await tgDownload(fileId)
+  if ("error" in img) {
+    await tg("sendMessage", { chat_id: chatId, text: `⚠️ Couldn't fetch the image — ${img.error}`, reply_to_message_id: msg.message_id })
+    return
+  }
+  const { contact, error } = await extractContactFromImage({ imageBase64: img.base64, mediaType: img.mediaType, caption })
+  if (!contact) {
+    await tg("sendMessage", { chat_id: chatId, text: `⚠️ Couldn't read a contact from that image — ${error}`, reply_to_message_id: msg.message_id })
+    return
+  }
+  // Caption is authoritative for category/tier — deterministic parse wins.
+  const hints = parseCaptionHints(caption)
+  if (hints.category) contact.category = hints.category
+  if (hints.tier) contact.tier = hints.tier
+
+  const missing: string[] = []
+  if (!contact.name) missing.push("name")
+  if (!contact.phone && !contact.email) missing.push("a phone or email")
+  if (!contact.category) missing.push("category (Agent / Vendor / Personal / PM / Investor / PrivateMoney / Seller)")
+  if (missing.length) {
+    await tg("sendMessage", {
+      chat_id: chatId,
+      text: `⚠️ Not added — I read ${contact.name ?? "no name"}, ${fmtPhone(contact.phone)}${contact.email ? `, ${contact.email}` : ""} but still need: ${missing.join(", ")}. Re-send the screenshot with those in the caption.`,
+      reply_to_message_id: msg.message_id,
+    })
+    return
+  }
+
+  const dups = await findDuplicates(contact)
+  if (dups.length) {
+    await tg("sendMessage", { chat_id: chatId, text: formatPending(contact, dups), reply_to_message_id: msg.message_id })
+    return
+  }
+  if (contact.uncertain || contact.otherNames.length) {
+    await tg("sendMessage", {
+      chat_id: chatId,
+      text: `${formatPending(contact, []).split("\n\n")[0]}\n\n🤔 I'm not fully sure about that read${contact.otherNames.length ? ` (also saw: ${contact.otherNames.join(", ")})` : ""}. Reply to THIS message "add" to add it, or "skip".`,
+      reply_to_message_id: msg.message_id,
+    })
+    return
+  }
+  await addContactAndReport(chatId, msg.message_id, contact)
+}
+
+/** Reply to a ⏸ PENDING CONTACT message: add / add anyway / update / skip. */
+async function handlePendingReply(chatId: number, msg: TgMessage, pendingText: string, body: string): Promise<boolean> {
+  const pending = parsePending(pendingText)
+  if (!pending) return false
+  const b = body.toLowerCase().trim()
+  const c = pending.contact
+  if (/^(skip|no|cancel|nevermind|never mind)\b/.test(b)) {
+    await tg("sendMessage", { chat_id: chatId, text: "👍 Skipped — nothing written.", reply_to_message_id: msg.message_id })
+    return true
+  }
+  if (/^(update|re-?tier|retier)\b/.test(b)) {
+    const id8 = pending.dupIds[0]
+    const tierM = /\b([a-e])\b/i.exec(b.replace(/^(update|re-?tier|retier)/, ""))
+    const tier = (tierM ? tierM[1].toUpperCase() : c.tier ?? "C") as Tier
+    if (!id8) {
+      await tg("sendMessage", { chat_id: chatId, text: "⚠️ No existing contact to update in that message.", reply_to_message_id: msg.message_id })
+      return true
+    }
+    const dups = await findDuplicates(c)
+    const target = dups.find((d) => d.id.startsWith(id8))
+    if (!target) {
+      await tg("sendMessage", { chat_id: chatId, text: "⚠️ Couldn't find that existing contact anymore.", reply_to_message_id: msg.message_id })
+      return true
+    }
+    const out = await retierRelationship(target.id, tier)
+    await tg("sendMessage", {
+      chat_id: chatId,
+      text: out.success ? `✅ ${target.name} re-tiered to ${tier}.` : `❌ Update failed — ${out.error}`,
+      reply_to_message_id: msg.message_id,
+    })
+    return true
+  }
+  if (/^(add|yes|go|add anyway|add it|add as new)\b/.test(b) || /^(a|add)$/.test(b)) {
+    // Tier override inline: "add as B"
+    const tierM = /\b(?:as|tier|level)\s+([a-e])\b/i.exec(b)
+    if (tierM) c.tier = tierM[1].toUpperCase() as Tier
+    if (!c.name || !c.category || (!c.phone && !c.email)) {
+      await tg("sendMessage", { chat_id: chatId, text: "⚠️ That pending contact is missing required fields — re-send the screenshot.", reply_to_message_id: msg.message_id })
+      return true
+    }
+    await addContactAndReport(chatId, msg.message_id, c)
+    return true
+  }
+  await tg("sendMessage", {
+    chat_id: chatId,
+    text: 'Reply "add anyway", "update" (optionally with a tier letter), or "skip".',
+    reply_to_message_id: msg.message_id,
+  })
+  return true
 }
 
 function extractPhone(text: string): string | null {
@@ -229,9 +387,22 @@ export async function POST(request: Request) {
   if (!msg || typeof chatId !== "number") return NextResponse.json({ ok: true })
   if (allowedChat && String(chatId) !== String(allowedChat)) return NextResponse.json({ ok: true })
 
+  // ---- Photo → Relationships contact (2026-08-20, replaces Thadius) ----
+  // Any image sent to this bot is a contact-intake request; the caption
+  // carries category/tier ("add this personal relationship ... A level").
+  if (msg.photo?.length || (msg.document?.mime_type ?? "").startsWith("image/")) {
+    await handleContactPhoto(chatId, msg)
+    return NextResponse.json({ ok: true })
+  }
+
   const body = (msg.text || "").trim()
   const repliedText = msg.reply_to_message?.text || msg.reply_to_message?.caption || ""
   if (!body) return NextResponse.json({ ok: true })
+
+  // Reply to a ⏸ PENDING CONTACT prompt → add anyway / update / skip.
+  if (repliedText && (await handlePendingReply(chatId, msg, repliedText, body))) {
+    return NextResponse.json({ ok: true })
+  }
 
   // "copy: T2 <guidance>" — TEMPLATE-level edit (2026-08-06, Ryan: "handle
   // everything inside Telegram... change the copy... at the template
@@ -260,7 +431,7 @@ export async function POST(request: Request) {
   if (!msg.reply_to_message) {
     await tg("sendMessage", {
       chat_id: chatId,
-      text: "Reply to a specific alert to act on it (tap-and-reply). Buttons on alerts work too. For questions, ask Thadius.",
+      text: "Reply to a specific alert to act on it (tap-and-reply). Buttons on alerts work too. Send a screenshot of a contact card with a caption (e.g. \"add as personal, tier A\") to add them to Relationships.",
       reply_to_message_id: msg.message_id,
     })
     return NextResponse.json({ ok: true })
