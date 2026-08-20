@@ -158,9 +158,16 @@ export async function findDuplicates(c: { name: string | null; phone: string | n
   for (const r of rows) {
     const fields: string[] = []
     const rName = String(r.name ?? "").toLowerCase().split(/\s+/).filter(Boolean).join(" ")
+    const rPhone = to10Digit(r.phone)
     if (qName && rName === qName) fields.push("name")
-    if (c.phone && to10Digit(r.phone) === c.phone) fields.push("phone")
+    if (c.phone && rPhone === c.phone) fields.push("phone")
     if (c.email && String(r.email ?? "").toLowerCase().trim() === c.email) fields.push("email")
+    // Near-miss: same last name + same phone prefix (first 7 digits) — catches
+    // "Jim Morelan 464-4436" vs on-file "James Morelan 464-4449" (2026-08-20).
+    if (!fields.length && qName && c.phone && rPhone.length === 10) {
+      const last = (n: string) => n.split(" ").pop() ?? ""
+      if (last(qName) && last(qName) === last(rName) && rPhone.slice(0, 7) === c.phone.slice(0, 7)) fields.push("last-name+phone-prefix")
+    }
     if (fields.length) out.push({ id: r.id, name: r.name, phone: r.phone, email: r.email, category: r.category, tier: r.tier, fields })
   }
   return out
