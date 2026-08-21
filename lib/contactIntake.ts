@@ -18,7 +18,10 @@ import { fetchAllRelationships, to10Digit } from "@/lib/relationships"
 // genuinely missing required field. Dedup ALWAYS runs first and a match
 // blocks the insert until Ryan says "add anyway" / "update".
 
-const MODEL = "claude-opus-5"
+// Sonnet 5, thinking off: this is OCR-grade extraction and the Telegram
+// webhook needs a fast answer (Opus 5 at effort low measured 31s; Telegram
+// re-delivers slow updates, which risks double-adds).
+const MODEL = "claude-sonnet-5"
 
 export const CATEGORIES = ["Agent", "Vendor", "Personal", "PM", "Investor", "PrivateMoney", "Seller"] as const
 export type Category = (typeof CATEGORIES)[number]
@@ -47,7 +50,7 @@ Rules:
 - category: map the caption's wording — "personal"/"friend"/"family" → Personal; "agent"/"realtor"/"broker" → Agent; "vendor"/"contractor"/"plumber"/"lender" → Vendor; "property manager"/"pm" → PM; "investor"/"wholesaler"/"buyer" → Investor; "private money"/"hard money" → PrivateMoney; "seller"/"owner" → Seller. If the caption doesn't say and the image makes it obvious (e.g. a Redfin agent page) use that; otherwise null.
 - tier: the caption's "A level" / "tier B" / "level c" → that letter. null if not stated.
 - source: one of Business Card, Referral, Redfin, iMessage, Networking, Email Thread, Other — infer from the image type (iPhone contact card → Other, iMessage → iMessage, business card → Business Card, Redfin → Redfin, email → Email Thread) unless the caption says.
-- notes: any useful context from the caption or image (title, company, how they know each other). Short. null if nothing.
+- notes: useful context from the caption or image (title, company, how they know each other). Short. Do NOT restate category or tier. null if nothing.
 - otherNames: if the image clearly shows several distinct people, list the others' names. Usually [].
 - uncertain: true only if the OCR is genuinely ambiguous (blurry digits, two candidate names, caption conflicts with image).
 Never invent a phone or email that is not legible in the image.`
@@ -62,8 +65,10 @@ const CONTACT_TOOL: Anthropic.Tool = {
       name: { type: ["string", "null"] },
       phone: { type: ["string", "null"], description: "exactly 10 digits or null" },
       email: { type: ["string", "null"] },
-      category: { type: ["string", "null"], enum: [...CATEGORIES, null] },
-      tier: { type: ["string", "null"], enum: ["A", "B", "C", "D", "E", null] },
+      // NOTE: strict mode rejects `enum` containing null on a ["string","null"]
+      // type (live 400 on 2026-08-20) — use anyOf with a null branch instead.
+      category: { anyOf: [{ type: "string", enum: [...CATEGORIES] }, { type: "null" }] },
+      tier: { anyOf: [{ type: "string", enum: ["A", "B", "C", "D", "E"] }, { type: "null" }] },
       source: { type: ["string", "null"] },
       notes: { type: ["string", "null"] },
       otherNames: { type: "array", items: { type: "string" } },
@@ -87,7 +92,7 @@ export async function extractContactFromImage(args: {
     const response = await client.messages.create({
       model: MODEL,
       max_tokens: 2048,
-      output_config: { effort: "low" },
+      thinking: { type: "disabled" },
       system: EXTRACT_SYSTEM,
       tools: [CONTACT_TOOL],
       tool_choice: { type: "tool", name: "record_contact" },

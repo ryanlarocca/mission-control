@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server"
+import { waitUntil } from "@vercel/functions"
 import { sendAgentsLineText, startAgentsLineRelayCall } from "@/lib/campaignSms"
 import { contactPhoneByName, sendCampaignEmailReply } from "@/lib/campaignEmail"
 import {
@@ -390,8 +391,16 @@ export async function POST(request: Request) {
   // ---- Photo → Relationships contact (2026-08-20, replaces Thadius) ----
   // Any image sent to this bot is a contact-intake request; the caption
   // carries category/tier ("add this personal relationship ... A level").
+  // Ack Telegram immediately and finish in the background (waitUntil keeps
+  // the function alive) — a slow vision call must never make Telegram
+  // re-deliver the update, which would double-add the contact.
   if (msg.photo?.length || (msg.document?.mime_type ?? "").startsWith("image/")) {
-    await handleContactPhoto(chatId, msg)
+    waitUntil(
+      handleContactPhoto(chatId, msg).catch(async (e) => {
+        console.error("[campaign-tg] contact photo failed:", e instanceof Error ? e.message : String(e))
+        await tg("sendMessage", { chat_id: chatId, text: `⚠️ Contact intake crashed — ${e instanceof Error ? e.message : String(e)}`, reply_to_message_id: msg.message_id })
+      })
+    )
     return NextResponse.json({ ok: true })
   }
 
