@@ -35,7 +35,7 @@ export async function POST(
   const { id } = await ctx.params
   if (!id) return NextResponse.json({ error: "id required" }, { status: 400 })
 
-  let body: { category?: unknown; tier?: unknown }
+  let body: { category?: unknown; tier?: unknown; preview?: unknown }
   try {
     body = await request.json()
   } catch {
@@ -69,30 +69,79 @@ export async function POST(
         { status: 400 }
       )
     }
-    if (!lead.name || !lead.name.trim()) {
+    // Gather the WHOLE contact cluster up front (2026-08-21). The UI promotes
+    // `mostRecentId`, which is usually the outbound call/text Ryan just made —
+    // a row with an EMPTY ai_summary and no notes. Reading only that row
+    // shipped contacts with "Promoted from Leads." and nothing else (Jerry /
+    // 1115 Mariposa). Context lives across the cluster: the inbound
+    // voicemail's ai_summary, each call's ai_notes, Ryan's typed notes.
+    const clusterOr: string[] = []
+    if (lead.caller_phone) clusterOr.push(`caller_phone.eq.${lead.caller_phone}`)
+    if (lead.email) clusterOr.push(`email.eq.${lead.email}`)
+    type ClusterRow = {
+      id: string; name: string | null; email: string | null; created_at: string; lead_type: string | null
+      ai_summary: string | null; ai_notes: string | null; notes: string | null; property_address: string | null
+    }
+    let cluster: ClusterRow[] = []
+    if (clusterOr.length > 0) {
+      const { data } = await sb
+        .from("leads")
+        .select("id, name, email, created_at, lead_type, ai_summary, ai_notes, notes, property_address")
+        .or(clusterOr.join(","))
+        .order("created_at", { ascending: true })
+      cluster = (data ?? []) as ClusterRow[]
+    }
+    if (!cluster.some((r) => r.id === lead.id)) {
+      cluster.push({ id: lead.id, name: lead.name, email: lead.email, created_at: new Date().toISOString(), lead_type: null, ai_summary: lead.ai_summary, ai_notes: null, notes: lead.notes, property_address: null })
+    }
+
+    const clean = (v: string | null | undefined) => (v || "").replace(/\s+/g, " ").trim()
+    const name = clean(lead.name) || clean([...cluster].reverse().find((r) => clean(r.name))?.name)
+    if (!name) {
       return NextResponse.json(
         { error: "lead has no name (set it on the card first, then promote)" },
         { status: 400 }
       )
     }
+    const email = lead.email || cluster.find((r) => r.email)?.email || null
+    const fmtDay = (iso: string) =>
+      new Date(iso).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric", timeZone: "America/Los_Angeles" })
 
-    // Carry the AI summary forward (compressed to one line) so the contact
-    // opens with usable context. If the call is still transcribing, ai_summary
-    // is empty here — applyAnalyzeCallResult self-heals these notes via
-    // source_lead_id once the transcript lands.
-    const aiContext = (lead.ai_summary || "").replace(/\s+/g, " ").trim()
-    const notes = aiContext
-      ? `Promoted from Leads. ${aiContext}`.slice(0, 1000)
-      : "Promoted from Leads."
+    // Best narrative: the longest ai_summary in the cluster (the triage
+    // summary is regenerated per inbound event; the richest one wins).
+    const summary = cluster.map((r) => clean(r.ai_summary)).sort((a, b) => b.length - a.length)[0] || ""
+    // Every distinct call analysis, chronological, dated.
+    const seenNotes = new Set<string>()
+    const callNotes = cluster
+      .filter((r) => clean(r.ai_notes))
+      .filter((r) => { const k = clean(r.ai_notes); if (seenNotes.has(k)) return false; seenNotes.add(k); return true })
+      .map((r) => `• ${fmtDay(r.created_at)} (${r.lead_type || "call"}): ${clean(r.ai_notes)}`)
+    // Ryan's typed notes, minus any prior promote marker.
+    const manual = Array.from(new Set(cluster.map((r) => clean(r.notes).replace(/^\[PROMOTED[^\]]*\]\s*/, "")).filter(Boolean)))
+    const addresses = Array.from(new Set(cluster.map((r) => clean(r.property_address)).filter(Boolean)))
+      .sort((a, b) => b.length - a.length)
+    const firstSeen = cluster[0]?.created_at
+    const today = new Date().toISOString().slice(0, 10)
+
+    const parts: string[] = [`Promoted from Leads ${today}${firstSeen ? ` · lead since ${fmtDay(firstSeen)}` : ""}`]
+    if (addresses.length) parts[0] += `\nProperty: ${addresses[0]}`
+    if (summary) parts.push(summary)
+    if (callNotes.length) parts.push(`Call notes:\n${callNotes.join("\n")}`)
+    if (manual.length) parts.push(`Ryan's notes: ${manual.join(" | ")}`)
+    const notes = parts.join("\n\n")
+
+    if (body.preview === true) {
+      return NextResponse.json({ ok: true, preview: true, name, phone: phoneE164, email, category, tier, notes, clusterRows: cluster.length })
+    }
 
     // Insert the Book-of-Business row. enriched_at = now() starts the 90-day
     // staleness clock from today.
     const { data: rel, error: insErr } = await sb
       .from("relationships")
       .insert({
-        name: lead.name.trim(),
+        name,
         phone: phoneE164,
-        email: lead.email || null,
+        email,
         category,
         tier,
         notes,
@@ -115,7 +164,6 @@ export async function POST(
     // cluster of leads rows sharing a phone/email; promotion means every row
     // for them must drop out of New/Contacted/Active and the Follow Ups
     // worklist.
-    const today = new Date().toISOString().slice(0, 10)
     const promoMarker = `[PROMOTED → Relationships: ${category} · ${today}]`
     const newNotes = lead.notes && lead.notes.trim()
       ? `${promoMarker} ${lead.notes}`

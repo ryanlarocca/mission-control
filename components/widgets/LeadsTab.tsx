@@ -452,6 +452,7 @@ export function LeadsTab() {
   // Promote → Relationships state. Per-card-open picker so two cards can't
   // both display the picker at once; in-flight + success/error per phone.
   const [promoteOpenFor, setPromoteOpenFor] = useState<string | null>(null)
+  const [promoteTier, setPromoteTier] = useState<"A" | "B" | "C" | "D">("C")
   const [promotingFor, setPromotingFor] = useState<string | null>(null)
   const [promoteError, setPromoteError] = useState<string | null>(null)
   const [promoteSuccessFor, setPromoteSuccessFor] = useState<string | null>(null)
@@ -1235,14 +1236,14 @@ export function LeadsTab() {
   // turns out to be a referral source — agent, vendor, etc. — not a seller.
   // Sets status=dead on the lead so it leaves the active queue; the
   // appended sheet row carries the lead's name/phone/AI summary forward.
-  async function promoteToRelationship(group: LeadGroup, category: RelationshipCategory) {
+  async function promoteToRelationship(group: LeadGroup, category: RelationshipCategory, tier: "A" | "B" | "C" | "D") {
     setPromoteError(null)
     setPromotingFor(group.phone)
     try {
       const res = await fetch(`/api/leads/${group.mostRecentId}/promote-to-relationship`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ category }),
+        body: JSON.stringify({ category, tier }),
       })
       const body = await res.json().catch(() => ({}))
       if (!res.ok || !body.ok) {
@@ -1675,7 +1676,9 @@ export function LeadsTab() {
               onDismissSuggestion={() => dismissSuggestedStatus(group)}
               promoteOpen={promoteOpenFor === group.phone}
               onTogglePromote={() => setPromoteOpenFor(prev => prev === group.phone ? null : group.phone)}
-              onPromoteToRelationship={(cat) => promoteToRelationship(group, cat)}
+              promoteTier={promoteTier}
+              onSetPromoteTier={setPromoteTier}
+              onPromoteToRelationship={(cat) => promoteToRelationship(group, cat, promoteTier)}
               promoting={promotingFor === group.phone}
               promoteError={promotingFor === null && promoteError && expandedPhone === group.phone ? promoteError : null}
               promoteSuccess={promoteSuccessFor === group.phone}
@@ -1743,6 +1746,8 @@ interface LeadCardProps {
   promoteOpen: boolean
   onTogglePromote: () => void
   onPromoteToRelationship: (category: RelationshipCategory) => void
+  promoteTier: "A" | "B" | "C" | "D"
+  onSetPromoteTier: (t: "A" | "B" | "C" | "D") => void
   promoting: boolean
   promoteError: string | null
   promoteSuccess: boolean
@@ -2454,6 +2459,24 @@ function LeadCard(p: LeadCardProps) {
             <div className="rounded-md border border-violet-900/60 bg-violet-950/20 px-3 py-2.5">
               <div className="text-[10px] uppercase tracking-wider text-violet-300/80 mb-1.5">
                 Move to Relationships as…
+              </div>
+              <div className="flex items-center gap-1.5 mb-2">
+                <span className="text-[10px] uppercase tracking-wider text-zinc-500 mr-1">Tier</span>
+                {(["A", "B", "C", "D"] as const).map(t => (
+                  <button
+                    key={t}
+                    onClick={() => p.onSetPromoteTier(t)}
+                    disabled={p.promoting}
+                    title={t === "A" ? "Every 30 days" : t === "B" ? "Every 45 days" : t === "C" ? "Every 60 days" : "Yearly"}
+                    className={`w-8 h-8 rounded-full text-xs font-bold border transition-colors disabled:opacity-50 ${
+                      p.promoteTier === t
+                        ? "bg-violet-500/30 border-violet-400 text-violet-100"
+                        : "bg-transparent border-zinc-700 text-zinc-500 hover:text-zinc-200 hover:border-zinc-500"
+                    }`}
+                  >
+                    {t}
+                  </button>
+                ))}
               </div>
               <div className="flex flex-wrap gap-1.5">
                 {RELATIONSHIP_CATEGORY_PICKER_ORDER.map(key => (
