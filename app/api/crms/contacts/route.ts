@@ -53,16 +53,24 @@ export async function GET() {
       buckets[t] = buckets[t].slice(0, DAILY_TARGETS[t])
     }
 
-    // Backfill: redistribute any queue shortfall to Agent so the queue
-    // always delivers totalTarget contacts when supply allows.
+    // Backfill: fill any queue shortfall from ANY category's leftover due
+    // contacts (notes-first / most-overdue-first, same sort as above) so the
+    // queue always delivers totalTarget when supply allows. Was Agent-only
+    // until 2026-08-21 — with 0 agents due that left a 1-person queue while
+    // 65 Personal/Seller/Investor/PM contacts sat overdue.
     const totalTargetVal = ALL_TYPES.reduce((s, t) => s + DAILY_TARGETS[t], 0)
     const totalFilled = ALL_TYPES.reduce((s, t) => s + buckets[t].length, 0)
     const shortfall = Math.max(0, totalTargetVal - totalFilled)
     if (shortfall > 0) {
-      const agentOverflow = fullBuckets.Agent.slice(
-        DAILY_TARGETS.Agent, DAILY_TARGETS.Agent + shortfall
+      const leftovers = ALL_TYPES.flatMap((t) =>
+        fullBuckets[t].slice(DAILY_TARGETS[t]).map((c) => ({ t, c }))
       )
-      buckets.Agent = [...buckets.Agent, ...agentOverflow]
+      leftovers.sort((x, y) => {
+        if (x.c.hasNotes !== y.c.hasNotes) return x.c.hasNotes ? -1 : 1
+        if (y.c.daysOverdue !== x.c.daysOverdue) return y.c.daysOverdue - x.c.daysOverdue
+        return (tierOrder[x.c.tier] ?? 3) - (tierOrder[y.c.tier] ?? 3)
+      })
+      for (const { t, c } of leftovers.slice(0, shortfall)) buckets[t].push(c)
     }
 
     const queue = interleave(buckets)
