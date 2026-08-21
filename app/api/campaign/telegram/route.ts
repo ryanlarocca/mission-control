@@ -30,6 +30,7 @@ import {
   type ImageMediaType,
   type Tier,
 } from "@/lib/contactIntake"
+import { CALENDAR_INTENT_RE, createCalendarEvent, extractEvent } from "@/lib/calendarIntake"
 
 // Dedicated campaign-bot webhook — the ZERO-TOKEN action path (2026-07-23,
 // Ryan: "get the thinking time down... maybe even no tokens"). The campaign
@@ -181,6 +182,44 @@ async function addContactAndReport(chatId: number, replyTo: number | undefined, 
       ? `✅ Added ${c.name} (${c.category} / Tier ${c.tier ?? "C"}) — ${fmtPhone(c.phone)}${c.email ? `, ${c.email}` : ""}. Live in Mission Control → Relationships.${c.tier ? "" : " Tier defaulted to C — say the word to re-tier."}`
       : `❌ Add failed — ${out.error}. Nothing was written.`,
     ...(replyTo ? { reply_to_message_id: replyTo, allow_sending_without_reply: true } : {}),
+  })
+}
+
+/** Text or photo(+caption) → Google Calendar event (2026-08-21, replaces the
+ * Thadius calendar-events skill). Creates immediately when unambiguous;
+ * asks one question otherwise. */
+async function handleCalendar(chatId: number, msg: TgMessage, text: string): Promise<void> {
+  let image: { base64: string; mediaType: ImageMediaType } | undefined
+  const fileId = msg.photo?.length ? msg.photo[msg.photo.length - 1].file_id : msg.document?.file_id
+  if (fileId) {
+    const img = await tgDownload(fileId)
+    if ("error" in img) {
+      await tg("sendMessage", { chat_id: chatId, text: `⚠️ Couldn't fetch the image — ${img.error}`, reply_to_message_id: msg.message_id })
+      return
+    }
+    image = img
+  }
+  const { event, error } = await extractEvent({ text, image })
+  if (!event) {
+    await tg("sendMessage", { chat_id: chatId, text: `⚠️ Couldn't read an event — ${error}`, reply_to_message_id: msg.message_id })
+    return
+  }
+  if (event.question || !event.summary || !event.start || !event.end) {
+    await tg("sendMessage", {
+      chat_id: chatId,
+      text: `🤔 ${event.question ?? "I couldn't pin down the date/time."}${event.summary ? ` (for: ${event.summary})` : ""}\nReply with the detail and the calendar keyword, e.g. "cal: Thursday 2pm".`,
+      reply_to_message_id: msg.message_id,
+    })
+    return
+  }
+  const out = await createCalendarEvent(event)
+  await tg("sendMessage", {
+    chat_id: chatId,
+    text: out.success
+      ? `📅 ${out.summary} — ${out.when}${event.location ? `\n📍 ${event.location}` : ""}${out.htmlLink ? `\n${out.htmlLink}` : ""}`
+      : `⚠️ Not added — ${out.error}`,
+    reply_to_message_id: msg.message_id,
+    disable_web_page_preview: true,
   })
 }
 
@@ -395,8 +434,10 @@ export async function POST(request: Request) {
   // the function alive) — a slow vision call must never make Telegram
   // re-deliver the update, which would double-add the contact.
   if (msg.photo?.length || (msg.document?.mime_type ?? "").startsWith("image/")) {
+    const caption = msg.caption ?? ""
+    const job = CALENDAR_INTENT_RE.test(caption) ? handleCalendar(chatId, msg, caption) : handleContactPhoto(chatId, msg)
     waitUntil(
-      handleContactPhoto(chatId, msg).catch(async (e) => {
+      job.catch(async (e) => {
         console.error("[campaign-tg] contact photo failed:", e instanceof Error ? e.message : String(e))
         await tg("sendMessage", { chat_id: chatId, text: `⚠️ Contact intake crashed — ${e instanceof Error ? e.message : String(e)}`, reply_to_message_id: msg.message_id })
       })
@@ -407,6 +448,18 @@ export async function POST(request: Request) {
   const body = (msg.text || "").trim()
   const repliedText = msg.reply_to_message?.text || msg.reply_to_message?.caption || ""
   if (!body) return NextResponse.json({ ok: true })
+
+  // "cal: <what/when>" / "add to calendar …" / "put this on my calendar …"
+  // → Google Calendar event. Standalone text, no reply-to needed.
+  if (/^(cal(endar)?:|add (this |it )?to (my )?calendar\b|put (this |it )?on (my )?calendar\b|schedule:)/i.test(body)) {
+    waitUntil(
+      handleCalendar(chatId, msg, body).catch(async (e) => {
+        console.error("[campaign-tg] calendar failed:", e instanceof Error ? e.message : String(e))
+        await tg("sendMessage", { chat_id: chatId, text: `⚠️ Calendar add crashed — ${e instanceof Error ? e.message : String(e)}`, reply_to_message_id: msg.message_id })
+      })
+    )
+    return NextResponse.json({ ok: true })
+  }
 
   // Reply to a ⏸ PENDING CONTACT prompt → add anyway / update / skip.
   if (repliedText && (await handlePendingReply(chatId, msg, repliedText, body))) {
@@ -440,7 +493,7 @@ export async function POST(request: Request) {
   if (!msg.reply_to_message) {
     await tg("sendMessage", {
       chat_id: chatId,
-      text: "Reply to a specific alert to act on it (tap-and-reply). Buttons on alerts work too. Send a screenshot of a contact card with a caption (e.g. \"add as personal, tier A\") to add them to Relationships.",
+      text: "Reply to a specific alert to act on it (tap-and-reply). Buttons on alerts work too. Send a screenshot of a contact card with a caption (e.g. \"add as personal, tier A\") to add them to Relationships. Say \"cal: showing at 123 Main St tomorrow 2pm with Ana\" (or send an invite screenshot captioned \"add to calendar\") to create a calendar event.",
       reply_to_message_id: msg.message_id,
     })
     return NextResponse.json({ ok: true })
