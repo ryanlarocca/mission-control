@@ -1,4 +1,5 @@
 import { getGmailClient, getLeadsClient } from "@/lib/leads"
+import { buildEmailMime, toGmailRaw } from "@/lib/emailMime"
 
 // Reply-by-Telegram for EMAIL alerts (2026-07-27, Ryan: typed replies to
 // AGENT REPLY alerts should just send). Maps an alert's contact name back
@@ -74,18 +75,15 @@ export async function sendCampaignEmailReply(args: {
   if (!toAddr) return { success: false, error: "no email address on file" }
   if (!/^re:/i.test(subject)) subject = `Re: ${subject}`
 
-  const mime = [
-    `From: Ryan LaRocca <${sendAs}>`,
-    `To: ${toAddr}`,
-    `Subject: ${subject}`,
-    ...(inReplyTo ? [`In-Reply-To: ${inReplyTo}`] : []),
-    ...(references ? [`References: ${references}`] : []),
-    "MIME-Version: 1.0",
-    'Content-Type: text/plain; charset="UTF-8"',
-    "",
+  // plain + HTML alternative — Gmail hard-wraps plain-only bodies (2026-08-21)
+  const mime = buildEmailMime({
+    from: `Ryan LaRocca <${sendAs}>`,
+    to: toAddr,
+    subject,
     body,
-  ].join("\r\n")
-  const rawB64 = Buffer.from(mime).toString("base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "")
+    extraHeaders: [...(inReplyTo ? [`In-Reply-To: ${inReplyTo}`] : []), ...(references ? [`References: ${references}`] : [])],
+  })
+  const rawB64 = toGmailRaw(mime)
 
   try {
     await gmail.users.messages.send({ userId: "me", requestBody: { raw: rawB64, threadId } })

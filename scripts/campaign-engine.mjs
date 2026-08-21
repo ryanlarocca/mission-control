@@ -33,6 +33,8 @@
  */
 
 import fs from "node:fs"
+import emailMime from "./email-mime.js"
+const { buildEmailMime } = emailMime
 import { createHmac } from "node:crypto"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
@@ -321,20 +323,15 @@ function unsubToken(contactId) {
 }
 
 function buildMime({ from, to, subject, body, contactId }) {
-  const headers = [
-    `From: Ryan LaRocca <${from}>`,
-    `To: ${to}`,
-    `Subject: ${subject}`,
-    "MIME-Version: 1.0",
-    'Content-Type: text/plain; charset="UTF-8"',
-    "Content-Transfer-Encoding: 7bit",
-  ]
+  // multipart/alternative via scripts/email-mime.mjs — plain 7bit bodies were
+  // hard-wrapped by Gmail at ~70 chars on delivery (2026-08-21).
+  const extraHeaders = []
   if (contactId && process.env.CAMPAIGN_UNSUB_SECRET) {
     const url = `https://mission-control-three-chi.vercel.app/api/campaign/unsub/${unsubToken(contactId)}`
-    headers.push(`List-Unsubscribe: <mailto:${from}?subject=unsubscribe>, <${url}>`)
-    headers.push("List-Unsubscribe-Post: List-Unsubscribe=One-Click")
+    extraHeaders.push(`List-Unsubscribe: <mailto:${from}?subject=unsubscribe>, <${url}>`)
+    extraHeaders.push("List-Unsubscribe-Post: List-Unsubscribe=One-Click")
   }
-  return `${headers.join("\r\n")}\r\n\r\n${body}`
+  return buildEmailMime({ from: `Ryan LaRocca <${from}>`, to, subject, body, extraHeaders })
 }
 
 function b64url(s) {

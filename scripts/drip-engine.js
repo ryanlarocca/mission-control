@@ -25,6 +25,7 @@ const fs = require("node:fs")
 const path = require("node:path")
 const { google } = require("googleapis")
 const { createClient } = require("@supabase/supabase-js")
+const { buildEmailMime } = require("./email-mime.js")
 
 // ─── env loader (matches scripts/run-migration.mjs) ─────────────────────────
 
@@ -828,15 +829,14 @@ function getGmailClient(userEmail) {
 }
 
 function buildRawEmail({ to, from, subject, body, inReplyTo, references }) {
-  const lines = [`To: ${to}`, `From: ${from}`, `Subject: ${subject}`]
-  if (inReplyTo) lines.push(`In-Reply-To: ${inReplyTo}`)
-  if (references && references.length > 0) lines.push(`References: ${references.join(" ")}`)
-  else if (inReplyTo) lines.push(`References: ${inReplyTo}`)
-  lines.push("MIME-Version: 1.0")
-  lines.push("Content-Type: text/plain; charset=UTF-8")
-  lines.push("")
-  lines.push(body)
-  return Buffer.from(lines.join("\r\n")).toString("base64url")
+  // multipart/alternative (plain + HTML) — Gmail hard-wraps plain-only
+  // bodies at ~70 chars on delivery (2026-08-21). Same builder as the
+  // campaign engine: scripts/email-mime.mjs.
+  const extraHeaders = []
+  if (inReplyTo) extraHeaders.push(`In-Reply-To: ${inReplyTo}`)
+  if (references && references.length > 0) extraHeaders.push(`References: ${references.join(" ")}`)
+  else if (inReplyTo) extraHeaders.push(`References: ${inReplyTo}`)
+  return Buffer.from(buildEmailMime({ from, to, subject, body, extraHeaders })).toString("base64url")
 }
 
 async function sendDripEmail({ lead, body, subject }) {
