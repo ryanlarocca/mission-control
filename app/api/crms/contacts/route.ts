@@ -2,7 +2,7 @@ import { NextResponse } from "next/server"
 import { getLeadsClient } from "@/lib/leads"
 import {
   CADENCE, DAILY_TARGETS, RELATIONSHIP_TYPES,
-  daysSince, emptyBuckets, fetchAllRelationships, interleave, toApiContact,
+  daysSince, emptyBuckets, fetchAllRelationships, interleave, queueOrder, toApiContact,
 } from "@/lib/relationships"
 
 // Today's cadence-due outreach queue, capped per category and interleaved.
@@ -40,21 +40,17 @@ export async function GET() {
       totalDueByType[c.type]++
     }
 
-    // Sort each bucket: notes first, then most overdue, then tier A > B > C > D.
-    const tierOrder: Record<string, number> = { A: 0, B: 1, C: 2, D: 3 }
+    // Sort each bucket: tier first, then real history over never-contacted,
+    // then most recently talked-to (see queueOrder).
     const fullBuckets = emptyBuckets()
     for (const t of ALL_TYPES) {
-      buckets[t].sort((a, b) => {
-        if (a.hasNotes !== b.hasNotes) return a.hasNotes ? -1 : 1
-        if (b.daysOverdue !== a.daysOverdue) return b.daysOverdue - a.daysOverdue
-        return (tierOrder[a.tier] ?? 3) - (tierOrder[b.tier] ?? 3)
-      })
+      buckets[t].sort(queueOrder)
       fullBuckets[t] = buckets[t]
       buckets[t] = buckets[t].slice(0, DAILY_TARGETS[t])
     }
 
     // Backfill: fill any queue shortfall from ANY category's leftover due
-    // contacts (notes-first / most-overdue-first, same sort as above) so the
+    // contacts (same queueOrder priority as above) so the
     // queue always delivers totalTarget when supply allows. Was Agent-only
     // until 2026-08-21 — with 0 agents due that left a 1-person queue while
     // 65 Personal/Seller/Investor/PM contacts sat overdue.
@@ -65,11 +61,7 @@ export async function GET() {
       const leftovers = ALL_TYPES.flatMap((t) =>
         fullBuckets[t].slice(DAILY_TARGETS[t]).map((c) => ({ t, c }))
       )
-      leftovers.sort((x, y) => {
-        if (x.c.hasNotes !== y.c.hasNotes) return x.c.hasNotes ? -1 : 1
-        if (y.c.daysOverdue !== x.c.daysOverdue) return y.c.daysOverdue - x.c.daysOverdue
-        return (tierOrder[x.c.tier] ?? 3) - (tierOrder[y.c.tier] ?? 3)
-      })
+      leftovers.sort((x, y) => queueOrder(x.c, y.c))
       for (const { t, c } of leftovers.slice(0, shortfall)) buckets[t].push(c)
     }
 

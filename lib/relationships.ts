@@ -129,6 +129,22 @@ export function toApiContact(row: RelationshipRow): ApiContact {
   }
 }
 
+// Queue priority (2026-08-21, Ryan: "favor people I've been talking to and
+// favor their tier above all else"): tier A > B > C > D first; then people
+// with a real contact history before never-contacted imports; then the
+// most recently talked-to (smallest overdue within the tier — same cadence,
+// so that IS recency); notes as the final tiebreak.
+const TIER_ORDER: Record<string, number> = { A: 0, B: 1, C: 2, D: 3 }
+export function queueOrder(a: ApiContact, b: ApiContact): number {
+  const t = (TIER_ORDER[a.tier] ?? 3) - (TIER_ORDER[b.tier] ?? 3)
+  if (t !== 0) return t
+  const aNever = a.lastContact === "never", bNever = b.lastContact === "never"
+  if (aNever !== bNever) return aNever ? 1 : -1
+  if (a.daysOverdue !== b.daysOverdue) return a.daysOverdue - b.daysOverdue
+  if (a.hasNotes !== b.hasNotes) return a.hasNotes ? -1 : 1
+  return 0
+}
+
 export function emptyBuckets(): Record<RelationshipCategory, ApiContact[]> {
   return { Agent: [], Vendor: [], Personal: [], PM: [], Investor: [], PrivateMoney: [], Seller: [] }
 }
