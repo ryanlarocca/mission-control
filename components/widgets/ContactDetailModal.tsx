@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from "react"
 import {
-  X, Loader2, Send, Save, Phone,
+  X, Loader2, Send, Save, Phone, PhoneCall,
   UserCheck, User, Wrench, TrendingUp, Home, Building2, Banknote,
 } from "lucide-react"
 import type { LucideIcon } from "lucide-react"
@@ -111,6 +111,8 @@ export function ContactDetailModal({ contact, onClose, onSendToast, onNotesSaved
   const [savingNotes, setSavingNotes] = useState(false)
   const [notesSaved, setNotesSaved] = useState(false)
   const [quickMessage, setQuickMessage] = useState("")
+  const [callNote, setCallNote] = useState("")
+  const [savingCall, setSavingCall] = useState(false)
   const [categoryPickerOpen, setCategoryPickerOpen] = useState(false)
   const [savingCategory, setSavingCategory] = useState(false)
   const [savingTier, setSavingTier] = useState(false)
@@ -219,6 +221,42 @@ export function ContactDetailModal({ contact, onClose, onSendToast, onNotesSaved
       onSendToast(`Save notes failed for ${contact.name}`)
     } finally {
       setSavingNotes(false)
+    }
+  }
+
+  // Log a phone call made outside the app: "call" touch + cadence clock +
+  // dated line appended to notes (server-side, /api/crms/log `note`).
+  async function handleLogCall() {
+    const note = callNote.trim()
+    if (!note || savingCall) return
+    setSavingCall(true)
+    try {
+      const res = await fetch("/api/crms/log", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          id: contact.id, modality: "call", message: note, note,
+          action: "sent", tier: contact.tier, category: contact.category,
+          generatedMessage: "", wasEdited: false,
+        }),
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(`log ${res.status}`)
+      if (typeof data?.notes === "string") {
+        setNotes(data.notes)
+        onNotesSaved(contact.id, data.notes)
+      }
+      setCallNote("")
+      onSendToast(`Call logged for ${contact.name}`)
+      fetch(`/api/crms/touches?phone=${encodeURIComponent(contact.phone)}&full=1`, { cache: "no-store" })
+        .then(r => r.json())
+        .then(d => setHistory(Array.isArray(d.history) ? d.history : []))
+        .catch(() => {})
+    } catch (e) {
+      console.error("Log call failed:", e)
+      onSendToast(`Couldn't log the call for ${contact.name}`)
+    } finally {
+      setSavingCall(false)
     }
   }
 
@@ -383,6 +421,29 @@ export function ContactDetailModal({ contact, onClose, onSendToast, onNotesSaved
               placeholder="Add a note..."
               style={{ fontSize: "16px" }}
             />
+          </div>
+
+          {/* Log a call */}
+          <div>
+            <p className="text-xs text-zinc-600 mb-1.5">Log a call</p>
+            <textarea
+              value={callNote}
+              onChange={e => setCallNote(e.target.value)}
+              rows={3}
+              className="w-full bg-zinc-900 border border-zinc-800 rounded px-3 py-2 text-zinc-200 leading-relaxed resize-none focus:outline-none focus:border-zinc-600"
+              placeholder="What did you talk about? Appends to notes and counts as today's touch."
+              style={{ fontSize: "16px" }}
+            />
+            <div className="flex justify-end mt-1.5">
+              <button
+                onClick={handleLogCall}
+                disabled={savingCall || !callNote.trim()}
+                className="flex items-center gap-1.5 text-xs text-sky-400 hover:text-sky-300 bg-sky-500/10 border border-sky-500/20 hover:border-sky-500/40 px-3 py-1.5 rounded transition-colors disabled:opacity-40 disabled:cursor-not-allowed min-h-[40px]"
+              >
+                {savingCall ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <PhoneCall className="w-3.5 h-3.5" />}
+                Save call
+              </button>
+            </div>
           </div>
 
           {/* Quick send */}

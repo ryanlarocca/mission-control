@@ -9,7 +9,7 @@ export const dynamic = "force-dynamic"
 export async function POST(request: Request) {
   try {
     const {
-      id, modality, message, action, tier, category, generatedMessage, wasEdited,
+      id, modality, message, action, tier, category, generatedMessage, wasEdited, note,
     } = await request.json()
 
     if (!id || typeof id !== "string") {
@@ -20,6 +20,7 @@ export async function POST(request: Request) {
     let logAppended = true
     let lastContactedWritten: boolean | null = null
     let snoozeWritten: boolean | null = null
+    let notes: string | null = null
 
     // Append-only touch row. generated_message (original AI draft) + was_edited
     // feed the generate route's voice few-shot and future voice-learning.
@@ -48,6 +49,20 @@ export async function POST(request: Request) {
       if (upd.error) console.error("Failed to update last_contacted_at:", upd.error)
     }
 
+    // Call notes (2026-08-21, Ryan: "sometimes I just call the relationship
+    // and there's no way to log the data from that call"). A dated line is
+    // appended to the contact's notes so it survives into enrichment +
+    // message generation, not just the touch log.
+    if (typeof note === "string" && note.trim()) {
+      const { data: cur } = await supabase.from("relationships").select("notes").eq("id", id).single()
+      const stamp = new Date().toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric", timeZone: "America/Los_Angeles" })
+      const line = `[${stamp} ${modality === "call" ? "call" : "note"}] ${note.trim()}`
+      const prev = String(cur?.notes ?? "").trim()
+      notes = prev ? `${prev}\n\n${line}` : line
+      const upd = await supabase.from("relationships").update({ notes, enriched_at: new Date().toISOString() }).eq("id", id)
+      if (upd.error) { console.error("Failed to append call note:", upd.error); notes = null }
+    }
+
     if (action === "skipped") {
       // Snooze the contact 24h so it drops out of today's queue.
       const until = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString()
@@ -65,7 +80,7 @@ export async function POST(request: Request) {
       )
     }
 
-    return NextResponse.json({ ok: true, logAppended, lastContactedWritten, snoozeWritten })
+    return NextResponse.json({ ok: true, logAppended, lastContactedWritten, snoozeWritten, notes })
   } catch (err) {
     console.error("crms/log error:", err)
     return NextResponse.json({ error: "Failed to log action" }, { status: 500 })

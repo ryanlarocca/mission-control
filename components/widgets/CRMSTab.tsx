@@ -5,7 +5,7 @@ import {
   Send, RefreshCw, SkipForward, Phone, Loader2,
   UserCheck, User, Wrench, TrendingUp, Home, Building2,
   MessageSquare, AlertTriangle, CheckCircle2, Check, Search, X, Banknote,
-  ListChecks, Undo2,
+  ListChecks, Undo2, PhoneCall,
 } from "lucide-react"
 import type { LucideIcon } from "lucide-react"
 import { ContactDetailModal } from "./ContactDetailModal"
@@ -339,6 +339,8 @@ function CRMSTabInner() {
   const [sendToast, setSendToast]     = useState<string | null>(null)
   const [touchesByPhone, setTouchesByPhone] = useState<Record<string, TouchesSummary>>({})
   const [detailPhone, setDetailPhone] = useState<string | null>(null)
+  const [callPanelOpen, setCallPanelOpen] = useState(false)
+  const [callNote, setCallNote]       = useState("")
 
   // ── Message state ──
   const [generatedMessages, setGeneratedMessages] = useState<Record<string, string>>({})
@@ -804,6 +806,46 @@ function CRMSTabInner() {
     } catch (e) {
       console.error("Mark Done log failed:", e)
       showSendToast(`Marked ${contact.name} done but failed to record date — will re-appear`)
+    } finally {
+      setActionPending(false)
+    }
+  }
+
+  // ── Log Call: Ryan phoned them (outside the app). Records a "call" touch,
+  // advances the cadence clock, appends the dated summary to notes.
+  async function handleLogCall() {
+    if (!selectedContact || actionPending) return
+    const note = callNote.trim()
+    if (!note) return
+    const contact = selectedContact
+    setActionPending(true)
+    try {
+      const res = await fetch("/api/crms/log", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          id: contact.id, modality: "call", message: note, note,
+          action: "sent", tier: contact.tier, category: contact.type,
+          generatedMessage: "", wasEdited: false,
+        }),
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok || data?.lastContactedWritten === false) {
+        showSendToast(`Call note saved for ${contact.name} but failed to record date — will re-appear`)
+      }
+      if (typeof data?.notes === "string") {
+        const patch = (c: CRMSContact) =>
+          c.id === contact.id ? { ...c, notes: data.notes, hasNotes: true, notesStale: false } : c
+        setContacts(prev => prev.map(patch))
+        setAllContacts(prev => prev.map(patch))
+      }
+      setCallNote("")
+      setCallPanelOpen(false)
+      setSent(prev => new Set(prev).add(contact.id))
+      advanceSelection(contact.id)
+    } catch (e) {
+      console.error("Log call failed:", e)
+      showSendToast(`Couldn't log the call for ${contact.name}`)
     } finally {
       setActionPending(false)
     }
@@ -1408,7 +1450,39 @@ function CRMSTabInner() {
                 )}
               </div>
 
-              {/* Action buttons — Skip, Mark Done (muted), Regenerate (secondary) + Send (primary) */}
+              {/* Log Call panel — summary of a phone call made outside the app */}
+              {callPanelOpen && (
+                <div className="px-4 py-3 border-t border-zinc-800 bg-zinc-900/60">
+                  <p className="text-xs text-zinc-500 mb-1.5">What did you talk about? Saved to their notes, counts as today&apos;s touch.</p>
+                  <textarea
+                    value={callNote}
+                    onChange={e => setCallNote(e.target.value)}
+                    rows={3}
+                    autoFocus
+                    placeholder="e.g. Called — he's listing the Willow St duplex in Sept, wants our number first."
+                    className="w-full bg-zinc-900 border border-zinc-700 rounded px-3 py-2 text-zinc-200 leading-relaxed resize-none focus:outline-none focus:border-zinc-500"
+                    style={{ fontSize: "16px" }}
+                  />
+                  <div className="flex justify-end gap-2 mt-1.5">
+                    <button
+                      onClick={() => { setCallPanelOpen(false); setCallNote("") }}
+                      className="text-xs text-zinc-500 hover:text-zinc-300 px-3 py-1.5"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      onClick={handleLogCall}
+                      disabled={actionPending || !callNote.trim()}
+                      className="flex items-center gap-1.5 text-xs font-medium text-sky-400 hover:text-sky-300 bg-sky-500/10 border border-sky-500/30 hover:border-sky-500/50 px-3 py-1.5 rounded transition-colors disabled:opacity-50 min-h-[40px]"
+                    >
+                      {actionPending ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <PhoneCall className="w-3.5 h-3.5" />}
+                      Save call
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {/* Action buttons — Skip, Remove, Mark Done, Log Call (muted), Regenerate (secondary) + Send (primary) */}
               <div className="px-4 py-3 border-t border-zinc-800 flex items-center gap-2 flex-wrap">
                 <button
                   onClick={handleSkip}
@@ -1436,6 +1510,19 @@ function CRMSTabInner() {
                 >
                   <Check className="w-3.5 h-3.5" />
                   Mark Done
+                </button>
+                <button
+                  onClick={() => setCallPanelOpen(o => !o)}
+                  disabled={actionPending}
+                  title="Log a phone call — note what you talked about"
+                  className={`flex items-center gap-1.5 text-xs px-3 py-1.5 rounded border transition-colors disabled:opacity-50 ${
+                    callPanelOpen
+                      ? "text-sky-300 bg-sky-500/15 border-sky-500/40"
+                      : "text-zinc-400 hover:text-zinc-200 bg-zinc-800 border-zinc-700"
+                  }`}
+                >
+                  <PhoneCall className="w-3.5 h-3.5" />
+                  Log Call
                 </button>
                 <button
                   onClick={regenerate}
