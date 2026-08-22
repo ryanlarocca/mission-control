@@ -690,10 +690,11 @@ async function healthPass() {
   // Once per weekday after 5:15pm PT (the window closed at 5:00).
   if (dryRun) return
   const wd = laWeekdayNow()
-  if (wd === "Sat" || wd === "Sun") return
+  const forced = args.includes("--health-now") // rehearsal flag
+  if (!forced && (wd === "Sat" || wd === "Sun")) return
   const now = new Date()
   const minutes = laHourNow() * 60 + Number(new Intl.DateTimeFormat("en-US", { timeZone: "America/Los_Angeles", minute: "numeric" }).format(now))
-  if (minutes < 17 * 60 + 15) return
+  if (!forced && minutes < 17 * 60 + 15) return
   const day = ptToday()
   const { data: existing } = await sb.from("campaign_settings").select("key").eq("key", `health:${day}`).maybeSingle()
   if (existing) return

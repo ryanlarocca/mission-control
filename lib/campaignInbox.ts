@@ -395,7 +395,9 @@ async function processOneCampaignInbox(mailbox: string): Promise<void> {
       const sender = parseSenderEmail(from)
       const threadId = message.threadId ?? null
 
-      if (!sender || sender.endsWith("@lrghomes.com")) continue
+      // Our own mail (internal lrghomes.com, or a campaign mailbox's self-sent
+      // copy, e.g. a redirected test) is never a reply or a bounce.
+      if (!sender || sender.endsWith("@lrghomes.com") || CAMPAIGN_INBOXES.includes(sender.toLowerCase())) continue
 
       const isBounce = BOUNCE_SENDER_RE.test(sender) || BOUNCE_SUBJECT_RE.test(subject)
       if (isBounce) {
