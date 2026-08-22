@@ -23,3 +23,6 @@ create table if not exists campaign_variants (
   personalize boolean not null default false,
   updated_at timestamptz not null default now()
 );
+-- status 'expired' for un-approved batches (constraint rebuilt with it added)
+-- alter table campaign_sends drop constraint campaign_sends_status_check;
+-- alter table campaign_sends add constraint campaign_sends_status_check check (status in (... existing ..., 'expired'));
