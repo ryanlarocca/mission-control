@@ -356,6 +356,7 @@ async function draftPass() {
   }
   const needReview = drafted - autoApproved
   log(`draft pass done: ${drafted} drafted (${autoApproved} auto-approved, ${needReview} gated), ${skippedSupp} newly suppressed, ${lintFailed} rejected by lint`)
+  if (lintFailed && !dryRun) bumpHealthCounter("lint_rejected", lintFailed)
   if (gatedAllowed && !dryRun) markGatedMinted()
   // Auto-approved minting is silent — the tick is machinery Ryan never
   // feels; sends show up in the daily digest. Only a GATED batch pings,
@@ -604,6 +605,109 @@ async function digestPass() {
   log(`digest sent: ${bounces.length} bounces`)
 }
 
+// ---------- Health monitoring (Phase B, 2026-08-21: "monitor and learn as we go") ----------
+// No Postmaster Tools exist for a gmail.com sender, so we watch every signal
+// we CAN see and keep a daily snapshot for trends: sent, bounces, genuine
+// replies, removes/unsubs, auto-replies, send failures, lint rejections,
+// pauses, and a daily CANARY (one freshly composed email to a never-opened
+// inbox Ryan reads once a week for placement). Snapshots live in
+// campaign_settings under health:<date> so the Friday scorecard and later
+// analysis can read them back.
+const HEALTH_STATE = path.join(__dirname, ".campaign-health-state.json")
+function readHealthState() {
+  try { return JSON.parse(fs.readFileSync(HEALTH_STATE, "utf-8")) } catch { return {} }
+}
+function bumpHealthCounter(key, n = 1) {
+  const st = readHealthState()
+  const day = ptToday()
+  st[day] = st[day] || {}
+  st[day][key] = (st[day][key] || 0) + n
+  fs.writeFileSync(HEALTH_STATE, JSON.stringify(st))
+}
+
+async function dayMetrics(dayStr) {
+  const start = new Date(`${dayStr}T00:00:00-07:00`).toISOString()
+  const end = new Date(`${dayStr}T23:59:59-07:00`).toISOString()
+  const cnt = async (table, col, mods) => {
+    let q = sb.from(table).select("id", { count: "exact", head: true }).gte(col, start).lte(col, end)
+    for (const [k, v] of Object.entries(mods)) q = Array.isArray(v) ? q.in(k, v) : v === null ? q.is(k, null) : q.eq(k, v)
+    const { count } = await q
+    return count ?? 0
+  }
+  const sent = await cnt("campaign_sends", "sent_at", { status: "sent" })
+  const failed = await cnt("campaign_sends", "created_at", { status: "failed" })
+  const bounces = await cnt("campaign_events", "occurred_at", { kind: "bounce" })
+  const replies = await cnt("campaign_events", "occurred_at", { kind: "email_reply", triage: null })
+  const unsubs = await cnt("campaign_events", "occurred_at", { kind: "email_reply", triage: "unsubscribe" })
+  const autoReplies = await cnt("campaign_events", "occurred_at", { kind: "email_reply", triage: ["auto_reply", "dead_mailbox"] })
+  const local = readHealthState()[dayStr] || {}
+  return { day: dayStr, sent, failed, bounces, replies, unsubs, autoReplies, lint_rejected: local.lint_rejected || 0, canary: local.canary || null }
+}
+
+async function canaryPass() {
+  const to = process.env.CAMPAIGN_CANARY_TO
+  if (!to || dryRun) return
+  const st = readHealthState()
+  const day = ptToday()
+  if (st[day]?.canary) return
+  const sentToday = await countToday("campaign_sends", "sent_at", { status: ["sent"] })
+  if (sentToday === 0) return // canary only rides along with a real send day
+  const { data: vt } = await sb.from("campaign_variants").select("*").eq("variant", "B").single()
+  if (!vt) return
+  const n = Object.values(st).filter((d) => d?.canary).length + 1
+  const composed = await composeVariantBody({ variant: vt, contact: { id: `canary-${day}`, name: "Ryan", first_name: "Ryan", email: to }, seed: `canary-${day}` })
+  const gmail = await gmailClient()
+  await sendCampaignMessage(gmail, { from: SEND_AS, to, subject: `[C${n}] ${composed.subject}`, body: composed.body, contactId: null, unsubHeaders: false })
+  bumpHealthCounter("canary_sent", 1)
+  st[day] = { ...(readHealthState()[day] || {}), canary: `C${n}` }
+  fs.writeFileSync(HEALTH_STATE, JSON.stringify(st))
+  log(`canary C${n} sent → ${to}`)
+}
+
+async function healthPass() {
+  // Once per weekday after 5:15pm PT (the window closed at 5:00).
+  if (dryRun) return
+  const wd = laWeekdayNow()
+  if (wd === "Sat" || wd === "Sun") return
+  const now = new Date()
+  const minutes = laHourNow() * 60 + Number(new Intl.DateTimeFormat("en-US", { timeZone: "America/Los_Angeles", minute: "numeric" }).format(now))
+  if (minutes < 17 * 60 + 15) return
+  const day = ptToday()
+  const { data: existing } = await sb.from("campaign_settings").select("key").eq("key", `health:${day}`).maybeSingle()
+  if (existing) return
+  const m = await dayMetrics(day)
+  // 7-day trailing window for context
+  const days = []
+  for (let i = 1; i <= 7; i++) {
+    const d = new Date(now.getTime() - i * 86_400_000)
+    const p = ptDateParts(d)
+    days.push(`${p.year}-${p.month}-${p.day}`)
+  }
+  const { data: hist } = await sb.from("campaign_settings").select("value").in("key", days.map((d) => `health:${d}`))
+  const agg = (hist ?? []).map((r) => r.value).reduce((a, v) => ({ sent: a.sent + (v.sent || 0), bounces: a.bounces + (v.bounces || 0), replies: a.replies + (v.replies || 0), unsubs: a.unsubs + (v.unsubs || 0) }), { sent: 0, bounces: 0, replies: 0, unsubs: 0 })
+  const pause = await getPause()
+  const pct = (n, d) => (d ? `${((n / d) * 100).toFixed(1)}%` : "—")
+  const warnings = []
+  if (m.sent && m.bounces / m.sent >= 0.01) warnings.push(`bounce rate ${pct(m.bounces, m.sent)} (watch line 1%, auto-pause 2%)`)
+  if (m.unsubs >= 2) warnings.push(`${m.unsubs} removes in one day`)
+  if (m.failed) warnings.push(`${m.failed} send failures`)
+  if (m.lint_rejected >= 3) warnings.push(`${m.lint_rejected} drafts rejected by lint`)
+  if (agg.sent >= 40 && agg.replies / agg.sent < 0.01) warnings.push(`7-day reply rate ${pct(agg.replies, agg.sent)} — below 1%`)
+  if (pause.paused) warnings.push(`PAUSED: ${pause.reason}`)
+  const status = warnings.length ? (warnings.some((w) => /PAUSED|2%/.test(w)) ? "🔴" : "🟡") : "🟢"
+  const snapshot = { ...m, warnings, sender: SEND_AS, cap: SEND_DAILY_CAP, recorded_at: now.toISOString() }
+  await sb.from("campaign_settings").upsert({ key: `health:${day}`, value: snapshot, updated_at: now.toISOString() })
+  if (m.sent === 0 && !warnings.length) { log("health: no sends today, snapshot stored, no card"); return }
+  await telegram(
+    `🩺 <b>Campaign health ${status} — ${wd} ${day.slice(5)}</b>\n` +
+      `📤 ${m.sent} sent from ${SEND_AS} (cap ${SEND_DAILY_CAP}) · ↩️ ${m.bounces} bounced (${pct(m.bounces, m.sent)}) · 💬 ${m.replies} replies · 🚫 ${m.unsubs} removes · 🤖 ${m.autoReplies} auto-replies · ⚠️ ${m.failed} failed · 🧹 ${m.lint_rejected} lint-rejected` +
+      (m.canary ? ` · 🐤 canary ${m.canary} sent` : "") +
+      `\n📈 7-day: ${agg.sent} sent, bounces ${pct(agg.bounces, agg.sent)}, replies ${pct(agg.replies, agg.sent)}, ${agg.unsubs} removes` +
+      (warnings.length ? `\n\n${warnings.map((w) => `• ${escHtml(w)}`).join("\n")}` : "\n\nAll clear. Ramp only moves when 3 straight days are green.")
+  )
+  log(`health card sent: ${status} ${warnings.join("; ")}`)
+}
+
 // ---------- Friday send-time scorecard ----------
 const SCORECARD_STATE = path.join(__dirname, ".campaign-scorecard-state.json")
 
@@ -680,6 +784,8 @@ try {
   if (!digestOnly && doDraft) await draftPass()
   if (!digestOnly && doSend) await sendPass()
   await digestPass()
+  if (!digestOnly && doSend) await canaryPass()
+  await healthPass()
   await scorecardPass()
 } catch (e) {
   console.error("[campaign] engine error:", e?.message ?? e)
