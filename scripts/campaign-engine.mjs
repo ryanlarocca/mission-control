@@ -221,6 +221,7 @@ function ptToday() {
 }
 
 function gatedMintAllowedToday() {
+  if (args.includes("--mint-now")) return true // rehearsal flag (use with --dry-run)
   if (laHourNow() < MINT_HOUR) return false // batch mints on the first pass after MINT_HOUR PT (evening, for the next weekday)
   const wd = laWeekdayNow()
   if (wd === "Fri" || wd === "Sat") return false // Fri/Sat evening batches would sit 2-3 days; Sunday evening mints Monday's
@@ -267,16 +268,16 @@ async function draftPass() {
   log(`draft pass: ${draftedToday} drafted today, ${backlog ?? 0} in draft/approved backlog, budget ${budget}`)
   if (budget === 0) return
 
-  const { data: due, error } = await sb
+  let dueQuery = sb
     .from("campaign_contacts")
     .select("id, name, first_name, email, phone, status, touch_number, next_touch_at, cohort, variant, property_address")
     .eq("status", "active")
     .not("email", "is", null)
     .lte("next_touch_at", new Date().toISOString())
-    .order("next_touch_at", { ascending: true })
-    .limit(budget * 2) // headroom for skips
+  if (COHORT) dueQuery = dueQuery.eq("cohort", COHORT) // Phase B: only tagged contacts
+  const { data: due, error } = await dueQuery.order("next_touch_at", { ascending: true }).limit(budget * 2) // headroom for skips
   if (error) throw new Error(`due fetch: ${error.message}`)
-  const dueList = COHORT ? (due ?? []).filter((c) => c.cohort === COHORT) : (due ?? [])
+  const dueList = due ?? []
   // Variant templates (A/B/C) for cohort T1 sends.
   const { data: variantRows } = await sb.from("campaign_variants").select("variant, touch_number, subject, body, personalize")
   const variants = new Map((variantRows ?? []).map((v) => [`${v.touch_number}:${v.variant}`, v]))
