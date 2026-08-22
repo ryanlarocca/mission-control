@@ -30,6 +30,7 @@ const navGroups = [
       { href: "/campaigns", label: "Campaigns", icon: Megaphone },
       { href: "/email-campaign", label: "Email Drip", icon: Zap },
       { href: "/redfin", label: "Redfin Search", icon: Search },
+      { href: "/deal-flow", label: "Deal Flow", icon: BarChart2 },
     ],
   },
   {
