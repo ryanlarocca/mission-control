@@ -49,3 +49,23 @@ Sender = **`ryan.lrghomes@gmail.com`**. On the record: 500 recipients/day hard c
 
 ## Test-inbox protocol (use every time)
 `ryanlarocca44@gmail.com` is the judge. Do not open, star, or "not spam" anything there until the batch is fully read. Unique bodies only. Tag subjects `[Xn]`. Read Spam folder first, then Promotions, remainder = Primary. Replace the judge inbox once it has seen a sender ~20 times.
+
+## Phase A results (2026-08-21 evening) — DONE
+
+Sender `ryan.lrghomes@gmail.com` wired via OAuth (Desktop client `campaign-gmail-sender` in GCP `lrg-mission-control`, app "LRG Mission Control", External, **still in Testing status with ryan.lrghomes@ as a test user** → refresh token expires after 7 days; follow-up: fill Branding's support email and Publish app, then re-consent once via `scripts/gmail-oauth-consent.mjs --write-env`). Token stored as `CAMPAIGN_GMAIL_OAUTH_*` (.env.local + Vercel prod). Pub/Sub watch registered on the mailbox; it's in `CAMPAIGN_INBOXES`. Code: `5852f81`.
+
+Judge inbox `ryanlarocca44@`, 11 unique bodies through `scripts/campaign-test-batch.mjs` (engine send path, plain+HTML, 2 min apart):
+
+| Tag | Variant | Placement |
+|---|---|---|
+| X1–X3 | typed-style notes (API-vs-app baseline) | **Primary ×3** |
+| X4 | July T1 template verbatim | Primary |
+| X5 | friendly "long time" | Primary |
+| X6 | "Intero" base, coffee ask | Primary |
+| **X7** | X6 shape **+ List-Unsubscribe headers** | **Promotions** |
+| X8 | bullet buy-box | Primary |
+| X9 | pitch language (POF, 24h offer, referral fee) | Primary |
+| X10 | long (~1,150 chars) | Primary |
+| X11 | property address as subject | Primary |
+
+Read: the sender is the whole story — 10/11 Primary including copy shapes that went Promotions from lrghomes.com this morning. The one reproducible Promotions trigger across both days is **List-Unsubscribe headers**. T1 ships without them (engine change live in `5852f81`); T2+ keep them. Judge inbox has now seen this sender 11× — retire it for placement tests (protocol: ~20 max).
