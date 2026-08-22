@@ -63,8 +63,22 @@ function gmailAuth(credentials, subject) {
   })
 }
 
+// Consumer-Gmail campaign sender (2026-08-21): OAuth refresh token instead of
+// DWD. Same topic — Gmail's push service account publishes to it regardless
+// of which account owns the watch.
+function oauthMailbox() {
+  const u = (process.env.CAMPAIGN_GMAIL_OAUTH_USER || "").toLowerCase()
+  return u && process.env.CAMPAIGN_GMAIL_OAUTH_REFRESH_TOKEN ? u : null
+}
+function oauthAuth() {
+  const auth = new google.auth.OAuth2(process.env.CAMPAIGN_GMAIL_OAUTH_CLIENT_ID, process.env.CAMPAIGN_GMAIL_OAUTH_CLIENT_SECRET)
+  auth.setCredentials({ refresh_token: process.env.CAMPAIGN_GMAIL_OAUTH_REFRESH_TOKEN })
+  return auth
+}
+
 async function callWatch(credentials, mailbox, topicPath) {
-  const gmail = google.gmail({ version: "v1", auth: gmailAuth(credentials, mailbox) })
+  const auth = mailbox === oauthMailbox() ? oauthAuth() : gmailAuth(credentials, mailbox)
+  const gmail = google.gmail({ version: "v1", auth })
   const { data } = await gmail.users.watch({
     userId: mailbox,
     requestBody: {
@@ -84,6 +98,7 @@ async function main() {
 
   const topicPath = `projects/${projectId}/topics/${TOPIC_NAME}`
   const mailboxes = loadMailboxes()
+  if (oauthMailbox()) mailboxes.push(oauthMailbox())
   console.log(`Renewing Gmail watch on topic: ${topicPath}`)
   console.log(`Mailboxes: ${mailboxes.join(", ")} (from ${path.relative(process.cwd(), CAMPAIGNS_PATH)})`)
 

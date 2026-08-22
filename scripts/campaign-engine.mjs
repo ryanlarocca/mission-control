@@ -33,13 +33,10 @@
  */
 
 import fs from "node:fs"
-import emailMime from "./email-mime.js"
-const { buildEmailMime } = emailMime
-import { createHmac } from "node:crypto"
+import { gmailClientFor, sendCampaignMessage } from "./campaign-gmail.mjs"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
 import { createClient } from "@supabase/supabase-js"
-import { google } from "googleapis"
 import { TOUCHES, renderTouch, nextOffsetDays } from "./campaign-touches.mjs"
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
@@ -317,38 +314,12 @@ async function draftPass() {
 // One-click unsubscribe (RFC 8058, 2026-08-06 deliverability work): Gmail
 // strongly favors bulk mail with these headers; the POST target writes
 // straight to the master DNC.
-function unsubToken(contactId) {
-  const secret = process.env.CAMPAIGN_UNSUB_SECRET || ""
-  return `${contactId}.${createHmac("sha256", secret).update(contactId).digest("hex").slice(0, 32)}`
-}
-
-function buildMime({ from, to, subject, body, contactId }) {
-  // multipart/alternative via scripts/email-mime.mjs — plain 7bit bodies were
-  // hard-wrapped by Gmail at ~70 chars on delivery (2026-08-21).
-  const extraHeaders = []
-  if (contactId && process.env.CAMPAIGN_UNSUB_SECRET) {
-    const url = `https://mission-control-three-chi.vercel.app/api/campaign/unsub/${unsubToken(contactId)}`
-    extraHeaders.push(`List-Unsubscribe: <mailto:${from}?subject=unsubscribe>, <${url}>`)
-    extraHeaders.push("List-Unsubscribe-Post: List-Unsubscribe=One-Click")
-  }
-  return buildEmailMime({ from: `Ryan LaRocca <${from}>`, to, subject, body, extraHeaders })
-}
-
-function b64url(s) {
-  return Buffer.from(s).toString("base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "")
-}
-
-async function gmailClient() {
-  const credentials = JSON.parse(process.env.GOOGLE_SERVICE_ACCOUNT_KEY)
-  const auth = new google.auth.JWT({
-    email: credentials.client_email,
-    key: credentials.private_key,
-    scopes: ["https://www.googleapis.com/auth/gmail.modify"],
-    subject: SEND_AS,
-  })
-  await auth.authorize()
-  return google.gmail({ version: "v1", auth })
-}
+// Auth + MIME live in scripts/campaign-gmail.mjs (shared with the test-batch
+// sender): DWD for lrghomes.com mailboxes, OAuth for the consumer Gmail.
+// T1 sends carry NO List-Unsubscribe headers (2026-08-21 finding: headers
+// alone flipped Primary → Promotions; the body's "reply remove" line covers
+// opt-out). T2+ keep the one-click headers.
+const gmailClient = () => gmailClientFor(SEND_AS)
 
 async function sendPass() {
   // Postal-address gate removed 2026-07-18 by Ryan's explicit call (list is
@@ -425,9 +396,14 @@ async function sendPass() {
       continue
     }
     try {
-      const raw = b64url(buildMime({ from: SEND_AS, to, subject: row.subject, body: row.body, contactId: row.contact_id }))
-      const res = await gmail.users.messages.send({ userId: "me", requestBody: { raw } })
-      const msg = res.data
+      const msg = await sendCampaignMessage(gmail, {
+        from: SEND_AS,
+        to,
+        subject: row.subject,
+        body: row.body,
+        contactId: row.contact_id,
+        unsubHeaders: row.touch_number !== 1,
+      })
       const nowIso = new Date().toISOString()
       await sb.from("campaign_sends").update({
         status: "sent",

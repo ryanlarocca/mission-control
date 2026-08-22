@@ -28,7 +28,13 @@ import { addSuppression } from "@/lib/suppression"
 // watched for replies to pre-migration threads and rests its reputation.
 // BOTH are campaign inboxes: campaign-check-first, never lead ingest.
 export const CAMPAIGN_INBOX = "info@lrghomes.com"
-export const CAMPAIGN_INBOXES = ["ryansvr@lrghomes.com", "info@lrghomes.com"]
+// + the consumer-Gmail sender (2026-08-21) when its OAuth env is present, so
+// its replies/bounces flow through the same pipeline + Telegram alerts.
+export const CAMPAIGN_INBOXES = [
+  "ryansvr@lrghomes.com",
+  "info@lrghomes.com",
+  ...(process.env.CAMPAIGN_GMAIL_OAUTH_USER ? [process.env.CAMPAIGN_GMAIL_OAUTH_USER.toLowerCase()] : []),
+]
 
 const BOUNCE_SENDER_RE = /mailer-daemon@|postmaster@/i
 const BOUNCE_SUBJECT_RE = /delivery status notification|undeliverable|delivery incomplete|failure notice|returned mail/i
