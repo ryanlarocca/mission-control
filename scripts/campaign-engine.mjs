@@ -233,6 +233,18 @@ function markGatedMinted() {
 
 async function draftPass() {
   const sets = await fetchSuppressionSets()
+  const gatedAllowed = gatedMintAllowedToday()
+  // Expire earlier un-tapped batch(es) BEFORE the backlog count — a batch
+  // Ryan never approved must not linger (and send later by surprise), nor
+  // block tonight's mint by filling the cap. (Bug found 2026-08-21: the 195
+  // stale Aug-6 T2 drafts zeroed the budget.)
+  if (gatedAllowed && !dryRun) {
+    const { data: stale } = await sb.from("campaign_sends").select("id").eq("status", "draft").or(`batch_date.is.null,batch_date.lt.${ptToday()}`)
+    if (stale?.length) {
+      await sb.from("campaign_sends").update({ status: "expired", error: "batch not approved by next mint" }).in("id", stale.map((r) => r.id))
+      log(`expired ${stale.length} un-approved drafts from earlier batches`)
+    }
+  }
   const draftedToday = await countToday("campaign_sends", "created_at")
   // Backlog-aware budget (2026-07-28): only top the pipeline up to the cap.
   // Before this, the pass minted 200/day unconditionally — including Sat+Sun
@@ -273,19 +285,9 @@ async function draftPass() {
   let drafted = 0
   let autoApproved = 0
   let skippedSupp = 0
-  const gatedAllowed = gatedMintAllowedToday()
   const gatedTouches = new Set()
   let lintFailed = 0
   const variantCounts = {}
-  // Expire yesterday's un-tapped batch(es) before minting tonight's — a batch
-  // Ryan never approved must not linger and send later by surprise.
-  if (gatedAllowed && !dryRun) {
-    const { data: stale } = await sb.from("campaign_sends").select("id").eq("status", "draft").or(`batch_date.is.null,batch_date.lt.${ptToday()}`)
-    if (stale?.length) {
-      await sb.from("campaign_sends").update({ status: "expired", error: "batch not approved by next mint" }).in("id", stale.map((r) => r.id))
-      log(`expired ${stale.length} un-approved drafts from earlier batches`)
-    }
-  }
   for (const c of dueList) {
     if (drafted >= budget) break
     if (isSuppressed(c, sets)) {
