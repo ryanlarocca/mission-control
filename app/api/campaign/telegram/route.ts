@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server"
+import { approveBatch, setPaused, campaignStatusLine } from "@/lib/campaignBatch"
 import { waitUntil } from "@vercel/functions"
 import { sendAgentsLineText, startAgentsLineRelayCall } from "@/lib/campaignSms"
 import { contactPhoneByName, sendCampaignEmailReply } from "@/lib/campaignEmail"
@@ -356,6 +357,23 @@ export async function POST(request: Request) {
     const chatId = cb.message?.chat?.id
     if (allowedChat && String(chatId) !== String(allowedChat)) return NextResponse.json({ ok: true })
     const call = /^call:(\d{10})$/.exec(cb.data)
+    // Phase B one-tap batch approval (2026-08-21): "bapprove:YYYY-MM-DD"
+    const bapprove = /^bapprove:(\d{4}-\d{2}-\d{2})$/.exec(cb.data)
+    if (bapprove) {
+      await tg("answerCallbackQuery", { callback_query_id: cb.id, text: "Approving batch…" })
+      const out = await approveBatch(bapprove[1])
+      if (out.success) {
+        await tg("editMessageReplyMarkup", { chat_id: chatId, message_id: cb.message?.message_id, reply_markup: { inline_keyboard: [] } })
+      }
+      await tg("sendMessage", {
+        chat_id: chatId,
+        text: out.success
+          ? `✅ ${out.approved} email${out.approved === 1 ? "" : "s"} approved — they'll go out at random minutes between 7am and 5pm PT on the next weekday. Reply "pause campaign" any time to stop them.`
+          : `⚠️ Not approved — ${out.error}`,
+        reply_to_message_id: cb.message?.message_id,
+      })
+      return NextResponse.json({ ok: true })
+    }
     const dsend = /^dsend:([0-9a-f-]{36})$/.exec(cb.data)
     const ddisc = /^ddisc:([0-9a-f-]{36})$/.exec(cb.data)
     if (call) {
@@ -448,6 +466,23 @@ export async function POST(request: Request) {
   const body = (msg.text || "").trim()
   const repliedText = msg.reply_to_message?.text || msg.reply_to_message?.caption || ""
   if (!body) return NextResponse.json({ ok: true })
+
+  // Campaign kill switch + status (Phase B guardrails, 2026-08-21).
+  if (/^(pause|stop|halt) (the )?campaign\b/i.test(body)) {
+    await setPaused(true, "manual (Telegram)", "ryan")
+    await tg("sendMessage", { chat_id: chatId, text: "⏸ Campaign paused — no emails will send until you reply \"resume campaign\". Approved + scheduled emails stay queued.", reply_to_message_id: msg.message_id })
+    return NextResponse.json({ ok: true })
+  }
+  if (/^(resume|unpause|start) (the )?campaign\b/i.test(body)) {
+    await setPaused(false, "manual (Telegram)", "ryan")
+    await tg("sendMessage", { chat_id: chatId, text: "▶️ Campaign resumed — the engine picks up approved emails on its next pass (every 20 min, weekdays 7am-5pm PT).", reply_to_message_id: msg.message_id })
+    return NextResponse.json({ ok: true })
+  }
+  if (/^campaign status\b/i.test(body)) {
+    const line = await campaignStatusLine()
+    await tg("sendMessage", { chat_id: chatId, text: `📊 ${line}`, reply_to_message_id: msg.message_id })
+    return NextResponse.json({ ok: true })
+  }
 
   // "cal: <what/when>" / "add to calendar …" / "put this on my calendar …"
   // → Google Calendar event. Standalone text, no reply-to needed.

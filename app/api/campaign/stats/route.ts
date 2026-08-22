@@ -11,7 +11,8 @@ export const dynamic = "force-dynamic"
 const EXPERIMENT_START = "2026-07-31"
 const REPLY_WINDOW_MS = 14 * 86_400_000
 
-type SendRow = { contact_id: string | null; touch_number: number; sent_at: string | null }
+type SendRow = { contact_id: string | null; touch_number: number; sent_at: string
+  variant?: string | null | null }
 
 async function pageAll<T>(fetchPage: (offset: number) => PromiseLike<{ data: T[] | null; error: { message: string } | null }>): Promise<T[]> {
   const all: T[] = []
@@ -35,7 +36,7 @@ export async function GET() {
     for (const c of contacts) contactsByStatus[c.status] = (contactsByStatus[c.status] ?? 0) + 1
 
     const sends = await pageAll<SendRow>((off) =>
-      sb.from("campaign_sends").select("contact_id, touch_number, sent_at").eq("status", "sent").range(off, off + 999)
+      sb.from("campaign_sends").select("contact_id, touch_number, sent_at, variant").eq("status", "sent").range(off, off + 999)
     )
     // triage null = genuine replies only (auto_reply / dead_mailbox /
     // unsubscribe rows are also kind=email_reply and must not count).
@@ -59,6 +60,15 @@ export async function GET() {
     const touches: Record<number, { sent: number; replied: number }> = {}
     for (const s of sends) {
       const b = (touches[s.touch_number] ??= { sent: 0, replied: 0 })
+      b.sent++
+      if (repliedWithin(s)) b.replied++
+    }
+
+    // Phase B copy test (2026-08-21): reply rate per variant (A/B/C)
+    const variants: Record<string, { sent: number; replied: number }> = {}
+    for (const s of sends) {
+      if (!s.variant) continue
+      const b = (variants[s.variant] ??= { sent: 0, replied: 0 })
       b.sent++
       if (repliedWithin(s)) b.replied++
     }
@@ -107,6 +117,7 @@ export async function GET() {
         queue_approved: approvedCount ?? 0,
       },
       touches,
+      variants,
       hours,
       recent_replies: (recent ?? []).map((r) => ({
         name: (r.contact as { name?: string } | null)?.name ?? "unknown",

@@ -34,6 +34,7 @@
 
 import fs from "node:fs"
 import { gmailClientFor, sendCampaignMessage } from "./campaign-gmail.mjs"
+import { composeVariantBody, lintBody, bodyHash } from "./campaign-compose.mjs"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
 import { createClient } from "@supabase/supabase-js"
@@ -55,6 +56,14 @@ for (const line of fs.readFileSync(path.join(REPO_ROOT, ".env.local"), "utf-8").
 const SEND_AS = process.env.CAMPAIGN_SEND_AS || "info@lrghomes.com"
 const DRAFT_DAILY_CAP = Number(process.env.CAMPAIGN_DRAFT_CAP || 200)
 const SEND_DAILY_CAP = Number(process.env.CAMPAIGN_SEND_CAP || 200)
+// Phase B (2026-08-21): while CAMPAIGN_COHORT is set, the draft pass only
+// considers contacts tagged with that cohort (scripts/phaseB-cohort.mjs).
+const COHORT = process.env.CAMPAIGN_COHORT || null
+// Gated batches mint in the EVENING for the next weekday (Ryan: "I might be
+// asleep in the morning — I'd rather approve the day before").
+const MINT_HOUR = Number(process.env.CAMPAIGN_MINT_HOUR || 18)
+const BOUNCE_PAUSE_RATE = 0.02
+const REVIEW_URL = "https://mission-control-three-chi.vercel.app/email-campaign"
 // Per-touch training wheels (Ryan 2026-07-31: "I don't need to approve the
 // 200 batch each day, at least for touch one"). Touches listed here are
 // drafted straight to 'approved' — no review stop. Everything else still
@@ -125,17 +134,18 @@ function log(msg) {
   console.log(`[campaign] ${msg}`)
 }
 
-async function telegram(text) {
+async function telegram(text, buttons) {
   // Campaign traffic lives on the dedicated campaign bot (2026-07-23);
   // Thadius's bot is only the fallback if it's ever unset.
   const token = process.env.CAMPAIGN_BOT_TOKEN || process.env.TELEGRAM_BOT_TOKEN
   const chatId = process.env.TELEGRAM_CHAT_ID
   if (!token || !chatId) return
+  const reply_markup = buttons?.length ? { inline_keyboard: [buttons] } : undefined
   try {
     await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ chat_id: chatId, text, parse_mode: "HTML" }),
+      body: JSON.stringify({ chat_id: chatId, text, parse_mode: "HTML", ...(reply_markup ? { reply_markup } : {}) }),
     })
   } catch (e) {
     console.warn("[campaign] telegram alert failed:", e?.message)
@@ -199,8 +209,15 @@ async function countToday(table, tsCol, filters) {
 // gate discussion). Auto touches top up continuously and silently.
 const GATED_DRAFT_STATE = path.join(__dirname, ".campaign-gated-draft-state.json")
 
+function ptToday() {
+  const p = ptDateParts(new Date())
+  return `${p.year}-${p.month}-${p.day}`
+}
+
 function gatedMintAllowedToday() {
-  if (laHourNow() < 6) return false // batch mints on the first pass after 6am PT
+  if (laHourNow() < MINT_HOUR) return false // batch mints on the first pass after MINT_HOUR PT (evening, for the next weekday)
+  const wd = laWeekdayNow()
+  if (wd === "Fri" || wd === "Sat") return false // Fri/Sat evening batches would sit 2-3 days; Sunday evening mints Monday's
   const p = ptDateParts(new Date())
   const today = `${p.year}-${p.month}-${p.day}`
   try {
@@ -234,13 +251,17 @@ async function draftPass() {
 
   const { data: due, error } = await sb
     .from("campaign_contacts")
-    .select("id, name, first_name, email, phone, status, touch_number, next_touch_at")
+    .select("id, name, first_name, email, phone, status, touch_number, next_touch_at, cohort, variant, property_address")
     .eq("status", "active")
     .not("email", "is", null)
     .lte("next_touch_at", new Date().toISOString())
     .order("next_touch_at", { ascending: true })
     .limit(budget * 2) // headroom for skips
   if (error) throw new Error(`due fetch: ${error.message}`)
+  const dueList = COHORT ? (due ?? []).filter((c) => c.cohort === COHORT) : (due ?? [])
+  // Variant templates (A/B/C) for cohort T1 sends.
+  const { data: variantRows } = await sb.from("campaign_variants").select("variant, touch_number, subject, body, personalize")
+  const variants = new Map((variantRows ?? []).map((v) => [`${v.touch_number}:${v.variant}`, v]))
 
   // Live copy from the DB (Telegram copy: edits land there); file is fallback.
   const { data: tmplRows, error: tmplErr } = await sb
@@ -254,7 +275,18 @@ async function draftPass() {
   let skippedSupp = 0
   const gatedAllowed = gatedMintAllowedToday()
   const gatedTouches = new Set()
-  for (const c of due) {
+  let lintFailed = 0
+  const variantCounts = {}
+  // Expire yesterday's un-tapped batch(es) before minting tonight's — a batch
+  // Ryan never approved must not linger and send later by surprise.
+  if (gatedAllowed && !dryRun) {
+    const { data: stale } = await sb.from("campaign_sends").select("id").eq("status", "draft").or(`batch_date.is.null,batch_date.lt.${ptToday()}`)
+    if (stale?.length) {
+      await sb.from("campaign_sends").update({ status: "expired", error: "batch not approved by next mint" }).in("id", stale.map((r) => r.id))
+      log(`expired ${stale.length} un-approved drafts from earlier batches`)
+    }
+  }
+  for (const c of dueList) {
     if (drafted >= budget) break
     if (isSuppressed(c, sets)) {
       skippedSupp++
@@ -275,8 +307,28 @@ async function draftPass() {
       continue
     }
     const auto = AUTO_SEND_TOUCHES.has(touch)
-    if (!auto && !gatedAllowed) continue // gated touches mint once daily, first pass after 6am PT
+    if (!auto && !gatedAllowed) continue // gated touches mint once daily, first pass after MINT_HOUR PT
     if (!auto) gatedTouches.add(touch)
+    // Phase B: cohort contacts with a variant get a UNIQUE Claude-composed
+    // body from the variant template, hard-linted before it can be queued.
+    let variant = null
+    let composed = null
+    const vt = c.variant ? variants.get(`${touch}:${c.variant}`) : null
+    if (vt) {
+      try {
+        composed = await composeVariantBody({ variant: vt, contact: c, seed: `${c.id.slice(0, 8)}-${Date.now() % 100000}` })
+        const errs = lintBody({ subject: composed.subject, body: composed.body, firstName: composed.firstName })
+        if (errs.length) throw new Error(`lint: ${errs.join("; ")}`)
+        variant = c.variant
+      } catch (e) {
+        lintFailed++
+        log(`REJECTED draft for ${c.email} (variant ${c.variant}): ${e?.message ?? e}`)
+        continue
+      }
+    }
+    const finalSubject = (composed?.subject ?? rendered.subject).trim()
+    const finalBody = composed?.body ?? rendered.body
+    if (variant) variantCounts[variant] = (variantCounts[variant] || 0) + 1
     if (dryRun) {
       log(`would draft T${touch}${auto ? " (auto-approved)" : ""} → ${c.name} <${c.email}> "${rendered.subject}"`)
       drafted++
@@ -286,8 +338,12 @@ async function draftPass() {
     const { error: insErr } = await sb.from("campaign_sends").insert({
       contact_id: c.id,
       touch_number: touch,
-      subject: rendered.subject.trim(),
-      body: rendered.body,
+      subject: finalSubject,
+      body: finalBody,
+      variant,
+      body_hash: bodyHash(finalBody),
+      batch_date: ptToday(),
+      sender: SEND_AS,
       status: auto ? "approved" : "draft",
       ...(auto ? { approved_at: new Date().toISOString(), scheduled_for: randomSendSlot() } : {}),
     })
@@ -299,14 +355,22 @@ async function draftPass() {
     if (auto) autoApproved++
   }
   const needReview = drafted - autoApproved
-  log(`draft pass done: ${drafted} drafted (${autoApproved} auto-approved, ${needReview} gated), ${skippedSupp} newly suppressed`)
+  log(`draft pass done: ${drafted} drafted (${autoApproved} auto-approved, ${needReview} gated), ${skippedSupp} newly suppressed, ${lintFailed} rejected by lint`)
   if (gatedAllowed && !dryRun) markGatedMinted()
   // Auto-approved minting is silent — the tick is machinery Ryan never
   // feels; sends show up in the daily digest. Only a GATED batch pings,
   // once a day, because that one needs his review.
   if (needReview > 0 && !dryRun) {
     const touchList = [...gatedTouches].sort((a, b) => a - b).map((t) => `T${t}`).join("/")
-    await telegram(`📝 <b>${needReview}</b> ${touchList} drafts ready for review in /email-campaign — approve when convenient; approved emails send at random experiment slots the next weekday.`)
+    const mix = Object.keys(variantCounts).length ? ` (${Object.entries(variantCounts).sort().map(([k, v]) => `${k}:${v}`).join(" ")})` : ""
+    const today = ptToday()
+    await telegram(
+      `📝 <b>${needReview}</b> ${touchList} emails drafted for the next weekday${mix}, from ${SEND_AS}.${lintFailed ? ` ${lintFailed} rejected by lint (not queued).` : ""}\n\nTap ✅ to approve all of them — they go out at random minutes 7am-5pm PT. Untapped = nothing sends; this batch expires at the next evening mint.`,
+      [
+        { text: `✅ Send all ${needReview}`, callback_data: `bapprove:${today}` },
+        { text: "👀 Review first", url: REVIEW_URL },
+      ]
+    )
   }
 }
 
@@ -320,6 +384,25 @@ async function draftPass() {
 // alone flipped Primary → Promotions; the body's "reply remove" line covers
 // opt-out). T2+ keep the one-click headers.
 const gmailClient = () => gmailClientFor(SEND_AS)
+
+// ---- Phase B guardrails: pause flag (shared with Telegram "pause campaign") ----
+async function getPause() {
+  const { data } = await sb.from("campaign_settings").select("value").eq("key", "pause").maybeSingle()
+  const v = data?.value ?? {}
+  if (v.paused && v.until && new Date(v.until).getTime() < Date.now()) return { paused: false }
+  return v
+}
+async function setPause(reason, hours) {
+  const value = { paused: true, reason, by: "engine", at: new Date().toISOString(), until: hours ? new Date(Date.now() + hours * 3_600_000).toISOString() : null }
+  await sb.from("campaign_settings").upsert({ key: "pause", value, updated_at: new Date().toISOString() })
+}
+async function bouncesToday() {
+  const p = ptDateParts(new Date())
+  const start = new Date(`${p.year}-${p.month}-${p.day}T00:00:00-07:00`).toISOString()
+  const { count } = await sb.from("campaign_events").select("id", { count: "exact", head: true }).eq("kind", "bounce").gte("occurred_at", start)
+  return count ?? 0
+}
+const THROTTLE_RE = /\b429\b|rate ?limit|quota|too many|user-rate|backend error|temporarily/i
 
 async function sendPass() {
   // Postal-address gate removed 2026-07-18 by Ryan's explicit call (list is
@@ -337,7 +420,24 @@ async function sendPass() {
   const hour = laHourNow()
   const inWindow = hour >= WINDOW.startHour && hour <= WINDOW.endHour
 
+  // Phase B guardrails (2026-08-21)
+  const pause = await getPause()
+  if (pause.paused) {
+    log(`PAUSED (${pause.reason ?? "manual"}${pause.until ? ` until ${pause.until}` : ""}) — no sends`)
+    return
+  }
+  if (/@lrghomes\.com$/i.test(SEND_AS) && !process.env.CAMPAIGN_ALLOW_DOMAIN_COLD) {
+    log(`REFUSING: cold sends from ${SEND_AS} are disabled (lrghomes.com is spam-flagged at Gmail; set CAMPAIGN_ALLOW_DOMAIN_COLD=1 to override)`)
+    await telegram(`⛔ Campaign send pass refused: sender is ${SEND_AS} (lrghomes.com cold sends are disabled). Fix CAMPAIGN_SEND_AS.`)
+    return
+  }
   const sentToday = await countToday("campaign_sends", "sent_at", { status: ["sent"] })
+  const bounced = await bouncesToday()
+  if (sentToday >= 10 && bounced / sentToday >= BOUNCE_PAUSE_RATE) {
+    await setPause(`bounce rate ${bounced}/${sentToday} today (≥${BOUNCE_PAUSE_RATE * 100}%)`, 48)
+    await telegram(`⏸ Campaign AUTO-PAUSED 48h: ${bounced} bounces on ${sentToday} sends today (≥2%). Reply "resume campaign" to override after checking the list.`)
+    return
+  }
   // Warm-up ramp for the ryansvr@ migration (2026-08-06): 75/day week one,
   // 150 week two, full cap after. Clear CAMPAIGN_RAMP_START to disable.
   let rampCap = SEND_DAILY_CAP
@@ -355,7 +455,7 @@ async function sendPass() {
   // Eligible = approved AND (no schedule OR its scheduled time has arrived).
   const { data: eligible, error } = await sb
     .from("campaign_sends")
-    .select("id, contact_id, touch_number, subject, body, status, scheduled_for")
+    .select("id, contact_id, touch_number, subject, body, status, scheduled_for, variant, body_hash")
     .eq("status", "approved")
     .or(`scheduled_for.is.null,scheduled_for.lte.${nowIso}`)
     .order("approved_at", { ascending: true })
@@ -395,6 +495,15 @@ async function sendPass() {
       sent++
       continue
     }
+    // Never send a body that already went out (unique index backs this up).
+    if (row.body_hash) {
+      const { data: dupe } = await sb.from("campaign_sends").select("id").eq("body_hash", row.body_hash).eq("status", "sent").neq("id", row.id).limit(1)
+      if (dupe?.length) {
+        await markFailed(row, `duplicate body (hash matches sent ${dupe[0].id})`)
+        failed++
+        continue
+      }
+    }
     try {
       const msg = await sendCampaignMessage(gmail, {
         from: SEND_AS,
@@ -410,6 +519,7 @@ async function sendPass() {
         sent_at: nowIso,
         gmail_message_id: msg.id ?? null,
         gmail_thread_id: msg.threadId ?? null,
+        sender: SEND_AS,
       }).eq("id", row.id)
       const offset = nextOffsetDays(row.touch_number)
       await sb.from("campaign_contacts").update({
@@ -422,14 +532,21 @@ async function sendPass() {
       await sb.from("campaign_events").insert({
         contact_id: contact.id,
         kind: "email_out",
-        body: `T${row.touch_number}: ${row.subject}`,
+        body: `T${row.touch_number}${row.variant ? ` [${row.variant}]` : ""}: ${row.subject}`,
         occurred_at: nowIso,
+        raw: { mailbox: SEND_AS, variant: row.variant ?? null, send_id: row.id },
       })
       sent++
       log(`sent T${row.touch_number} → ${to}`)
     } catch (e) {
-      await markFailed(row, e?.message ?? String(e))
+      const m = e?.message ?? String(e)
+      await markFailed(row, m)
       failed++
+      if (THROTTLE_RE.test(m)) {
+        await setPause(`Gmail throttle: ${m.slice(0, 120)}`, 48)
+        await telegram(`⏸ Campaign AUTO-PAUSED 48h on a Gmail throttle/quota response: <code>${m.slice(0, 200)}</code>. Remaining approved emails stay queued.`)
+        break
+      }
     }
     await sleep(3000 + Math.random() * 7000)
   }

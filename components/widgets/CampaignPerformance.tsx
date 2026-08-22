@@ -20,6 +20,7 @@ type Stats = {
     queue_approved: number
   }
   touches: Record<string, { sent: number; replied: number }>
+  variants?: Record<string, { sent: number; replied: number }>
   hours: Record<string, { sent: number; replied: number }>
   recent_replies: { name: string; when: string; snippet: string }[]
 }
@@ -111,6 +112,36 @@ export function CampaignPerformance() {
         </div>
         <div className="mt-2 text-[11px] text-zinc-600">Bars scale to the best hour; hours under 10 sends show numbers only. Friday scorecard mirrors this in Telegram.</div>
       </div>
+
+      {/* Phase B copy test: reply rate per variant */}
+      {stats.variants && Object.keys(stats.variants).length > 0 && (
+        <div className="rounded-lg border border-zinc-800 bg-zinc-900 p-4">
+          <div className="mb-1 text-sm font-semibold text-zinc-100">Copy test (A/B/C)</div>
+          <div className="mb-2 text-[11px] text-zinc-500">A = July template · B = short + in-person ask · C = B personalized. Genuine replies within 14 days of the send.</div>
+          <table className="w-full text-xs">
+            <thead>
+              <tr className="text-left text-zinc-500">
+                <th className="py-1 font-medium">Variant</th>
+                <th className="py-1 font-medium">Sent</th>
+                <th className="py-1 font-medium">Replied</th>
+                <th className="py-1 font-medium">Reply rate</th>
+              </tr>
+            </thead>
+            <tbody>
+              {Object.entries(stats.variants)
+                .sort(([a], [b]) => a.localeCompare(b))
+                .map(([v, r]) => (
+                  <tr key={v} className="border-t border-zinc-800 text-zinc-200">
+                    <td className="py-1 font-semibold">{v}</td>
+                    <td className="py-1">{r.sent}</td>
+                    <td className="py-1">{r.replied}</td>
+                    <td className="py-1">{r.sent ? `${((r.replied / r.sent) * 100).toFixed(1)}%` : "—"}</td>
+                  </tr>
+                ))}
+            </tbody>
+          </table>
+        </div>
+      )}
 
       {/* Touch funnel */}
       <div className="rounded-lg border border-zinc-800 bg-zinc-900 p-4">
