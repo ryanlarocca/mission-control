@@ -54,8 +54,14 @@ for (const line of fs.readFileSync(path.join(REPO_ROOT, ".env.local"), "utf-8").
 }
 
 const SEND_AS = process.env.CAMPAIGN_SEND_AS || "info@lrghomes.com"
-const DRAFT_DAILY_CAP = Number(process.env.CAMPAIGN_DRAFT_CAP || 200)
-const SEND_DAILY_CAP = Number(process.env.CAMPAIGN_SEND_CAP || 200)
+// Doubling ramp (Ryan 2026-08-21: "one, then two, then four... around 200 max"):
+// the live cap = RAMP_SCHEDULE[step]; step lives in campaign_settings
+// ("ramp"), advances only after a GREEN send day (health pass), holds on
+// yellow, drops one step on red. CAMPAIGN_SEND_CAP/DRAFT_CAP are ceilings.
+const RAMP_SCHEDULE = (process.env.CAMPAIGN_RAMP_SCHEDULE || "1,2,4,8,16,32,64,128,200").split(",").map(Number)
+let DRAFT_DAILY_CAP = Number(process.env.CAMPAIGN_DRAFT_CAP || 200)
+let SEND_DAILY_CAP = Number(process.env.CAMPAIGN_SEND_CAP || 200)
+let RAMP = { step: 0 }
 // Phase B (2026-08-21): while CAMPAIGN_COHORT is set, the draft pass only
 // considers contacts tagged with that cohort (scripts/phaseB-cohort.mjs).
 const COHORT = process.env.CAMPAIGN_COHORT || null
@@ -388,6 +394,19 @@ async function draftPass() {
 // opt-out). T2+ keep the one-click headers.
 const gmailClient = () => gmailClientFor(SEND_AS)
 
+async function loadRamp() {
+  const { data } = await sb.from("campaign_settings").select("value").eq("key", "ramp").maybeSingle()
+  RAMP = { step: 0, ...(data?.value ?? {}) }
+  const cap = RAMP_SCHEDULE[Math.min(RAMP.step, RAMP_SCHEDULE.length - 1)]
+  SEND_DAILY_CAP = Math.min(SEND_DAILY_CAP, cap)
+  DRAFT_DAILY_CAP = Math.min(DRAFT_DAILY_CAP, cap)
+  log(`ramp step ${RAMP.step}: cap ${cap}/day${RAMP.held_reason ? ` (last: ${RAMP.held_reason})` : ""}`)
+}
+async function saveRamp(patch) {
+  RAMP = { ...RAMP, ...patch, updated_at: new Date().toISOString() }
+  await sb.from("campaign_settings").upsert({ key: "ramp", value: RAMP, updated_at: RAMP.updated_at })
+}
+
 // ---- Phase B guardrails: pause flag (shared with Telegram "pause campaign") ----
 async function getPause() {
   const { data } = await sb.from("campaign_settings").select("value").eq("key", "pause").maybeSingle()
@@ -697,15 +716,32 @@ async function healthPass() {
   if (agg.sent >= 40 && agg.replies / agg.sent < 0.01) warnings.push(`7-day reply rate ${pct(agg.replies, agg.sent)} — below 1%`)
   if (pause.paused) warnings.push(`PAUSED: ${pause.reason}`)
   const status = warnings.length ? (warnings.some((w) => /PAUSED|2%/.test(w)) ? "🔴" : "🟡") : "🟢"
-  const snapshot = { ...m, warnings, sender: SEND_AS, cap: SEND_DAILY_CAP, recorded_at: now.toISOString() }
+  const snapshot = { ...m, warnings, sender: SEND_AS, cap: SEND_DAILY_CAP, ramp_step: RAMP.step, recorded_at: now.toISOString() }
   await sb.from("campaign_settings").upsert({ key: `health:${day}`, value: snapshot, updated_at: now.toISOString() })
+  // Ramp decision for the next send day
+  let rampNote = ""
+  const maxStep = RAMP_SCHEDULE.length - 1
+  if (m.sent > 0) {
+    if (status === "🟢" && m.sent >= SEND_DAILY_CAP && RAMP.step < maxStep) {
+      await saveRamp({ step: RAMP.step + 1, held_reason: null, last_change: day })
+      rampNote = `\n\n⬆️ Ramp: green day at ${m.sent}/day → next batch ${RAMP_SCHEDULE[RAMP.step]}/day.`
+    } else if (status === "🔴" && RAMP.step > 0) {
+      await saveRamp({ step: RAMP.step - 1, held_reason: warnings[0], last_change: day })
+      rampNote = `\n\n⬇️ Ramp: dropped back to ${RAMP_SCHEDULE[RAMP.step]}/day.`
+    } else if (status === "🟡") {
+      await saveRamp({ held_reason: warnings[0] })
+      rampNote = `\n\n⏸ Ramp held at ${RAMP_SCHEDULE[RAMP.step]}/day until a green day.`
+    } else if (m.sent < SEND_DAILY_CAP) {
+      rampNote = `\n\nRamp holds at ${RAMP_SCHEDULE[RAMP.step]}/day (only ${m.sent} of ${SEND_DAILY_CAP} went out).`
+    }
+  }
   if (m.sent === 0 && !warnings.length) { log("health: no sends today, snapshot stored, no card"); return }
   await telegram(
     `🩺 <b>Campaign health ${status} — ${wd} ${day.slice(5)}</b>\n` +
       `📤 ${m.sent} sent from ${SEND_AS} (cap ${SEND_DAILY_CAP}) · ↩️ ${m.bounces} bounced (${pct(m.bounces, m.sent)}) · 💬 ${m.replies} replies · 🚫 ${m.unsubs} removes · 🤖 ${m.autoReplies} auto-replies · ⚠️ ${m.failed} failed · 🧹 ${m.lint_rejected} lint-rejected` +
       (m.canary ? ` · 🐤 canary ${m.canary} sent` : "") +
       `\n📈 7-day: ${agg.sent} sent, bounces ${pct(agg.bounces, agg.sent)}, replies ${pct(agg.replies, agg.sent)}, ${agg.unsubs} removes` +
-      (warnings.length ? `\n\n${warnings.map((w) => `• ${escHtml(w)}`).join("\n")}` : "\n\nAll clear. Ramp only moves when 3 straight days are green.")
+      (warnings.length ? `\n\n${warnings.map((w) => `• ${escHtml(w)}`).join("\n")}` : "\n\nAll clear.") + rampNote
   )
   log(`health card sent: ${status} ${warnings.join("; ")}`)
 }
@@ -783,6 +819,7 @@ async function scorecardPass() {
 // ---------- main ----------
 const digestOnly = args.includes("--digest")
 try {
+  await loadRamp()
   if (!digestOnly && doDraft) await draftPass()
   if (!digestOnly && doSend) await sendPass()
   await digestPass()

@@ -31,8 +31,8 @@ Daily snapshots are stored in `campaign_settings` as `health:<YYYY-MM-DD>` for t
 
 ## Ramp doctrine (current)
 
-1. 20/day × 3 send days (Phase B test) → 40 → 80 → ~120. Each step needs **3 consecutive green days** and Ryan's explicit OK. Never skip a step.
-2. Any 🔴 (auto-pause) → drop back one step after resuming and hold 48h.
+1. **Doubling ramp (Ryan, 2026-08-21):** 1 → 2 → 4 → 8 → 16 → 32 → 64 → 128 → 200/day. The engine advances one step automatically after a 🟢 day where the full cap went out; 🟡 holds; 🔴 drops one step. Ceiling 200 (Gmail hard cap 500). Ryan still taps ✅ on every evening batch. Step lives in `campaign_settings.ramp`.
+2. Any auto-pause → resume only after the cause is understood; the ramp already dropped a step.
 3. Canary in Spam or Promotions twice in a row → freeze volume, run a clean-inbox placement batch before continuing.
 4. Never send cold from `lrghomes.com`. Keep lrghomes.com for replies and warm threads only while it heals.
 5. T1: no List-Unsubscribe headers, body "reply remove" line only. Unique body per recipient, always.
