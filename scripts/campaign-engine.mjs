@@ -34,7 +34,7 @@
 
 import fs from "node:fs"
 import { gmailClientFor, sendCampaignMessage } from "./campaign-gmail.mjs"
-import { composeVariantBody, lintBody, bodyHash } from "./campaign-compose.mjs"
+import { composeVariantBody, lintBody, bodyHash, loadEditExamples, PROMPT_VERSION } from "./campaign-compose.mjs"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
 import { createClient } from "@supabase/supabase-js"
@@ -281,6 +281,8 @@ async function draftPass() {
   // Variant templates (A/B/C) for cohort T1 sends.
   const { data: variantRows } = await sb.from("campaign_variants").select("variant, touch_number, subject, body, personalize")
   const variants = new Map((variantRows ?? []).map((v) => [`${v.touch_number}:${v.variant}`, v]))
+  // Ryan's recent draft edits (style examples for the compose prompt), per touch.
+  const editExamples = new Map()
 
   // Live copy from the DB (Telegram copy: edits land there); file is fallback.
   const { data: tmplRows, error: tmplErr } = await sb
@@ -325,7 +327,8 @@ async function draftPass() {
     const vt = c.variant ? variants.get(`${touch}:${c.variant}`) : null
     if (vt) {
       try {
-        composed = await composeVariantBody({ variant: vt, contact: c, seed: `${c.id.slice(0, 8)}-${Date.now() % 100000}` })
+        if (!editExamples.has(touch)) editExamples.set(touch, await loadEditExamples(sb, touch))
+        composed = await composeVariantBody({ variant: vt, contact: c, seed: `${c.id.slice(0, 8)}-${Date.now() % 100000}`, examples: editExamples.get(touch) })
         const errs = lintBody({ subject: composed.subject, body: composed.body, firstName: composed.firstName })
         if (errs.length) throw new Error(`lint: ${errs.join("; ")}`)
         variant = c.variant
@@ -339,7 +342,8 @@ async function draftPass() {
     const finalBody = composed?.body ?? rendered.body
     if (variant) variantCounts[variant] = (variantCounts[variant] || 0) + 1
     if (dryRun) {
-      log(`would draft T${touch}${auto ? " (auto-approved)" : ""} → ${c.name} <${c.email}> "${rendered.subject}"`)
+      log(`would draft T${touch}${auto ? " (auto-approved)" : ""} → ${c.name} <${c.email}> "${finalSubject}"${variant ? ` [${variant} ${PROMPT_VERSION}]` : ""}`)
+      if (composed) log(finalBody.split("\n").map((l) => "    | " + l).join("\n"))
       drafted++
       if (auto) autoApproved++
       continue
@@ -351,6 +355,7 @@ async function draftPass() {
       body: finalBody,
       variant,
       body_hash: bodyHash(finalBody),
+      prompt_version: variant ? PROMPT_VERSION : null,
       batch_date: ptToday(),
       sender: SEND_AS,
       status: auto ? "approved" : "draft",

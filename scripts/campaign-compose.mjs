@@ -3,9 +3,54 @@
 // repeated text as bulk), linted against hard rules before it can be
 // queued, and hashed so an identical body can never send twice.
 import { createHash } from "node:crypto"
+import fs from "node:fs"
+import path from "node:path"
+import { fileURLToPath } from "node:url"
 import Anthropic from "@anthropic-ai/sdk"
 
 const MODEL = "claude-sonnet-5"
+// Bump when COMPOSE_RULES / temperature / example policy changes so reply
+// rate can be attributed per prompt (stamped on campaign_sends.prompt_version).
+export const PROMPT_VERSION = "v2-2026-08-24"
+// Sonnet 5 rejects sampling params (temperature/top_p); variation is
+// constrained by the prompt rules + seed instead.
+const MIN_EXAMPLES = 3 // one outlier edit must not steer the model
+const MAX_EXAMPLES = 8
+
+/** briefs/CAMPAIGN_VOICE.md RULES block (Ryan-editable). Cached per process. */
+let voiceCache = null
+export function loadVoiceRules() {
+  if (voiceCache !== null) return voiceCache
+  const candidates = [
+    path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../briefs/CAMPAIGN_VOICE.md"),
+    path.join(process.cwd(), "briefs/CAMPAIGN_VOICE.md"),
+  ]
+  for (const p of candidates) {
+    try {
+      const m = fs.readFileSync(p, "utf-8").match(/<!-- RULES START -->([\s\S]*?)<!-- RULES END -->/)
+      if (m) return (voiceCache = m[1].trim())
+    } catch {}
+  }
+  return (voiceCache = "")
+}
+
+/**
+ * Ryan's recent corrections (campaign_send_edits) for one touch, newest
+ * first. Style signal only: the prompt is told the template's required
+ * elements still win (an edit that deleted the personalization must not
+ * collapse variant C into B). Returns [] below MIN_EXAMPLES.
+ */
+export async function loadEditExamples(sb, touchNumber) {
+  const { data } = await sb
+    .from("campaign_send_edits")
+    .select("body_before, body_after, variant, kind")
+    .eq("touch_number", touchNumber)
+    .eq("kind", "edit")
+    .order("created_at", { ascending: false })
+    .limit(MAX_EXAMPLES)
+  const rows = (data ?? []).filter((r) => r.body_before && r.body_after && r.body_before !== r.body_after)
+  return rows.length >= MIN_EXAMPLES ? rows : []
+}
 const AGENTS_LINE_DISPLAY = "(650) 910-4007"
 
 export function makeSignature() {
@@ -23,11 +68,18 @@ const BROKERAGES = {
   "sothebysrealty.com": "Sotheby's", "exprealty.com": "eXp", "redfin.com": "Redfin", "bhhsdrysdale.com": "Berkshire Hathaway",
   "christiesrealestate.com": "Christie's", "corcorangl.com": "Corcoran", "remax.net": "RE/MAX", "century21.com": "Century 21",
 }
+/** "1173 Shamrock DR" → "1173 Shamrock Dr" (dialer export shouts suffixes). */
+export function prettyAddress(a) {
+  return (a ?? "").replace(/\s+/g, " ").trim().replace(/\b([A-Z]{2,4})\b/g, (w) => (/^(N|S|E|W|NE|NW|SE|SW|CA)$/.test(w) ? w : w[0] + w.slice(1).toLowerCase()))
+}
 export function brokerageFor(email) {
   const d = (email ?? "").split("@")[1]?.toLowerCase() ?? ""
   for (const [k, v] of Object.entries(BROKERAGES)) if (d === k.toLowerCase() || d.endsWith("." + k.toLowerCase())) return v
   return null
 }
+
+// Phrases Ryan has deleted or flagged (briefs/CAMPAIGN_VOICE.md). Hard reject.
+export const VOICE_BANNED = ["random thought", "hop on a call", "reach out", "reaching out", "circle back", "touch base", "been meaning to", "hope this finds", "hope you're well", "hope you are well", "i'd love to", "i would love to", "excited", "no drama", "actually closes", "last minute renegotiat", "going back and forth", "let's just"]
 
 /**
  * Hard lint. Returns [] when clean, else the list of violations. A body that
@@ -47,21 +99,26 @@ export function lintBody({ subject, body, firstName }) {
   if (subject.length > 60) errs.push(`subject too long (${subject.length})`)
   if (/\b(guarantee|100%|free money|act now|limited time|!!)/i.test(body)) errs.push("spammy phrase")
   if (/https?:\/\//i.test(body)) errs.push("link in body")
+  const banned = VOICE_BANNED.filter((p) => body.toLowerCase().includes(p))
+  if (banned.length) errs.push(`banned phrase: ${banned.join(", ")}`)
   return errs
 }
 
-const COMPOSE_RULES = `You rewrite one outreach email for Ryan LaRocca, a real estate investor at LRG Homes, so that it reads naturally and is worded differently from the template while saying the same things.
-He buys single-family homes and 2-15 unit multifamily in the Bay Area (South Bay focus: San Jose, Sunnyvale, Santa Clara) under $4M. As-is, quick close, proof of funds with every offer. He is writing to a real-estate agent he has crossed paths with before.
+const COMPOSE_RULES = `You lightly vary one outreach email for Ryan LaRocca, a real estate investor at LRG Homes, so that it is not word-for-word identical to the template while reading exactly like the template.
+He buys single-family homes and 2-15 unit multifamily in the Bay Area (South Bay focus: San Jose, Sunnyvale, Santa Clara) under $4M. As-is, quick close, proof of funds with every offer. He is writing to a real-estate agent he has crossed paths with.
 
 Hard rules:
 - Output ONLY the email body. No subject, no preamble, no commentary, no signature (it is appended automatically).
-- Start with exactly "Hi {{first_name}}," on its own line, then a blank line.
-- Keep every factual claim from the template. Do not add claims, numbers, property names, or past interactions that are not in the template or the CONTEXT block.
-- Keep the same ask (the call to action) as the template, in your own words.
-- Reword substantially: different sentence structure and word choices, same meaning, similar length (within about 20 percent).
-- Plain, warm, direct. Short sentences. Like a busy investor typing to a colleague. No hype, no exclamation points.
-- NEVER use em dashes, en dashes, bullet points, emojis, or links. Plain punctuation only.
-- If the CONTEXT block contains a brokerage or property and personalization is requested, weave ONE natural reference to it (e.g. "over at Intero", "the place on Opal Dr"). Never invent details about the property.`
+- Start with exactly the greeting line given in the template (Hi + the recipient's first name + comma) on its own line, then a blank line. Never change the name in the greeting.
+- Keep the template's sentences and order. Vary ONLY: the wording of the first sentence, a few word choices elsewhere, and optionally swap the order of two sentences. Same meaning, same length (within about 10 percent), same paragraph count.
+- Keep every factual claim and the same ask (call to action). Do not add sentences, openers, reassurances, qualifiers, or references that are not in the template or the CONTEXT block. Do not remove the ask.
+- If the CONTEXT block contains a brokerage or property and personalization is requested, fold ONE short clause into the FIRST sentence as the reason you know each other, e.g. "This is Ryan LaRocca with LRG Homes, we crossed paths around your listing on Opal Dr." or "... back when you were at Intero." This is required when requested. Never invent details about it, never say it is currently listed, never put it in the question or the close.
+- NEVER use em dashes, en dashes, bullet points, exclamation points, emojis, or links. Plain punctuation only.
+
+VOICE RULES (Ryan's, non-negotiable):
+{{voice}}
+
+If CORRECTIONS are provided below, they are Ryan's own edits to earlier drafts. Match the style of the AFTER side and never re-introduce phrasing he deleted. They are style guidance only: the template above still decides content and required elements.`
 
 let client = null
 function anthropic() {
@@ -78,31 +135,34 @@ function sanitize(text) {
  * Returns { subject, body } with the signature appended and merge filled,
  * or throws. Caller lints + hashes.
  */
-export async function composeVariantBody({ variant, contact, seed }) {
+export async function composeVariantBody({ variant, contact, seed, examples = [] }) {
   const first = (contact.first_name || contact.name || "").trim().split(/\s+/)[0] || "there"
   const brokerage = brokerageFor(contact.email)
   const ctx = []
   if (brokerage) ctx.push(`Brokerage: ${brokerage}`)
-  if (variant.personalize && contact.property_address) ctx.push(`Property address associated with them from a PAST listing (may be long sold; do NOT say it is currently listed, say e.g. "the place on ..." or "your listing a while back on ..."): ${contact.property_address}`)
+  if (variant.personalize && contact.property_address) ctx.push(`Past listing of theirs (use as the first-sentence nod, e.g. "your listing on ${prettyAddress(contact.property_address)}"). Property address associated with them from a PAST listing (may be long sold; do NOT say it is currently listed, say e.g. "the place on ..." or "your listing a while back on ..."): ${prettyAddress(contact.property_address)}`)
   const user = [
     `TEMPLATE (subject: "${variant.subject}"):`,
-    variant.body,
+    variant.body.replaceAll("{{first_name}}", first),
     "",
     `CONTEXT:`,
     ctx.length ? ctx.join("\n") : "(none)",
     `Personalization requested: ${variant.personalize ? "yes" : "no"}`,
-    `Variation seed: ${seed} (use it to pick a different opening and rhythm than other rewrites)`,
+    `Variation seed: ${seed} (use it to pick a different first-sentence wording than other drafts)`,
+    ...(examples.length
+      ? ["", "CORRECTIONS (Ryan's edits, newest first):", ...examples.map((e, i) => `--- ${i + 1} BEFORE ---\n${e.body_before}\n--- ${i + 1} AFTER ---\n${e.body_after}`)]
+      : []),
   ].join("\n")
   const res = await anthropic().messages.create({
     model: MODEL,
-    max_tokens: 1024,
-    temperature: 1,
-    system: COMPOSE_RULES,
+    max_tokens: 4096, // adaptive thinking shares this budget on Sonnet 5; 1024 starved the text
+    system: COMPOSE_RULES.replace("{{voice}}", loadVoiceRules() || "(none on file)"),
     messages: [{ role: "user", content: user }],
   })
   if (res.stop_reason === "refusal") throw new Error("model declined")
   const text = sanitize(res.content.find((b) => b.type === "text")?.text ?? "")
-  if (!text) throw new Error("empty composition")
+  if (!text) throw new Error(`empty composition (stop_reason=${res.stop_reason})`)
   const fill = (s) => s.replaceAll("{{first_name}}", first)
-  return { subject: fill(variant.subject).trim(), body: `${fill(text)}\n\n${makeSignature()}`, firstName: first }
+  const body = fill(text).replace(/^(Hi|Hey|Hello) [^\n]*,/, `Hi ${first},`) // greeting is never the model's call
+  return { subject: fill(variant.subject).trim(), body: `${body}\n\n${makeSignature()}`, firstName: first }
 }

@@ -20,6 +20,7 @@ interface QueueSend {
   body: string
   status: string
   edited: boolean
+  variant?: string | null
   error: string | null
   created_at: string
   scheduled_for: string | null
@@ -198,6 +199,23 @@ export function EmailCampaignTab() {
       await loadQueue()
     } catch {
       ping("Action failed — retry")
+    }
+  }
+
+  const [regenId, setRegenId] = useState<string | null>(null)
+  const regenerate = async (id: string) => {
+    if (regenId) return
+    setRegenId(id)
+    try {
+      const res = await fetch(`/api/campaign/sends/${id}/regenerate`, { method: "POST" })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error ?? `${res.status}`)
+      ping("↻ Regenerated — old version kept as a rejection signal")
+      await loadQueue()
+    } catch (e) {
+      ping(`Regenerate failed: ${e instanceof Error ? e.message : e}`)
+    } finally {
+      setRegenId(null)
     }
   }
 
@@ -483,6 +501,11 @@ export function EmailCampaignTab() {
                             <button onClick={() => rowAction(s.id, "unapprove")} className="rounded-md border border-zinc-700 px-3 py-1.5 text-sm">Back to draft</button>
                           )}
                           <button onClick={() => setEditing({ id: s.id, subject: s.subject, body: s.body })} className="rounded-md border border-zinc-700 px-3 py-1.5 text-sm">✎ Edit</button>
+                          {s.variant && s.status === "draft" && (
+                            <button onClick={() => regenerate(s.id)} disabled={regenId === s.id} className="rounded-md border border-zinc-700 px-3 py-1.5 text-sm disabled:opacity-50">
+                              {regenId === s.id ? "↻ Writing…" : "↻ Regenerate"}
+                            </button>
+                          )}
                           <button onClick={() => rowAction(s.id, "skip")} className="rounded-md border border-zinc-700 px-3 py-1.5 text-sm text-red-400">Skip this contact</button>
                         </div>
                       </>
