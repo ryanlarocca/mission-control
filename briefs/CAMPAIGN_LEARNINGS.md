@@ -13,6 +13,7 @@
 - **2026-08-21** — From the new sender, copy barely matters for placement: 10/11 Primary (July template verbatim, pitch language, long, address-subject all Primary). **List-Unsubscribe headers were the one reproducible Promotions trigger** (both days, both senders). T1 ships without them; T2+ keep them.
 - **2026-08-21** — Test-inbox hygiene: a personal inbox that knows the sender trains itself within a few emails and stops being a judge. Never reuse a body across inboxes; Gmail fingerprints repeats as bulk.
 - **2026-08-21** — Consumer Gmail sender limits: 500 recipients/day hard cap, no Postmaster Tools, no brand DKIM, throttling on cold patterns. Our practical ceiling target ~120–150/day after a full ramp.
+- **2026-08-24** — Copy quality: the July-style "reword substantially at temperature 1" paraphrase was the cringe source (Augie Bertao draft added "Random thought", an invented "been meaning to reach out since your listing" line, and "instead of going back and forth"). Compose v2 (`prompt_version` v2-2026-08-24): keep the template's sentences, reword the first + one other sentence, voice rulebook in `briefs/CAMPAIGN_VOICE.md`, Ryan's edits stored in `campaign_send_edits` and fed back as style examples once >=3 exist, banned-phrase hard lint, Regenerate button (rejections logged). Rehearsal: 5/5 lint-clean, unique hashes. Watch item: same-variant bodies now differ mainly in the first sentence + name/address; fine at the current ramp, re-check the canary before 64+/day. API gotchas: Sonnet 5 rejects `temperature` (400) and adaptive thinking eats `max_tokens` (1024 starved the text; now 4096).
 
 ## Signals we watch (daily 🩺 health card, Telegram, ~5:15pm PT)
 
@@ -37,3 +38,4 @@ Daily snapshots are stored in `campaign_settings` as `health:<YYYY-MM-DD>` for t
 4. Never send cold from `lrghomes.com`. Keep lrghomes.com for replies and warm threads only while it heals.
 5. T1: no List-Unsubscribe headers, body "reply remove" line only. Unique body per recipient, always.
 6. Weekly (Friday scorecard): review variant reply rates; promote the winner only after ≥60 sends per variant.
+7. **Copy learning loop (2026-08-24):** edits and regenerates are signals, never wasted. Weekly, distill repeated corrections into `briefs/CAMPAIGN_VOICE.md` rules (bump `PROMPT_VERSION`), retire the examples. Track edit rate + edit size per week; the feature works when edit rate falls toward ~10%. Edits are style-only signal: the variant's required elements (C personalization) always win, or the A/B/C test is contaminated.
