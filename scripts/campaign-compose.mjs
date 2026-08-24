@@ -110,7 +110,7 @@ He buys single-family homes and 2-15 unit multifamily in the Bay Area (South Bay
 Hard rules:
 - Output ONLY the email body. No subject, no preamble, no commentary, no signature (it is appended automatically).
 - Start with exactly the greeting line given in the template (Hi + the recipient's first name + comma) on its own line, then a blank line. Never change the name in the greeting.
-- Keep the template's sentences and order. Vary ONLY: the wording of the first sentence, a few word choices elsewhere, and optionally swap the order of two sentences. Same meaning, same length (within about 10 percent), same paragraph count.
+- Keep the template's sentences and order. Reword the first sentence and at least one other sentence, change a few word choices elsewhere, and optionally swap the order of two sentences. Same meaning, same length (within about 10 percent), same paragraph count.
 - Keep every factual claim and the same ask (call to action). Do not add sentences, openers, reassurances, qualifiers, or references that are not in the template or the CONTEXT block. Do not remove the ask.
 - If the CONTEXT block contains a brokerage or property and personalization is requested, fold ONE short clause into the FIRST sentence as the reason you know each other, e.g. "This is Ryan LaRocca with LRG Homes, we crossed paths around your listing on Opal Dr." or "... back when you were at Intero." This is required when requested. Never invent details about it, never say it is currently listed, never put it in the question or the close.
 - NEVER use em dashes, en dashes, bullet points, exclamation points, emojis, or links. Plain punctuation only.
@@ -135,7 +135,11 @@ function sanitize(text) {
  * Returns { subject, body } with the signature appended and merge filled,
  * or throws. Caller lints + hashes.
  */
-export async function composeVariantBody({ variant, contact, seed, examples = [] }) {
+/**
+ * @param {{ variant: any, contact: any, seed: string, examples?: Array<{ body_before: string, body_after: string }>, avoid?: string[] }} opts
+ * @returns {Promise<{ subject: string, body: string, firstName: string }>}
+ */
+export async function composeVariantBody({ variant, contact, seed, examples = [], avoid = [] }) {
   const first = (contact.first_name || contact.name || "").trim().split(/\s+/)[0] || "there"
   const brokerage = brokerageFor(contact.email)
   const ctx = []
@@ -149,6 +153,9 @@ export async function composeVariantBody({ variant, contact, seed, examples = []
     ctx.length ? ctx.join("\n") : "(none)",
     `Personalization requested: ${variant.personalize ? "yes" : "no"}`,
     `Variation seed: ${seed} (use it to pick a different first-sentence wording than other drafts)`,
+    ...(avoid.length
+      ? ["", "EARLIER DRAFTS TO AVOID (same template; use different wording in every sentence so this one is not a near copy of any of them):", ...avoid.slice(-4).map((b, i) => `--- avoid ${i + 1} ---\n${b.split("\n\nRyan LaRocca, LRG")[0]}`)]
+      : []),
     ...(examples.length
       ? ["", "CORRECTIONS (Ryan's edits, newest first):", ...examples.map((e, i) => `--- ${i + 1} BEFORE ---\n${e.body_before}\n--- ${i + 1} AFTER ---\n${e.body_after}`)]
       : []),

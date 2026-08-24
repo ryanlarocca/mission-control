@@ -49,7 +49,7 @@ export async function POST(_req: NextRequest, ctx: { params: Promise<{ id: strin
     let composed: { subject: string; body: string; firstName: string } | null = null
     let lastErr = ""
     for (let attempt = 0; attempt < 2 && !composed; attempt++) {
-      const c = await composeVariantBody({ variant: vt, contact, seed: `regen-${id.slice(0, 8)}-${Date.now() % 100000}-${attempt}`, examples })
+      const c = await composeVariantBody({ variant: vt, contact, seed: `regen-${id.slice(0, 8)}-${Date.now() % 100000}-${attempt}`, examples, avoid: [row.body] })
       const errs = lintBody({ subject: c.subject, body: c.body, firstName: c.firstName })
       if (errs.length) { lastErr = errs.join("; "); continue }
       if (bodyHash(c.body) === bodyHash(row.body)) { lastErr = "identical to current body"; continue }

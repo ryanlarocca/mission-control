@@ -283,6 +283,7 @@ async function draftPass() {
   const variants = new Map((variantRows ?? []).map((v) => [`${v.touch_number}:${v.variant}`, v]))
   // Ryan's recent draft edits (style examples for the compose prompt), per touch.
   const editExamples = new Map()
+  const composedThisPass = new Map() // variant → bodies minted this pass (passed as "avoid" for variety)
 
   // Live copy from the DB (Telegram copy: edits land there); file is fallback.
   const { data: tmplRows, error: tmplErr } = await sb
@@ -328,7 +329,8 @@ async function draftPass() {
     if (vt) {
       try {
         if (!editExamples.has(touch)) editExamples.set(touch, await loadEditExamples(sb, touch))
-        composed = await composeVariantBody({ variant: vt, contact: c, seed: `${c.id.slice(0, 8)}-${Date.now() % 100000}`, examples: editExamples.get(touch) })
+        composed = await composeVariantBody({ variant: vt, contact: c, seed: `${c.id.slice(0, 8)}-${Date.now() % 100000}`, examples: editExamples.get(touch), avoid: composedThisPass.get(c.variant) ?? [] })
+        composedThisPass.set(c.variant, [...(composedThisPass.get(c.variant) ?? []), composed.body])
         const errs = lintBody({ subject: composed.subject, body: composed.body, firstName: composed.firstName })
         if (errs.length) throw new Error(`lint: ${errs.join("; ")}`)
         variant = c.variant
