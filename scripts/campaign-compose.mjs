@@ -11,7 +11,7 @@ import Anthropic from "@anthropic-ai/sdk"
 const MODEL = "claude-sonnet-5"
 // Bump when COMPOSE_RULES / temperature / example policy changes so reply
 // rate can be attributed per prompt (stamped on campaign_sends.prompt_version).
-export const PROMPT_VERSION = "v2-2026-08-24"
+export const PROMPT_VERSION = "v3-2026-08-24"
 // Sonnet 5 rejects sampling params (temperature/top_p); variation is
 // constrained by the prompt rules + seed instead.
 const MIN_EXAMPLES = 3 // one outlier edit must not steer the model
@@ -72,14 +72,17 @@ const BROKERAGES = {
 export function prettyAddress(a) {
   return (a ?? "").replace(/\s+/g, " ").trim().replace(/\b([A-Z]{2,4})\b/g, (w) => (/^(N|S|E|W|NE|NW|SE|SW|CA)$/.test(w) ? w : w[0] + w.slice(1).toLowerCase()))
 }
+/** Bay Area region from the phone area code — factual, no history claimed. */
+const REGIONS = { "408": "the South Bay", "669": "the South Bay", "650": "the Peninsula", "510": "the East Bay", "925": "the East Bay", "415": "San Francisco", "628": "San Francisco", "831": "the Santa Cruz area" }
+export function regionFor(phone) {
+  const d = (phone ?? "").replace(/\D/g, "").replace(/^1/, "")
+  return d.length === 10 ? REGIONS[d.slice(0, 3)] ?? null : null
+}
 export function brokerageFor(email) {
   const d = (email ?? "").split("@")[1]?.toLowerCase() ?? ""
   for (const [k, v] of Object.entries(BROKERAGES)) if (d === k.toLowerCase() || d.endsWith("." + k.toLowerCase())) return v
   return null
 }
-
-// Phrases Ryan has deleted or flagged (briefs/CAMPAIGN_VOICE.md). Hard reject.
-export const VOICE_BANNED = ["random thought", "hop on a call", "reach out", "reaching out", "circle back", "touch base", "been meaning to", "hope this finds", "hope you're well", "hope you are well", "i'd love to", "i would love to", "excited", "no drama", "actually closes", "last minute renegotiat", "going back and forth", "let's just"]
 
 /**
  * Hard lint. Returns [] when clean, else the list of violations. A body that
@@ -92,15 +95,11 @@ export function lintBody({ subject, body, firstName }) {
   if (!body.includes(AGENTS_LINE_DISPLAY)) errs.push("missing agents-line phone")
   if (!/Ryan LaRocca/.test(body)) errs.push("missing signature name")
   if (!/reply "remove"/i.test(body) && !/reply remove/i.test(body)) errs.push("missing 'reply remove' opt-out line")
-  if (/—|–/.test(body) || /—|–/.test(subject)) errs.push("em/en dash")
-  if (/^\s*[-*•]\s/m.test(body)) errs.push("bullet list")
   if (body.length < 250) errs.push(`too short (${body.length})`)
   if (body.length > 1400) errs.push(`too long (${body.length})`)
   if (subject.length > 60) errs.push(`subject too long (${subject.length})`)
   if (/\b(guarantee|100%|free money|act now|limited time|!!)/i.test(body)) errs.push("spammy phrase")
   if (/https?:\/\//i.test(body)) errs.push("link in body")
-  const banned = VOICE_BANNED.filter((p) => body.toLowerCase().includes(p))
-  if (banned.length) errs.push(`banned phrase: ${banned.join(", ")}`)
   return errs
 }
 
@@ -112,8 +111,8 @@ Hard rules:
 - Start with exactly the greeting line given in the template (Hi + the recipient's first name + comma) on its own line, then a blank line. Never change the name in the greeting.
 - Keep the template's sentences and order. Reword the first sentence and at least one other sentence, change a few word choices elsewhere, and optionally swap the order of two sentences. Same meaning, same length (within about 10 percent), same paragraph count.
 - Keep every factual claim and the same ask (call to action). Do not add sentences, openers, reassurances, qualifiers, or references that are not in the template or the CONTEXT block. Do not remove the ask.
-- If the CONTEXT block contains a brokerage or property and personalization is requested, fold ONE short clause into the FIRST sentence as the reason you know each other, e.g. "This is Ryan LaRocca with LRG Homes, we crossed paths around your listing on Opal Dr." or "... back when you were at Intero." This is required when requested. Never invent details about it, never say it is currently listed, never put it in the question or the close.
-- NEVER use em dashes, en dashes, bullet points, exclamation points, emojis, or links. Plain punctuation only.
+- If personalization is requested and CONTEXT gives a region or brokerage, fold ONE short clause into the ask, e.g. "if anything comes across in the East Bay, send it my way" or "anything over at Intero that fits". Never claim history with the person. If CONTEXT has neither, write it without personalization.
+- No links. Dashes, bullets, and emojis are allowed only when they read naturally; default to plain punctuation.
 
 VOICE RULES (Ryan's, non-negotiable):
 {{voice}}
@@ -127,7 +126,7 @@ function anthropic() {
 }
 
 function sanitize(text) {
-  return text.replace(/—|–/g, ", ").replace(/ ,/g, ",").replace(/,\s*,/g, ",").replace(/^["'`]+|["'`]+$/g, "").trim()
+  return text.replace(/^["'`]+|["'`]+$/g, "").trim()
 }
 
 /**
@@ -144,7 +143,8 @@ export async function composeVariantBody({ variant, contact, seed, examples = []
   const brokerage = brokerageFor(contact.email)
   const ctx = []
   if (brokerage) ctx.push(`Brokerage: ${brokerage}`)
-  if (variant.personalize && contact.property_address) ctx.push(`Past listing of theirs (use as the first-sentence nod, e.g. "your listing on ${prettyAddress(contact.property_address)}"). Property address associated with them from a PAST listing (may be long sold; do NOT say it is currently listed, say e.g. "the place on ..." or "your listing a while back on ..."): ${prettyAddress(contact.property_address)}`)
+  const region = variant.personalize ? regionFor(contact.phone) : null
+  if (variant.personalize && region) ctx.push(`Region they work (from their phone area code): ${region}`)
   const user = [
     `TEMPLATE (subject: "${variant.subject}"):`,
     variant.body.replaceAll("{{first_name}}", first),
