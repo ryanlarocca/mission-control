@@ -1,6 +1,12 @@
 import { NextRequest, NextResponse } from "next/server"
 import { getLeadsClient } from "@/lib/leads"
 import { randomSendSlot } from "@/lib/campaignSlots"
+import { createHash } from "node:crypto"
+
+// Mirrors bodyHash() in scripts/campaign-compose.mjs (unique-body guard).
+function bodyHash(body: string) {
+  return createHash("sha256").update(body.replace(/\s+/g, " ").trim().toLowerCase()).digest("hex")
+}
 
 // Per-draft actions for the email-campaign approval queue: approve, skip,
 // unapprove, and inline edits (edits flag `edited` — the voice-learning
@@ -24,7 +30,7 @@ export async function PATCH(
     const sb = getLeadsClient()
     const { data: row, error: fetchErr } = await sb
       .from("campaign_sends")
-      .select("id, status")
+      .select("id, status, contact_id, touch_number, variant, subject, body")
       .eq("id", id)
       .maybeSingle()
     if (fetchErr) return NextResponse.json({ error: fetchErr.message }, { status: 500 })
@@ -40,7 +46,28 @@ export async function PATCH(
     }
     if (typeof body.body === "string" && body.body.trim()) {
       patch.body = body.body
+      patch.body_hash = bodyHash(body.body)
       patch.edited = true
+    }
+    // Voice learning: keep the before/after pair whenever the text actually
+    // changed (campaign_send_edits feeds the compose prompt as corrections).
+    const textChanged =
+      (typeof patch.subject === "string" && patch.subject !== row.subject) ||
+      (typeof patch.body === "string" && patch.body !== row.body)
+    if (textChanged) {
+      const { error: editErr } = await sb.from("campaign_send_edits").insert({
+        send_id: row.id,
+        contact_id: row.contact_id,
+        touch_number: row.touch_number,
+        variant: row.variant,
+        subject_before: row.subject,
+        subject_after: typeof patch.subject === "string" ? patch.subject : row.subject,
+        body_before: row.body,
+        body_after: typeof patch.body === "string" ? patch.body : row.body,
+      })
+      if (editErr) return NextResponse.json({ error: `edit history: ${editErr.message}` }, { status: 500 })
+    } else {
+      delete patch.edited
     }
     if (body.action === "approve") {
       patch.status = "approved"
