@@ -148,11 +148,15 @@ async function telegram(text, buttons) {
   if (!token || !chatId) return
   const reply_markup = buttons?.length ? { inline_keyboard: [buttons] } : undefined
   try {
-    await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+    const res = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ chat_id: chatId, text, parse_mode: "HTML", ...(reply_markup ? { reply_markup } : {}) }),
     })
+    // Telegram rejects silently otherwise (bad HTML, bad button URL) — Ryan
+    // missed a batch ping 2026-08-25 and there was nothing in the log.
+    if (!res.ok) console.warn(`[campaign] telegram alert REJECTED ${res.status}: ${(await res.text()).slice(0, 200)} :: ${text.slice(0, 80)}`)
+    else log(`telegram sent: ${text.replace(/<[^>]+>/g, "").split("\n")[0].slice(0, 70)}`)
   } catch (e) {
     console.warn("[campaign] telegram alert failed:", e?.message)
   }
