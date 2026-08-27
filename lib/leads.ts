@@ -1219,11 +1219,20 @@ export async function sendLeadSms(input: {
   return { success: true, status: 200, messageSid, leadId: loggedId, logError }
 }
 
+// Lead alerts post from the Marketing bot (@Marketing6677bot) since
+// 2026-08-27 — Ryan retired Thadius as his day-to-day bot. Replies to these
+// alerts land on /api/campaign/telegram, which routes lead-alert replies
+// through sendLeadSms (lead line). Falls back to the legacy token if the
+// campaign bot isn't configured.
+export function leadAlertBotToken(): string | undefined {
+  return process.env.CAMPAIGN_BOT_TOKEN || process.env.TELEGRAM_BOT_TOKEN
+}
+
 export async function sendTelegramAlert(text: string): Promise<void> {
-  const token = process.env.TELEGRAM_BOT_TOKEN
+  const token = leadAlertBotToken()
   const chatId = process.env.TELEGRAM_CHAT_ID
   if (!token || !chatId) {
-    console.warn("[telegram] Missing TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID")
+    console.warn("[telegram] Missing CAMPAIGN_BOT_TOKEN/TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID")
     return
   }
   try {
@@ -1247,10 +1256,10 @@ export async function sendTelegramVoice(
   caption: string,
   filename: string = "voicemail.mp3"
 ): Promise<void> {
-  const token = process.env.TELEGRAM_BOT_TOKEN
+  const token = leadAlertBotToken()
   const chatId = process.env.TELEGRAM_CHAT_ID
   if (!token || !chatId) {
-    console.warn("[telegram] Missing TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID")
+    console.warn("[telegram] Missing CAMPAIGN_BOT_TOKEN/TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID")
     return
   }
   try {

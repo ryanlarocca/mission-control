@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server"
+import { getLeadsClient, lookupLeadName, normalizeE164, sendLeadSms } from "@/lib/leads"
 import { approveBatch, setPaused, campaignStatusLine } from "@/lib/campaignBatch"
 import { waitUntil } from "@vercel/functions"
 import { sendAgentsLineText, startAgentsLineRelayCall } from "@/lib/campaignSms"
@@ -626,6 +627,40 @@ export async function POST(request: Request) {
       return NextResponse.json({ ok: true })
     }
     await postDraft(chatId, msg.message_id, out)
+    return NextResponse.json({ ok: true })
+  }
+
+  // Lead-line alerts (Leads tab — /api/leads/sms, /voice, /email, recordings,
+  // DNC) post from this bot since 2026-08-27 (Ryan retired Thadius). They
+  // embed the lead phone in E.164 ("+1408…") or, for email/DM leads, as
+  // "(xxx) xxx-xxxx" under a "New … lead" header. Replies go out on the LEAD
+  // line via sendLeadSms (DNC guard, timeline row, cadence reset) — never the
+  // agents line. Same path as the old /api/telegram/webhook bridge.
+  const leadE164 = repliedText.match(/\+\d{10,15}/)?.[0]
+  const leadHeader = /\bnew (lead|[\w ]*lead|recording)\b/i.test(repliedText) && !/agents line/i.test(repliedText)
+  const leadPhone = leadE164
+    ? normalizeE164(leadE164) || leadE164
+    : leadHeader && extractPhone(repliedText)
+      ? `+1${extractPhone(repliedText)}`
+      : null
+  if (leadPhone) {
+    const result = await sendLeadSms({ phone: leadPhone, message: body, source: null })
+    let label = leadPhone
+    if (result.success) {
+      try {
+        const name = await lookupLeadName(getLeadsClient(), leadPhone)
+        if (name) label = `${name} (${leadPhone})`
+      } catch {
+        /* label stays as the phone */
+      }
+    }
+    await tg("sendMessage", {
+      chat_id: chatId,
+      text: result.success
+        ? `✅ Sent to ${label} from the lead line${result.logError ? "  ⚠️ (logged with a warning)" : ""}`
+        : `⚠️ Not sent — ${result.error || "unknown error"}`,
+      reply_to_message_id: msg.message_id,
+    })
     return NextResponse.json({ ok: true })
   }
 
