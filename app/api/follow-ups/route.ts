@@ -319,12 +319,14 @@ export async function GET(_request: NextRequest) {
         )[0]
 
       const hasPhone = leads.some((l) => l.caller_phone && !isAnonymousCaller(l.caller_phone))
+      const hasEmail = leads.some((l) => !!l.email)
       const input: NextTouchInput = {
         dripCampaignType: dripLead?.drip_campaign_type,
         dripTouchNumber: dripLead?.drip_touch_number,
         lastDripSentAt: dripLead?.last_drip_sent_at,
         createdAt: dripLead?.created_at ?? rep.created_at,
         hasPhone,
+        hasEmail,
         status: rep.status ?? "new",
         isDnc: rep.is_dnc,
         isJunk: rep.is_junk,

@@ -91,6 +91,13 @@ export interface NextTouchInput {
   lastDripSentAt: string | null | undefined
   createdAt: string
   hasPhone: boolean
+  // Whether the cluster has an email address on file. A forecast whose
+  // channel can't actually be sent (email touch, no email / iMessage touch,
+  // no phone) is dropped rather than shown — the engine skips those touches
+  // every pass (`channel_email_no_address`), so surfacing them pinned
+  // contacts to the top of Follow Ups with a drip nobody could send
+  // (2026-08-27). Defaults to true so older callers don't regress.
+  hasEmail?: boolean
   // Lead lifecycle — drips are suppressed for active/dead/DNC/junk.
   status: string
   isDnc?: boolean | null
@@ -222,11 +229,17 @@ function resolveDripTouch(input: NextTouchInput): NextTouch | null {
     : next.delayHours
   const due = new Date(baseMs + effectiveDelayHours * HOUR_MS).toISOString()
 
+  // Unsendable forecast → no drip touch at all, so the follow-up call (if
+  // any) becomes the primary and the contact resurfaces on *that* date.
+  const channel = effectiveChannelForTouch(campaign, next.touchNumber, input.hasPhone)
+  if (channel === "email" && input.hasEmail === false) return null
+  if (channel === "imessage" && !input.hasPhone) return null
+
   return {
     kind: "drip",
     due,
     reason: `Drip touch #${next.touchNumber}`,
-    channel: effectiveChannelForTouch(campaign, next.touchNumber, input.hasPhone),
+    channel,
     touchNumber: next.touchNumber,
     campaignType: campaign.type,
     isQueued: false,

@@ -165,6 +165,10 @@ function forecastNextTouch(lead: LeadLite, now: Date, horizon: Date): ForecastIt
     next.touchNumber,
     Boolean(lead.caller_phone)
   )
+  // Unsendable → not a forecast. The engine skips these every pass
+  // (channel_email_no_address / channel_imessage_no_phone); mirror that.
+  if (channel === "email" && !lead.email) return null
+  if (channel === "imessage" && !lead.caller_phone) return null
 
   // If the due time is already past now, show it as due-now in the
   // forecast bucket — the engine will pick it up on its next pass.

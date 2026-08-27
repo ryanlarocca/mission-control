@@ -1852,6 +1852,7 @@ function LeadCard(p: LeadCardProps) {
     lastDripSentAt: intakeRow?.last_drip_sent_at,
     createdAt: intakeRow?.created_at ?? group.mostRecentEvent.created_at,
     hasPhone: !!group.contactPhone,
+    hasEmail: !!group.email,
     status: group.status,
     isDnc: group.isDnc,
     isJunk: group.isJunk,
