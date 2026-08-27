@@ -995,10 +995,16 @@ function StatusMenu({
   status,
   disabled,
   onPick,
+  onNurture,
 }: {
   status: string
   disabled: boolean
   onPick: (choice: { status?: string; flag?: "is_junk" | "is_dnc" }) => void
+  // Park on the slow long_term_nurture drip campaign. Lives in this menu
+  // because "Nurture" above is just a lifecycle label — Ryan opened the
+  // dropdown looking for the slow cadence and concluded it didn't exist
+  // (2026-08-27). Distinct from the lifecycle relabel.
+  onNurture: () => void
 }) {
   const [open, setOpen] = useState(false)
   const ref = useRef<HTMLDivElement | null>(null)
@@ -1049,6 +1055,15 @@ function StatusMenu({
               {o.key === status && <Check className="w-3 h-3 ml-auto text-emerald-400" />}
             </button>
           ))}
+          <div className="my-1 border-t border-zinc-800" />
+          <button
+            type="button"
+            onClick={() => { setOpen(false); onNurture() }}
+            title="Switch to the slow long-term-nurture drip (~60/120/180/240/365/540d) + 6-month follow-up"
+            className="w-full flex items-center gap-2 px-3 py-1.5 hover:bg-zinc-800 text-left text-indigo-300/90"
+          >
+            <CalendarClock className="w-3 h-3" /> Long-term nurture (slow drip)
+          </button>
           <div className="my-1 border-t border-zinc-800" />
           <button
             type="button"
@@ -1182,12 +1197,13 @@ function ContactCard({ row, ...h }: { row: ContactRow } & CardHandlers) {
             status={row.status}
             disabled={acting}
             onPick={(choice) => h.onChangeStatus(row, choice)}
+            onNurture={() => h.onLongTermNurture(row)}
           />
           <button
             onClick={() => h.onLongTermNurture(row)}
             disabled={acting}
             title="Park this lead — switch to the slow long-term-nurture cadence"
-            className="inline-flex items-center gap-1 px-2 py-1 rounded text-zinc-500 hover:text-zinc-200 hover:bg-zinc-900 transition-colors disabled:opacity-60 shrink-0"
+            className="inline-flex items-center gap-1 px-2 py-1 rounded border border-indigo-900/60 text-indigo-300/90 hover:text-indigo-100 hover:bg-indigo-950/50 transition-colors disabled:opacity-60 shrink-0"
           >
             <CalendarClock className="w-3.5 h-3.5" /> Long-term nurture
           </button>
