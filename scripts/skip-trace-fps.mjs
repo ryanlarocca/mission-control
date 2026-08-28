@@ -63,7 +63,7 @@ const isPlaceholderName = (n) => {
   const d = n.replace(/\D/g, "")
   return /^[\d\s().+-]+$/.test(n.trim()) && d.length >= 10 && d.length <= 11
 }
-const isAnon = (p) => !p || /anonym|restrict|unavail|private|unknown/i.test(p) || p.replace(/\D/g, "").length < 10
+const isAnon = (p) => !p || /555\d{4}$/.test(p) || /anonym|restrict|unavail|private|unknown/i.test(p) || p.replace(/\D/g, "").length < 10
 const fmtPhone = (e164) => { const d = e164.replace(/\D/g, "").slice(-10); return `${d.slice(0, 3)}-${d.slice(3, 6)}-${d.slice(6)}` }
 
 // ---------- leads ----------
@@ -244,11 +244,11 @@ async function writeCluster(cluster, res) {
 const clusters = selectClusters(await fetchAllLeads())
 console.log(`${clusters.length} cluster(s) to trace${DRY ? " (dry run)" : ""}`)
 if (!clusters.length) process.exit(0)
-// Persistent profile: cookies from a cleared challenge survive between runs,
-// so one human click covers the whole backfill instead of every page.
-const PROFILE = path.join(process.env.HOME, ".skip-trace-chrome-profile")
-const browser = await chromium.launchPersistentContext(PROFILE, { channel: "chrome", headless: false, viewport: { width: 1280, height: 900 } })
-const page = browser.pages()[0] || (await browser.newPage())
+// Fresh context, NOT a persistent profile: with a saved profile FPS's
+// "Loading Search Results…" splash never resolved (2026-08-27); a clean
+// context loads fine. One context for the whole run.
+const browser = await chromium.launch({ channel: "chrome", headless: false })
+const page = await (await browser.newContext({ viewport: { width: 1280, height: 900 } })).newPage()
 const report = []
 for (const [i, c] of clusters.entries()) {
   process.stdout.write(`[${i + 1}/${clusters.length}] ${c.phone} (${c.rows[0].source}) … `)
@@ -256,7 +256,10 @@ for (const [i, c] of clusters.entries()) {
   try { res = await scrapePhone(page, c.phone) } catch (e) { res = { status: `error: ${e.message.split("\n")[0]}`, persons: [] } }
   const flags = res.status === "ok" ? flagsFor(res.persons) : []
   console.log(res.status === "ok" ? `${res.persons.length} person(s)${flags.length ? `  ⚑ ${flags.length} flag(s)` : ""}` : res.status)
-  await writeCluster(c, res)
+  // Only durable outcomes get written; a transient error/challenge must not
+  // stamp the cluster (the marker would make later runs skip it).
+  if (res.status === "ok" || res.status === "no_record") await writeCluster(c, res)
+  else console.log(`   (not written — ${res.status})`)
   report.push({ phone: c.phone, source: c.rows[0].source, status: res.status, flags, persons: res.persons.map((p) => ({ name: p.name, age: p.age, deceased: p.deceased, current: p.current?.address, previous: (p.previous || []).map((a) => a.address) })) })
   fs.writeFileSync("scripts/.skip-trace-report.json", JSON.stringify(report, null, 1))
   if (i < clusters.length - 1) await sleep(jitter(8000, 20000))
