@@ -34,7 +34,7 @@
 
 import fs from "node:fs"
 import { gmailClientFor, sendCampaignMessage } from "./campaign-gmail.mjs"
-import { composeVariantBody, lintBody, bodyHash, loadEditExamples, PROMPT_VERSION } from "./campaign-compose.mjs"
+import { composeVariantBody, lintBody, bodyHash, loadEditExamples, loadCopyRules, PROMPT_VERSION } from "./campaign-compose.mjs"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
 import { createClient } from "@supabase/supabase-js"
@@ -274,7 +274,7 @@ async function draftPass() {
 
   let dueQuery = sb
     .from("campaign_contacts")
-    .select("id, name, first_name, email, phone, status, touch_number, next_touch_at, cohort, variant, property_address")
+    .select("id, name, first_name, email, phone, status, touch_number, next_touch_at, cohort, variant, property_address, import_flags")
     .eq("status", "active")
     .not("email", "is", null)
     .lte("next_touch_at", new Date().toISOString())
@@ -287,6 +287,8 @@ async function draftPass() {
   const variants = new Map((variantRows ?? []).map((v) => [`${v.touch_number}:${v.variant}`, v]))
   // Ryan's recent draft edits (style examples for the compose prompt), per touch.
   const editExamples = new Map()
+  // Ryan's standing copy rules (typed in the queue UI) — one fetch per pass.
+  const copyRules = await loadCopyRules(sb)
   const composedThisPass = new Map() // variant → bodies minted this pass (passed as "avoid" for variety)
 
   // Live copy from the DB (Telegram copy: edits land there); file is fallback.
@@ -333,9 +335,9 @@ async function draftPass() {
     if (vt) {
       try {
         if (!editExamples.has(touch)) editExamples.set(touch, await loadEditExamples(sb, touch))
-        composed = await composeVariantBody({ variant: vt, contact: c, seed: `${c.id.slice(0, 8)}-${Date.now() % 100000}`, examples: editExamples.get(touch), avoid: composedThisPass.get(c.variant) ?? [] })
+        composed = await composeVariantBody({ variant: vt, contact: c, seed: `${c.id.slice(0, 8)}-${Date.now() % 100000}`, examples: editExamples.get(touch), avoid: composedThisPass.get(c.variant) ?? [], rules: copyRules })
         composedThisPass.set(c.variant, [...(composedThisPass.get(c.variant) ?? []), composed.body])
-        const errs = lintBody({ subject: composed.subject, body: composed.body, firstName: composed.firstName })
+        const errs = lintBody({ subject: composed.subject, body: composed.body, firstName: composed.firstName, contact: c })
         if (errs.length) throw new Error(`lint: ${errs.join("; ")}`)
         variant = c.variant
       } catch (e) {

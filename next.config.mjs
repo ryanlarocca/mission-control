@@ -8,6 +8,7 @@ const nextConfig = {
   experimental: {
     outputFileTracingIncludes: {
       "/api/campaign/sends/[id]/regenerate": ["./briefs/CAMPAIGN_VOICE.md", "./scripts/campaign-compose.mjs"],
+      "/api/campaign/regenerate-batch": ["./briefs/CAMPAIGN_VOICE.md", "./scripts/campaign-compose.mjs"],
     },
   },
 };

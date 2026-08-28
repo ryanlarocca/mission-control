@@ -33,6 +33,13 @@ interface QueueSend {
   } | null
 }
 
+interface CopyRule {
+  id: string
+  rule: string
+  active: boolean
+  created_at: string
+}
+
 interface QueueCounts {
   draft: number
   approved: number
@@ -202,21 +209,126 @@ export function EmailCampaignTab() {
     }
   }
 
+  // Regenerate with a note (Ryan 2026-08-27): say WHY once, optionally keep
+  // it as a standing rule, and apply to one draft or every draft at once.
   const [regenId, setRegenId] = useState<string | null>(null)
+  const [noteFor, setNoteFor] = useState<string | "ALL" | null>(null) // which draft the note box is open for
+  const [note, setNote] = useState("")
+  const [saveAsRule, setSaveAsRule] = useState(false)
+  const [rules, setRules] = useState<CopyRule[]>([])
+  const [rulesOpen, setRulesOpen] = useState(false)
+  const [newRule, setNewRule] = useState("")
+
+  const loadRules = useCallback(async () => {
+    try {
+      const res = await fetch("/api/campaign/copy-rules", { cache: "no-store" })
+      const data = await res.json()
+      if (res.ok) setRules(data.rules ?? [])
+    } catch { /* non-fatal */ }
+  }, [])
+  useEffect(() => { void loadRules() }, [loadRules])
+
+  const addRule = async (text: string) => {
+    const rule = text.trim()
+    if (!rule) return
+    const res = await fetch("/api/campaign/copy-rules", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ rule }) })
+    if (!res.ok) { ping("Rule save failed"); return }
+    setNewRule("")
+    ping("✓ Standing rule saved — applies to every future draft")
+    await loadRules()
+  }
+  const retireRule = async (id: string) => {
+    const res = await fetch("/api/campaign/copy-rules", { method: "DELETE", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id }) })
+    if (!res.ok) { ping("Remove failed"); return }
+    await loadRules()
+  }
+
+  const openNote = (id: string | "ALL") => {
+    setNoteFor(id)
+    setNote("")
+    setSaveAsRule(false)
+  }
+
   const regenerate = async (id: string) => {
     if (regenId) return
     setRegenId(id)
     try {
-      const res = await fetch(`/api/campaign/sends/${id}/regenerate`, { method: "POST" })
+      const res = await fetch(`/api/campaign/sends/${id}/regenerate`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ note, saveAsRule }),
+      })
       const data = await res.json()
       if (!res.ok) throw new Error(data.error ?? `${res.status}`)
-      ping("↻ Regenerated — old version kept as a rejection signal")
-      await loadQueue()
+      ping(saveAsRule && note.trim() ? "↻ Regenerated + rule saved for future drafts" : "↻ Regenerated — old version kept as a rejection signal")
+      setNoteFor(null)
+      await Promise.all([loadQueue(), loadRules()])
     } catch (e) {
       ping(`Regenerate failed: ${e instanceof Error ? e.message : e}`)
     } finally {
       setRegenId(null)
     }
+  }
+
+  const regenerateAll = async () => {
+    if (regenId) return
+    const targets = drafts.filter((d) => d.variant)
+    if (targets.length === 0) return
+    setRegenId("ALL")
+    try {
+      const res = await fetch("/api/campaign/regenerate-batch", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ids: targets.map((d) => d.id), note, saveAsRule }),
+      })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error ?? `${res.status}`)
+      const failed = (data.failed ?? []).length
+      ping(`↻ Regenerated ${data.regenerated}/${data.total} drafts${failed ? ` — ${failed} failed lint, left as-is` : ""}${saveAsRule && note.trim() ? " + rule saved" : ""}`)
+      setNoteFor(null)
+      await Promise.all([loadQueue(), loadRules()])
+    } catch (e) {
+      ping(`Regenerate all failed: ${e instanceof Error ? e.message : e}`)
+    } finally {
+      setRegenId(null)
+    }
+  }
+
+  /** Note box shared by per-draft Regenerate and Regenerate-all. A render
+   *  helper (not a component) so the textarea isn't remounted per keystroke. */
+  const renderNoteBox = (target: string | "ALL") => {
+    const busyNow = regenId !== null
+    const count = target === "ALL" ? drafts.filter((d) => d.variant).length : 1
+    return (
+      <div className="mt-2 flex max-w-2xl flex-col gap-2 rounded-md border border-amber-500/40 bg-amber-500/5 p-3">
+        <div className="text-xs font-semibold text-amber-300">
+          {target === "ALL" ? `What should change across all ${count} drafts?` : "What's wrong with this one?"}
+          <span className="ml-1 font-normal text-zinc-500">(optional — blank just rerolls)</span>
+        </div>
+        <textarea
+          autoFocus
+          value={note}
+          onChange={(e) => setNote(e.target.value)}
+          rows={2}
+          placeholder={'e.g. "Don\'t say we\'ve crossed paths or met — I don\'t know most of these people."'}
+          className="rounded-md border border-zinc-700 bg-zinc-950 px-3 py-2 text-[13px] text-zinc-100"
+        />
+        <label className="flex items-center gap-2 text-xs text-zinc-400">
+          <input type="checkbox" checked={saveAsRule} onChange={(e) => setSaveAsRule(e.target.checked)} disabled={!note.trim()} className="h-4 w-4 accent-amber-500" />
+          Also keep this as a standing rule for every future draft
+        </label>
+        <div className="flex flex-wrap gap-2">
+          <button
+            onClick={() => (target === "ALL" ? regenerateAll() : regenerate(target))}
+            disabled={busyNow}
+            className="rounded-md bg-amber-500 px-3 py-1.5 text-sm font-semibold text-amber-950 disabled:opacity-50"
+          >
+            {busyNow ? `↻ Writing${target === "ALL" ? ` ${count}…` : "…"}` : target === "ALL" ? `↻ Regenerate all ${count}` : "↻ Regenerate"}
+          </button>
+          <button onClick={() => setNoteFor(null)} disabled={busyNow} className="rounded-md border border-zinc-700 px-3 py-1.5 text-sm disabled:opacity-50">Cancel</button>
+        </div>
+      </div>
+    )
   }
 
   const saveEdit = async () => {
@@ -413,6 +525,21 @@ export function EmailCampaignTab() {
             >
               Select all {drafts.length}
             </button>
+            <button
+              onClick={() => (noteFor === "ALL" ? setNoteFor(null) : openNote("ALL"))}
+              disabled={drafts.filter((d) => d.variant).length === 0 || regenId !== null}
+              className="rounded-lg border border-amber-500/50 px-3 py-2 text-sm font-medium text-amber-300 disabled:opacity-40"
+              title="Rewrite every waiting draft with one note"
+            >
+              {regenId === "ALL" ? "↻ Writing…" : `↻ Regenerate all ${drafts.filter((d) => d.variant).length}…`}
+            </button>
+            <button
+              onClick={() => setRulesOpen((o) => !o)}
+              className="rounded-lg border border-zinc-700 px-3 py-2 text-sm font-medium text-zinc-300"
+              title="Standing copy rules read by every draft"
+            >
+              Rules ({rules.length})
+            </button>
             <span className="text-xs text-zinc-500">
               {scheduleAt
                 ? "Held until your chosen time, then sent (still capped 200/day, Mon–Fri)."
@@ -421,6 +548,33 @@ export function EmailCampaignTab() {
             </span>
           </div>
 
+          {noteFor === "ALL" && renderNoteBox("ALL")}
+          {rulesOpen && (
+            <div className="mb-1 flex max-w-2xl flex-col gap-2 rounded-lg border border-zinc-800 bg-zinc-900 p-3">
+              <div className="text-xs font-semibold text-zinc-300">
+                Standing copy rules
+                <span className="ml-1 font-normal text-zinc-500">— read into every draft the engine or Regenerate writes. Only rules you type here; nothing is inferred from edits.</span>
+              </div>
+              {rules.length === 0 && <div className="text-xs text-zinc-500">None yet.</div>}
+              {rules.map((r, i) => (
+                <div key={r.id} className="flex items-start gap-2 text-[13px] text-zinc-200">
+                  <span className="font-mono text-zinc-500">{i + 1}.</span>
+                  <span className="flex-1">{r.rule}</span>
+                  <button onClick={() => retireRule(r.id)} className="text-xs text-zinc-500 hover:text-red-400" title="Remove rule">✕</button>
+                </div>
+              ))}
+              <div className="flex gap-2">
+                <input
+                  value={newRule}
+                  onChange={(e) => setNewRule(e.target.value)}
+                  onKeyDown={(e) => { if (e.key === "Enter") void addRule(newRule) }}
+                  placeholder="Add a rule…"
+                  className="flex-1 rounded-md border border-zinc-700 bg-zinc-950 px-3 py-1.5 text-[13px] text-zinc-100"
+                />
+                <button onClick={() => addRule(newRule)} disabled={!newRule.trim()} className="rounded-md border border-zinc-700 px-3 py-1.5 text-sm disabled:opacity-40">Add</button>
+              </div>
+            </div>
+          )}
           {loadingQueue && <div className="py-8 text-center text-sm text-zinc-500">Loading queue…</div>}
           {!loadingQueue && sends.length === 0 && (
             <div className="rounded-lg border border-dashed border-zinc-800 py-8 text-center text-sm text-zinc-500">
@@ -502,12 +656,13 @@ export function EmailCampaignTab() {
                           )}
                           <button onClick={() => setEditing({ id: s.id, subject: s.subject, body: s.body })} className="rounded-md border border-zinc-700 px-3 py-1.5 text-sm">✎ Edit</button>
                           {s.variant && s.status === "draft" && (
-                            <button onClick={() => regenerate(s.id)} disabled={regenId === s.id} className="rounded-md border border-zinc-700 px-3 py-1.5 text-sm disabled:opacity-50">
-                              {regenId === s.id ? "↻ Writing…" : "↻ Regenerate"}
+                            <button onClick={() => (noteFor === s.id ? setNoteFor(null) : openNote(s.id))} disabled={regenId !== null} className="rounded-md border border-zinc-700 px-3 py-1.5 text-sm disabled:opacity-50">
+                              {regenId === s.id ? "↻ Writing…" : "↻ Regenerate…"}
                             </button>
                           )}
                           <button onClick={() => rowAction(s.id, "skip")} className="rounded-md border border-zinc-700 px-3 py-1.5 text-sm text-red-400">Skip this contact</button>
                         </div>
+                        {noteFor === s.id && renderNoteBox(s.id)}
                       </>
                     )}
                   </div>

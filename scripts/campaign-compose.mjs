@@ -11,7 +11,7 @@ import Anthropic from "@anthropic-ai/sdk"
 const MODEL = "claude-sonnet-5"
 // Bump when COMPOSE_RULES / temperature / example policy changes so reply
 // rate can be attributed per prompt (stamped on campaign_sends.prompt_version).
-export const PROMPT_VERSION = "v3-2026-08-24"
+export const PROMPT_VERSION = "v4-2026-08-27"
 // Sonnet 5 rejects sampling params (temperature/top_p); variation is
 // constrained by the prompt rules + seed instead.
 const MIN_EXAMPLES = 3 // one outlier edit must not steer the model
@@ -51,6 +51,47 @@ export async function loadEditExamples(sb, touchNumber) {
   const rows = (data ?? []).filter((r) => r.body_before && r.body_after && r.body_before !== r.body_after)
   return rows.length >= MIN_EXAMPLES ? rows : []
 }
+
+/**
+ * Ryan's standing copy rules (campaign_copy_rules, active only, oldest
+ * first). Typed by Ryan in the queue UI — never inferred from edits. Every
+ * compose path (engine, regenerate, regenerate-all) reads them.
+ * @returns {Promise<string[]>}
+ */
+export async function loadCopyRules(sb) {
+  const { data } = await sb
+    .from("campaign_copy_rules")
+    .select("rule")
+    .eq("active", true)
+    .order("created_at", { ascending: true })
+    .limit(30)
+  return (data ?? []).map((r) => (r.rule ?? "").trim()).filter(Boolean)
+}
+
+/**
+ * Phrases that assert a relationship the contact may not remember. To a
+ * stranger these read as a lie and trigger spam reports (Ryan 2026-08-27).
+ * Allowed only when the contact is a known relationship
+ * (import_flags has relationships_overlap).
+ */
+const RELATIONSHIP_CLAIMS = [
+  /crossed paths/i, /paths (have )?crossed/i, /worked together/i, /we('ve| have)? (spoken|talked|chatted|met|connected)/i,
+  /as (we )?discussed/i, /(nice|good|great) (to )?(reconnect|catch(ing)? up)/i, /\breconnect(ing)?\b/i, /(since|when) we last/i,
+  /been (a )?while since/i, /(our|the) last (call|conversation|deal|transaction)/i, /(from|since) (our|the) (deal|transaction|closing)/i,
+  /remember me/i, /you may (recall|remember)/i, /get(ting)? back in touch/i, /back in touch/i, /follow(ing)? up on our/i,
+]
+export function isKnownRelationship(contact) {
+  return Array.isArray(contact?.import_flags) && contact.import_flags.includes("relationships_overlap")
+}
+/** @returns {string|null} the offending phrase, or null when clean / allowed */
+export function relationshipClaim(text, contact) {
+  if (isKnownRelationship(contact)) return null
+  for (const re of RELATIONSHIP_CLAIMS) {
+    const m = text.match(re)
+    if (m) return m[0]
+  }
+  return null
+}
 const AGENTS_LINE_DISPLAY = "(650) 910-4007"
 
 export function makeSignature() {
@@ -88,8 +129,11 @@ export function brokerageFor(email) {
  * Hard lint. Returns [] when clean, else the list of violations. A body that
  * fails is NEVER queued — the contact is skipped and counted in the ping.
  */
-export function lintBody({ subject, body, firstName }) {
+/** @param {{ subject: string, body: string, firstName: string, contact?: any }} opts */
+export function lintBody({ subject, body, firstName, contact = null }) {
   const errs = []
+  const claim = relationshipClaim(`${subject}\n${body}`, contact)
+  if (claim) errs.push(`claims a relationship ("${claim}") with a contact who is not a known relationship`)
   if (/\{\{|\}\}/.test(body) || /\{\{|\}\}/.test(subject)) errs.push("unfilled merge token")
   if (!new RegExp(`^(Hi|Hey|Hello) ${firstName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")},`, "m").test(body)) errs.push("missing 'Hi <first name>,' greeting")
   if (!body.includes(AGENTS_LINE_DISPLAY)) errs.push("missing agents-line phone")
@@ -104,7 +148,7 @@ export function lintBody({ subject, body, firstName }) {
 }
 
 const COMPOSE_RULES = `You lightly vary one outreach email for Ryan LaRocca, a real estate investor at LRG Homes, so that it is not word-for-word identical to the template while reading exactly like the template.
-He buys single-family homes and 2-15 unit multifamily in the Bay Area (South Bay focus: San Jose, Sunnyvale, Santa Clara) under $4M. As-is, quick close, proof of funds with every offer. He is writing to a real-estate agent he has crossed paths with.
+He buys single-family homes and 2-15 unit multifamily in the Bay Area (South Bay focus: San Jose, Sunnyvale, Santa Clara) under $4M. As-is, quick close, proof of funds with every offer. He is writing cold to a real-estate agent. Assume NO prior relationship: never say or imply they have met, spoken, worked together, or are reconnecting, unless CONTEXT says the agent is a known relationship.
 
 Hard rules:
 - Output ONLY the email body. No subject, no preamble, no commentary, no signature (it is appended automatically).
@@ -117,7 +161,11 @@ Hard rules:
 VOICE RULES (Ryan's, non-negotiable):
 {{voice}}
 
-If CORRECTIONS are provided below, they are Ryan's own edits to earlier drafts. Match the style of the AFTER side and never re-introduce phrasing he deleted. They are style guidance only: the template above still decides content and required elements.`
+STANDING RULES (typed by Ryan in the queue; they override the template wherever they conflict — rewrite the template's sentence rather than break a rule):
+{{rules}}
+
+If CORRECTIONS are provided below, they are Ryan's own edits to earlier drafts. Match the style of the AFTER side and never re-introduce phrasing he deleted. They are style guidance only: the template above still decides content and required elements.
+If RYAN'S NOTE ON THIS DRAFT is provided, it is his reason for rejecting the previous draft of this exact email. Fix exactly what it says; it outranks the template.`
 
 let client = null
 function anthropic() {
@@ -135,16 +183,18 @@ function sanitize(text) {
  * or throws. Caller lints + hashes.
  */
 /**
- * @param {{ variant: any, contact: any, seed: string, examples?: Array<{ body_before: string, body_after: string }>, avoid?: string[] }} opts
+ * @param {{ variant: any, contact: any, seed: string, examples?: Array<{ body_before: string, body_after: string }>, avoid?: string[], rules?: string[], note?: string }} opts
+ *   rules — Ryan's standing copy rules (loadCopyRules); note — his one-off reason for rejecting the draft being replaced.
  * @returns {Promise<{ subject: string, body: string, firstName: string }>}
  */
-export async function composeVariantBody({ variant, contact, seed, examples = [], avoid = [] }) {
+export async function composeVariantBody({ variant, contact, seed, examples = [], avoid = [], rules = [], note = "" }) {
   const first = (contact.first_name || contact.name || "").trim().split(/\s+/)[0] || "there"
   const brokerage = brokerageFor(contact.email)
   const ctx = []
   if (brokerage) ctx.push(`Brokerage: ${brokerage}`)
   const region = variant.personalize ? regionFor(contact.phone) : null
   if (variant.personalize && region) ctx.push(`Region they work (from their phone area code): ${region}`)
+  ctx.push(isKnownRelationship(contact) ? "Known relationship: yes (Ryan has a real history with this agent)" : "Known relationship: NO (cold — do not claim any history)")
   const user = [
     `TEMPLATE (subject: "${variant.subject}"):`,
     variant.body.replaceAll("{{first_name}}", first),
@@ -159,11 +209,13 @@ export async function composeVariantBody({ variant, contact, seed, examples = []
     ...(examples.length
       ? ["", "CORRECTIONS (Ryan's edits, newest first):", ...examples.map((e, i) => `--- ${i + 1} BEFORE ---\n${e.body_before}\n--- ${i + 1} AFTER ---\n${e.body_after}`)]
       : []),
+    ...(note.trim() ? ["", "RYAN'S NOTE ON THIS DRAFT:", note.trim()] : []),
   ].join("\n")
+  const rulesText = rules.length ? rules.map((r, i) => `${i + 1}. ${r}`).join("\n") : "(none)"
   const res = await anthropic().messages.create({
     model: MODEL,
     max_tokens: 4096, // adaptive thinking shares this budget on Sonnet 5; 1024 starved the text
-    system: COMPOSE_RULES.replace("{{voice}}", loadVoiceRules() || "(none on file)"),
+    system: COMPOSE_RULES.replace("{{voice}}", loadVoiceRules() || "(none on file)").replace("{{rules}}", rulesText),
     messages: [{ role: "user", content: user }],
   })
   if (res.stop_reason === "refusal") throw new Error("model declined")
