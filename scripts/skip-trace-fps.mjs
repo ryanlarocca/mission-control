@@ -18,7 +18,9 @@
 //                         clusters already carrying a skip-trace block)
 //   --since <hours>       only clusters whose first row is newer than N hours
 //                         AND still have no property_address (intake mode)
-//   --phone +1408…        one number
+//   --phone +1408…[,+1…]  one number or a comma-separated list
+//   --delay <sec>         minimum pause between lookups (default 8–20 s;
+//                         use 60–120 once Cloudflare starts throttling)
 //   --force               re-trace even if a block already exists
 //   --dry-run             look up + print, write nothing
 //
@@ -48,7 +50,9 @@ const flag = (f) => args.includes(f)
 const opt = (f) => { const i = args.indexOf(f); return i >= 0 ? args[i + 1] : null }
 const DRY = flag("--dry-run"), FORCE = flag("--force")
 const SINCE_H = opt("--since") ? Number(opt("--since")) : null
-const ONE = opt("--phone")
+const ONE = opt("--phone") // single E164 or comma-separated list
+const PHONES = ONE ? new Set(ONE.split(",").map((x) => x.trim())) : null
+const DELAY_S = opt("--delay") ? Number(opt("--delay")) : null // min seconds between lookups
 if (!flag("--backfill") && !SINCE_H && !ONE) {
   console.error("usage: skip-trace-fps.mjs --backfill | --since <hours> | --phone <E164> [--force] [--dry-run]")
   process.exit(1)
@@ -86,7 +90,7 @@ function selectClusters(rows) {
   }
   const out = []
   for (const [phone, ls] of by) {
-    if (ONE && phone !== ONE) continue
+    if (PHONES && !PHONES.has(phone)) continue
     if (ls.some((l) => l.is_dnc || l.is_junk || l.status === "dead")) continue
     if (!FORCE && ls.some((l) => (l.notes || "").includes(MARK))) continue
     if (SINCE_H) {
@@ -135,7 +139,8 @@ function parseCard(text) {
     relatives: rel ? rel.replace(/^Relatives:\s*/, "").split("•").map((s) => s.trim()).filter(Boolean) : [],
   }
 }
-async function scrapePhone(page, phone) {
+async function scrapePhone(newPage, phone) {
+  let page = await newPage()
   const url = `https://www.fastpeoplesearch.com/${fmtPhone(phone)}`
   await page.goto(url, { waitUntil: "domcontentloaded", timeout: 45_000 })
   await sleep(jitter(3500, 6000))
@@ -171,6 +176,7 @@ async function scrapePhone(page, phone) {
   const living = persons.filter((p) => !p.deceased).slice(0, 3)
   for (const p of living) {
     await sleep(jitter(4000, 8000))
+    page = await newPage() // every navigation in a fresh context — reuse hangs on FPS's loader
     await page.goto(p.link, { waitUntil: "domcontentloaded", timeout: 45_000 })
     await sleep(jitter(3000, 5000))
     // Same splash as the results page — wait for the profile sections (or a
@@ -233,7 +239,9 @@ async function writeCluster(cluster, res) {
   const setName = living && cluster.rows.every((r) => isPlaceholderName(r.name)) ? living.name : null
   if (DRY) { console.log(note + (setName ? `\n   → name: ${setName}` : "")); return }
   for (const r of cluster.rows) {
-    const patch = { notes: r.notes ? `${r.notes.trimEnd()}\n\n${note}` : note }
+    // Replace any earlier skip-trace block (re-runs / --force) rather than stacking them.
+    const prior = (r.notes || "").replace(/\n*\[Skip trace[\s\S]*?(?=\n\n(?!\s*[•⚑]|\s{3})|$)/g, "").trim()
+    const patch = { notes: prior ? `${prior}\n\n${note}` : note }
     if (setName) patch.name = setName
     const resp = await fetch(`${SB}/rest/v1/leads?id=eq.${r.id}`, { method: "PATCH", headers: { ...H, Prefer: "return=minimal" }, body: JSON.stringify(patch) })
     if (!resp.ok) console.log(`  ✗ PATCH ${r.id} → ${resp.status} ${await resp.text()}`)
@@ -248,12 +256,15 @@ if (!clusters.length) process.exit(0)
 // "Loading Search Results…" splash never resolved (2026-08-27); a clean
 // context loads fine. One context for the whole run.
 const browser = await chromium.launch({ channel: "chrome", headless: false })
-const page = await (await browser.newContext({ viewport: { width: 1280, height: 900 } })).newPage()
+// One context PER LOOKUP: reusing a context, FPS's loader hung from the 3rd
+// number on (13 straight no_cards, 2026-08-27); a fresh context loads.
+let ctx = null
+async function freshPage() { if (ctx) await ctx.close().catch(() => {}); ctx = await browser.newContext({ viewport: { width: 1280, height: 900 } }); return ctx.newPage() }
 const report = []
 for (const [i, c] of clusters.entries()) {
   process.stdout.write(`[${i + 1}/${clusters.length}] ${c.phone} (${c.rows[0].source}) … `)
   let res
-  try { res = await scrapePhone(page, c.phone) } catch (e) { res = { status: `error: ${e.message.split("\n")[0]}`, persons: [] } }
+  try { res = await scrapePhone(freshPage, c.phone) } catch (e) { res = { status: `error: ${e.message.split("\n")[0]}`, persons: [] } }
   const flags = res.status === "ok" ? flagsFor(res.persons) : []
   console.log(res.status === "ok" ? `${res.persons.length} person(s)${flags.length ? `  ⚑ ${flags.length} flag(s)` : ""}` : res.status)
   // Only durable outcomes get written; a transient error/challenge must not
@@ -262,7 +273,7 @@ for (const [i, c] of clusters.entries()) {
   else console.log(`   (not written — ${res.status})`)
   report.push({ phone: c.phone, source: c.rows[0].source, status: res.status, flags, persons: res.persons.map((p) => ({ name: p.name, age: p.age, deceased: p.deceased, current: p.current?.address, previous: (p.previous || []).map((a) => a.address) })) })
   fs.writeFileSync("scripts/.skip-trace-report.json", JSON.stringify(report, null, 1))
-  if (i < clusters.length - 1) await sleep(jitter(8000, 20000))
+  if (i < clusters.length - 1) await sleep(DELAY_S ? jitter(DELAY_S * 1000, DELAY_S * 1500) : jitter(8000, 20000))
 }
 await browser.close()
 const ok = report.filter((r) => r.status === "ok").length
