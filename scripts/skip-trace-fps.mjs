@@ -63,7 +63,7 @@ const MARK = "[Skip trace"
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 const jitter = (lo, hi) => lo + Math.random() * (hi - lo)
 const isPlaceholderName = (n) => {
-  if (!n || !n.trim()) return true
+  if (!n || !n.trim() || /^(unknown|anonymous|n\/a)$/i.test(n.trim())) return true
   const d = n.replace(/\D/g, "")
   return /^[\d\s().+-]+$/.test(n.trim()) && d.length >= 10 && d.length <= 11
 }
