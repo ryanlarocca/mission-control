@@ -32,7 +32,7 @@ export const TOUCHES = [
     dayOffset: 0,
     label: "South Bay reintro + buy box",
     subject: "Buying in the South Bay again",
-    body: `Hi {{first_name}}, Ryan LaRocca with LRG Homes. We've crossed paths before, so I wanted to reconnect. I'm actively buying single-family homes and 2-15 unit multifamily. South Bay is home turf (San Jose, Sunnyvale, Santa Clara) but I'll go anywhere in the Bay under $4M. As-is, quick close, no drama.
+    body: `Hi {{first_name}}, Ryan LaRocca with LRG Homes. I'm an investor buying directly from agents and wanted to get on your radar. I'm actively buying single-family homes and 2-15 unit multifamily. South Bay is home turf (San Jose, Sunnyvale, Santa Clara) but I'll go anywhere in the Bay under $4M. As-is, quick close, no drama.
 
 If you've got a listing that fits, especially one that's rough, stuck, or getting no love, I'd genuinely like a look. Just reply here or text me at ${AGENTS_LINE_DISPLAY}.`,
   },

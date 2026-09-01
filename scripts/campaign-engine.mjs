@@ -270,7 +270,23 @@ async function draftPass() {
   let budget = Math.max(0, Math.min(DRAFT_DAILY_CAP - draftedToday, DRAFT_DAILY_CAP - (backlog ?? 0)))
   if (limit !== null) budget = Math.min(budget, limit)
   log(`draft pass: ${draftedToday} drafted today, ${backlog ?? 0} in draft/approved backlog, budget ${budget}`)
-  if (budget === 0) return
+  if (budget === 0) {
+    // Starved-by-backlog with nothing drafted = the send side is stuck.
+    // This exact state ran silently for 4 days after the Aug-28 token death
+    // (8 unsendable approved rows filled the cap, so zero drafts minted).
+    // Alert once per day instead of quietly returning.
+    if (draftedToday === 0 && (backlog ?? 0) >= DRAFT_DAILY_CAP) {
+      const starveFile = "scripts/.campaign-draft-starved-state.json"
+      const day = new Date().toLocaleDateString("en-CA")
+      let last = null
+      try { last = JSON.parse(fs.readFileSync(starveFile, "utf-8")).last } catch {}
+      if (last !== day) {
+        fs.writeFileSync(starveFile, JSON.stringify({ last: day }))
+        await telegram(`⚠️ Campaign drafts starved: ${backlog} un-sent draft/approved rows fill the ${DRAFT_DAILY_CAP}/day cap — check the send pass.`)
+      }
+    }
+    return
+  }
 
   let dueQuery = sb
     .from("campaign_contacts")
@@ -348,6 +364,20 @@ async function draftPass() {
     }
     const finalSubject = (composed?.subject ?? rendered.subject).trim()
     const finalBody = composed?.body ?? rendered.body
+    // Deterministic (non-variant) drafts used to bypass lint entirely — the
+    // fallback T1 template shipped a banned relationship claim unchecked.
+    // Run the dangerous checks (false history, unfilled merge tokens) on
+    // every body; structural checks (greeting/sig lines) stay variant-only
+    // because template renders add some pieces later in the send path.
+    if (!composed) {
+      const detErrs = lintBody({ subject: finalSubject, body: finalBody, firstName: c.first_name || c.name || "", contact: c })
+        .filter((m) => m.startsWith("claims a relationship") || m === "unfilled merge token")
+      if (detErrs.length) {
+        lintFailed++
+        log(`REJECTED draft for ${c.email} (template T${touch}): ${detErrs.join("; ")}`)
+        continue
+      }
+    }
     if (variant) variantCounts[variant] = (variantCounts[variant] || 0) + 1
     if (dryRun) {
       log(`would draft T${touch}${auto ? " (auto-approved)" : ""} → ${c.name} <${c.email}> "${finalSubject}"${variant ? ` [${variant} ${PROMPT_VERSION}]` : ""}`)
@@ -833,16 +863,29 @@ async function scorecardPass() {
 
 // ---------- main ----------
 const digestOnly = args.includes("--digest")
-try {
-  await loadRamp()
-  if (!digestOnly && doDraft) await draftPass()
-  if (!digestOnly && doSend) await sendPass()
-  await digestPass()
-  if (!digestOnly && doSend) await canaryPass()
-  await healthPass()
-  await scorecardPass()
-} catch (e) {
-  console.error("[campaign] engine error:", e?.message ?? e)
-  await telegram(`🔥 Campaign engine crashed: ${e?.message ?? e}`)
+// Each pass runs isolated (2026-09-01): a single try/catch used to abort the
+// whole run — the Aug-31 invalid_grant crash in sendPass took digest, canary,
+// health and the ramp bookkeeping down with it, so 4 dead days produced no
+// health card at all. One Telegram at the end names every failed pass.
+const passFailures = []
+async function runPass(name, fn) {
+  try { await fn(); return true } catch (e) {
+    const msg = e?.message ?? String(e)
+    console.error(`[campaign] ${name} pass error:`, msg)
+    passFailures.push(`${name}: ${String(msg).slice(0, 120)}`)
+    return false
+  }
+}
+const rampOk = await runPass("ramp", loadRamp)
+// Without ramp state the caps fall back to env defaults — skip the passes
+// that would send/draft at the wrong volume; observation passes still run.
+if (rampOk && !digestOnly && doDraft) await runPass("draft", draftPass)
+if (rampOk && !digestOnly && doSend) await runPass("send", sendPass)
+await runPass("digest", digestPass)
+if (rampOk && !digestOnly && doSend) await runPass("canary", canaryPass)
+await runPass("health", healthPass)
+await runPass("scorecard", scorecardPass)
+if (passFailures.length) {
+  await telegram(`🔥 Campaign engine: ${passFailures.length} pass(es) failed — ${passFailures.join(" · ")}`)
   process.exit(1)
 }

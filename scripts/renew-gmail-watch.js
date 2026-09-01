@@ -116,10 +116,31 @@ async function main() {
     }
   }
 
-  if (failed) process.exitCode = 1
+  if (failed) {
+    // A lapsed watch silently stops inbound lead-email ingest 7 days later.
+    // The Aug-29 invalid_grant failures sat unseen in the err log for 2.5
+    // days — alert loudly instead (2026-09-01).
+    await telegram(`⚠️ Gmail watch renewal: ${failed}/${mailboxes.length} mailbox(es) failed — inbound email ingest lapses when the watch expires. See /tmp/lrg-gmail-watch-renewal-err.log`)
+    process.exitCode = 1
+  }
 }
 
-main().catch((e) => {
+// Best-effort Telegram alert (same env the campaign engine uses).
+async function telegram(text) {
+  const token = process.env.CAMPAIGN_BOT_TOKEN || process.env.TELEGRAM_BOT_TOKEN
+  const chatId = process.env.TELEGRAM_CHAT_ID
+  if (!token || !chatId) return
+  try {
+    await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ chat_id: chatId, text }),
+    })
+  } catch {}
+}
+
+main().catch(async (e) => {
   console.error("Renewal failed:", e)
+  await telegram(`🔥 Gmail watch renewal crashed: ${e?.message ?? e}`)
   process.exit(1)
 })

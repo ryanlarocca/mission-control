@@ -1,4 +1,5 @@
 import { getLeadsClient } from "@/lib/leads"
+import { randomSendSlot } from "@/lib/campaignSlots"
 
 // Phase B guardrails (2026-08-21, Ryan: "one tap a day, not twenty" +
 // "draft the night before, I might be asleep"):
@@ -9,29 +10,17 @@ import { getLeadsClient } from "@/lib/leads"
 //   - "pause campaign" / "resume campaign" flip a DB flag the engine checks
 //     before every send; the engine also sets it on a bounce spike/throttle.
 
+// randomSendSlot now comes from lib/campaignSlots — this file used to carry a
+// third copy with a month-range DST guess (`m >= 3 && m <= 11 ? 7 : 8`) that
+// mis-slots early-March / early-November approvals by an hour. The shared
+// version round-trips the offset through Intl instead.
+
 const PT = "America/Los_Angeles"
 
 function ptParts(d: Date): { y: number; m: number; d: number; weekday: string } {
   const parts = new Intl.DateTimeFormat("en-US", { timeZone: PT, year: "numeric", month: "2-digit", day: "2-digit", weekday: "short" }).formatToParts(d)
   const get = (t: string) => parts.find((p) => p.type === t)?.value ?? ""
   return { y: Number(get("year")), m: Number(get("month")), d: Number(get("day")), weekday: get("weekday") }
-}
-
-/** Random minute in the 7:00a–4:59p PT window on the next weekday (same rule as the engine). */
-export function randomSendSlot(from = new Date()): string {
-  let probe = new Date(from.getTime() + 86_400_000)
-  for (let i = 0; i < 7; i++) {
-    const p = ptParts(probe)
-    if (p.weekday !== "Sat" && p.weekday !== "Sun") {
-      const hour = 7 + Math.floor(Math.random() * 10)
-      const minute = Math.floor(Math.random() * 60)
-      // PT offset: PDT (-7) Mar–Nov, PST (-8) otherwise — good enough for scheduling
-      const offset = p.m >= 3 && p.m <= 11 ? 7 : 8
-      return new Date(Date.UTC(p.y, p.m - 1, p.d, hour + offset, minute)).toISOString()
-    }
-    probe = new Date(probe.getTime() + 86_400_000)
-  }
-  return new Date(from.getTime() + 86_400_000).toISOString()
 }
 
 export async function approveBatch(batchDate: string): Promise<{ success: boolean; approved?: number; error?: string }> {
@@ -49,7 +38,7 @@ export async function approveBatch(batchDate: string): Promise<{ success: boolea
   for (const r of rows) {
     const { error: uErr } = await sb
       .from("campaign_sends")
-      .update({ status: "approved", approved_at: now.toISOString(), scheduled_for: randomSendSlot(now) })
+      .update({ status: "approved", approved_at: now.toISOString(), scheduled_for: randomSendSlot() })
       .eq("id", r.id)
       .eq("status", "draft")
     if (!uErr) approved++
