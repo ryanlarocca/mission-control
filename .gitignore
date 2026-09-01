@@ -37,3 +37,4 @@ next-env.d.ts
 .env.local.save
 .campaign-digest-state.json
 scripts/.skip-trace-report.json
+scripts/.skip-trace-ledger.jsonl
