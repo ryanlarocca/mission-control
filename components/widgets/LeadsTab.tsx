@@ -2131,8 +2131,10 @@ function LeadCard(p: LeadCardProps) {
               onChange={e => p.onEditNote(e.target.value)}
               onBlur={p.onCommitNote}
               placeholder="Add notes…"
-              rows={2}
-              className="w-full bg-zinc-900 border border-zinc-800 rounded px-3 py-2 text-sm text-zinc-100 placeholder-zinc-600 focus:outline-none focus:border-zinc-700 resize-none"
+              // Auto-size to the content (skip-trace blocks are many lines);
+              // cap at 16 rows, drag-resize (resize-y) past that.
+              rows={Math.min(16, Math.max(3, ((p.draftNote ?? group.notes ?? "").match(/\n/g)?.length ?? 0) + 2))}
+              className="w-full bg-zinc-900 border border-zinc-800 rounded px-3 py-2 text-sm text-zinc-100 placeholder-zinc-600 focus:outline-none focus:border-zinc-700 resize-y"
               style={{ fontSize: 16 }}
             />
           </div>
