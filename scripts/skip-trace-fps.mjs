@@ -19,10 +19,18 @@
 //   --since <hours>       only clusters whose first row is newer than N hours
 //                         AND still have no property_address (intake mode)
 //   --phone +1408…[,+1…]  one number or a comma-separated list
+//   --queue <file>        phones from a CSV/text file (any 10-digit numbers
+//                         found in it, e.g. needs_trace.csv from a list build)
 //   --delay <sec>         minimum pause between lookups (default 8–20 s;
 //                         use 60–120 once Cloudflare starts throttling)
 //   --force               re-trace even if a block already exists
 //   --dry-run             look up + print, write nothing
+//
+// Unattended running: FPS throttling (a streak of no_cards) triggers an
+// automatic long pause instead of burning the rest of the queue; a Telegram
+// ping goes out when a Cloudflare challenge needs a human click and again
+// at completion. Every outcome is appended to scripts/.skip-trace-ledger.jsonl
+// (durable across runs; the per-run report JSON is still rewritten).
 //
 // Project memo: ~/Projects/PROJECTS/lead-skip-trace/PROJECT_MEMO.md
 import fs from "node:fs"
@@ -30,8 +38,9 @@ import path from "node:path"
 import { chromium } from "playwright"
 
 const envPath = [
-  "/Users/ryanlarocca/.openclaw/workspace/PROJECTS/mission-control/.env.local",
   path.join(process.cwd(), ".env.local"),
+  "/Users/ryanlarocca/Projects/PROJECTS/mission-control/.env.local",
+  "/Users/ryanlarocca/.openclaw/workspace/PROJECTS/mission-control/.env.local", // pre-migration fallback
 ].find((p) => fs.existsSync(p))
 const env = {}
 for (const line of fs.readFileSync(envPath, "utf-8").split("\n")) {
@@ -51,11 +60,26 @@ const opt = (f) => { const i = args.indexOf(f); return i >= 0 ? args[i + 1] : nu
 const DRY = flag("--dry-run"), FORCE = flag("--force")
 const SINCE_H = opt("--since") ? Number(opt("--since")) : null
 const ONE = opt("--phone") // single E164 or comma-separated list
-const PHONES = ONE ? new Set(ONE.split(",").map((x) => x.trim())) : null
+const QUEUE = opt("--queue") // CSV/text file; every 10-digit number in it is a target
+const queuePhones = QUEUE
+  ? [...fs.readFileSync(QUEUE, "utf-8").matchAll(/\+?1?[\s(.-]*(\d{3})[\s).-]*(\d{3})[\s.-]*(\d{4})\b/g)].map((m) => `+1${m[1]}${m[2]}${m[3]}`)
+  : []
+const PHONES = ONE || QUEUE ? new Set([...(ONE ? ONE.split(",").map((x) => x.trim()) : []), ...queuePhones]) : null
 const DELAY_S = opt("--delay") ? Number(opt("--delay")) : null // min seconds between lookups
-if (!flag("--backfill") && !SINCE_H && !ONE) {
-  console.error("usage: skip-trace-fps.mjs --backfill | --since <hours> | --phone <E164> [--force] [--dry-run]")
+if (!flag("--backfill") && !SINCE_H && !ONE && !QUEUE) {
+  console.error("usage: skip-trace-fps.mjs --backfill | --since <hours> | --phone <E164> | --queue <file> [--force] [--dry-run]")
   process.exit(1)
+}
+
+// Telegram (best-effort; silent when env is absent, e.g. dry runs elsewhere)
+async function telegram(text) {
+  const token = env.CAMPAIGN_BOT_TOKEN || env.TELEGRAM_BOT_TOKEN
+  const chatId = env.TELEGRAM_CHAT_ID
+  if (!token || !chatId || DRY) return
+  await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ chat_id: chatId, text }),
+  }).catch(() => {})
 }
 
 const TODAY = new Date().toLocaleDateString("en-CA")
@@ -105,6 +129,7 @@ function selectClusters(rows) {
 
 // ---------- scrape ----------
 async function waitForHumanIfChallenged(page) {
+  let pinged = false
   for (let i = 0; i < 120; i++) { // up to 10 min — Ryan is usually on calls
     const title = await page.title().catch(() => "")
     const body = await page.evaluate(() => document.body?.innerText || "").catch(() => "")
@@ -113,6 +138,7 @@ async function waitForHumanIfChallenged(page) {
     const turnstile = await page.evaluate(() => !!document.querySelector("iframe[src*='challenges.cloudflare.com']")).catch(() => false)
     if (turnstile) {
       if (i === 0) console.log("  ⚠ Cloudflare 'Verify you are human' checkbox — needs one human click in the Chrome window (waiting up to 10 min)…")
+      if (!pinged) { pinged = true; await telegram("🔍 Skip-trace paused: Cloudflare needs one human click in the Chrome window on the Mac mini (waiting 10 min).") }
       await sleep(5000); continue
     }
     // Strict: Cloudflare's interstitial title / opening text only. The word
@@ -120,6 +146,7 @@ async function waitForHumanIfChallenged(page) {
     const challenged = /security challenge|attention required|access denied/i.test(title) || /verify you are human|checking your browser/i.test(body.slice(0, 300))
     if (!challenged) return true
     if (i === 0) console.log(`  ⚠ challenge page — waiting for a human to clear it (10 min max)… [${title}]`)
+    if (!pinged) { pinged = true; await telegram("🔍 Skip-trace paused: Cloudflare challenge needs a human in the Chrome window on the Mac mini (waiting 10 min).") }
     await sleep(5000)
   }
   return false
@@ -261,6 +288,7 @@ const browser = await chromium.launch({ channel: "chrome", headless: false })
 let ctx = null
 async function freshPage() { if (ctx) await ctx.close().catch(() => {}); ctx = await browser.newContext({ viewport: { width: 1280, height: 900 } }); return ctx.newPage() }
 const report = []
+let noCardStreak = 0 // consecutive no_cards = FPS throttling us, not real misses
 for (const [i, c] of clusters.entries()) {
   process.stdout.write(`[${i + 1}/${clusters.length}] ${c.phone} (${c.rows[0].source}) … `)
   let res
@@ -271,10 +299,25 @@ for (const [i, c] of clusters.entries()) {
   // stamp the cluster (the marker would make later runs skip it).
   if (res.status === "ok" || res.status === "no_record") await writeCluster(c, res)
   else console.log(`   (not written — ${res.status})`)
-  report.push({ phone: c.phone, source: c.rows[0].source, status: res.status, flags, persons: res.persons.map((p) => ({ name: p.name, age: p.age, deceased: p.deceased, current: p.current?.address, previous: (p.previous || []).map((a) => a.address) })) })
+  const entry = { ts: new Date().toISOString(), phone: c.phone, source: c.rows[0].source, status: res.status, flags, persons: res.persons.map((p) => ({ name: p.name, age: p.age, deceased: p.deceased, current: p.current?.address, previous: (p.previous || []).map((a) => a.address) })) }
+  report.push(entry)
   fs.writeFileSync("scripts/.skip-trace-report.json", JSON.stringify(report, null, 1))
-  if (i < clusters.length - 1) await sleep(DELAY_S ? jitter(DELAY_S * 1000, DELAY_S * 1500) : jitter(8000, 20000))
+  fs.appendFileSync("scripts/.skip-trace-ledger.jsonl", JSON.stringify(entry) + "\n")
+  if (i < clusters.length - 1) {
+    // Adaptive backoff: 3 straight no_cards ≈ throttled → sit out 10 min;
+    // 6 straight → 30 min. Resets on any real outcome (ok / no_record).
+    noCardStreak = res.status === "no_cards" ? noCardStreak + 1 : 0
+    if (noCardStreak > 0 && noCardStreak % 3 === 0) {
+      const mins = noCardStreak >= 6 ? 30 : 10
+      console.log(`  ⏸ ${noCardStreak} straight no_cards — FPS is throttling; backing off ${mins} min`)
+      await sleep(mins * 60_000)
+    } else {
+      await sleep(DELAY_S ? jitter(DELAY_S * 1000, DELAY_S * 1500) : jitter(8000, 20000))
+    }
+  }
 }
 await browser.close()
 const ok = report.filter((r) => r.status === "ok").length
+const retryable = report.filter((r) => !["ok", "no_record"].includes(r.status)).length
 console.log(`\ndone: ${ok} found, ${report.length - ok} misses, ${report.filter((r) => r.flags.length).length} flagged → scripts/.skip-trace-report.json`)
+await telegram(`🔍 Skip-trace run done: ${ok} traced, ${report.filter((r) => r.status === "no_record").length} no-record, ${retryable} to retry (throttled/challenge), ${report.filter((r) => r.flags.length).length} ⚑ flagged.`)
