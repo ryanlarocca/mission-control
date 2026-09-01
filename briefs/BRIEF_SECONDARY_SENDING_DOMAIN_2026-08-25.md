@@ -2,9 +2,40 @@
 
 Ryan's decision (2026-08-25): build our own deliverability stack instead of
 paying a platform to wrap. Research summary in agent-email-v2 CHANGELOG
-2026-08-25. The consumer gmail.com sender stays only for the Phase B cohort
-test; the drip moves to a secondary domain with Google's own measurement
-(Postmaster Tools) once it is warm.
+2026-08-25.
+
+## Standing architecture (Ryan approved 2026-09-01 — supersedes everything below on conflict)
+
+**Goal: durable high-volume sending that hits Primary. Build once, built right —
+speed is explicitly NOT the priority (Ryan: "missing out on 8–16 emails a day
+doesn't matter to me").**
+
+- **`ryan.lrghomes@gmail.com` is retired from cold sending, permanently and
+  immediately.** It never ramps again. Its only remaining jobs: catch replies
+  to the 2,351 past sends and feed reply/unsub ingest (which is why the OAuth
+  publish still matters). The 8 approved-but-unsent rows get cancelled.
+- **Two domains, asymmetric roles — NOT the cold-email-industry "many small
+  mailboxes" pattern** (that's snowshoeing; M3AAWG condemns it, filters hunt
+  it, and the 35–50/mailbox lore has no data behind it — reputation is scored
+  per DOMAIN, so splitting a domain's volume across mailboxes is cosmetic):
+  - **Workhorse** (lrghomesbuys.com): ONE mailbox, carries the drip. Ramps
+    5→10→20→35→50→75… gated (below), stopping at the **list-sized steady
+    state** — for today's ~2,100 contacts on the 30-day cadence that is
+    **~75–100/day** (2,100 ÷ ~22 weekday sends/mo ≈ 95). When Ryan adds
+    contacts, the ramp resumes toward the new list size under the same gates.
+    Volume follows the list, never the reverse. No hard wall below Gmail's
+    5,000/day bulk threshold; we stay far under it.
+  - **Understudy** (lrghomesoffers.com): ONE mailbox, deliberately small
+    (~20–40/day) carrying a real warm segment (Relationships tier). Its job
+    is insurance: a live, warm reputation ready to absorb volume if the
+    workhorse ever degrades — no 6-week cold rebuild (the lrghomes.com
+    lesson). Two real senders with real jobs, not six clones.
+- **Add mailboxes only for reply-traffic organization, never for reputation.**
+- **List quality is the real constraint, not sending capacity:** July died on
+  a 7.1% day-one bounce rate. Email verification of all ~2,100 addresses
+  BEFORE their first touch from the new domain is a required September build
+  item, same priority as DNS. Growth beyond steady state is a list-building
+  problem (new fish in the pond), not an infrastructure problem.
 
 ## Design
 - Domain: `lrghomesbuys.com` (available 2026-08-25, re-verified 2026-08-31;
@@ -46,12 +77,12 @@ Spam Resource recommends ~30 days of age before commercial mail. Aging runs
 concurrently with the Workspace/DNS setup steps, so it costs no extra time
 if the domain is bought now.
 
-| Week (of sending) | Volume/day | Who |
+| Week (of sending) | Volume/day (workhorse) | Who |
 |---|---|---|
-| 1 | 5–10 | agents who replied in July (37), Ryan's team, Relationships tier-1 agents — copy asks a question that invites a reply |
-| 2 | 10–20 | remaining Relationships agents + repliers' follow-ups |
-| 3–4 | 20–35 | cohort variants begin (same A/B/C test) |
-| 5–6+ | 35–50 per mailbox | steady state; add a 2nd mailbox before exceeding 50/day |
+| 1 | 5–10 | agents who replied in July (37), Ryan's team — copy asks a question that invites a reply (understudy simultaneously starts 3–5/day to Relationships tier-1) |
+| 2 | 10–20 | repliers' follow-ups + verified cohort begins |
+| 3–4 | 20–35 | cohort variants (same A/B/C test) |
+| 5–8+ | 50 → 75–100 | keep stepping while gates stay green, stop at the list-sized steady state (~75–100/day for today's 2,100 contacts); understudy holds ~20–40 |
 
 Ramp rules (research-backed):
 - **Gates are the ONLY advancement mechanism** — the week column is a floor,
