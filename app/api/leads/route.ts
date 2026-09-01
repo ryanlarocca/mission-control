@@ -19,29 +19,41 @@ export async function GET(request: NextRequest) {
   const hasFollowup = url.searchParams.get("has_followup")
   const sort = url.searchParams.get("sort")
   const limitParam = parseInt(url.searchParams.get("limit") || "100", 10)
-  const limit = Number.isFinite(limitParam) ? Math.max(1, Math.min(500, limitParam)) : 100
+  // The old 500 ceiling silently hid every lead row older than the newest
+  // 500 from the tab (at 665 rows the April/May clusters vanished — found
+  // 2026-09-01 when #callblock search showed 32 of 64 tagged clusters).
+  // Ceiling is now 5000, fetched in 1000-row pages below because PostgREST
+  // caps any single select at 1000 rows regardless of .limit().
+  const limit = Number.isFinite(limitParam) ? Math.max(1, Math.min(5000, limitParam)) : 100
 
   try {
     const sb = getLeadsClient()
-    let q = sb.from("leads").select("*").limit(limit)
+    const PAGE = 1000
+    const rows: unknown[] = []
+    for (let from = 0; from < limit; from += PAGE) {
+      const to = Math.min(from + PAGE, limit) - 1
+      let q = sb.from("leads").select("*").range(from, to)
 
-    if (status && VALID_LEAD_STATUSES.includes(status as LeadStatus)) q = q.eq("status", status)
-    if (source) q = q.eq("source", source)
-    if (campaignLabel) q = q.eq("campaign_label", campaignLabel)
-    if (hasFollowup === "true") q = q.not("recommended_followup_date", "is", null)
+      if (status && VALID_LEAD_STATUSES.includes(status as LeadStatus)) q = q.eq("status", status)
+      if (source) q = q.eq("source", source)
+      if (campaignLabel) q = q.eq("campaign_label", campaignLabel)
+      if (hasFollowup === "true") q = q.not("recommended_followup_date", "is", null)
 
-    if (sort === "followup_date_asc") {
-      q = q.order("recommended_followup_date", { ascending: true, nullsFirst: false })
-    } else {
-      q = q.order("created_at", { ascending: false })
+      if (sort === "followup_date_asc") {
+        q = q.order("recommended_followup_date", { ascending: true, nullsFirst: false })
+      } else {
+        q = q.order("created_at", { ascending: false })
+      }
+
+      const { data, error } = await q
+      if (error) {
+        console.error("[leads:GET] Query failed:", error)
+        return NextResponse.json({ error: error.message }, { status: 500 })
+      }
+      rows.push(...(data ?? []))
+      if (!data || data.length < to - from + 1) break // short page = done
     }
-
-    const { data, error } = await q
-    if (error) {
-      console.error("[leads:GET] Query failed:", error)
-      return NextResponse.json({ error: error.message }, { status: 500 })
-    }
-    return NextResponse.json({ leads: data ?? [] })
+    return NextResponse.json({ leads: rows })
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e)
     console.error("[leads:GET] Threw:", msg)

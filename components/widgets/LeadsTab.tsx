@@ -492,7 +492,7 @@ export function LeadsTab() {
     fetchAbortRef.current = ac
     const startedAt = Date.now()
     try {
-      const res = await fetch("/api/leads?limit=500", { cache: "no-store", signal: ac.signal })
+      const res = await fetch("/api/leads?limit=5000", { cache: "no-store", signal: ac.signal })
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
       const data = await res.json()
       // Discard this snapshot if the user made an optimistic edit after the
