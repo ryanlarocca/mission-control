@@ -36,17 +36,23 @@ place — schema or row-shape may have drifted since it was authored.
 - `find-ricardo-call-2026-05-12.mjs` — specific lookup tied to a debug session
 - `find-offer-leads.mjs` — offer-leads scan that predates the proper `offer_amount` column
 
+### Archived 2026-09-02 (organization audit)
+Gmail probes: `probe-gmail.mjs`, `probe-history-list.mjs`, `probe-messages-list.mjs`, `send-test-email.mjs` — 2026-05-05 Pub/Sub debugging.
+Ad-hoc lead queries superseded by `inspect-lead.mjs`: `check-email-leads.mjs`, `check-lead-full.mjs`, `check-leads-by-phone.mjs`, `check-recent-leads.mjs`, `count-statuses.mjs`.
+Completed migrations/backfills: `migrate-relationships-from-sheet.mjs` (BoB sheet → Supabase, ran 2026-05-22), `phase7d-backfill-analyzer.mjs`, `relabel-legacy-campaigns.mjs`, `cleanup-google-voice-leads.mjs`, `import-agent-campaign.mjs` (2026-07 campaign import), `seed-gym-tracker.mjs`.
+Finished-task verifiers/one-offs: `verify-rescues-2026-05-12.mjs`, `verify-sends-replies.mjs`, `drips-e2e-test.mjs`, `seed-drip-test-leads.mjs`, `set-telegram-webhook.mjs` (superseded by `setup-campaign-bot.mjs`), `configure-twilio-number.mjs`.
+
+### `sql/` — applied migrations
+All 27 `scripts/*.sql` files moved here 2026-09-02. Every one was applied to
+prod Supabase at its dated time; `run-migration.mjs` takes an explicit path,
+so re-running one is `node scripts/run-migration.mjs scripts/archive/sql/<file>`.
+New migrations: prefer `supabase/migrations/`.
+
 ## Active scripts (kept in `scripts/`)
 
 These are reusable tools and stay outside the archive:
 - `inspect-lead.mjs` — full-state dump for any lead (phone / uuid / email)
-- `check-lead-full.mjs`, `check-leads-by-phone.mjs`, `check-recent-leads.mjs`, `check-email-leads.mjs`
-- `count-statuses.mjs`
 - `compute-campaign-metrics.mjs`
 - `drip-engine.js` (load-bearing — runs hourly via launchd)
-- `drips-e2e-test.mjs`
 - `run-migration.mjs`
-- `relabel-legacy-campaigns.mjs` — still useful for new campaign tagging
 - `regenerate-pending-drips.js`
-- `phase7d-backfill-analyzer.mjs` — kept active because the analyzer prompt evolves and re-runs are expected
-- `*.sql` migrations (idempotent, safe to re-run via `run-migration.mjs`)
