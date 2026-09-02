@@ -5,6 +5,8 @@ import { useEffect, useState } from "react"
 // Performance tab for /email-campaign (Ryan 2026-07-31): campaign health,
 // the send-time experiment (reply rate by PT send hour), touch funnel, and
 // recent replies. Read-only; data from /api/campaign/stats.
+// Not to be confused with CampaignPerformanceTab (direct-mail/Google Ads
+// funnel + ROI on /campaigns) — different domain, different API.
 
 type Stats = {
   experiment_start: string
@@ -34,7 +36,7 @@ function pct(replied: number, sent: number): string {
   return sent ? `${((100 * replied) / sent).toFixed(1)}%` : "—"
 }
 
-export function CampaignPerformance() {
+export function EmailCampaignPerformance() {
   const [stats, setStats] = useState<Stats | null>(null)
   const [error, setError] = useState("")
 

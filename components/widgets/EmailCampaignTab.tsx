@@ -1,7 +1,7 @@
 "use client"
 
 import { useCallback, useEffect, useRef, useState } from "react"
-import { CampaignPerformance } from "@/components/widgets/CampaignPerformance"
+import { EmailCampaignPerformance } from "@/components/widgets/EmailCampaignPerformance"
 
 // Agent email-drip campaign workspace (Phase 3 of
 // briefs/EMAIL_DRIP_CAMPAIGN_2026-07-17.md). Mirrors the mockup Ryan
@@ -673,7 +673,7 @@ export function EmailCampaignTab() {
         </div>
       )}
 
-      {view === "performance" && <CampaignPerformance />}
+      {view === "performance" && <EmailCampaignPerformance />}
 
       {view === "contacts" && (
         <div>
