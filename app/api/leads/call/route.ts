@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server"
-import { FORWARD_TO, getLeadsClient, getTwilioNumber, registerManualTouch } from "@/lib/leads"
+import { FORWARD_TO, getLeadsClient, getTwilioNumber, isOwnedNumber, registerManualTouch } from "@/lib/leads"
 
 // Outbound call relay. Click "Call" on a lead card →
 //   1. Insert an outbound `lead_type=call` row (twilio_number=null per the
@@ -45,6 +45,22 @@ export async function POST(request: NextRequest) {
   const leadPhone = normalizeE164(phoneInput)
   if (!leadPhone) {
     return NextResponse.json({ error: `Invalid phone: ${phoneInput}` }, { status: 400 })
+  }
+
+  // Refuse to dial ourselves. A phantom lead row can carry one of our own
+  // Twilio numbers as caller_phone (see isOwnedNumber), and clicking Call on
+  // it rang LRG's own voicemail while logging more phantom rows on both legs
+  // (2026-09-03). The webhook guards stop new ones being created; this stops
+  // the 33 rows already in the table from being dialed.
+  if (isOwnedNumber(leadPhone)) {
+    return NextResponse.json(
+      {
+        error:
+          `${leadPhone} is one of our own Twilio numbers, so this lead card is a phantom — ` +
+          `the real contact number is in the message body. Not dialing.`,
+      },
+      { status: 400 }
+    )
   }
 
   const sid = process.env.TWILIO_ACCOUNT_SID

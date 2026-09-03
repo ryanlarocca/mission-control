@@ -6,6 +6,7 @@ import {
   dedupeClusterStamps,
   getCampaignSource,
   getLeadsClient,
+  isOwnedNumber,
   type LeadStatus,
   lookupLeadName,
   parseTwilioBody,
@@ -53,6 +54,18 @@ export async function POST(request: Request) {
     callerPhone = params.get("From") || ""
   } catch (e) {
     console.error("[voice] Failed to parse Twilio body:", e)
+  }
+
+  // A call whose caller ID is one of OUR OWN Twilio numbers is the system
+  // dialing itself — most often the outbound caller-ID leg reaching another
+  // LRG line. Still return the Dial TwiML so the call connects, but never
+  // write a lead row: on 2026-09-03 a self-call logged three phantom "leads"
+  // whose transcripts were our own voicemail greeting.
+  if (callerPhone && isOwnedNumber(callerPhone)) {
+    console.warn(`[voice] self-originated call from our own number ${callerPhone} -> ${twilioNumber}; dialing without logging a lead`)
+    return new NextResponse(buildTwiml(twilioNumber), {
+      headers: { "Content-Type": "text/xml" },
+    })
   }
 
   if (callerPhone) {

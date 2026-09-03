@@ -51,6 +51,40 @@ export const OUTBOUND_TWILIO_NUMBER = "+16502043247"
 // and the google_ads_form drip path in the voice/sms webhooks.
 export const GOOGLE_ADS_LANDING_NUMBER = "+16506703914"
 
+// Every phone number WE own on the Twilio account. A webhook whose `From` is
+// one of these is our own infrastructure talking to itself, never a lead.
+//
+// 2026-09-03: the landing page sends a "🔔 NEW LEAD" alert SMS from the Google
+// Ads number to the Office — Info line. /api/leads/sms had no sender check, so
+// it ingested that alert as an inbound lead whose caller_phone was our own
+// landing-page number. Clicking Call then dialed ourselves — Ryan reached the
+// LRG voicemail greeting and the outbound leg logged a SECOND self-lead on the
+// outbound caller-ID number. 33 rows across 4 of our numbers had accumulated
+// this way.
+//
+// CAMPAIGN_MAP holds the lead-facing lines; the agents line is owned by the
+// email-campaign stack (app/api/campaign/voice) and isn't in that map, so it
+// is listed explicitly. Keep in sync with the Twilio console.
+export const AGENTS_LINE_NUMBER = "+16509104007"
+const OWNED_NUMBER_LIST: readonly string[] = [
+  ...Object.keys(CAMPAIGN_MAP),
+  AGENTS_LINE_NUMBER,
+]
+export const OWNED_NUMBERS: ReadonlySet<string> = new Set(OWNED_NUMBER_LIST)
+// Compared on the last 10 digits so unformatted variants ("6506703914",
+// "1 650-670-3914") match the E.164 form Twilio normally sends.
+const OWNED_LAST10: ReadonlySet<string> = new Set(
+  OWNED_NUMBER_LIST.map((n) => n.replace(/\D/g, "").slice(-10))
+)
+
+// True when a webhook's caller is one of our own Twilio numbers. Callers must
+// drop the event rather than write a lead row.
+export function isOwnedNumber(raw: string | null | undefined): boolean {
+  if (!raw) return false
+  const d = String(raw).replace(/\D/g, "")
+  return d.length >= 10 && OWNED_LAST10.has(d.slice(-10))
+}
+
 // Phase 7C-may8 Bug 6: explicit STOP keywords flag the lead DNC and kill the
 // drip. DNC_KEYWORDS is the reference list; the matching in isDncMessage is
 // deliberately NOT a blanket substring scan — see the comment there.

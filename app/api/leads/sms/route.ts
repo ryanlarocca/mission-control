@@ -7,6 +7,7 @@ import {
   getLeadsClient,
   isDncMessage,
   isMobileHome,
+  isOwnedNumber,
   type LeadStatus,
   lookupLeadName,
   parseTwilioBody,
@@ -41,6 +42,18 @@ export async function POST(request: Request) {
     bodyText = params.get("Body") || ""
   } catch (e) {
     console.error("[sms] Failed to parse Twilio body:", e)
+  }
+
+  // Our own infrastructure texting itself is never a lead. The landing page
+  // sends its "🔔 NEW LEAD" alert SMS from the Google Ads number to the
+  // Office — Info line; without this check that alert was ingested as an
+  // inbound lead whose caller_phone was our own number, and clicking Call
+  // dialed us straight into our own voicemail (2026-09-03, Hannah Melotto).
+  // The real lead row is created by the landing page's own form POST — this
+  // SMS is only a notification, so dropping it loses nothing.
+  if (isOwnedNumber(from)) {
+    console.warn(`[sms] ignoring self-originated SMS from our own number ${from} -> ${to}`)
+    return new NextResponse(EMPTY_TWIML, { status: 200, headers: { "Content-Type": "text/xml" } })
   }
 
   const source = getCampaignSource(to)
