@@ -64,3 +64,29 @@ describe("resolveNextTouch — dripStatus gates the forecast on the stamped row"
     expect(resolveNextTouch({ ...base, status: "nurture" }).primary?.kind).toBe("drip")
   })
 })
+
+// Grace Chang, 2026-09-03: an email-only lead (no phone on the cluster) whose
+// follow-up rendered as "Follow-up call · today". The Call button was already
+// hidden, but the heading still told Ryan to phone someone we have no number
+// for. The touch now carries the channel that is actually actionable.
+describe("resolveCallTouch — follow-up channel reflects what's actionable", () => {
+  const noDrip = { ...base, dripCampaignType: null, hasPhone: true }
+  it("marks the follow-up email-only when the cluster has no phone", () => {
+    const r = resolveNextTouch({ ...noDrip, hasPhone: false })
+    expect(r.primary?.kind).toBe("call")
+    expect(r.primary?.channel).toBe("email")
+  })
+  it("leaves channel null when a phone IS on file (a real call)", () => {
+    const r = resolveNextTouch({ ...noDrip, hasPhone: true })
+    expect(r.primary?.kind).toBe("call")
+    expect(r.primary?.channel).toBeNull()
+  })
+  it("still surfaces the follow-up rather than dropping it", () => {
+    // Grace asked "what you will offer?" — the work is real even with no
+    // phone, so this must never be filtered out the way an unsendable drip is.
+    const r = resolveNextTouch({ ...noDrip, hasPhone: false, hasEmail: true })
+    expect(r.primary).not.toBeNull()
+    expect(r.primary?.due).toBe("2026-12-01")
+    expect(r.primary?.reason).toBe("call back in Dec")
+  })
+})

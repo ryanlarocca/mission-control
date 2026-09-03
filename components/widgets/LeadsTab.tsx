@@ -1776,9 +1776,13 @@ interface LeadCardProps {
 // any) shows as a faint second line. Same lib/next-touch resolver that
 // powers the Follow Ups tab, so the card and the worklist can't disagree.
 function TouchLabel({ touch }: { touch: NextTouch }) {
-  const Icon = touch.kind === "call" ? Phone : Bot
+  // A follow-up on a phone-less lead comes back with channel="email" — show
+  // it as an email follow-up rather than telling Ryan to call a lead we have
+  // no number for.
+  const followupByEmail = touch.kind === "call" && touch.channel === "email"
+  const Icon = touch.kind === "call" ? (followupByEmail ? Mail : Phone) : Bot
   const label = touch.kind === "call"
-    ? "Call"
+    ? (followupByEmail ? "Email" : "Call")
     : `Drip #${touch.touchNumber}${touch.channel === "email" ? " email" : ""}`
   return (
     <span className="inline-flex items-center gap-1 min-w-0">

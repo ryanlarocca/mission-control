@@ -1276,11 +1276,17 @@ function CallBlock({
   onText: () => void
 }) {
   const overdue = classifyUrgency(touch) === "overdue"
+  // resolveCallTouch marks a follow-up on a phone-less lead as channel="email".
+  // The Call button below was already gated on row.phone, but the heading still
+  // read "Follow-up call" — so an email-only lead like Grace Chang showed
+  // "Follow-up call · today" for someone we have no number for (2026-09-03).
+  const byEmail = touch.channel === "email"
+  const HeadIcon = byEmail ? Mail : Phone
   return (
     <div className="px-3 py-2 border-t border-zinc-900">
       <div className="flex items-center gap-1.5 text-xs">
-        <Phone className="w-3.5 h-3.5 text-emerald-400" />
-        <span className="text-zinc-300 font-medium">Follow-up call</span>
+        <HeadIcon className="w-3.5 h-3.5 text-emerald-400" />
+        <span className="text-zinc-300 font-medium">{byEmail ? "Follow-up email" : "Follow-up call"}</span>
         <span className="text-zinc-600">·</span>
         <span className={overdue ? "text-red-300" : "text-amber-300"}>{describeTouchWhen(touch)}</span>
       </div>

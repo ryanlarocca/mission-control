@@ -267,7 +267,13 @@ function resolveCallTouch(input: NextTouchInput): NextTouch | null {
     kind: "call",
     due: date, // bare YYYY-MM-DD — bucketed in the consumer's TZ
     reason: input.followupReason ?? null,
-    channel: null,
+    // A follow-up on a lead with no phone number cannot be a call. Carry the
+    // channel that IS actionable so the card and the worklist stop telling
+    // Ryan to phone someone we have no number for (Grace Chang, 2026-09-03 —
+    // email-only lead reading "Follow-up call · today"). null = we have a
+    // phone, i.e. a real call. Drip consumers never read `channel` on a
+    // kind="call" touch, so this is inert for them.
+    channel: input.hasPhone ? null : "email",
     touchNumber: null,
     campaignType: null,
     isQueued: false,
