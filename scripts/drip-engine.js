@@ -575,15 +575,62 @@ RESPONSIVENESS (last 30 days):
 `
 }
 
+// Substance rotation for a lead who is not replying.
+//
+// Until 2026-09-03 both unresponsive branches below returned ONE fixed string
+// regardless of touch number, so the touch-number ladder at the bottom of
+// phaseGuidanceFor (early → value prop → long-tail) was unreachable for any
+// silent lead. Combined with the separate "never repeat an opener" rule, the
+// model was told to vary the SURFACE and keep the SUBSTANCE identical — which
+// is exactly what came out. Grace Chang got six near-identical "just checking
+// in, no pressure" emails; the only concrete reason to reply (cash, 2-3 week
+// close, no repairs/commissions) did not appear until the sixth, by which
+// point she had tuned out. Four of the six also apologized for the previous
+// ones, because the old string interpolated the raw outbound count and the
+// model escalated: "a few times" → "been persistent" → "reached out quite a
+// bit". The stock example phrases leaked verbatim too ("just wanted to check
+// in", "I'll leave you be").
+//
+// Responsiveness now sets the TONE; the touch number sets the SUBSTANCE.
+function unresponsiveAngle(touchNumber) {
+  if (touchNumber <= 1) {
+    return "ANGLE — opening: short, warm, low-pressure. Say you'd like to help with the property and make it easy to reply. No terms yet."
+  }
+  if (touchNumber === 2) {
+    return "ANGLE — terms: lead with the concrete offer, because this is the only real reason for them to reply. Cash, close in 2-3 weeks, no repairs, no commissions, no showings. State it plainly as what you can do, not as a pitch. This is the most important touch in the sequence — do not waste it on another availability check."
+  }
+  if (touchNumber === 3) {
+    return "ANGLE — one specific question: ask a single concrete, low-effort question they can answer in a few words (e.g. whether it is tenant-occupied, roughly what they had in mind, whether they've already listed it). One question only — this is the one touch that may ask anything."
+  }
+  if (touchNumber === 4) {
+    return "ANGLE — close the loop: say plainly that you will stop reaching out unless they want to keep talking, and mean it. No guilt, no tally of past messages, no 'I've tried a few times'. Warm and final."
+  }
+  return "ANGLE — dormant: one line, months apart, no ask. A brief market or seasonal note that leaves the door open. Assume they are not selling right now."
+}
+
+// Rules shared by every unresponsive touch. These exist because the old
+// guidance produced escalating self-deprecation and boilerplate.
+const UNRESPONSIVE_RULES = [
+  "Do NOT apologize for previous messages and do NOT count them. Banned: \"I've reached out a few times\", \"I know I've been persistent\", \"I've reached out quite a bit\", \"sorry to keep bothering you\".",
+  "Acknowledge the silence at most ONCE, and only on touches 1-2. After that just deliver the angle.",
+  "Banned stock phrases (they became boilerplate): \"just wanted to check in\", \"I'll leave you be\", \"no worries if the timing's off\".",
+  "Every message must carry something the previous ones did not. If the angle is already covered, say less rather than repeating.",
+  "Do NOT imply the lead reached out to you.",
+].join("\n  - ")
+
 function phaseGuidanceFor(touchNumber, sig) {
-  // Responsiveness overrides the touch-number phase — when the lead has gone
-  // dark, the right message isn't "low-pressure availability check", it's a
-  // warm reach-out that acknowledges the silence.
+  // Responsiveness sets the tone; the touch number sets the substance. The
+  // tone rules stop the model inventing a reply that never happened; the
+  // angle stops six touches from being the same message.
   if (sig && sig.state === "never_responded" && sig.outboundTotal >= 1) {
-    return `UNRESPONSIVE — Ryan has reached out ${sig.outboundTotal}x and the lead hasn't responded. Acknowledge you've been trying to connect, no pressure. Examples of the tone: "Hey, just wanted to check in", "Let me know if there's anything I can do to help, otherwise I'll leave you be". Leave the door open without pushing. Do NOT ask a clarifying question and do NOT imply the lead reached out to you.`
+    return `UNRESPONSIVE — the lead has not replied. Ryan is the one reaching out; keep it warm and low-pressure, and never push.
+  ${unresponsiveAngle(touchNumber)}
+  - ${UNRESPONSIVE_RULES}`
   }
   if (sig && sig.state === "gone_quiet") {
-    return `GONE QUIET — they responded earlier but the conversation died ${sig.daysSinceLastResponse}d ago. Warm, brief check-in, no recap, no re-ask of an old question. Acknowledge the gap and offer to help. Same tone as UNRESPONSIVE but you can reference that you talked before.`
+    return `GONE QUIET — they responded earlier but the conversation died ${sig.daysSinceLastResponse}d ago. You MAY reference that you spoke before. No recap, no re-asking an old question.
+  ${unresponsiveAngle(touchNumber)}
+  - ${UNRESPONSIVE_RULES}`
   }
   // Brief initial inbound — lead reached out (call/voicemail/text) but the
   // content was too thin to interpret intent. Standard touch #1 ("just
