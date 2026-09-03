@@ -6,7 +6,7 @@ import {
   Phone, PhoneOutgoing, Voicemail, MessageSquare, ClipboardList, ChevronDown, ChevronRight,
   Loader2, RefreshCw, Send, Check, Mail, Trash2, Bot, Clock, X,
   Sparkles, PhoneOff, Ban, ShieldOff, Zap, Wand2, Pencil, Search, SlidersHorizontal,
-  Maximize2, Hourglass, Smartphone,
+  Maximize2, Hourglass, Smartphone, Copy,
 } from "lucide-react"
 import {
   resolveNextTouch, describeTouchWhen, classifyUrgency,
@@ -3129,6 +3129,47 @@ function TimelineAiEntry(props: {
   )
 }
 
+// Copy-to-clipboard for call / voicemail transcripts. Ryan reads these on
+// his phone and wants to paste them elsewhere (the Whisper text is rough,
+// so he often hands it to a chat to clean up). navigator.clipboard needs a
+// secure context + user gesture — both true on the Vercel deploy — with a
+// hidden-textarea fallback for older iOS Safari.
+function CopyButton({ text, label = "Copy" }: { text: string; label?: string }) {
+  const [copied, setCopied] = useState(false)
+  async function copy() {
+    try {
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(text)
+      } else {
+        const ta = document.createElement("textarea")
+        ta.value = text
+        ta.setAttribute("readonly", "")
+        ta.style.position = "fixed"
+        ta.style.opacity = "0"
+        document.body.appendChild(ta)
+        ta.select()
+        document.execCommand("copy")
+        document.body.removeChild(ta)
+      }
+      setCopied(true)
+      setTimeout(() => setCopied(false), 1500)
+    } catch (e) {
+      console.warn("[copy] failed", e)
+    }
+  }
+  return (
+    <button
+      type="button"
+      onClick={copy}
+      aria-label={label}
+      className="inline-flex items-center gap-1 text-[11px] text-zinc-400 hover:text-zinc-100 active:text-zinc-100 px-2 py-1 -my-1 rounded touch-manipulation"
+    >
+      {copied ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
+      <span>{copied ? "Copied" : label}</span>
+    </button>
+  )
+}
+
 function TimelineEvent({ ev }: { ev: Lead }) {
   const outbound = isOutbound(ev)
   const Icon = TYPE_ICON[ev.lead_type ?? "call"] || Phone
@@ -3169,8 +3210,13 @@ function TimelineEvent({ ev }: { ev: Lead }) {
           {isOutboundCall ? (
             <>
               {ev.message && (
-                <div className="text-sm text-zinc-100 whitespace-pre-wrap break-words max-h-48 overflow-y-auto pr-1">
-                  {ev.message}
+                <div>
+                  <div className="text-sm text-zinc-100 whitespace-pre-wrap break-words max-h-48 overflow-y-auto pr-1">
+                    {ev.message}
+                  </div>
+                  <div className="flex justify-end mt-1">
+                    <CopyButton text={ev.message} label="Copy transcript" />
+                  </div>
                 </div>
               )}
               {ev.recording_url && (
@@ -3214,8 +3260,13 @@ function TimelineEvent({ ev }: { ev: Lead }) {
           <div className="space-y-2">
             {/* `message` holds the Whisper transcription for voicemail rows */}
             {ev.message && (
-              <div className="text-sm text-zinc-200 bg-zinc-900 rounded px-3 py-2 whitespace-pre-wrap break-words max-h-48 overflow-y-auto">
-                {ev.message}
+              <div>
+                <div className="text-sm text-zinc-200 bg-zinc-900 rounded px-3 py-2 whitespace-pre-wrap break-words max-h-48 overflow-y-auto">
+                  {ev.message}
+                </div>
+                <div className="flex justify-end mt-1">
+                  <CopyButton text={ev.message} label="Copy transcript" />
+                </div>
               </div>
             )}
             {ev.recording_url && (
@@ -3237,8 +3288,13 @@ function TimelineEvent({ ev }: { ev: Lead }) {
         {ev.lead_type === "call" && (ev.message || ev.recording_url) && (
           <div className="space-y-2">
             {ev.message && (
-              <div className="text-sm text-zinc-200 bg-zinc-900 rounded px-3 py-2 whitespace-pre-wrap break-words max-h-48 overflow-y-auto">
-                {ev.message}
+              <div>
+                <div className="text-sm text-zinc-200 bg-zinc-900 rounded px-3 py-2 whitespace-pre-wrap break-words max-h-48 overflow-y-auto">
+                  {ev.message}
+                </div>
+                <div className="flex justify-end mt-1">
+                  <CopyButton text={ev.message} label="Copy transcript" />
+                </div>
               </div>
             )}
             {ev.recording_url && (
