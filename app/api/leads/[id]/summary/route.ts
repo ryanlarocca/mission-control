@@ -229,7 +229,11 @@ ${transcript}`
         model: HAIKU_MODEL,
         // 400 → 700 to fit the property_details array (a seller with two
         // multi-unit properties can otherwise truncate the JSON mid-object).
-        max_tokens: 700,
+        // 700 → 1200 (2026-09-03): a long summary plus a populated
+        // property_details `notes` field still overran it, and a truncated
+        // object fails JSON.parse — which used to dump the raw blob into the
+        // card.
+        max_tokens: 1200,
         messages: [{ role: "user", content: prompt }],
       }),
     })
@@ -273,12 +277,30 @@ ${transcript}`
       }
       extractedDetails = parsePropertyDetails(parsed.property_details)
     } catch {
-      // Fall back: treat the whole cleaned response as the paragraph if it's
-      // free text rather than JSON. Better to show a summary than nothing.
-      summary = cleaned
+      // The model returned something JSON.parse rejected. Two very different
+      // cases, and the old fallback conflated them by assigning the whole
+      // response to `summary`: genuine free text (fine to show) versus a JSON
+      // object truncated mid-write by max_tokens (NOT fine — it renders a wall
+      // of {"summary": …, "property_details": […]} inside the card, which is
+      // what Ryan hit on Bill Kester, 2026-09-03).
+      if (/^[{[]/.test(cleaned)) {
+        // `summary` is the first key in the requested schema, so it is
+        // normally still intact when only the tail was cut. Salvage that one
+        // field; if even it is unrecoverable, leave summary null and let the
+        // 502 below fire rather than storing a blob.
+        const m = cleaned.match(/"summary"\s*:\s*"((?:[^"\\]|\\.)*)"/)
+        summary = m
+          ? m[1].replace(/\\"/g, '"').replace(/\\n/g, "\n").replace(/\\\\/g, "\\").trim()
+          : null
+        if (!summary) {
+          console.error(`[summary] unparseable model response for ${id}: ${cleaned.slice(0, 200)}`)
+        }
+      } else {
+        summary = cleaned
+      }
     }
-    if (!summary) {
-      return NextResponse.json({ error: "no summary in model response" }, { status: 502 })
+    if (!summary || /^[{[]/.test(summary)) {
+      return NextResponse.json({ error: "no usable summary in model response" }, { status: 502 })
     }
 
     const generated_at = new Date().toISOString()
