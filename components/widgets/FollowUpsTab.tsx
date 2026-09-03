@@ -7,6 +7,7 @@ import {
   Sparkles, SkipForward, Eye, ExternalLink, CalendarClock, Ban, ShieldOff,
 } from "lucide-react"
 import { formatPhone } from "@/lib/utils"
+import { handleSessionExpired } from "@/lib/session-expired"
 import {
   classifyUrgency, describeTouchWhen, touchSortKey,
   type NextTouch, type NextTouchUrgency,
@@ -199,6 +200,7 @@ export function FollowUpsTab() {
     if (!silent) setLoading(true)
     try {
       const res = await fetch("/api/follow-ups", { cache: "no-store" })
+      if (handleSessionExpired(res)) return
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
       setData(await res.json() as FollowUpsPayload)
       // Only clear the error banner on an explicit (non-silent) load —

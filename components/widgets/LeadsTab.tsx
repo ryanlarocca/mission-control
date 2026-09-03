@@ -13,6 +13,7 @@ import {
   type NextTouch, type NextTouchSummary,
 } from "@/lib/next-touch"
 import { isAnonymousCaller } from "@/lib/anonymous"
+import { handleSessionExpired } from "@/lib/session-expired"
 import type { LeadStatus, PropertyDetail } from "@/lib/leads"
 import { formatPhone } from "@/lib/utils"
 import {
@@ -493,6 +494,8 @@ export function LeadsTab() {
     const startedAt = Date.now()
     try {
       const res = await fetch("/api/leads?limit=5000", { cache: "no-store", signal: ac.signal })
+      // A lapsed session must not leave the tab frozen on stale data.
+      if (handleSessionExpired(res)) return
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
       const data = await res.json()
       // Discard this snapshot if the user made an optimistic edit after the
