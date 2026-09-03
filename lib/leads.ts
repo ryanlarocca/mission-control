@@ -1179,13 +1179,37 @@ export async function sendLeadSms(input: {
   // but surface a logging failure.
   let loggedId: string | null = null
   let logError: string | null = null
+  // Inherit the cluster's campaign source when the caller didn't supply one.
+  // Both Telegram reply paths pass `source: null` outright, and the UI send
+  // route defaults to null when the client omits it — so a reply Ryan fired
+  // from his phone wrote an outbound row orphaned from the campaign it belongs
+  // to (2026-09-03: "Sure" to +16504643993 landed with source=null while the
+  // inbound it answered was source="Outbound"). That breaks attribution and
+  // makes the card's source depend on which row happens to be newest.
+  // Best-effort: a lookup failure must never block a send that already went.
+  let effectiveSource = source
+  if (!effectiveSource) {
+    try {
+      const sbSrc = getLeadsClient()
+      const { data: prior } = await sbSrc
+        .from("leads")
+        .select("source")
+        .eq("caller_phone", phone)
+        .not("source", "is", null)
+        .order("created_at", { ascending: false })
+        .limit(1)
+      effectiveSource = prior?.[0]?.source ?? null
+    } catch (e) {
+      console.warn("[sendLeadSms] source inheritance lookup failed:", e)
+    }
+  }
   try {
     const sb = getLeadsClient()
     // twilio_number=null is the outbound marker (isOutbound() === !twilio_number).
     const { data, error } = await sb
       .from("leads")
       .insert({
-        source,
+        source: effectiveSource,
         twilio_number: null,
         caller_phone: phone,
         lead_type: "sms",
