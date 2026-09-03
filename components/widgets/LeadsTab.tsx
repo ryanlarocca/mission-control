@@ -1854,6 +1854,10 @@ function LeadCard(p: LeadCardProps) {
     hasPhone: !!group.contactPhone,
     hasEmail: !!group.email,
     status: group.status,
+    // The engine gates on the stamped row's own status, so the forecast has
+    // to as well — otherwise a dead intake row's stamp shows as "due now"
+    // under a live cluster status and the click writes nothing.
+    dripStatus: intakeRow?.status,
     isDnc: group.isDnc,
     isJunk: group.isJunk,
     recommendedFollowupDate: group.recommendedFollowupDate,

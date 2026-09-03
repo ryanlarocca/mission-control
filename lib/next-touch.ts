@@ -100,6 +100,15 @@ export interface NextTouchInput {
   hasEmail?: boolean
   // Lead lifecycle — drips are suppressed for active/dead/DNC/junk.
   status: string
+  // Status of the row the drip stamp actually lives on, when that differs
+  // from the cluster's status-driving row. The engine evaluates status and
+  // drip_campaign_type on the SAME row (`fetchEligibleLeads`), but a cluster
+  // can carry its stamp on a dead intake row while a newer live row supplies
+  // the cluster status — Chris Shoemaker, 2026-09-02: dead intake row stamped
+  // direct_mail_email#1, newer row `contacted`, so the card forecast "Drip #2
+  // email · due now" for a touch the engine would never send. Defaults to
+  // `status` so existing callers are unchanged.
+  dripStatus?: string | null
   isDnc?: boolean | null
   isJunk?: boolean | null
   // Follow-up reminder.
@@ -202,7 +211,7 @@ function resolveDripTouch(input: NextTouchInput): NextTouch | null {
 
   // Forecast path — mirrors the drip engine's eligibility math so the UI
   // hint matches what the engine will actually do.
-  if (STOP_STATUSES.includes(input.status)) return null
+  if (STOP_STATUSES.includes(input.dripStatus ?? input.status)) return null
   if (input.isDnc || input.isJunk) return null
   if (!input.dripCampaignType) return null
   const campaign = getCampaign(input.dripCampaignType)

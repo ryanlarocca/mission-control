@@ -2536,6 +2536,15 @@ export interface EmailTriageResult {
   // I could offer $X").
   offer_amount: number | null
   offer_verbalized: boolean
+  // Follow-up extraction (2026-09-02). Without these an inbound email could
+  // not create a task at all: /api/follow-ups selects on
+  // `drip_campaign_type NOT NULL OR recommended_followup_date NOT NULL`, so a
+  // seller writing "give me a call tomorrow" produced nothing (Chris
+  // Shoemaker, 2026-09-02). The call path has always set these via
+  // analyzeCallTranscript; email now matches it. Null unless the seller's own
+  // words justify a date.
+  recommended_followup_date: string | null
+  followup_reason: string | null
 }
 
 export async function triageEmailLead(
@@ -2548,7 +2557,10 @@ export async function triageEmailLead(
     return null
   }
 
+  const today = new Date().toISOString().slice(0, 10)
   const prompt = `You are triaging an email response to a real estate direct mail campaign. The sender received a mailer about selling their home.
+
+TODAY IS ${today}.
 
 Subject: ${subject}
 Body: ${body}
@@ -2560,7 +2572,9 @@ Respond in JSON only:
   "summary": "one sentence summary",
   "suggestedReply": "a short, natural text-message-style reply Ryan can send. Warm, direct, no fluff. 1-2 sentences max.",
   "offer_amount": number | null,
-  "offer_verbalized": true | false
+  "offer_verbalized": true | false,
+  "recommended_followup_date": "YYYY-MM-DD" | null,
+  "followup_reason": "short phrase quoting the sender" | null
 }
 
 temperature:
@@ -2581,7 +2595,27 @@ OFFER DETECTION
 - The body field may contain the seller's reply only or a full email
     thread. Identify which lines are Ryan's (look for "From: Ryan" or his
     sign-off "— Ryan" / "Ryan LaRocca"). If you can't tell who said the
-    number, default to null.`
+    number, default to null.
+
+FOLLOW-UP DATE
+- recommended_followup_date: the date Ryan should next reach out, as
+    YYYY-MM-DD, derived from what the SENDER actually wrote. Resolve relative
+    wording against TODAY ("tomorrow", "next week", "after the first of the
+    month", "in the spring").
+- Set a date whenever the sender invites contact or names a timeframe, even
+    loosely. These all warrant one:
+      • an explicit invitation — "give me a call", "call me at 408-...",
+        "let me know", "please contact me", "what's your offer?"
+      • a stated timeline — "not until spring", "check back in 60 days",
+        "after we close on the other place"
+      • an open question aimed at Ryan that he still owes an answer to.
+    A bare invitation with no timing → tomorrow.
+- followup_reason: a short phrase in the sender's own words explaining the
+    date, e.g. "said 'give me a call to discuss timing and pricing'". This is
+    what Ryan reads in the worklist, so make it specific and quote them.
+- Both null when the sender declined, opted out, or gave nothing to act on.
+    Never invent a date to look useful — null is the correct answer for a
+    hard no. If you set one field you must set the other.`
 
   try {
     const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
@@ -2593,7 +2627,10 @@ OFFER DETECTION
       body: JSON.stringify({
         model: "anthropic/claude-haiku-4-5",
         messages: [{ role: "user", content: prompt }],
-        max_tokens: 200,
+        // 200 was already tight for summary + suggestedReply; adding the two
+        // follow-up fields would truncate the JSON and fail the parse, which
+        // reads as "triage returned null" rather than an error.
+        max_tokens: 700,
       }),
     })
 
@@ -2614,6 +2651,8 @@ OFFER DETECTION
       suggestedReply?: string
       offer_amount?: unknown
       offer_verbalized?: unknown
+      recommended_followup_date?: unknown
+      followup_reason?: unknown
     }
     if (
       !parsed.temperature ||
@@ -2623,6 +2662,23 @@ OFFER DETECTION
     }
     if (!parsed.summary || typeof parsed.summary !== "string") return null
     if (!parsed.suggestedReply || typeof parsed.suggestedReply !== "string") return null
+
+    // Same shape + guard the call path uses: a date only counts with a
+    // reason beside it, and the long-horizon check clears "call back in a
+    // couple years" paired with a next-week date.
+    const rawDate =
+      typeof parsed.recommended_followup_date === "string" &&
+      /^\d{4}-\d{2}-\d{2}$/.test(parsed.recommended_followup_date.trim())
+        ? parsed.recommended_followup_date.trim()
+        : null
+    const rawReason =
+      typeof parsed.followup_reason === "string" && parsed.followup_reason.trim()
+        ? parsed.followup_reason.trim()
+        : null
+    const { date: followupDate, reason: followupReason } = validateFollowupAgainstReason(
+      rawDate && rawReason ? rawDate : null,
+      rawDate && rawReason ? rawReason : null
+    )
 
     return {
       temperature: parsed.temperature as Temperature,
@@ -2634,6 +2690,8 @@ OFFER DETECTION
           ? parsed.offer_amount
           : null,
       offer_verbalized: parsed.offer_verbalized === true,
+      recommended_followup_date: followupDate,
+      followup_reason: followupReason,
     }
   } catch (e) {
     console.error("[triage-email] Threw:", e)

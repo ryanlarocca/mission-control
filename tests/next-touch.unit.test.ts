@@ -39,3 +39,28 @@ describe("resolveNextTouch — unsendable forecasts", () => {
     expect(r.primary?.isQueued).toBe(true)
   })
 })
+
+// Chris Shoemaker, 2026-09-02: the cluster's drip stamp sat on a `dead` intake
+// row while a newer `contacted` row supplied the cluster status, so the card
+// forecast a drip the engine would never send (it gates status and
+// drip_campaign_type on the same row).
+describe("resolveNextTouch — dripStatus gates the forecast on the stamped row", () => {
+  it("suppresses the drip forecast when the stamped row is dead", () => {
+    const r = resolveNextTouch({ ...base, status: "contacted", dripStatus: "dead" })
+    expect(r.primary?.kind).toBe("call")
+    expect(r.secondary).toBeNull()
+  })
+  it("does not suppress the follow-up call — that still surfaces", () => {
+    const r = resolveNextTouch({ ...base, status: "contacted", dripStatus: "dead" })
+    expect(r.primary?.due).toBe("2026-12-01")
+    expect(r.primary?.reason).toBe("call back in Dec")
+  })
+  it("keeps the forecast when the stamped row is live", () => {
+    const r = resolveNextTouch({ ...base, status: "contacted", dripStatus: "nurture" })
+    expect(r.primary?.kind).toBe("drip")
+  })
+  it("falls back to status when dripStatus is absent", () => {
+    expect(resolveNextTouch({ ...base, status: "dead" }).primary?.kind).toBe("call")
+    expect(resolveNextTouch({ ...base, status: "nurture" }).primary?.kind).toBe("drip")
+  })
+})

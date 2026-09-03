@@ -42,3 +42,7 @@ scripts/.campaign-gated-draft-state.json
 scripts/.campaign-scorecard-state.json
 scripts/.skip-trace-report.json
 scripts/.skip-trace-ledger.jsonl
+# Raw mailbox sweep output — full email bodies, names, addresses and phone
+# numbers for ~2,600 real people. Regenerate with scan-missed-email-leads.mjs.
+scripts/.missed-lead-scan.json
+scripts/.missed-lead-candidates.json

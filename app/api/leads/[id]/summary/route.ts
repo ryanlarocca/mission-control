@@ -163,6 +163,15 @@ Produce a JSON object:
       • If the latest event is a hostile pass or opt-out, the summary
         should say so as the headline, even if earlier rows were warmer.
 
+    NEVER ASSERT AN ABSENCE OF CONTACT. The event log holds inbound messages
+    and automated sends, but it does NOT capture replies Ryan sent by hand
+    from Gmail, or calls he placed outside the system — those are invisible
+    to you. So you are forbidden from writing that Ryan did not respond, that
+    no follow-up occurred, that the lead is "uncontacted", or that the lead
+    ignored him. You cannot know any of that. Describe only what is present.
+    When the newest event is inbound with nothing recorded after it, frame it
+    as an open thread awaiting a next step — never as Ryan having gone silent.
+
     Keep this NARRATIVE — who, what, where it stands, urgency. Hard property
     SPECS go in the structured property_details field below, not in spec-heavy
     sentences here.

@@ -377,6 +377,12 @@ async function ingestGoogleVoice(args: {
       suggested_reply: triage?.suggestedReply ?? null,
       status: triage?.is_dead ? "dead" : inheritedStatus,
       temperature: triage?.temperature ?? null,
+      // /api/follow-ups keys off recommended_followup_date, so these are what
+      // let an inbound email reach the worklist at all. Null unless the
+      // sender's own words justified a date (see triageEmailLead).
+      recommended_followup_date: triage?.recommended_followup_date ?? null,
+      followup_reason: triage?.followup_reason ?? null,
+      followup_generated_at: triage ? new Date().toISOString() : null,
       gmail_thread_id: threadId,
       ...dripFields,
     })
@@ -624,6 +630,12 @@ async function handleAppsScript(payload: AppsScriptPayload): Promise<NextRespons
       suggested_reply: triage?.suggestedReply ?? null,
       status: triage?.is_dead ? "dead" : inheritedStatus,
       temperature: triage?.temperature ?? null,
+      // /api/follow-ups keys off recommended_followup_date, so these are what
+      // let an inbound email reach the worklist at all. Null unless the
+      // sender's own words justified a date (see triageEmailLead).
+      recommended_followup_date: triage?.recommended_followup_date ?? null,
+      followup_reason: triage?.followup_reason ?? null,
+      followup_generated_at: triage ? new Date().toISOString() : null,
       is_junk: isJunkAddr || undefined,
       // Suspected-fake review banner (suggested_status + reason). {} when
       // the lead is clean or is a re-engagement — spreads harmlessly.
@@ -852,6 +864,12 @@ async function processSingleMessage(args: {
       suggested_reply: triage?.suggestedReply ?? null,
       status: triage?.is_dead ? "dead" : inheritedStatus,
       temperature: triage?.temperature ?? null,
+      // /api/follow-ups keys off recommended_followup_date, so these are what
+      // let an inbound email reach the worklist at all. Null unless the
+      // sender's own words justified a date (see triageEmailLead).
+      recommended_followup_date: triage?.recommended_followup_date ?? null,
+      followup_reason: triage?.followup_reason ?? null,
+      followup_generated_at: triage ? new Date().toISOString() : null,
       is_junk: isJunkAddr || undefined,
       // Suspected-fake review banner — {} when clean or a re-engagement.
       ...(spam ? spamReviewColumns(spam) : {}),
