@@ -57,6 +57,21 @@ export async function middleware(request: NextRequest) {
   const valid = await verifySessionToken(session, secret)
 
   if (!valid) {
+    // An expired session on an API call must NOT be redirected. Next's
+    // redirect is a 307, which preserves the method, so the browser re-issues
+    // the POST against /login — a page, not a route handler — and gets back
+    // "405 Method Not Allowed". Every fetch in the app then surfaces that as
+    // its failure message: Ryan clicked Long-Term Nurture on 2026-09-03 and
+    // was told "Long-term nurture failed: HTTP 405" when the real problem was
+    // simply that he was logged out. Answer API callers with a 401 and a
+    // message worth showing; keep the redirect for page navigations, where it
+    // is the right behavior.
+    if (pathname.startsWith("/api/")) {
+      return NextResponse.json(
+        { error: "Session expired — reload the page and sign in again." },
+        { status: 401 }
+      )
+    }
     const loginUrl = new URL("/login", request.url)
     loginUrl.searchParams.set("from", pathname)
     return NextResponse.redirect(loginUrl)
