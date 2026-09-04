@@ -187,10 +187,13 @@ export function encodeEmailHeader(value: string): string {
 }
 
 // Build a Gmail API client that impersonates the given mailbox owner via
-// Google Workspace domain-wide delegation. DWD on the lrghomes.com tenant is
-// authorized for gmail.modify only — gmail.readonly returns 401
+// Google Workspace domain-wide delegation. DWD on the lrghomes Workspace
+// tenant is authorized for gmail.modify only — gmail.readonly returns 401
 // `unauthorized_client`, gmail.send is also unauthorized. gmail.modify
 // includes the read AND send perms we need (see Phase 7.4 in the CRMS memo).
+// The grant is per Workspace customer, so the secondary sending domains
+// (lrghomesbuys.com, lrghomesoffers.com) inherit it — verified 2026-09-03
+// with scripts/check-dwd-scopes.mjs (re-run it before trusting a new domain).
 // Used by both /api/leads/email (for inbound thread fetch) and
 // /api/leads/email-reply (for outbound send).
 export function getGmailClient(userEmail: string): gmail_v1.Gmail {

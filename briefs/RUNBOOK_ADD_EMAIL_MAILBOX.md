@@ -7,7 +7,8 @@ When a new direct-mail campaign drops with a new email address (e.g. `ryansvk@lr
 1. **Create the mailbox in Google Workspace Admin** (manual — there's no API for this without a heavier admin-SDK setup).
 2. **Run the CLI:**
    ```bash
-   cd /Users/ryanlarocca/.openclaw/workspace/PROJECTS/mission-control
+   cd /Users/ryanlarocca/Projects/PROJECTS/mission-control
+   node scripts/add-email-mailbox.mjs ryansvk@lrghomes.com SVK-C --dry-run   # preview + DWD token proof, writes nothing
    node scripts/add-email-mailbox.mjs ryansvk@lrghomes.com SVK-C
    ```
 3. **Deploy:**
@@ -20,8 +21,8 @@ That's it. The Mac mini renewal cron picks up the new mailbox on its next 09:00 
 
 ## What the CLI does
 
-`scripts/add-email-mailbox.mjs <email> <campaign-label>`:
-1. Validates the email ends in `@lrghomes.com` (DWD is scoped to that domain).
+`scripts/add-email-mailbox.mjs <email> <campaign-label> [--dry-run]`:
+1. Validates the email is on a Workspace-tenant domain: `@lrghomes.com`, `@lrghomesbuys.com` or `@lrghomesoffers.com` (`ALLOWED_DOMAINS` in the script). `--dry-run` stops after proving a DWD token mints for the mailbox — no config write, no watch.
 2. Reads `config/email-campaigns.json`, adds the new entry, writes it back sorted.
 3. Calls `gmail.users.watch` for the new mailbox against the existing Pub/Sub topic `lrg-gmail-leads`.
 4. Prints next-step reminders.
@@ -34,9 +35,9 @@ The route at `app/api/leads/email/route.ts` imports `config/email-campaigns.json
 
 ## Constraints / gotchas
 
-- **`@lrghomes.com` only.** DWD on the lrghomes Workspace tenant is authorized for the `gmail.modify` scope on this one domain. A mailbox on a different domain won't auth and the CLI rejects it up-front.
+- **Workspace-tenant domains only.** DWD on the lrghomes Workspace tenant is authorized for the `gmail.modify` scope. The grant is per *customer*, not per domain, so the secondary sending domains added 2026-09-01 (`lrghomesbuys.com`, `lrghomesoffers.com`) inherit it — verified 2026-09-03 with `node scripts/check-dwd-scopes.mjs` (tokens minted for all three mailboxes). A mailbox on any other domain won't auth and the CLI rejects it up-front. Adding a fourth domain = add it to `ALLOWED_DOMAINS` *after* the checker passes for a mailbox there.
 - **Workspace mailbox must exist first.** The CLI calls `gmail.users.watch` against a real mailbox; if Google can't find the user, you get a `404 Not Found`. Create the mailbox in Admin before running the CLI.
-- **`gmail.send` scope is NOT authorized** — only `gmail.modify`. If we ever need to send mail from one of these inboxes via the service account, we'll have to go back to Google Admin and add the send scope to the DWD client.
+- **`gmail.send` scope is NOT authorized** — only `gmail.modify` (re-confirmed 2026-09-03; `gmail.readonly` is also unauthorized). This is not a blocker: `messages.send` accepts `gmail.modify`, which is how the campaign engine and `/api/leads/email-reply` already send. Adding `gmail.send` would be least-privilege hygiene only. `node scripts/check-dwd-scopes.mjs` prints the exact Admin-console steps if Ryan ever wants to extend the grant.
 - **Vercel CLI must be authenticated.** `vercel deploy --prod` runs against the existing project linked at `.vercel/project.json`. If you're running from a fresh checkout, run `npx vercel login` first.
 
 ## How the renewal stays current
@@ -80,11 +81,12 @@ If nothing lands in Supabase after sending a probe email:
 
 4. **Is the campaign mapped?** Look for `[email] Notification for unmapped address: <email>` — means you haven't redeployed since adding the mailbox. Run `npx vercel deploy --prod`.
 
-5. **Is the mailbox really on `@lrghomes.com`?** The CLI enforces this, but if someone bypassed it, the route's middleware whitelist + the route itself will both quietly drop the request.
+5. **Is the mailbox really on a tenant domain?** The CLI enforces `ALLOWED_DOMAINS`, but if someone bypassed it, the route's middleware whitelist + the route itself will both quietly drop the request. `node scripts/check-dwd-scopes.mjs <mailbox>` tells you in one call whether Google recognises the user and which scopes mint.
 
 ## Related files
 
 - `scripts/add-email-mailbox.mjs` — the CLI
+- `scripts/check-dwd-scopes.mjs` — read-only DWD scope × mailbox verifier (run before trusting a new domain)
 - `scripts/setup-gmail-watch.js` — one-time topic + subscription setup (already done; only re-run after disaster recovery)
 - `scripts/renew-gmail-watch.js` — daily cron target
 - `config/email-campaigns.json` — single source of truth for the mailbox→campaign map
