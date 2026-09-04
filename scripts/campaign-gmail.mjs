@@ -1,8 +1,15 @@
 // Shared Gmail sender for the agent campaign (engine + test batches).
 //
 // Two auth paths, picked by mailbox (2026-08-21, deliverability restart):
-//   - *@lrghomes.com  → service account with domain-wide delegation (as before)
+//   - any Workspace-tenant mailbox (*@lrghomes.com, *@lrghomesbuys.com,
+//     *@lrghomesoffers.com) → service account with domain-wide delegation.
+//     DWD is per customer, so the secondary domains inherit the grant —
+//     verified 2026-09-03 via scripts/check-dwd-scopes.mjs (gmail.modify
+//     mints for all three; gmail.send is NOT granted but messages.send
+//     works under gmail.modify).
 //   - the consumer Gmail in CAMPAIGN_GMAIL_OAUTH_USER → OAuth refresh token
+//     (RETIRED 2026-09-01 — env vars removed; branch kept only until the
+//     Gmail strip lands in the September rebuild)
 //     (DWD cannot impersonate gmail.com). Token minted once via
 //     scripts/gmail-oauth-consent.mjs; env CAMPAIGN_GMAIL_OAUTH_{CLIENT_ID,
 //     CLIENT_SECRET,REFRESH_TOKEN,USER}. The same token lets the inbox

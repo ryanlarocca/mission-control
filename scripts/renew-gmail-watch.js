@@ -12,7 +12,11 @@
  *
  * Required env (in .env.local or shell):
  *   GOOGLE_SERVICE_ACCOUNT_KEY   JSON service-account key (must have DWD
- *                                with the gmail.modify scope on lrghomes.com)
+ *                                with the gmail.modify scope on the lrghomes
+ *                                Workspace tenant — covers lrghomes.com and
+ *                                the lrghomesbuys.com / lrghomesoffers.com
+ *                                secondary domains; verify with
+ *                                scripts/check-dwd-scopes.mjs)
  */
 
 const { google } = require("googleapis")
