@@ -1,0 +1,42 @@
+{
+  "_doc": [
+    "Agent drip senders — locked spec: briefs/BRIEF_SECONDARY_SENDING_DOMAIN_2026-08-25.md ('Standing architecture' + 'Warm-up plan').",
+    "Two domains, asymmetric roles. workhorse = carries the drip, ramps to the list-sized steady state. understudy = small, warm segment, reputation insurance.",
+    "ramp = the per-step daily cap ladder. The engine advances ONE step at a time and only through the gates in scripts/campaign-senders.mjs (healthy days at the step, bounces <2%, no failures/pause, replies still arriving, never more than 2x week-over-week). The ladder is never a calendar.",
+    "ceiling = list-sized steady state; raise it when Ryan adds contacts (volume follows the list, never the reverse). The ramp stops at min(ramp step, ceiling).",
+    "segment: 'drip' = the pool nobody else claims; 'relationships' = campaign contacts whose email is in the Relationships table (tiers below). A contact stays on whichever sender sent its last touch (thread continuity).",
+    "replyTo: header on every send. Default info@lrghomes.com (existing watched campaign inbox) until Ryan answers Q2 in briefs/REBUILD_PROGRESS_2026-09.md. null = no Reply-To.",
+    "CAMPAIGN_SENDERS env (comma list of addresses) narrows the enabled set at runtime; unset = every sender with enabled:true. CAMPAIGN_SEND_AS is only a legacy fallback when this file has no enabled sender."
+  ],
+  "gates": {
+    "minHealthyDays": 3,
+    "healthyDayMinFraction": 0.6,
+    "maxWeekOverWeek": 2,
+    "bounceHoldRate": 0.01,
+    "bounceRedRate": 0.02,
+    "replyCheckMinSends": 40,
+    "requireCanaryVerdict": false,
+    "requirePostmaster": false
+  },
+  "senders": {
+    "ryan@lrghomesbuys.com": {
+      "enabled": true,
+      "role": "workhorse",
+      "label": "buys",
+      "ramp": [5, 10, 20, 35, 50, 75, 100],
+      "ceiling": 100,
+      "segment": "drip",
+      "replyTo": "info@lrghomes.com"
+    },
+    "ryan@lrghomesoffers.com": {
+      "enabled": true,
+      "role": "understudy",
+      "label": "offers",
+      "ramp": [3, 5, 10, 20, 30, 40],
+      "ceiling": 40,
+      "segment": "relationships",
+      "segmentTiers": ["A", "B", "C"],
+      "replyTo": "info@lrghomes.com"
+    }
+  }
+}

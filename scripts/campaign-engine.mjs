@@ -16,10 +16,12 @@
  *   (training-wheels rule — per-touch auto-send can come later).
  *   Daily draft cap keeps the review queue reviewable.
  *
- * SEND pass: sends status 'approved' rows via the Gmail API as
- *   info@lrghomes.com (service account + DWD), inside the 9:00a–4:30p PT
- *   window (--now overrides for testing), up to the daily send cap, with
- *   randomized 3–10s jitter between sends. Stamps gmail ids, advances the
+ * SEND pass: sends status 'approved' rows via the Gmail API from the row's
+ *   assigned sender (config/campaign-senders.json — workhorse
+ *   ryan@lrghomesbuys.com + understudy ryan@lrghomesoffers.com, service
+ *   account + DWD), inside the 7:00a–5:00p PT window (--now overrides for
+ *   testing), up to EACH sender's ramp cap for the day, with randomized
+ *   3–10s jitter between sends. Stamps gmail ids, advances the
  *   contact's touch clock, and re-checks contact status + suppression at
  *   send time. Failures mark the row 'failed' and alert Telegram — no
  *   silent skips anywhere.
@@ -39,6 +41,7 @@ import path from "node:path"
 import { fileURLToPath } from "node:url"
 import { createClient } from "@supabase/supabase-js"
 import { TOUCHES, renderTouch, nextOffsetDays } from "./campaign-touches.mjs"
+import { loadSenderConfig, loadSenderStates, saveSenderState, capFor, evaluateSenderDay, fetchRelationshipEmails, fetchReplierIds, fetchLastSenderByContact, assignSender, priorityOf } from "./campaign-senders.mjs"
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const REPO_ROOT = path.resolve(__dirname, "..")
@@ -53,15 +56,26 @@ for (const line of fs.readFileSync(path.join(REPO_ROOT, ".env.local"), "utf-8").
   if (process.env[key] === undefined) process.env[key] = val
 }
 
-const SEND_AS = process.env.CAMPAIGN_SEND_AS || "info@lrghomes.com"
-// Doubling ramp (Ryan 2026-08-21: "one, then two, then four... around 200 max"):
-// the live cap = RAMP_SCHEDULE[step]; step lives in campaign_settings
-// ("ramp"), advances only after a GREEN send day (health pass), holds on
-// yellow, drops one step on red. CAMPAIGN_SEND_CAP/DRAFT_CAP are ceilings.
-const RAMP_SCHEDULE = (process.env.CAMPAIGN_RAMP_SCHEDULE || "1,2,4,8,16,32,64,128,200").split(",").map(Number)
-let DRAFT_DAILY_CAP = Number(process.env.CAMPAIGN_DRAFT_CAP || 200)
-let SEND_DAILY_CAP = Number(process.env.CAMPAIGN_SEND_CAP || 200)
-let RAMP = { step: 0 }
+// Multi-sender (2026-09-04, September rebuild item 2 — locked spec in
+// briefs/BRIEF_SECONDARY_SENDING_DOMAIN_2026-08-25.md): senders, roles, ramp
+// ladders (5→10→20→35→50→75→100 for the workhorse) and ceilings live in
+// config/campaign-senders.json; each sender's ramp state lives in
+// campaign_settings `sender:<email>`. A sender's live cap = its ramp step,
+// advanced only by the gates in scripts/campaign-senders.mjs (healthy send
+// days at the step, bounces, replies still arriving, never more than 2×
+// week-over-week). The old single RAMP_SCHEDULE / CAMPAIGN_RAMP_START paths
+// are gone. CAMPAIGN_SEND_CAP / CAMPAIGN_DRAFT_CAP remain as TOTAL ceilings
+// across all senders (safety net, not a ramp).
+const SENDER_CFG = loadSenderConfig()
+const SENDERS = SENDER_CFG.senders
+const SENDER_STATE = new Map() // email → ramp state, filled by loadRamp()
+const TOTAL_DRAFT_CEILING = Number(process.env.CAMPAIGN_DRAFT_CAP || 200)
+const TOTAL_SEND_CEILING = Number(process.env.CAMPAIGN_SEND_CAP || 200)
+const senderCap = (s) => capFor(s, SENDER_STATE.get(s.email))
+const senderByEmail = (email) => SENDERS.find((s) => s.email === String(email ?? "").trim().toLowerCase()) ?? null
+// Rows minted before multi-sender carry sender=null → they belong to the workhorse.
+const senderFilter = (q, sender) => (sender.email === SENDER_CFG.workhorse?.email ? q.or(`sender.eq.${sender.email},sender.is.null`) : q.eq("sender", sender.email))
+const ownerOf = (email) => senderByEmail(email) ?? SENDER_CFG.workhorse
 // Phase B (2026-08-21): while CAMPAIGN_COHORT is set, the draft pass only
 // considers contacts tagged with that cohort (scripts/phaseB-cohort.mjs).
 const COHORT = process.env.CAMPAIGN_COHORT || null
@@ -213,6 +227,23 @@ async function countToday(table, tsCol, filters) {
   return count ?? 0
 }
 
+async function countSendsTodayFor(sender, tsCol, statuses) {
+  const start = new Date()
+  start.setHours(0, 0, 0, 0)
+  let q = sb.from("campaign_sends").select("id", { count: "exact", head: true }).gte(tsCol, start.toISOString())
+  if (statuses) q = q.in("status", statuses)
+  const { count, error } = await senderFilter(q, sender)
+  if (error) throw new Error(`count sends for ${sender.email}: ${error.message}`)
+  return count ?? 0
+}
+
+async function backlogFor(sender) {
+  const q = sb.from("campaign_sends").select("id", { count: "exact", head: true }).in("status", ["draft", "approved"])
+  const { count, error } = await senderFilter(q, sender)
+  if (error) throw new Error(`backlog count for ${sender.email}: ${error.message}`)
+  return count ?? 0
+}
+
 // ---------- DRAFT pass ----------
 // Gated (non-auto) touches mint ONCE per day in a single batch → one review
 // ping, not a drip of them every 20 minutes (Ryan 2026-07-31: T2 approval
@@ -256,48 +287,70 @@ async function draftPass() {
       log(`expired ${stale.length} un-approved drafts from earlier batches`)
     }
   }
-  const draftedToday = await countToday("campaign_sends", "created_at")
-  // Backlog-aware budget (2026-07-28): only top the pipeline up to the cap.
-  // Before this, the pass minted 200/day unconditionally — including Sat+Sun
-  // while sends held — so Ryan faced a ~400-draft mega-queue Monday and the
-  // send cap spread his one approval across two days of sends he didn't
-  // expect. Invariant now: draft + approved (un-sent) never exceeds the cap.
-  const { count: backlog, error: backlogErr } = await sb
-    .from("campaign_sends")
-    .select("id", { count: "exact", head: true })
-    .in("status", ["draft", "approved"])
-  if (backlogErr) throw new Error(`backlog count: ${backlogErr.message}`)
-  let budget = Math.max(0, Math.min(DRAFT_DAILY_CAP - draftedToday, DRAFT_DAILY_CAP - (backlog ?? 0)))
-  if (limit !== null) budget = Math.min(budget, limit)
-  log(`draft pass: ${draftedToday} drafted today, ${backlog ?? 0} in draft/approved backlog, budget ${budget}`)
-  if (budget === 0) {
+  // Per-sender, backlog-aware budgets (2026-07-28 invariant, now per sender):
+  // each sender tops up only to ITS ramp cap — drafted today + un-sent
+  // backlog (draft/approved) never exceeds the cap, so one ✅ ≈ one day of
+  // sends for that mailbox. CAMPAIGN_DRAFT_CAP still bounds the total.
+  const budgets = new Map()
+  let draftedTotal = 0
+  let backlogTotal = 0
+  const budgetNotes = []
+  for (const s of SENDERS) {
+    if (SENDER_STATE.get(s.email)?.paused) { budgets.set(s.email, 0); budgetNotes.push(`${s.label} paused`); continue }
+    const cap = senderCap(s)
+    const drafted = await countSendsTodayFor(s, "created_at")
+    const backlog = await backlogFor(s)
+    draftedTotal += drafted
+    backlogTotal += backlog
+    budgets.set(s.email, Math.max(0, Math.min(cap - drafted, cap - backlog)))
+    budgetNotes.push(`${s.label} ${budgets.get(s.email)} (cap ${cap}, ${drafted} drafted, ${backlog} backlog)`)
+  }
+  let totalBudget = Math.max(0, Math.min(TOTAL_DRAFT_CEILING - draftedTotal, [...budgets.values()].reduce((a, b) => a + b, 0)))
+  if (limit !== null) totalBudget = Math.min(totalBudget, limit)
+  log(`draft pass: budgets ${budgetNotes.join(" · ")} → total ${totalBudget}`)
+  if (totalBudget === 0) {
     // Starved-by-backlog with nothing drafted = the send side is stuck.
     // This exact state ran silently for 4 days after the Aug-28 token death
     // (8 unsendable approved rows filled the cap, so zero drafts minted).
     // Alert once per day instead of quietly returning.
-    if (draftedToday === 0 && (backlog ?? 0) >= DRAFT_DAILY_CAP) {
+    const capTotal = SENDERS.reduce((a, s) => a + senderCap(s), 0)
+    if (draftedTotal === 0 && backlogTotal >= capTotal && capTotal > 0) {
       const starveFile = "scripts/.campaign-draft-starved-state.json"
       const day = new Date().toLocaleDateString("en-CA")
       let last = null
       try { last = JSON.parse(fs.readFileSync(starveFile, "utf-8")).last } catch {}
       if (last !== day) {
         fs.writeFileSync(starveFile, JSON.stringify({ last: day }))
-        await telegram(`⚠️ Campaign drafts starved: ${backlog} un-sent draft/approved rows fill the ${DRAFT_DAILY_CAP}/day cap — check the send pass.`)
+        await telegram(`⚠️ Campaign drafts starved: ${backlogTotal} un-sent draft/approved rows fill today's ${capTotal}/day caps — check the send pass.`)
       }
     }
     return
   }
 
-  let dueQuery = sb
-    .from("campaign_contacts")
-    .select("id, name, first_name, email, phone, status, touch_number, next_touch_at, cohort, variant, property_address, import_flags")
-    .eq("status", "active")
-    .not("email", "is", null)
-    .lte("next_touch_at", new Date().toISOString())
-  if (COHORT) dueQuery = dueQuery.eq("cohort", COHORT) // Phase B: only tagged contacts
-  const { data: due, error } = await dueQuery.order("next_touch_at", { ascending: true }).limit(budget * 2) // headroom for skips
-  if (error) throw new Error(`due fetch: ${error.message}`)
-  const dueList = due ?? []
+  // Engagement-first ordering (brief, warm-up plan): the whole due pool is
+  // fetched, then sorted repliers → Relationships matches → everyone else,
+  // oldest due first within a tier. A capped/ordered DB query would let the
+  // 2,100 long-due strangers crowd out the 14 repliers at 5/day.
+  const dueList = []
+  for (let from = 0; ; from += 1000) {
+    let dueQuery = sb
+      .from("campaign_contacts")
+      .select("id, name, first_name, email, phone, status, touch_number, next_touch_at, cohort, variant, property_address, import_flags")
+      .eq("status", "active")
+      .not("email", "is", null)
+      .lte("next_touch_at", new Date().toISOString())
+    if (COHORT) dueQuery = dueQuery.eq("cohort", COHORT) // Phase B: only tagged contacts
+    const { data, error } = await dueQuery.order("next_touch_at", { ascending: true }).range(from, from + 999)
+    if (error) throw new Error(`due fetch: ${error.message}`)
+    dueList.push(...(data ?? []))
+    if (!data || data.length < 1000 || dueList.length >= 5000) break
+  }
+  const understudy = SENDERS.find((s) => s.segment === "relationships")
+  const relEmails = await fetchRelationshipEmails(sb, understudy?.segmentTiers ?? ["A", "B", "C"])
+  const replierIds = await fetchReplierIds(sb)
+  const lastSender = await fetchLastSenderByContact(sb, dueList.filter((c) => c.touch_number > 0).map((c) => c.id))
+  dueList.sort((a, b) => priorityOf(a, { replierIds, relEmails }) - priorityOf(b, { replierIds, relEmails }) || (a.next_touch_at < b.next_touch_at ? -1 : a.next_touch_at > b.next_touch_at ? 1 : 0))
+  const perSender = new Map(SENDERS.map((s) => [s.email, 0]))
   // Variant templates (A/B/C) for cohort T1 sends.
   const { data: variantRows } = await sb.from("campaign_variants").select("variant, touch_number, subject, body, personalize")
   const variants = new Map((variantRows ?? []).map((v) => [`${v.touch_number}:${v.variant}`, v]))
@@ -321,7 +374,7 @@ async function draftPass() {
   let lintFailed = 0
   const variantCounts = {}
   for (const c of dueList) {
-    if (drafted >= budget) break
+    if (drafted >= totalBudget) break
     if (isSuppressed(c, sets)) {
       skippedSupp++
       if (!dryRun) {
@@ -342,6 +395,11 @@ async function draftPass() {
     }
     const auto = AUTO_SEND_TOUCHES.has(touch)
     if (!auto && !gatedAllowed) continue // gated touches mint once daily, first pass after MINT_HOUR PT
+    // Which mailbox carries this contact: sticky to the thread's mailbox,
+    // else the understudy's segment claim, else the workhorse. A sender whose
+    // budget is spent skips the contact — it stays due for the next pass.
+    const sender = assignSender({ contact: c, senders: SENDERS, relEmails, lastSender })
+    if (!sender || (budgets.get(sender.email) ?? 0) <= 0) continue
     if (!auto) gatedTouches.add(touch)
     // Phase B: cohort contacts with a variant get a UNIQUE Claude-composed
     // body from the variant template, hard-linted before it can be queued.
@@ -380,10 +438,12 @@ async function draftPass() {
     }
     if (variant) variantCounts[variant] = (variantCounts[variant] || 0) + 1
     if (dryRun) {
-      log(`would draft T${touch}${auto ? " (auto-approved)" : ""} → ${c.name} <${c.email}> "${finalSubject}"${variant ? ` [${variant} ${PROMPT_VERSION}]` : ""}`)
+      log(`would draft T${touch}${auto ? " (auto-approved)" : ""} from ${sender.email} [${sender.role}, p${priorityOf(c, { replierIds, relEmails })}] → ${c.name} <${c.email}> "${finalSubject}"${variant ? ` [${variant} ${PROMPT_VERSION}]` : ""}`)
       if (composed) log(finalBody.split("\n").map((l) => "    | " + l).join("\n"))
       drafted++
       if (auto) autoApproved++
+      budgets.set(sender.email, budgets.get(sender.email) - 1)
+      perSender.set(sender.email, perSender.get(sender.email) + 1)
       continue
     }
     const { error: insErr } = await sb.from("campaign_sends").insert({
@@ -395,7 +455,7 @@ async function draftPass() {
       body_hash: bodyHash(finalBody),
       prompt_version: variant ? PROMPT_VERSION : null,
       batch_date: ptToday(),
-      sender: SEND_AS,
+      sender: sender.email,
       status: auto ? "approved" : "draft",
       ...(auto ? { approved_at: new Date().toISOString(), scheduled_for: randomSendSlot() } : {}),
     })
@@ -405,9 +465,12 @@ async function draftPass() {
     }
     drafted++
     if (auto) autoApproved++
+    budgets.set(sender.email, budgets.get(sender.email) - 1)
+    perSender.set(sender.email, perSender.get(sender.email) + 1)
   }
   const needReview = drafted - autoApproved
-  log(`draft pass done: ${drafted} drafted (${autoApproved} auto-approved, ${needReview} gated), ${skippedSupp} newly suppressed, ${lintFailed} rejected by lint`)
+  const fromList = SENDERS.filter((s) => perSender.get(s.email)).map((s) => `${s.email} (${perSender.get(s.email)})`).join(", ") || "nobody"
+  log(`draft pass done: ${drafted} drafted (${autoApproved} auto-approved, ${needReview} gated) from ${fromList}, ${skippedSupp} newly suppressed, ${lintFailed} rejected by lint`)
   if (lintFailed && !dryRun) bumpHealthCounter("lint_rejected", lintFailed)
   if (gatedAllowed && !dryRun) markGatedMinted()
   // Auto-approved minting is silent — the tick is machinery Ryan never
@@ -418,7 +481,7 @@ async function draftPass() {
     const mix = Object.keys(variantCounts).length ? ` (${Object.entries(variantCounts).sort().map(([k, v]) => `${k}:${v}`).join(" ")})` : ""
     const today = ptToday()
     await telegram(
-      `📝 <b>${needReview}</b> ${touchList} emails drafted for the next weekday${mix}, from ${SEND_AS}.${lintFailed ? ` ${lintFailed} rejected by lint (not queued).` : ""}\n\nTap ✅ to approve all of them — they go out at random minutes 7am-5pm PT. Untapped = nothing sends; this batch expires at the next evening mint.`,
+      `📝 <b>${needReview}</b> ${touchList} emails drafted for the next weekday${mix}, from ${escHtml(fromList)}.${lintFailed ? ` ${lintFailed} rejected by lint (not queued).` : ""}\n\nTap ✅ to approve all of them — they go out at random minutes 7am-5pm PT. Untapped = nothing sends; this batch expires at the next evening mint.`,
       [
         { text: `✅ Send all ${needReview}`, callback_data: `bapprove:${today}` },
         { text: "👀 Review first", url: REVIEW_URL },
@@ -436,19 +499,21 @@ async function draftPass() {
 // T1 sends carry NO List-Unsubscribe headers (2026-08-21 finding: headers
 // alone flipped Primary → Promotions; the body's "reply remove" line covers
 // opt-out). T2+ keep the one-click headers.
-const gmailClient = () => gmailClientFor(SEND_AS)
+// One authenticated client per sender, minted lazily (DWD token per mailbox).
+const gmailClients = new Map()
+async function gmailClient(sender) {
+  if (!gmailClients.has(sender.email)) gmailClients.set(sender.email, await gmailClientFor(sender.email))
+  return gmailClients.get(sender.email)
+}
 
 async function loadRamp() {
-  const { data } = await sb.from("campaign_settings").select("value").eq("key", "ramp").maybeSingle()
-  RAMP = { step: 0, ...(data?.value ?? {}) }
-  const cap = RAMP_SCHEDULE[Math.min(RAMP.step, RAMP_SCHEDULE.length - 1)]
-  SEND_DAILY_CAP = Math.min(SEND_DAILY_CAP, cap)
-  DRAFT_DAILY_CAP = Math.min(DRAFT_DAILY_CAP, cap)
-  log(`ramp step ${RAMP.step}: cap ${cap}/day${RAMP.held_reason ? ` (last: ${RAMP.held_reason})` : ""}`)
-}
-async function saveRamp(patch) {
-  RAMP = { ...RAMP, ...patch, updated_at: new Date().toISOString() }
-  await sb.from("campaign_settings").upsert({ key: "ramp", value: RAMP, updated_at: RAMP.updated_at })
+  if (!SENDERS.length) throw new Error("no enabled sender — populate config/campaign-senders.json (or CAMPAIGN_SENDERS / CAMPAIGN_SEND_AS)")
+  const states = await loadSenderStates(sb, SENDERS)
+  for (const s of SENDERS) {
+    const st = states.get(s.email)
+    SENDER_STATE.set(s.email, st)
+    log(`sender ${s.email} [${s.role}${s.legacy ? ", legacy env fallback" : ""}]: step ${st.step} → cap ${capFor(s, st)}/day (ladder ${s.ramp.join("→")}, ceiling ${s.ceiling}), healthy days ${st.healthy_days}${st.held_reason ? ` (held: ${st.held_reason})` : ""}${st.paused ? ` PAUSED: ${st.paused_reason ?? ""}` : ""}`)
+  }
 }
 
 // ---- Phase B guardrails: pause flag (shared with Telegram "pause campaign") ----
@@ -492,11 +557,6 @@ async function sendPass() {
     log(`PAUSED (${pause.reason ?? "manual"}${pause.until ? ` until ${pause.until}` : ""}) — no sends`)
     return
   }
-  if (/@lrghomes\.com$/i.test(SEND_AS) && !process.env.CAMPAIGN_ALLOW_DOMAIN_COLD) {
-    log(`REFUSING: cold sends from ${SEND_AS} are disabled (lrghomes.com is spam-flagged at Gmail; set CAMPAIGN_ALLOW_DOMAIN_COLD=1 to override)`)
-    await telegram(`⛔ Campaign send pass refused: sender is ${SEND_AS} (lrghomes.com cold sends are disabled). Fix CAMPAIGN_SEND_AS.`)
-    return
-  }
   const sentToday = await countToday("campaign_sends", "sent_at", { status: ["sent"] })
   const bounced = await bouncesToday()
   if (sentToday >= 10 && bounced / sentToday >= BOUNCE_PAUSE_RATE) {
@@ -504,28 +564,42 @@ async function sendPass() {
     await telegram(`⏸ Campaign AUTO-PAUSED 48h: ${bounced} bounces on ${sentToday} sends today (≥2%). Reply "resume campaign" to override after checking the list.`)
     return
   }
-  // Warm-up ramp for the ryansvr@ migration (2026-08-06): 75/day week one,
-  // 150 week two, full cap after. Clear CAMPAIGN_RAMP_START to disable.
-  let rampCap = SEND_DAILY_CAP
-  if (process.env.CAMPAIGN_RAMP_START) {
-    const days = Math.floor((Date.now() - new Date(`${process.env.CAMPAIGN_RAMP_START}T00:00:00-07:00`).getTime()) / 86400_000)
-    rampCap = days < 7 ? 75 : days < 14 ? 150 : SEND_DAILY_CAP
+  // Per-sender budgets: each mailbox sends up to ITS ramp cap for the day.
+  // lrghomes.com mailboxes stay refused for cold sends (spam-flagged domain,
+  // 2026-08-21) unless CAMPAIGN_ALLOW_DOMAIN_COLD is set — the guard is per
+  // sender, so the new domains are never blocked by it.
+  const budgets = new Map()
+  const notes = []
+  for (const s of SENDERS) {
+    if (/@lrghomes\.com$/i.test(s.email) && !process.env.CAMPAIGN_ALLOW_DOMAIN_COLD) {
+      log(`REFUSING ${s.email}: cold sends from lrghomes.com are disabled (set CAMPAIGN_ALLOW_DOMAIN_COLD=1 to override)`)
+      await telegram(`⛔ Campaign send pass skipped ${s.email}: lrghomes.com cold sends are disabled. Fix config/campaign-senders.json.`)
+      budgets.set(s.email, 0)
+      continue
+    }
+    const st = SENDER_STATE.get(s.email)
+    if (st?.paused) { budgets.set(s.email, 0); notes.push(`${s.label} PAUSED (${st.paused_reason ?? "manual"})`); continue }
+    const cap = senderCap(s)
+    const sentBy = await countSendsTodayFor(s, "sent_at", ["sent"])
+    budgets.set(s.email, Math.max(0, cap - sentBy))
+    notes.push(`${s.label} ${sentBy}/${cap}`)
   }
-  const effectiveCap = Math.min(SEND_DAILY_CAP, rampCap)
-  let budget = Math.max(0, effectiveCap - sentToday)
+  let budget = Math.max(0, Math.min(TOTAL_SEND_CEILING - sentToday, [...budgets.values()].reduce((a, b) => a + b, 0)))
   if (limit !== null) budget = Math.min(budget, limit)
-  log(`send pass: ${sentToday} sent today, cap ${effectiveCap}${effectiveCap !== SEND_DAILY_CAP ? " (warm-up ramp)" : ""}, budget ${budget}, ${inWindow ? "in-window" : "OUT of window"}`)
+  log(`send pass: ${sentToday} sent today (${notes.join(", ")}), budget ${budget}, ${inWindow ? "in-window" : "OUT of window"}`)
   if (budget === 0) return
 
   const nowIso = new Date().toISOString()
   // Eligible = approved AND (no schedule OR its scheduled time has arrived).
+  // Fetched with headroom: a row whose sender is out of budget is skipped,
+  // not consumed, so it can't starve the other mailbox's slots.
   const { data: eligible, error } = await sb
     .from("campaign_sends")
-    .select("id, contact_id, touch_number, subject, body, status, scheduled_for, variant, body_hash")
+    .select("id, contact_id, touch_number, subject, body, status, scheduled_for, variant, body_hash, sender")
     .eq("status", "approved")
     .or(`scheduled_for.is.null,scheduled_for.lte.${nowIso}`)
     .order("approved_at", { ascending: true })
-    .limit(budget)
+    .limit(Math.max(budget * 3, 50))
   if (error) throw new Error(`approved fetch: ${error.message}`)
   // Unscheduled rows need the send window; scheduled-due rows bypass it.
   const approved = (eligible ?? []).filter((r) => nowOverride || r.scheduled_for || inWindow)
@@ -535,10 +609,15 @@ async function sendPass() {
   }
 
   const sets = await fetchSuppressionSets()
-  const gmail = dryRun ? null : await gmailClient()
   let sent = 0
   let failed = 0
   for (const row of approved) {
+    if (sent >= budget) break
+    // A row minted for a mailbox that is no longer enabled waits (stays
+    // approved) rather than quietly going out from another domain.
+    const sender = row.sender ? senderByEmail(row.sender) : SENDER_CFG.workhorse
+    if (!sender) { log(`holding ${row.id}: its sender ${row.sender} is not enabled`); continue }
+    if ((budgets.get(sender.email) ?? 0) <= 0) continue
     const { data: contact, error: cErr } = await sb
       .from("campaign_contacts")
       .select("id, name, first_name, email, phone, status, touch_number, gmail_thread_id")
@@ -557,8 +636,9 @@ async function sendPass() {
     }
     const to = redirectTo ?? contact.email
     if (dryRun) {
-      log(`would send T${row.touch_number} → ${to} "${row.subject}"`)
+      log(`would send T${row.touch_number} from ${sender.email}${sender.replyTo ? ` (reply-to ${sender.replyTo})` : ""} → ${to} "${row.subject}"`)
       sent++
+      budgets.set(sender.email, budgets.get(sender.email) - 1)
       continue
     }
     // Never send a body that already went out (unique index backs this up).
@@ -571,13 +651,15 @@ async function sendPass() {
       }
     }
     try {
+      const gmail = await gmailClient(sender)
       const msg = await sendCampaignMessage(gmail, {
-        from: SEND_AS,
+        from: sender.email,
         to,
         subject: row.subject,
         body: row.body,
         contactId: row.contact_id,
         unsubHeaders: row.touch_number !== 1,
+        extraHeaders: sender.replyTo ? [`Reply-To: ${sender.replyTo}`] : [],
       })
       const nowIso = new Date().toISOString()
       await sb.from("campaign_sends").update({
@@ -585,7 +667,7 @@ async function sendPass() {
         sent_at: nowIso,
         gmail_message_id: msg.id ?? null,
         gmail_thread_id: msg.threadId ?? null,
-        sender: SEND_AS,
+        sender: sender.email,
       }).eq("id", row.id)
       const offset = nextOffsetDays(row.touch_number)
       await sb.from("campaign_contacts").update({
@@ -600,10 +682,11 @@ async function sendPass() {
         kind: "email_out",
         body: `T${row.touch_number}${row.variant ? ` [${row.variant}]` : ""}: ${row.subject}`,
         occurred_at: nowIso,
-        raw: { mailbox: SEND_AS, variant: row.variant ?? null, send_id: row.id },
+        raw: { mailbox: sender.email, variant: row.variant ?? null, send_id: row.id },
       })
       sent++
-      log(`sent T${row.touch_number} → ${to}`)
+      budgets.set(sender.email, budgets.get(sender.email) - 1)
+      log(`sent T${row.touch_number} from ${sender.email} → ${to}`)
     } catch (e) {
       const m = e?.message ?? String(e)
       await markFailed(row, m)
@@ -637,6 +720,7 @@ function escHtml(t) {
 }
 
 async function digestPass() {
+  if (dryRun) { log("digest: skipped (dry run)"); return }
   let since = new Date(Date.now() - 24 * 3600_000).toISOString()
   try {
     since = JSON.parse(fs.readFileSync(DIGEST_STATE, "utf-8")).last
@@ -709,24 +793,64 @@ async function dayMetrics(dayStr) {
   return { day: dayStr, sent, failed, bounces, replies, unsubs, autoReplies, lint_rejected: local.lint_rejected || 0, canary: local.canary || null }
 }
 
+// Per-sender metrics over [startIso, endIso]. Sends/failures carry the
+// sender column; bounces/replies/unsubs are keyed by contact, so they are
+// attributed to the mailbox that sent that contact's most recent touch
+// (null = pre-multi-sender → workhorse). One fetch, tallied per sender.
+async function senderMetricsRange(startIso, endIso) {
+  const out = new Map(SENDERS.map((s) => [s.email, { sent: 0, failed: 0, bounces: 0, replies: 0, unsubs: 0, autoReplies: 0 }]))
+  for (const s of SENDERS) {
+    const m = out.get(s.email)
+    const { count: sent } = await senderFilter(sb.from("campaign_sends").select("id", { count: "exact", head: true }).eq("status", "sent").gte("sent_at", startIso).lte("sent_at", endIso), s)
+    const { count: failed } = await senderFilter(sb.from("campaign_sends").select("id", { count: "exact", head: true }).eq("status", "failed").gte("created_at", startIso).lte("created_at", endIso), s)
+    m.sent = sent ?? 0
+    m.failed = failed ?? 0
+  }
+  const events = []
+  for (let from = 0; ; from += 1000) {
+    const { data, error } = await sb.from("campaign_events").select("contact_id, kind, triage").in("kind", ["bounce", "email_reply"]).gte("occurred_at", startIso).lte("occurred_at", endIso).range(from, from + 999)
+    if (error) throw new Error(`sender events: ${error.message}`)
+    events.push(...(data ?? []))
+    if (!data || data.length < 1000) break
+  }
+  const lastSender = await fetchLastSenderByContact(sb, events.map((e) => e.contact_id))
+  for (const e of events) {
+    const owner = ownerOf(lastSender.get(e.contact_id))
+    const m = owner ? out.get(owner.email) : null
+    if (!m) continue
+    if (e.kind === "bounce") m.bounces++
+    else if (e.triage === null) m.replies++
+    else if (e.triage === "unsubscribe") m.unsubs++
+    else if (e.triage === "auto_reply" || e.triage === "dead_mailbox") m.autoReplies++
+  }
+  return out
+}
+
 async function canaryPass() {
   const to = process.env.CAMPAIGN_CANARY_TO
   if (!to || dryRun) return
   const st = readHealthState()
   const day = ptToday()
-  if (st[day]?.canary) return
-  const sentToday = await countToday("campaign_sends", "sent_at", { status: ["sent"] })
-  if (sentToday === 0) return // canary only rides along with a real send day
+  // One canary per sender per send day — each domain's placement is its own
+  // reputation. State: st[day].canary = { [sender]: "C<n>" } (legacy days
+  // hold a bare string from the single-sender era).
+  const doneToday = typeof st[day]?.canary === "object" && st[day].canary ? st[day].canary : {}
   const { data: vt } = await sb.from("campaign_variants").select("*").eq("variant", "B").single()
   if (!vt) return
-  const n = Object.values(st).filter((d) => d?.canary).length + 1
-  const composed = await composeVariantBody({ variant: vt, contact: { id: `canary-${day}`, name: "Ryan", first_name: "Ryan", email: to }, seed: `canary-${day}` })
-  const gmail = await gmailClient()
-  await sendCampaignMessage(gmail, { from: SEND_AS, to, subject: `[C${n}] ${composed.subject}`, body: composed.body, contactId: null, unsubHeaders: false })
-  bumpHealthCounter("canary_sent", 1)
-  st[day] = { ...(readHealthState()[day] || {}), canary: `C${n}` }
-  fs.writeFileSync(HEALTH_STATE, JSON.stringify(st))
-  log(`canary C${n} sent → ${to}`)
+  for (const s of SENDERS) {
+    if (doneToday[s.email]) continue
+    const sentBy = await countSendsTodayFor(s, "sent_at", ["sent"])
+    if (sentBy === 0) continue // canary only rides along with a real send day
+    const n = Object.values(st).filter((d) => (typeof d?.canary === "object" ? d.canary?.[s.email] : d?.canary)).length + 1
+    const composed = await composeVariantBody({ variant: vt, contact: { id: `canary-${day}-${s.label}`, name: "Ryan", first_name: "Ryan", email: to }, seed: `canary-${day}-${s.label}` })
+    const gmail = await gmailClient(s)
+    await sendCampaignMessage(gmail, { from: s.email, to, subject: `[C${n} ${s.label}] ${composed.subject}`, body: composed.body, contactId: null, unsubHeaders: false, extraHeaders: s.replyTo ? [`Reply-To: ${s.replyTo}`] : [] })
+    bumpHealthCounter("canary_sent", 1)
+    const cur = readHealthState()
+    cur[day] = { ...(cur[day] || {}), canary: { ...(typeof cur[day]?.canary === "object" ? cur[day].canary : {}), [s.email]: `C${n}` } }
+    fs.writeFileSync(HEALTH_STATE, JSON.stringify(cur))
+    log(`canary C${n} from ${s.email} → ${to}`)
+  }
 }
 
 async function healthPass() {
@@ -760,31 +884,46 @@ async function healthPass() {
   if (m.lint_rejected >= 3) warnings.push(`${m.lint_rejected} drafts rejected by lint`)
   if (agg.sent >= 40 && agg.replies / agg.sent < 0.01) warnings.push(`7-day reply rate ${pct(agg.replies, agg.sent)} — below 1%`)
   if (pause.paused) warnings.push(`PAUSED: ${pause.reason}`)
-  const status = warnings.length ? (warnings.some((w) => /PAUSED|2%/.test(w)) ? "🔴" : "🟡") : "🟢"
-  const snapshot = { ...m, warnings, sender: SEND_AS, cap: SEND_DAILY_CAP, ramp_step: RAMP.step, recorded_at: now.toISOString() }
-  await sb.from("campaign_settings").upsert({ key: `health:${day}`, value: snapshot, updated_at: now.toISOString() })
-  // Ramp decision for the next send day
-  let rampNote = ""
-  const maxStep = RAMP_SCHEDULE.length - 1
-  if (m.sent > 0) {
-    if (status === "🟢" && m.sent >= SEND_DAILY_CAP && RAMP.step < maxStep) {
-      await saveRamp({ step: RAMP.step + 1, held_reason: null, last_change: day })
-      rampNote = `\n\n⬆️ Ramp: green day at ${m.sent}/day → next batch ${RAMP_SCHEDULE[RAMP.step]}/day.`
-    } else if (status === "🔴" && RAMP.step > 0) {
-      await saveRamp({ step: RAMP.step - 1, held_reason: warnings[0], last_change: day })
-      rampNote = `\n\n⬇️ Ramp: dropped back to ${RAMP_SCHEDULE[RAMP.step]}/day.`
-    } else if (status === "🟡") {
-      await saveRamp({ held_reason: warnings[0] })
-      rampNote = `\n\n⏸ Ramp held at ${RAMP_SCHEDULE[RAMP.step]}/day until a green day.`
-    } else if (m.sent < SEND_DAILY_CAP) {
-      rampNote = `\n\nRamp holds at ${RAMP_SCHEDULE[RAMP.step]}/day (only ${m.sent} of ${SEND_DAILY_CAP} went out).`
-    }
+  // Per-sender ramp decisions (2026-09-04). Each mailbox is judged on its own
+  // day: green + enough of its cap went out → a healthy day; three healthy
+  // days at a step (and the other gates) → the next rung; red → drop a rung;
+  // a skipped weekday resets the streak. Senders that have never sent and
+  // sent nothing today are left untouched (pre-launch, nothing to judge).
+  const dayStart = new Date(`${day}T00:00:00-07:00`).toISOString()
+  const dayEnd = new Date(`${day}T23:59:59-07:00`).toISOString()
+  const perSender = await senderMetricsRange(dayStart, dayEnd)
+  const trailing = await senderMetricsRange(new Date(new Date(dayStart).getTime() - 7 * 86_400_000).toISOString(), new Date(new Date(dayStart).getTime() - 1000).toISOString())
+  const senderLines = []
+  const senderSnap = {}
+  let worst = "🟢"
+  for (const s of SENDERS) {
+    const state = SENDER_STATE.get(s.email)
+    const sm = perSender.get(s.email)
+    if (sm.sent === 0 && !state?.entered_step) { senderSnap[s.email] = { ...sm, cap: senderCap(s), step: state?.step ?? 0, decision: "idle" }; continue }
+    const ev = evaluateSenderDay({ sender: s, state, day, metrics: sm, trailing: trailing.get(s.email), gates: SENDER_CFG.gates, extra: { paused: pause.paused ? pause.reason : state?.paused ? state.paused_reason ?? "manual" : null, canaryVerdicts: state?.canary_verdicts, postmaster: state?.postmaster } })
+    const saved = await saveSenderState(sb, s.email, ev.state)
+    SENDER_STATE.set(s.email, saved)
+    senderSnap[s.email] = { ...sm, cap: ev.cap, step: ev.state.step, status: ev.status, decision: ev.decision, healthy_days: ev.state.healthy_days, checks: ev.checks, warnings: ev.warnings }
+    if (ev.status === "🔴" || (ev.status === "🟡" && worst === "🟢")) worst = ev.status
+    const verdict =
+      ev.decision === "advance" ? `⬆️ next batch ${ev.nextCap}/day` :
+      ev.decision === "drop" ? `⬇️ dropped to ${ev.nextCap}/day` :
+      ev.decision === "steady" ? `✅ steady at ${ev.cap}/day (ceiling)` :
+      ev.decision === "gap" ? `⏸ no sends — streak reset, holds ${ev.cap}/day` :
+      `⏸ holds ${ev.cap}/day (${ev.state.held_reason ?? "waiting on gates"})`
+    senderLines.push(`${ev.status} <b>${escHtml(s.label)}</b> ${escHtml(s.email)}: ${sm.sent}/${ev.cap} sent · ${sm.bounces} bounced (${pct(sm.bounces, sm.sent)}) · ${sm.replies} replies · ${sm.failed} failed · healthy ${ev.state.healthy_days}/${SENDER_CFG.gates.minHealthyDays} → ${escHtml(verdict)}`)
   }
+  const status = warnings.length ? (warnings.some((w) => /PAUSED|2%/.test(w)) ? "🔴" : "🟡") : worst
+  const capTotal = SENDERS.reduce((a, s) => a + senderCap(s), 0)
+  const snapshot = { ...m, warnings, sender: SENDERS.map((s) => s.email).join(","), cap: capTotal, senders: senderSnap, recorded_at: now.toISOString() }
+  await sb.from("campaign_settings").upsert({ key: `health:${day}`, value: snapshot, updated_at: now.toISOString() })
+  const rampNote = senderLines.length ? `\n\n${senderLines.join("\n")}` : ""
   if (m.sent === 0 && !warnings.length) { log("health: no sends today, snapshot stored, no card"); return }
+  const canaryNote = m.canary ? (typeof m.canary === "object" ? Object.entries(m.canary).map(([e, c]) => `${c} ${e.split("@")[1]}`).join(", ") : m.canary) : null
   await telegram(
     `🩺 <b>Campaign health ${status} — ${wd} ${day.slice(5)}</b>\n` +
-      `📤 ${m.sent} sent from ${SEND_AS} (cap ${SEND_DAILY_CAP}) · ↩️ ${m.bounces} bounced (${pct(m.bounces, m.sent)}) · 💬 ${m.replies} replies · 🚫 ${m.unsubs} removes · 🤖 ${m.autoReplies} auto-replies · ⚠️ ${m.failed} failed · 🧹 ${m.lint_rejected} lint-rejected` +
-      (m.canary ? ` · 🐤 canary ${m.canary} sent` : "") +
+      `📤 ${m.sent} sent (caps ${capTotal}) · ↩️ ${m.bounces} bounced (${pct(m.bounces, m.sent)}) · 💬 ${m.replies} replies · 🚫 ${m.unsubs} removes · 🤖 ${m.autoReplies} auto-replies · ⚠️ ${m.failed} failed · 🧹 ${m.lint_rejected} lint-rejected` +
+      (canaryNote ? ` · 🐤 canary ${escHtml(canaryNote)} sent` : "") +
       `\n📈 7-day: ${agg.sent} sent, bounces ${pct(agg.bounces, agg.sent)}, replies ${pct(agg.replies, agg.sent)}, ${agg.unsubs} removes` +
       (warnings.length ? `\n\n${warnings.map((w) => `• ${escHtml(w)}`).join("\n")}` : "\n\nAll clear.") + rampNote
   )
@@ -798,6 +937,7 @@ async function scorecardPass() {
   // Fires once, Fridays after 4pm PT. Reply attribution: a sent email counts
   // as "replied" if its contact logged an email_reply within 14 days after
   // that send. Bins by ACTUAL sent_at hour (PT) since EXPERIMENT_START.
+  if (dryRun) return // never post from a rehearsal
   const parts = ptDateParts(new Date())
   if (parts.weekday !== "Fri" || laHourNow() < 16) return
   let lastSent = ""
@@ -877,8 +1017,8 @@ async function runPass(name, fn) {
   }
 }
 const rampOk = await runPass("ramp", loadRamp)
-// Without ramp state the caps fall back to env defaults — skip the passes
-// that would send/draft at the wrong volume; observation passes still run.
+// Without sender ramp state the caps are unknown — skip the passes that
+// would send/draft at the wrong volume; observation passes still run.
 if (rampOk && !digestOnly && doDraft) await runPass("draft", draftPass)
 if (rampOk && !digestOnly && doSend) await runPass("send", sendPass)
 await runPass("digest", digestPass)
