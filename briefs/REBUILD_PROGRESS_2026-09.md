@@ -16,6 +16,7 @@ count.
 - [x] **(2) Engine multi-sender** — `CAMPAIGN_SENDERS` config, per-sender daily caps, per-sender gated warm-up ramp 5→10→20→35→50→75+ advancing only on healthy days per the brief — done 2026-09-04 (night 2)
 - [ ] **(3) Per-sender health checks, auto-pause, Telegram alerts**
 - [ ] **(4) Strip retired Gmail sender** from `config/email-campaigns.json` + document which Vercel env vars to remove
+- [ ] **(4b) Reset the send-time scorecard window for the new domains** — `EXPERIMENT_START` in `scripts/campaign-engine.mjs` is hardcoded to 2026-07-31 (the Gmail run), so once lrghomesbuys/offers start sending, the Friday scorecard and the `/email-campaign` Performance tab mix dead-Gmail data into the new numbers. Either move the start to the first new-domain send day (read it from `campaign_sends` where `sender` is a new-domain mailbox, don't hardcode) or bin by sender. Check the Performance tab's query for the same hardcoded date. Added 2026-09-04 late after Ryan saw the leaked Friday scorecard (10a pile-up = hand-approved July batches; auto-approval randomizes 7a–5p so the spread self-corrects).
 - [ ] **(5) Email-verification tooling** for the ~2,100 contact list (SMTP-level checks; no paid services — if one is genuinely needed, recommend it here instead)
 - [ ] **(6) T2–T11 template pass** against `CAMPAIGN_VOICE.md` — proposed edits written here for Ryan's review, templates untouched
 
