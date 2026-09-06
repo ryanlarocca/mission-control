@@ -46,3 +46,5 @@ scripts/.skip-trace-ledger.jsonl
 # numbers for ~2,600 real people. Regenerate with scan-missed-email-leads.mjs.
 scripts/.missed-lead-scan.json
 scripts/.missed-lead-candidates.json
+scripts/.campaign-health-state.json
+scripts/.campaign-draft-starved-state.json

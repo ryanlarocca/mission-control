@@ -41,7 +41,7 @@ import path from "node:path"
 import { fileURLToPath } from "node:url"
 import { createClient } from "@supabase/supabase-js"
 import { TOUCHES, renderTouch, nextOffsetDays } from "./campaign-touches.mjs"
-import { loadSenderConfig, loadSenderStates, saveSenderState, capFor, evaluateSenderDay, fetchRelationshipEmails, fetchReplierIds, fetchLastSenderByContact, assignSender, priorityOf } from "./campaign-senders.mjs"
+import { loadSenderConfig, loadSenderStates, saveSenderState, capFor, evaluateSenderDay, fetchRelationshipEmails, fetchReplierIds, fetchLastSenderByContact, assignSender, priorityOf, isSenderPaused, pauseLabel, withPause, withResume } from "./campaign-senders.mjs"
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const REPO_ROOT = path.resolve(__dirname, "..")
@@ -296,7 +296,7 @@ async function draftPass() {
   let backlogTotal = 0
   const budgetNotes = []
   for (const s of SENDERS) {
-    if (SENDER_STATE.get(s.email)?.paused) { budgets.set(s.email, 0); budgetNotes.push(`${s.label} paused`); continue }
+    if (isSenderPaused(SENDER_STATE.get(s.email))) { budgets.set(s.email, 0); budgetNotes.push(`${s.label} paused`); continue }
     const cap = senderCap(s)
     const drafted = await countSendsTodayFor(s, "created_at")
     const backlog = await backlogFor(s)
@@ -510,30 +510,60 @@ async function loadRamp() {
   if (!SENDERS.length) throw new Error("no enabled sender — populate config/campaign-senders.json (or CAMPAIGN_SENDERS / CAMPAIGN_SEND_AS)")
   const states = await loadSenderStates(sb, SENDERS)
   for (const s of SENDERS) {
-    const st = states.get(s.email)
+    let st = states.get(s.email)
+    // An engine pause carries an expiry (gates.autoPauseHours). Once it has
+    // lapsed the sender resumes here — before draft/send/health read the
+    // state — so every pass agrees. Ryan's manual pauses have no expiry.
+    if (st.paused && !isSenderPaused(st)) {
+      const was = pauseLabel(st)
+      st = withResume(st, { by: "engine", note: `pause expired: ${st.paused_reason ?? ""}` })
+      if (!dryRun) {
+        st = await saveSenderState(sb, s.email, st)
+        await telegram(`▶️ <b>${escHtml(s.label)}</b> ${escHtml(s.email)} resumed — its ${escHtml(was ?? "")} pause expired. Sends pick up on the next pass at ${capFor(s, st)}/day.`)
+      } else log(`would resume ${s.email}: pause expired (${was})`)
+    }
     SENDER_STATE.set(s.email, st)
-    log(`sender ${s.email} [${s.role}${s.legacy ? ", legacy env fallback" : ""}]: step ${st.step} → cap ${capFor(s, st)}/day (ladder ${s.ramp.join("→")}, ceiling ${s.ceiling}), healthy days ${st.healthy_days}${st.held_reason ? ` (held: ${st.held_reason})` : ""}${st.paused ? ` PAUSED: ${st.paused_reason ?? ""}` : ""}`)
+    log(`sender ${s.email} [${s.role}${s.legacy ? ", legacy env fallback" : ""}]: step ${st.step} → cap ${capFor(s, st)}/day (ladder ${s.ramp.join("→")}, ceiling ${s.ceiling}), healthy days ${st.healthy_days}${st.held_reason ? ` (held: ${st.held_reason})` : ""}${isSenderPaused(st) ? ` PAUSED: ${pauseLabel(st)}` : ""}`)
   }
 }
 
 // ---- Phase B guardrails: pause flag (shared with Telegram "pause campaign") ----
+// The GLOBAL pause is Ryan's kill switch ("pause campaign") — every sender
+// stops. Engine-detected trouble pauses ONE sender (below) so the other
+// domain keeps its consistency streak (item 3, 2026-09-05).
 async function getPause() {
   const { data } = await sb.from("campaign_settings").select("value").eq("key", "pause").maybeSingle()
   const v = data?.value ?? {}
   if (v.paused && v.until && new Date(v.until).getTime() < Date.now()) return { paused: false }
   return v
 }
-async function setPause(reason, hours) {
-  const value = { paused: true, reason, by: "engine", at: new Date().toISOString(), until: hours ? new Date(Date.now() + hours * 3_600_000).toISOString() : null }
-  await sb.from("campaign_settings").upsert({ key: "pause", value, updated_at: new Date().toISOString() })
-}
-async function bouncesToday() {
-  const p = ptDateParts(new Date())
-  const start = new Date(`${p.year}-${p.month}-${p.day}T00:00:00-07:00`).toISOString()
-  const { count } = await sb.from("campaign_events").select("id", { count: "exact", head: true }).eq("kind", "bounce").gte("occurred_at", start)
-  return count ?? 0
+
+/**
+ * Per-sender auto-pause: persist the pause on the sender's state row, tell
+ * Ryan once, and hand back the state. Dry runs log the decision and touch
+ * nothing (no DB write, no Telegram).
+ */
+async function pauseSender(s, reason, { hours = SENDER_CFG.gates.autoPauseHours ?? 48, why = "" } = {}) {
+  let st = withPause(SENDER_STATE.get(s.email), { reason, by: "engine", hours })
+  if (dryRun) {
+    log(`would AUTO-PAUSE ${s.email} for ${hours}h: ${reason}`)
+    SENDER_STATE.set(s.email, st)
+    return st
+  }
+  st = await saveSenderState(sb, s.email, st)
+  SENDER_STATE.set(s.email, st)
+  log(`AUTO-PAUSED ${s.email} for ${hours}h: ${reason}`)
+  const others = SENDERS.filter((o) => o.email !== s.email && !isSenderPaused(SENDER_STATE.get(o.email))).map((o) => o.label)
+  await telegram(
+    `⏸ <b>${escHtml(s.label)}</b> ${escHtml(s.email)} AUTO-PAUSED ${hours}h: ${escHtml(reason)}.${why ? ` ${escHtml(why)}` : ""}\n` +
+      `${others.length ? `${escHtml(others.join(", "))} keeps sending.` : "No other sender is active."} Its approved emails stay queued. Reply "resume ${escHtml(s.label)}" to override after checking, or "pause ${escHtml(s.label)}" to hold it past the expiry.`
+  )
+  return st
 }
 const THROTTLE_RE = /\b429\b|rate ?limit|quota|too many|user-rate|backend error|temporarily/i
+// A DWD/OAuth failure means no mail can leave this mailbox at all (the
+// Aug-28 token death failed every approved row, one by one, for four days).
+const AUTH_FAIL_RE = /invalid_grant|unauthorized_client|invalid_client|unauthorized|forbidden|\b40[13]\b|precondition check failed|delegation denied|mail service not enabled/i
 
 async function sendPass() {
   // Postal-address gate removed 2026-07-18 by Ryan's explicit call (list is
@@ -558,12 +588,13 @@ async function sendPass() {
     return
   }
   const sentToday = await countToday("campaign_sends", "sent_at", { status: ["sent"] })
-  const bounced = await bouncesToday()
-  if (sentToday >= 10 && bounced / sentToday >= BOUNCE_PAUSE_RATE) {
-    await setPause(`bounce rate ${bounced}/${sentToday} today (≥${BOUNCE_PAUSE_RATE * 100}%)`, 48)
-    await telegram(`⏸ Campaign AUTO-PAUSED 48h: ${bounced} bounces on ${sentToday} sends today (≥2%). Reply "resume campaign" to override after checking the list.`)
-    return
-  }
+  // Per-sender health check before any send (item 3): today's bounces are
+  // attributed to the mailbox that sent the contact's latest touch, and a
+  // red bounce day pauses THAT sender only — the other domain keeps its
+  // streak. Same red line as the health pass (≥2% at ≥10 sends, or 2
+  // bounces below that), so intraday and end-of-day agree.
+  const todayStart = new Date(`${ptToday()}T00:00:00-07:00`).toISOString()
+  const todayBySender = await senderMetricsRange(todayStart, new Date().toISOString())
   // Per-sender budgets: each mailbox sends up to ITS ramp cap for the day.
   // lrghomes.com mailboxes stay refused for cold sends (spam-flagged domain,
   // 2026-08-21) unless CAMPAIGN_ALLOW_DOMAIN_COLD is set — the guard is per
@@ -577,12 +608,16 @@ async function sendPass() {
       budgets.set(s.email, 0)
       continue
     }
-    const st = SENDER_STATE.get(s.email)
-    if (st?.paused) { budgets.set(s.email, 0); notes.push(`${s.label} PAUSED (${st.paused_reason ?? "manual"})`); continue }
+    let st = SENDER_STATE.get(s.email)
+    const tm = todayBySender.get(s.email) ?? { sent: 0, bounces: 0 }
+    const red = tm.sent >= 10 ? tm.bounces / tm.sent >= BOUNCE_PAUSE_RATE : tm.bounces >= 2
+    if (red && !isSenderPaused(st)) {
+      st = await pauseSender(s, `bounce rate ${((100 * tm.bounces) / Math.max(tm.sent, 1)).toFixed(1)}% (${tm.bounces}/${tm.sent}) today ≥ ${BOUNCE_PAUSE_RATE * 100}%`, { why: "Check the list before resuming — July died on day-one bounces." })
+    }
+    if (isSenderPaused(st)) { budgets.set(s.email, 0); notes.push(`${s.label} PAUSED (${pauseLabel(st)})`); continue }
     const cap = senderCap(s)
-    const sentBy = await countSendsTodayFor(s, "sent_at", ["sent"])
-    budgets.set(s.email, Math.max(0, cap - sentBy))
-    notes.push(`${s.label} ${sentBy}/${cap}`)
+    budgets.set(s.email, Math.max(0, cap - tm.sent))
+    notes.push(`${s.label} ${tm.sent}/${cap}${tm.bounces ? ` (${tm.bounces} bounced)` : ""}`)
   }
   let budget = Math.max(0, Math.min(TOTAL_SEND_CEILING - sentToday, [...budgets.values()].reduce((a, b) => a + b, 0)))
   if (limit !== null) budget = Math.min(budget, limit)
@@ -607,6 +642,24 @@ async function sendPass() {
     log(inWindow ? "nothing approved + due to send" : "outside window — no scheduled sends due")
     return
   }
+
+  // Auth preflight per sender that is about to send: mint its Gmail client
+  // ONCE up front. A dead token/grant pauses that sender (and alerts) instead
+  // of failing every approved row one by one. Runs in dry-run too — minting
+  // a token sends nothing, and it is the live proof the mailbox can send.
+  for (const s of SENDERS) {
+    if ((budgets.get(s.email) ?? 0) <= 0) continue
+    if (!approved.some((r) => (r.sender ? senderByEmail(r.sender) : SENDER_CFG.workhorse)?.email === s.email)) continue
+    try {
+      await gmailClient(s)
+      log(`auth ok: ${s.email}`)
+    } catch (e) {
+      const msg = e?.response?.data?.error_description || e?.response?.data?.error || e?.message || String(e)
+      await pauseSender(s, `Gmail auth failed: ${String(msg).slice(0, 120)}`, { why: `Run node scripts/check-dwd-scopes.mjs ${s.email}.` })
+      budgets.set(s.email, 0)
+    }
+  }
+  if ([...budgets.values()].every((b) => b <= 0)) { log("every sender is paused or out of budget — nothing to send"); return }
 
   const sets = await fetchSuppressionSets()
   let sent = 0
@@ -691,11 +744,16 @@ async function sendPass() {
       const m = e?.message ?? String(e)
       await markFailed(row, m)
       failed++
+      // Throttle or auth trouble pauses THIS sender; the other mailbox's
+      // rows in this pass still go out.
       if (THROTTLE_RE.test(m)) {
-        await setPause(`Gmail throttle: ${m.slice(0, 120)}`, 48)
-        await telegram(`⏸ Campaign AUTO-PAUSED 48h on a Gmail throttle/quota response: <code>${m.slice(0, 200)}</code>. Remaining approved emails stay queued.`)
-        break
+        await pauseSender(sender, `Gmail throttle: ${m.slice(0, 120)}`, { why: "Remaining approved emails stay queued." })
+        budgets.set(sender.email, 0)
+      } else if (AUTH_FAIL_RE.test(m)) {
+        await pauseSender(sender, `Gmail auth failed mid-pass: ${m.slice(0, 120)}`, { why: `Run node scripts/check-dwd-scopes.mjs ${sender.email}.` })
+        budgets.set(sender.email, 0)
       }
+      if ([...budgets.values()].every((b) => b <= 0)) break
     }
     await sleep(3000 + Math.random() * 7000)
   }
@@ -855,16 +913,19 @@ async function canaryPass() {
 
 async function healthPass() {
   // Once per weekday after 5:15pm PT (the window closed at 5:00).
-  if (dryRun) return
-  const wd = laWeekdayNow()
+  // `--dry-run --health-now` rehearses the whole pass against live data and
+  // prints the card instead of saving/posting anything (item 3 verification).
   const forced = args.includes("--health-now") // rehearsal flag
+  const rehearsal = dryRun && forced
+  if (dryRun && !rehearsal) return
+  const wd = laWeekdayNow()
   if (!forced && (wd === "Sat" || wd === "Sun")) return
   const now = new Date()
   const minutes = laHourNow() * 60 + Number(new Intl.DateTimeFormat("en-US", { timeZone: "America/Los_Angeles", minute: "numeric" }).format(now))
   if (!forced && minutes < 17 * 60 + 15) return
   const day = ptToday()
   const { data: existing } = await sb.from("campaign_settings").select("key").eq("key", `health:${day}`).maybeSingle()
-  if (existing) return
+  if (existing && !rehearsal) return
   const m = await dayMetrics(day)
   // 7-day trailing window for context
   const days = []
@@ -896,14 +957,32 @@ async function healthPass() {
   const senderLines = []
   const senderSnap = {}
   let worst = "🟢"
+  const canaryToday = typeof m.canary === "object" && m.canary ? m.canary : {}
+  if (SENDER_CFG.gates.requireCanaryVerdict && !process.env.CAMPAIGN_CANARY_TO) warnings.push("CAMPAIGN_CANARY_TO is unset — no canary goes out, so the canary gate can never clear and every sender holds its rung")
   for (const s of SENDERS) {
-    const state = SENDER_STATE.get(s.email)
+    let state = SENDER_STATE.get(s.email)
     const sm = perSender.get(s.email)
     if (sm.sent === 0 && !state?.entered_step) { senderSnap[s.email] = { ...sm, cap: senderCap(s), step: state?.step ?? 0, decision: "idle" }; continue }
-    const ev = evaluateSenderDay({ sender: s, state, day, metrics: sm, trailing: trailing.get(s.email), gates: SENDER_CFG.gates, extra: { paused: pause.paused ? pause.reason : state?.paused ? state.paused_reason ?? "manual" : null, canaryVerdicts: state?.canary_verdicts, postmaster: state?.postmaster } })
-    const saved = await saveSenderState(sb, s.email, ev.state)
+    const ev = evaluateSenderDay({ sender: s, state, day, metrics: sm, trailing: trailing.get(s.email), gates: SENDER_CFG.gates, extra: { paused: pause.paused ? `campaign: ${pause.reason ?? "manual"}` : isSenderPaused(state) ? pauseLabel(state) : null } })
+    // The day's evidence says stop (red bounces, canary in Spam two days
+    // running): pause this sender on top of the ramp decision. The send pass
+    // usually catches a bounce day first; this covers bounces that landed
+    // after the last send of the day.
+    let next = ev.state
+    let pausedNow = null
+    if (ev.autoPause && !isSenderPaused(state) && !pause.paused) {
+      next = withPause(next, { reason: ev.autoPause.reason, by: "engine", hours: ev.autoPause.hours })
+      pausedNow = ev.autoPause
+    }
+    const saved = rehearsal ? next : await saveSenderState(sb, s.email, next)
     SENDER_STATE.set(s.email, saved)
-    senderSnap[s.email] = { ...sm, cap: ev.cap, step: ev.state.step, status: ev.status, decision: ev.decision, healthy_days: ev.state.healthy_days, checks: ev.checks, warnings: ev.warnings }
+    state = saved
+    if (rehearsal) log(`health rehearsal ${s.email}: ${ev.status} ${ev.decision} → step ${next.step} cap ${ev.nextCap}${pausedNow ? ` · would AUTO-PAUSE ${pausedNow.hours}h: ${pausedNow.reason}` : ""} · checks: ${ev.checks.map((c) => `${c.pass ? "✓" : "✗"} ${c.name} (${c.note})`).join("; ")}`)
+    if (pausedNow && !rehearsal) {
+      const others = SENDERS.filter((o) => o.email !== s.email && !isSenderPaused(SENDER_STATE.get(o.email))).map((o) => o.label)
+      await telegram(`⏸ <b>${escHtml(s.label)}</b> ${escHtml(s.email)} AUTO-PAUSED ${pausedNow.hours}h at the day's health check: ${escHtml(pausedNow.reason)}. ${others.length ? `${escHtml(others.join(", "))} keeps sending.` : "No other sender is active."} Reply "resume ${escHtml(s.label)}" to override.`)
+    }
+    senderSnap[s.email] = { ...sm, cap: ev.cap, step: ev.state.step, status: ev.status, decision: ev.decision, healthy_days: ev.state.healthy_days, checks: ev.checks, warnings: ev.warnings, paused: isSenderPaused(saved) ? pauseLabel(saved) : null, canary: ev.canary.note }
     if (ev.status === "🔴" || (ev.status === "🟡" && worst === "🟢")) worst = ev.status
     const verdict =
       ev.decision === "advance" ? `⬆️ next batch ${ev.nextCap}/day` :
@@ -911,22 +990,29 @@ async function healthPass() {
       ev.decision === "steady" ? `✅ steady at ${ev.cap}/day (ceiling)` :
       ev.decision === "gap" ? `⏸ no sends — streak reset, holds ${ev.cap}/day` :
       `⏸ holds ${ev.cap}/day (${ev.state.held_reason ?? "waiting on gates"})`
-    senderLines.push(`${ev.status} <b>${escHtml(s.label)}</b> ${escHtml(s.email)}: ${sm.sent}/${ev.cap} sent · ${sm.bounces} bounced (${pct(sm.bounces, sm.sent)}) · ${sm.replies} replies · ${sm.failed} failed · healthy ${ev.state.healthy_days}/${SENDER_CFG.gates.minHealthyDays} → ${escHtml(verdict)}`)
+    // Canary bookkeeping for Ryan: a canary went out today from this mailbox
+    // and no verdict is recorded yet → ask for one (the gate needs it).
+    const needVerdict = canaryToday[s.email] && !ev.canary.today
+    const canaryLine = needVerdict
+      ? ` · 🐤 ${canaryToday[s.email]} sent — where did it land? reply "canary ${s.label} primary|promotions|spam"`
+      : ev.canary.today ? ` · 🐤 ${ev.canary.today}` : ""
+    senderLines.push(`${ev.status} <b>${escHtml(s.label)}</b> ${escHtml(s.email)}: ${sm.sent}/${ev.cap} sent · ${sm.bounces} bounced (${pct(sm.bounces, sm.sent)}) · ${sm.replies} replies · ${sm.failed} failed · healthy ${ev.state.healthy_days}/${SENDER_CFG.gates.minHealthyDays}${isSenderPaused(saved) ? ` · ⏸ PAUSED ${escHtml(pauseLabel(saved))}` : ""}${escHtml(canaryLine)} → ${escHtml(verdict)}`)
   }
   const status = warnings.length ? (warnings.some((w) => /PAUSED|2%/.test(w)) ? "🔴" : "🟡") : worst
   const capTotal = SENDERS.reduce((a, s) => a + senderCap(s), 0)
   const snapshot = { ...m, warnings, sender: SENDERS.map((s) => s.email).join(","), cap: capTotal, senders: senderSnap, recorded_at: now.toISOString() }
-  await sb.from("campaign_settings").upsert({ key: `health:${day}`, value: snapshot, updated_at: now.toISOString() })
+  if (!rehearsal) await sb.from("campaign_settings").upsert({ key: `health:${day}`, value: snapshot, updated_at: now.toISOString() })
   const rampNote = senderLines.length ? `\n\n${senderLines.join("\n")}` : ""
-  if (m.sent === 0 && !warnings.length) { log("health: no sends today, snapshot stored, no card"); return }
+  if (m.sent === 0 && !warnings.length && !rehearsal) { log("health: no sends today, snapshot stored, no card"); return }
   const canaryNote = m.canary ? (typeof m.canary === "object" ? Object.entries(m.canary).map(([e, c]) => `${c} ${e.split("@")[1]}`).join(", ") : m.canary) : null
-  await telegram(
+  const card =
     `🩺 <b>Campaign health ${status} — ${wd} ${day.slice(5)}</b>\n` +
       `📤 ${m.sent} sent (caps ${capTotal}) · ↩️ ${m.bounces} bounced (${pct(m.bounces, m.sent)}) · 💬 ${m.replies} replies · 🚫 ${m.unsubs} removes · 🤖 ${m.autoReplies} auto-replies · ⚠️ ${m.failed} failed · 🧹 ${m.lint_rejected} lint-rejected` +
       (canaryNote ? ` · 🐤 canary ${escHtml(canaryNote)} sent` : "") +
       `\n📈 7-day: ${agg.sent} sent, bounces ${pct(agg.bounces, agg.sent)}, replies ${pct(agg.replies, agg.sent)}, ${agg.unsubs} removes` +
       (warnings.length ? `\n\n${warnings.map((w) => `• ${escHtml(w)}`).join("\n")}` : "\n\nAll clear.") + rampNote
-  )
+  if (rehearsal) { log(`health rehearsal — card that WOULD post (nothing saved, nothing sent):\n${card}`); return }
+  await telegram(card)
   log(`health card sent: ${status} ${warnings.join("; ")}`)
 }
 

@@ -14,7 +14,7 @@ count.
 
 - [x] **(1) DWD `gmail.send` scope tooling + relax `add-email-mailbox.mjs` for lrghomesbuys.com / lrghomesoffers.com** — done 2026-09-03 (night 1)
 - [x] **(2) Engine multi-sender** — `CAMPAIGN_SENDERS` config, per-sender daily caps, per-sender gated warm-up ramp 5→10→20→35→50→75+ advancing only on healthy days per the brief — done 2026-09-04 (night 2)
-- [ ] **(3) Per-sender health checks, auto-pause, Telegram alerts**
+- [x] **(3) Per-sender health checks, auto-pause, Telegram alerts** — done 2026-09-05 (night 3). Gmail watches for the two new mailboxes are NOT registered (live infra change, Q5 unanswered) — the exact two commands are in the night-3 log.
 - [ ] **(4) Strip retired Gmail sender** from `config/email-campaigns.json` + document which Vercel env vars to remove
 - [ ] **(4b) Reset the send-time scorecard window for the new domains** — `EXPERIMENT_START` in `scripts/campaign-engine.mjs` is hardcoded to 2026-07-31 (the Gmail run), so once lrghomesbuys/offers start sending, the Friday scorecard and the `/email-campaign` Performance tab mix dead-Gmail data into the new numbers. Either move the start to the first new-domain send day (read it from `campaign_sends` where `sender` is a new-domain mailbox, don't hardcode) or bin by sender. Check the Performance tab's query for the same hardcoded date. Added 2026-09-04 late after Ryan saw the leaked Friday scorecard (10a pile-up = hand-approved July batches; auto-approval randomizes 7a–5p so the spread self-corrects).
 - [ ] **(5) Email-verification tooling** for the ~2,100 contact list (SMTP-level checks; no paid services — if one is genuinely needed, recommend it here instead)
@@ -152,6 +152,90 @@ alerts + the verdict input go there. Also: `lib/campaignBatch.ts`
 Telegram replies will send from whichever domain sent the touch (that is
 correct thread continuity, but see Q5 on bounces).
 
+### 2026-09-05 — night 3 — item (3) DONE
+
+**Shipped (branch only, engine still unloaded, zero emails, zero prod writes):**
+- **Per-sender auto-pause** — each mailbox now stops on its own evidence
+  while the other keeps its consistency streak. State lives on the sender's
+  `campaign_settings` row (`paused`, `paused_reason`, `paused_by`,
+  `paused_at`, `paused_until`); an engine pause carries a 48h expiry
+  (`gates.autoPauseHours`) and lifts itself at the next `loadRamp` (Telegram
+  "▶️ buys resumed"); Ryan's pauses have no expiry. Triggers:
+  - **send pass, before any send:** today's per-sender bounces (attributed to
+    the mailbox that sent the contact's latest touch) — red line = ≥2% at ≥10
+    sends or 2 bounces below that, same rule as the health pass. Replaces the
+    old GLOBAL bounce auto-pause; the global `pause` row is now only Ryan's
+    kill switch ("pause campaign") and the engine never sets it.
+  - **send pass, auth preflight:** each sender about to send mints its Gmail
+    client once up front; a dead token/grant pauses that sender + alerts
+    instead of failing every approved row one by one (the Aug-28 pattern).
+    Runs in dry-run too — minting a token sends nothing.
+  - **mid-pass:** a Gmail throttle/quota response or an auth error pauses
+    that sender and zeroes its budget; the loop continues with the other
+    mailbox's rows (used to `break` and pause everyone).
+  - **health pass (5:15pm PT):** `evaluateSenderDay` returns `autoPause` for
+    a red bounce day or the canary in Spam two days running (the brief's
+    2-in-a-row rule); the pass applies it on top of the ramp decision.
+- **Canary verdict input (the "canary Primary 3 days running" gate is now
+  ENFORCED, `requireCanaryVerdict: true` — D7):** Ryan reads the judge inbox
+  and replies `canary buys primary` / `canary offers spam` (optional
+  `YYYY-MM-DD` for an earlier day). Gate = last 3 recorded verdicts all
+  primary and the newest ≤7 days old (`canaryVerdictMaxAgeDays`); a missing
+  verdict for today does not fail the gate while yesterday's is recent
+  (grace for late reads). One Spam day = 🟡 hold; two running = 🔴 drop a
+  rung + auto-pause. The health card asks for the verdict on any day a canary
+  went out without one, and warns when `CAMPAIGN_CANARY_TO` is unset (it is —
+  see Q6).
+- **Postmaster input, manual:** `reputation buys high|medium|low|bad`
+  records what the dashboard shows; gate stays advisory (D8). LOW/BAD shows
+  as a 🟡 warning.
+- **Consistency rule:** `gap_days` counts consecutive weekdays with zero
+  sends; the card warns at ≥2 (`gapWarnDays`).
+- **Telegram commands** (`app/api/campaign/telegram/route.ts` → new
+  `lib/campaignSenders.ts`): `pause buys [why]`, `resume offers`, `canary …`,
+  `reputation …`; a token that isn't a sender label/address falls through
+  untouched. `campaign status` now prints one line per sender (cap, step,
+  healthy days, pause, last 3 verdicts, Postmaster) instead of the retired
+  `CAMPAIGN_SEND_AS`.
+- **Bounce visibility for the new domains (Q5, code half):**
+  `lib/campaignInbox.ts` lists `ryan@lrghomesbuys.com` +
+  `ryan@lrghomesoffers.com` in `CAMPAIGN_INBOXES`, and the own-mail skip +
+  DSN failed-recipient extraction now cover all three domains (they only knew
+  lrghomes.com). Inert until a watch exists. **Not done, on purpose:** the
+  watch registration itself (writes `config/email-campaigns.json`, calls
+  `gmail.users.watch` on the live tenant, needs a deploy). Ryan or a
+  supervised session runs:
+  `node scripts/add-email-mailbox.mjs ryan@lrghomesbuys.com AGENT-DRIP-BUYS`
+  and `… ryan@lrghomesoffers.com AGENT-DRIP-OFFERS` (`--dry-run` first — the
+  buys dry-run passed tonight: token minted, would add + watch, wrote
+  nothing).
+- `--dry-run --health-now` is now a full health rehearsal: computes every
+  per-sender decision from live data and prints the card; saves nothing,
+  posts nothing.
+- `.gitignore`: the engine's `.campaign-health-state.json` +
+  `.campaign-draft-starved-state.json` were untracked-but-unignored.
+
+**Verified:** `npx tsc --noEmit` clean; `npx vitest run` 70/70 (new
+`tests/campaign-senders.unit.test.ts`, 7 tests: pause expiry vs manual, red
+day → drop + auto-pause, 2-bounce rule under 10 sends, canary gate 3-of-3 +
+staleness + bad verdict rejected, gate blocks advancement until verdicts
+exist, Spam ×2 pauses, gap-day counting). Live, read-only: `node
+scripts/check-dwd-scopes.mjs` → `gmail.modify` mints for all three
+mailboxes; `--send --dry-run --now` → `buys 0/5, offers 0/3` via the new
+per-sender bounce path; `--draft --dry-run --mint-now --limit=4` → 4 T2
+drafts, July repliers first, budgets honour the pause check; `--send
+--dry-run --health-now` → card prints `🟡` with the single warning
+"CAMPAIGN_CANARY_TO is unset…" and both senders idle. 40-weekday simulation
+through `evaluateSenderDay` with daily verdicts: 3 primaries unlock 5→10 on
+day 3; a Spam day holds; the second Spam day drops 10→5 + pauses; a 2-bounce
+day at 10/day drops + pauses; the ≤2× week-over-week gate then paces every
+rung (10→20 day 24, 20→35 day 30, 35→50 day 36).
+
+**Hand-off to item (4):** `scripts/campaign-gmail.mjs` still carries the
+OAuth branch + `CAMPAIGN_GMAIL_OAUTH_*` reads; `lib/campaignInbox.ts` still
+appends `CAMPAIGN_GMAIL_OAUTH_USER`; `config/email-campaigns.json` never had
+the Gmail address (nothing to strip there — confirm and say so).
+
 ## Decisions taken by the builder (reversible, flag if wrong)
 
 - D1 (9/3): did **not** request or add `gmail.send` anywhere in code. All
@@ -173,6 +257,25 @@ correct thread continuity, but see Q5 on bounces).
 - D6 (9/4): a contact stays on the mailbox that sent its last touch (thread
   continuity beats segment rules); the understudy claims only never-touched
   Relationships matches.
+- D7 (9/5): `requireCanaryVerdict` flipped to **true** — the brief lists
+  "canary Primary 3 days running" as an advancement gate and the input now
+  exists (Telegram `canary <label> <verdict>`), so D3's advisory exception
+  ends. Cost: until a judge inbox is set (`CAMPAIGN_CANARY_TO`) and Ryan
+  records verdicts, every sender holds at rung 0 (5/day + 3/day). Flip back
+  with one config line if that's the wrong trade.
+- D8 (9/5): `requirePostmaster` stays **false**. Postmaster Tools doesn't
+  have the new domains yet (Ryan's 9/3 leftover) and shows nothing for a
+  domain until weeks of volume — enforcing it would freeze the ramp on a
+  blank dashboard. Manual `reputation <label> <level>` feeds the slot so the
+  gate can be flipped later without code.
+- D9 (9/5): engine auto-pauses are **per sender, 48h, self-expiring**; the
+  global `pause` row is Ryan's only. The health-pass red day pauses on top
+  of dropping a rung (Phase B's "auto-pause on ≥2% bounces" kept, now
+  scoped); a pause never drops a rung by itself.
+- D10 (9/5): did **not** register Gmail watches on the new mailboxes or
+  touch `config/email-campaigns.json` — Q5 is unanswered and merging a
+  config change would make the Mac mini renewal cron register the watches
+  as a side effect. Code is ready; two commands remain (night-3 log).
 
 ## Questions for Ryan
 
@@ -216,4 +319,20 @@ correct thread continuity, but see Q5 on bounces).
    bounce gate would pass blind. Item (3) needs to register a watch on each
    (relaxed `scripts/add-email-mailbox.mjs`, `--dry-run` first) and add both
    to `CAMPAIGN_INBOXES` in `lib/campaignInbox.ts`. OK to do that without
-   waiting on Q2?
+   waiting on Q2? *(9/5 update: the `CAMPAIGN_INBOXES` half is done on the
+   branch; only the two `add-email-mailbox.mjs` runs remain — D10.)*
+6. **Q6 (blocks the ramp past 5/day — needs a judge inbox):** the canary gate
+   is now enforced (D7) and `CAMPAIGN_CANARY_TO` is not set anywhere (the old
+   judge `ryanlarocca44@` was retired; memo lists "new judge inbox" as a
+   September item). Which address is the new judge — a fresh consumer Gmail
+   you never open except to read canaries? Set it in mission-control
+   `.env.local` as `CAMPAIGN_CANARY_TO=…`, then the daily loop is: one canary
+   per sender rides along with each send day (`[C<n> buys]` / `[C<n>
+   offers]`), the 5:15pm card asks where it landed, you reply `canary buys
+   primary` (or `promotions` / `spam`). If you'd rather not read a judge
+   inbox daily, say so and I set `requireCanaryVerdict` back to advisory —
+   but then the brief's canary gate is decorative.
+7. **Q7 (small):** the 48h engine pause set at a Thursday 5:15pm health check
+   expires Saturday — Friday is lost and Monday resumes; set on a Friday,
+   only Monday morning is affected. Fine as is, or would you rather the
+   pause be "next weekday only" (24h) so a single bad day costs one day?

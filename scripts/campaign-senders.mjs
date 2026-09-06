@@ -28,9 +28,15 @@ export const DEFAULT_GATES = {
   bounceHoldRate: 0.01, // yellow (hold) line
   bounceRedRate: 0.02, // red (drop a step) line, once ≥10 sent in the day
   replyCheckMinSends: 40, // once a sender has this many sends in 7 days, zero genuine replies = hold
-  requireCanaryVerdict: false, // flip when the canary-verdict input exists (rebuild item 3)
-  requirePostmaster: false, // flip when Postmaster reputation is ingested (rebuild item 3)
+  requireCanaryVerdict: true, // brief: "canary Primary 3 days running" — verdicts arrive via Telegram "canary <label> <verdict>" (item 3, 2026-09-05)
+  canaryVerdictMaxAgeDays: 7, // the newest recorded verdict must be at most this old for the canary gate to count
+  requirePostmaster: false, // flip when Postmaster Tools shows a reputation for the new domains ("reputation <label> <level>" records it)
+  autoPauseHours: 48, // engine-set pauses (bounce red, throttle, auth, canary Spam ×2) expire on their own after this
+  gapWarnDays: 2, // consecutive weekdays with zero sends before the health card warns (consistency rule)
 }
+
+export const CANARY_VERDICTS = ["primary", "promotions", "spam"]
+export const POSTMASTER_LEVELS = ["HIGH", "MEDIUM", "LOW", "BAD"]
 
 /** Parse config/campaign-senders.json (+ CAMPAIGN_SENDERS narrowing). Pure — no DB. */
 export function loadSenderConfig({ env = process.env, configPath = SENDERS_CONFIG_PATH } = {}) {
@@ -81,7 +87,76 @@ export function loadSenderConfig({ env = process.env, configPath = SENDERS_CONFI
 export const stateKey = (email) => `sender:${email.toLowerCase()}`
 
 export function freshState() {
-  return { step: 0, entered_step: null, healthy_days: 0, held_reason: null, last_change: null, paused: false, paused_reason: null, history: [] }
+  return {
+    step: 0, entered_step: null, healthy_days: 0, held_reason: null, last_change: null, history: [],
+    // per-sender pause (item 3): the engine sets it on its own evidence (with an
+    // expiry), Ryan sets it from Telegram ("pause buys", no expiry). Mirrored
+    // in lib/campaignSenders.ts for the Telegram route — keep the shape in sync.
+    paused: false, paused_reason: null, paused_by: null, paused_at: null, paused_until: null,
+    gap_days: 0, // consecutive weekdays with zero sends
+    canary_verdicts: {}, // { "YYYY-MM-DD": "primary" | "promotions" | "spam" } — Ryan's read of the judge inbox
+    postmaster: null, // { reputation: "HIGH"|"MEDIUM"|"LOW"|"BAD", recorded_at, by } — manual until the Postmaster API is authorized
+  }
+}
+
+/** True while a sender's own pause is in force (an engine pause expires on its own). */
+export function isSenderPaused(state, now = Date.now()) {
+  if (!state?.paused) return false
+  if (state.paused_until && new Date(state.paused_until).getTime() < now) return false
+  return true
+}
+
+/** Human line for a paused sender: reason + who + until. */
+export function pauseLabel(state) {
+  if (!state?.paused) return null
+  const until = state.paused_until ? ` until ${new Date(state.paused_until).toLocaleString("en-US", { timeZone: "America/Los_Angeles", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })} PT` : ""
+  return `${state.paused_reason ?? "manual"} (${state.paused_by ?? "?"}${until})`
+}
+
+export function withPause(state, { reason, by = "engine", hours = null } = {}) {
+  const at = new Date()
+  return {
+    ...freshState(), ...(state ?? {}),
+    paused: true, paused_reason: reason ?? null, paused_by: by, paused_at: at.toISOString(),
+    paused_until: hours ? new Date(at.getTime() + hours * 3_600_000).toISOString() : null,
+  }
+}
+
+export function withResume(state, { by = "engine", note = null } = {}) {
+  const st = { ...freshState(), ...(state ?? {}) }
+  return { ...st, paused: false, paused_reason: null, paused_by: null, paused_at: null, paused_until: null, resumed_at: new Date().toISOString(), resumed_by: by, resumed_note: note }
+}
+
+export function withCanaryVerdict(state, day, verdict) {
+  const v = String(verdict ?? "").toLowerCase()
+  if (!CANARY_VERDICTS.includes(v)) throw new Error(`canary verdict must be one of ${CANARY_VERDICTS.join("/")}, got "${verdict}"`)
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) throw new Error(`bad canary day "${day}"`)
+  const st = { ...freshState(), ...(state ?? {}) }
+  const all = { ...(st.canary_verdicts ?? {}), [day]: v }
+  const keep = Object.keys(all).sort().slice(-30)
+  return { ...st, canary_verdicts: Object.fromEntries(keep.map((d) => [d, all[d]])) }
+}
+
+/**
+ * The brief's "canary Primary 3 days running" gate, from the recorded
+ * verdicts up to and including `day`: the last `minHealthyDays` verdicts must
+ * all be primary and the newest must be recent (a verdict from three weeks
+ * ago says nothing about today's placement). Also returns the Spam streak
+ * for the 2-in-a-row auto-pause rule.
+ */
+export function canaryGate(state, day, gates = DEFAULT_GATES) {
+  const all = state?.canary_verdicts ?? {}
+  const days = Object.keys(all).filter((d) => d <= day).sort()
+  const recent = days.slice(-gates.minHealthyDays).map((d) => ({ day: d, verdict: all[d] }))
+  const newest = days[days.length - 1] ?? null
+  const ageDays = newest ? Math.round((new Date(`${day}T12:00:00Z`) - new Date(`${newest}T12:00:00Z`)) / 86_400_000) : null
+  const stale = newest ? ageDays > (gates.canaryVerdictMaxAgeDays ?? 7) : true
+  const enough = recent.length >= gates.minHealthyDays
+  const allPrimary = enough && recent.every((r) => r.verdict === "primary")
+  let spamStreak = 0
+  for (let i = days.length - 1; i >= 0 && all[days[i]] === "spam"; i--) spamStreak++
+  const note = !days.length ? "no verdicts recorded" : `${recent.map((r) => r.verdict).join(",")}${enough ? "" : ` (${recent.length}/${gates.minHealthyDays} recorded)`}${stale ? ` — newest ${newest}, stale` : ""}`
+  return { pass: allPrimary && !stale, note, recent, newest, ageDays, stale, spamStreak, today: all[day] ?? null }
 }
 
 /** Ramp state per enabled sender (campaign_settings `sender:<email>`; fresh if absent). */
@@ -133,7 +208,13 @@ export function capAsOf(sender, state, day, daysAgo = 7) {
  *
  * metrics:  { sent, failed, bounces, replies, unsubs, autoReplies }
  * trailing: { sent, bounces, replies }  (the previous 7 days, this sender)
- * extra:    { paused, canaryVerdicts?: {day: verdict}, postmaster?: {reputation} }
+ * extra:    { paused (label of a pause in force, or null), canaryVerdicts?, postmaster? }
+ *           canaryVerdicts / postmaster default to the state's own slots.
+ *
+ * Returns `autoPause: { reason, hours } | null` when the day's evidence says
+ * this sender should stop on its own (item 3): a red bounce day, or the
+ * canary landing in Spam two days running (the brief's 2-in-a-row rule). The
+ * engine applies it; a pause never drops a rung by itself.
  */
 export function evaluateSenderDay({ sender, state, day, metrics, trailing, gates = DEFAULT_GATES, extra = {} }) {
   const st = { ...freshState(), ...(state ?? {}) }
@@ -143,6 +224,8 @@ export function evaluateSenderDay({ sender, state, day, metrics, trailing, gates
   const checks = []
   const warnings = []
   const pct = (n, d) => (d ? `${((100 * n) / d).toFixed(1)}%` : "—")
+  const canary = canaryGate({ ...st, canary_verdicts: extra.canaryVerdicts ?? st.canary_verdicts }, day, gates)
+  const rep = (extra.postmaster ?? st.postmaster)?.reputation ?? null
 
   // --- day quality ---
   const bounceRate = m.sent ? m.bounces / m.sent : 0
@@ -153,10 +236,18 @@ export function evaluateSenderDay({ sender, state, day, metrics, trailing, gates
   if (m.unsubs >= 2) warnings.push({ level: "yellow", text: `${m.unsubs} removes in one day` })
   if (extra.paused) warnings.push({ level: "yellow", text: `paused: ${extra.paused}` }) // a pause holds the rung; only bounces drop it
   if (tr.sent >= gates.replyCheckMinSends && tr.replies === 0) warnings.push({ level: "yellow", text: `no genuine replies on the last ${tr.sent} sends (7 days)` })
+  // Canary placement (brief: expect some week-1 spam-foldering; the 2-in-a-row
+  // rule decides, not a single bad day). Two Spam verdicts running = pause.
+  if (canary.spamStreak >= 2 && canary.newest === day) warnings.push({ level: "red", text: `canary in Spam ${canary.spamStreak} days running` })
+  else if (canary.today === "spam") warnings.push({ level: "yellow", text: "canary landed in Spam today" })
+  if (rep === "BAD" || rep === "LOW") warnings.push({ level: gates.requirePostmaster ? "red" : "yellow", text: `Postmaster reputation ${rep}` })
+  // Consistency rule: gaps in weekday sending lapse provider memory.
+  const gap = m.sent === 0
+  const gapDays = gap ? (st.gap_days ?? 0) + 1 : 0
+  if (gap && gapDays >= (gates.gapWarnDays ?? 2) && st.entered_step) warnings.push({ level: "yellow", text: `no sends for ${gapDays} weekdays — send every weekday, reputation memory lapses` })
   const status = warnings.some((w) => w.level === "red") ? "🔴" : warnings.length ? "🟡" : "🟢"
 
   // --- advancement gates (all must pass) ---
-  const gap = m.sent === 0
   let healthy = st.healthy_days
   if (gap) healthy = 0 // consistency: a skipped weekday resets the streak (M3AAWG/Braze: lapses reset progress)
   else if (status === "🟢" && m.sent >= Math.ceil(cap * gates.healthyDayMinFraction)) healthy += 1
@@ -171,16 +262,17 @@ export function evaluateSenderDay({ sender, state, day, metrics, trailing, gates
   checks.push({ name: "no failures / pause", pass: !m.failed && !extra.paused, note: m.failed ? `${m.failed} failed` : extra.paused ? "paused" : "ok" })
   checks.push({ name: "replies still arriving", pass: !(tr.sent >= gates.replyCheckMinSends && tr.replies === 0), note: `${tr.replies} on ${tr.sent} (7d)` })
   checks.push({ name: "≤ 2× week-over-week", pass: nextCap <= weekAgoCap * gates.maxWeekOverWeek, note: `next ${nextCap} vs ${weekAgoCap} a week ago` })
-  // Inputs that do not exist yet (rebuild item 3) are advisory until flipped in config.
-  const verdicts = extra.canaryVerdicts ?? {}
-  const lastVerdicts = Object.keys(verdicts).sort().slice(-gates.minHealthyDays).map((d) => verdicts[d])
-  const canaryPass = lastVerdicts.length >= gates.minHealthyDays && lastVerdicts.every((v) => v === "primary")
-  checks.push({ name: "canary Primary 3 days", pass: gates.requireCanaryVerdict ? canaryPass : true, note: lastVerdicts.length ? lastVerdicts.join(",") : "no verdicts recorded", advisory: !gates.requireCanaryVerdict })
-  const rep = extra.postmaster?.reputation ?? null
-  checks.push({ name: "Postmaster reputation", pass: gates.requirePostmaster ? rep === "HIGH" || rep === "MEDIUM" : true, note: rep ?? "not ingested", advisory: !gates.requirePostmaster })
+  checks.push({ name: `canary Primary ${gates.minHealthyDays} days`, pass: gates.requireCanaryVerdict ? canary.pass : true, note: canary.note, advisory: !gates.requireCanaryVerdict })
+  checks.push({ name: "Postmaster reputation", pass: gates.requirePostmaster ? rep === "HIGH" || rep === "MEDIUM" : true, note: rep ?? "not recorded", advisory: !gates.requirePostmaster })
+
+  // --- auto-pause (item 3): the engine stops THIS sender, the other keeps going ---
+  let autoPause = null
+  if (red && m.bounces) autoPause = { reason: `bounce rate ${pct(m.bounces, m.sent)} (${m.bounces}/${m.sent}) ≥ ${gates.bounceRedRate * 100}%`, hours: gates.autoPauseHours ?? 48 }
+  else if (canary.spamStreak >= 2 && canary.newest === day) autoPause = { reason: `canary in Spam ${canary.spamStreak} days running`, hours: gates.autoPauseHours ?? 48 }
+  else if (gates.requirePostmaster && rep === "BAD") autoPause = { reason: "Postmaster reputation BAD", hours: gates.autoPauseHours ?? 48 }
 
   let decision = "hold"
-  let next = { ...st, healthy_days: healthy }
+  let next = { ...st, healthy_days: healthy, gap_days: gapDays }
   if (gap) {
     decision = "gap"
     next.held_reason = st.entered_step ? "no sends today — streak reset" : st.held_reason
@@ -203,9 +295,9 @@ export function evaluateSenderDay({ sender, state, day, metrics, trailing, gates
     next.held_reason = status === "🟡" ? warnings[0].text : checks.filter((c) => !c.pass).map((c) => `${c.name} (${c.note})`).join("; ")
   }
   if (!next.entered_step && !gap) next.entered_step = day
-  const entry = { day, step: st.step, cap, sent: m.sent, bounces: m.bounces, replies: m.replies, status, decision }
+  const entry = { day, step: st.step, cap, sent: m.sent, bounces: m.bounces, replies: m.replies, status, decision, ...(canary.today ? { canary: canary.today } : {}) }
   next.history = [...(st.history ?? []).filter((h) => h.day !== day), entry].sort((a, b) => (a.day < b.day ? -1 : 1)).slice(-40)
-  return { status, warnings: warnings.map((w) => w.text), checks, decision, cap, nextCap: capFor(sender, next), state: next }
+  return { status, warnings: warnings.map((w) => w.text), checks, decision, cap, nextCap: capFor(sender, next), state: next, autoPause, canary }
 }
 
 // ---------- segment + ordering helpers (engagement-first ramp) ----------
@@ -293,14 +385,17 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
   const states = await loadSenderStates(sb, cfg.senders)
   const rows = cfg.senders.map((s) => {
     const st = states.get(s.email)
-    return { email: s.email, role: s.role, segment: s.segment, replyTo: s.replyTo, step: st.step, cap: capFor(s, st), ceiling: s.ceiling, ramp: s.ramp.join("→"), healthy_days: st.healthy_days, entered_step: st.entered_step, held: st.held_reason, paused: st.paused ? st.paused_reason || true : false, legacy: !!s.legacy }
+    const today = new Intl.DateTimeFormat("en-CA", { timeZone: "America/Los_Angeles", year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date())
+    const canary = canaryGate(st, today, cfg.gates)
+    return { email: s.email, role: s.role, segment: s.segment, replyTo: s.replyTo, step: st.step, cap: capFor(s, st), ceiling: s.ceiling, ramp: s.ramp.join("→"), healthy_days: st.healthy_days, entered_step: st.entered_step, held: st.held_reason, paused: isSenderPaused(st) ? pauseLabel(st) : false, pause_expired: !!st.paused && !isSenderPaused(st), gap_days: st.gap_days ?? 0, canary: canary.note, canary_gate: cfg.gates.requireCanaryVerdict ? canary.pass : "advisory", postmaster: st.postmaster?.reputation ?? null, legacy: !!s.legacy }
   })
   if (process.argv.includes("--json")) console.log(JSON.stringify({ gates: cfg.gates, senders: rows }, null, 2))
   else {
-    console.log(`senders (${rows.length} enabled of ${cfg.all.length} configured; gates: ${cfg.gates.minHealthyDays} healthy days/step, ≤${cfg.gates.maxWeekOverWeek}× week-over-week)`)
+    console.log(`senders (${rows.length} enabled of ${cfg.all.length} configured; gates: ${cfg.gates.minHealthyDays} healthy days/step, ≤${cfg.gates.maxWeekOverWeek}× week-over-week, canary gate ${cfg.gates.requireCanaryVerdict ? "ENFORCED" : "advisory"}, Postmaster gate ${cfg.gates.requirePostmaster ? "ENFORCED" : "advisory"}, auto-pause ${cfg.gates.autoPauseHours}h)`)
     for (const r of rows) {
       console.log(`  ${r.email}  [${r.role}${r.legacy ? ", legacy env fallback" : ""}]  segment=${r.segment}  reply-to=${r.replyTo ?? "none"}`)
-      console.log(`    step ${r.step} → cap ${r.cap}/day (ladder ${r.ramp}, ceiling ${r.ceiling}) · healthy days ${r.healthy_days} · since ${r.entered_step ?? "—"}${r.held ? ` · held: ${r.held}` : ""}${r.paused ? ` · PAUSED ${r.paused}` : ""}`)
+      console.log(`    step ${r.step} → cap ${r.cap}/day (ladder ${r.ramp}, ceiling ${r.ceiling}) · healthy days ${r.healthy_days} · since ${r.entered_step ?? "—"}${r.held ? ` · held: ${r.held}` : ""}${r.paused ? ` · PAUSED ${r.paused}` : r.pause_expired ? " · pause expired (resumes on the next pass)" : ""}${r.gap_days ? ` · ${r.gap_days} gap day${r.gap_days === 1 ? "" : "s"}` : ""}`)
+      console.log(`    canary: ${r.canary} (gate ${r.canary_gate === "advisory" ? "advisory" : r.canary_gate ? "pass" : "FAIL"}) · Postmaster: ${r.postmaster ?? "not recorded"}`)
     }
     if (!rows.length) console.log("  (none — populate config/campaign-senders.json or set CAMPAIGN_SEND_AS)")
   }

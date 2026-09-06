@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server"
 import { getLeadsClient, lookupLeadName, normalizeE164, sendLeadSms } from "@/lib/leads"
 import { approveBatch, setPaused, campaignStatusLine } from "@/lib/campaignBatch"
+import { resolveSender, setSenderPaused, recordCanaryVerdict, recordPostmaster } from "@/lib/campaignSenders"
 import { waitUntil } from "@vercel/functions"
 import { sendAgentsLineText, startAgentsLineRelayCall } from "@/lib/campaignSms"
 import { contactPhoneByName, sendCampaignEmailReply } from "@/lib/campaignEmail"
@@ -482,6 +483,47 @@ export async function POST(request: Request) {
   if (/^campaign status\b/i.test(body)) {
     const line = await campaignStatusLine()
     await tg("sendMessage", { chat_id: chatId, text: `📊 ${line}`, reply_to_message_id: msg.message_id })
+    return NextResponse.json({ ok: true })
+  }
+
+  // Per-sender controls (September rebuild item 3, 2026-09-05). The sender
+  // token is a label ("buys" / "offers") or the mailbox address; anything
+  // that doesn't resolve falls through to the other handlers untouched.
+  //   pause buys [why] · resume offers · canary buys primary|promotions|spam [YYYY-MM-DD]
+  //   reputation offers high|medium|low|bad
+  const senderCmd = /^(pause|stop|halt|resume|unpause|canary|reputation|postmaster)\s+(\S+)\s*(.*)$/i.exec(body)
+  const senderRef = senderCmd ? resolveSender(senderCmd[2]) : null
+  if (senderCmd && senderRef) {
+    const verb = senderCmd[1].toLowerCase()
+    const rest = senderCmd[3].trim()
+    const who = `${senderRef.label} (${senderRef.email})`
+    try {
+      if (verb === "pause" || verb === "stop" || verb === "halt") {
+        await setSenderPaused(senderRef.email, true, rest ? `manual: ${rest}` : "manual (Telegram)", "ryan")
+        await tg("sendMessage", { chat_id: chatId, text: `⏸ ${who} paused — no emails from that mailbox until you reply "resume ${senderRef.label}". Its approved emails stay queued; the other sender is unaffected.`, reply_to_message_id: msg.message_id })
+      } else if (verb === "resume" || verb === "unpause") {
+        await setSenderPaused(senderRef.email, false, "manual (Telegram)", "ryan")
+        await tg("sendMessage", { chat_id: chatId, text: `▶️ ${who} resumed — the engine picks its approved emails up on the next pass.`, reply_to_message_id: msg.message_id })
+      } else if (verb === "canary") {
+        const [verdict, day] = rest.split(/\s+/)
+        if (!verdict) {
+          await tg("sendMessage", { chat_id: chatId, text: `Where did the ${senderRef.label} canary land? Reply "canary ${senderRef.label} primary", "… promotions" or "… spam" (add YYYY-MM-DD for an earlier day).`, reply_to_message_id: msg.message_id })
+        } else {
+          const out = await recordCanaryVerdict(senderRef.email, verdict, day)
+          await tg("sendMessage", { chat_id: chatId, text: `🐤 ${who} canary ${out.day}: ${verdict.toLowerCase()} recorded. Last 3: ${out.recent.join(", ")}. The ramp needs 3 Primary in a row to advance; Spam 2 days running pauses the sender.`, reply_to_message_id: msg.message_id })
+        }
+      } else {
+        const level = rest.split(/\s+/)[0]
+        if (!level) {
+          await tg("sendMessage", { chat_id: chatId, text: `What does Postmaster show for ${senderRef.label}? Reply "reputation ${senderRef.label} high", "… medium", "… low" or "… bad".`, reply_to_message_id: msg.message_id })
+        } else {
+          const st = await recordPostmaster(senderRef.email, level, "ryan")
+          await tg("sendMessage", { chat_id: chatId, text: `📮 ${who} Postmaster reputation recorded: ${st.postmaster?.reputation}. (Advisory until the Postmaster gate is switched on in config/campaign-senders.json.)`, reply_to_message_id: msg.message_id })
+        }
+      }
+    } catch (e) {
+      await tg("sendMessage", { chat_id: chatId, text: `⚠️ ${verb} ${senderRef.label} failed — ${e instanceof Error ? e.message : String(e)}`, reply_to_message_id: msg.message_id })
+    }
     return NextResponse.json({ ok: true })
   }
 

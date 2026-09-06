@@ -2,11 +2,13 @@
   "_doc": [
     "Agent drip senders — locked spec: briefs/BRIEF_SECONDARY_SENDING_DOMAIN_2026-08-25.md ('Standing architecture' + 'Warm-up plan').",
     "Two domains, asymmetric roles. workhorse = carries the drip, ramps to the list-sized steady state. understudy = small, warm segment, reputation insurance.",
-    "ramp = the per-step daily cap ladder. The engine advances ONE step at a time and only through the gates in scripts/campaign-senders.mjs (healthy days at the step, bounces <2%, no failures/pause, replies still arriving, never more than 2x week-over-week). The ladder is never a calendar.",
+    "ramp = the per-step daily cap ladder. The engine advances ONE step at a time and only through the gates in scripts/campaign-senders.mjs (healthy days at the step, bounces <2%, no failures/pause, replies still arriving, canary Primary 3 days running, never more than 2x week-over-week). The ladder is never a calendar.",
     "ceiling = list-sized steady state; raise it when Ryan adds contacts (volume follows the list, never the reverse). The ramp stops at min(ramp step, ceiling).",
     "segment: 'drip' = the pool nobody else claims; 'relationships' = campaign contacts whose email is in the Relationships table (tiers below). A contact stays on whichever sender sent its last touch (thread continuity).",
     "replyTo: header on every send. Default info@lrghomes.com (existing watched campaign inbox) until Ryan answers Q2 in briefs/REBUILD_PROGRESS_2026-09.md. null = no Reply-To.",
-    "CAMPAIGN_SENDERS env (comma list of addresses) narrows the enabled set at runtime; unset = every sender with enabled:true. CAMPAIGN_SEND_AS is only a legacy fallback when this file has no enabled sender."
+    "CAMPAIGN_SENDERS env (comma list of addresses) narrows the enabled set at runtime; unset = every sender with enabled:true. CAMPAIGN_SEND_AS is only a legacy fallback when this file has no enabled sender.",
+    "Per-sender health + auto-pause (rebuild item 3, 2026-09-05): each mailbox pauses ON ITS OWN — bounce red day, Gmail throttle, DWD auth failure, or canary in Spam two days running — for autoPauseHours, then resumes by itself; the other sender keeps sending. Telegram: 'pause buys' / 'resume offers' / 'canary buys primary|promotions|spam' / 'reputation offers high|medium|low|bad' / 'campaign status'.",
+    "requireCanaryVerdict: the brief's 'canary Primary 3 days running' gate. true = a sender cannot advance a rung until its last minHealthyDays recorded canary verdicts are all 'primary' and the newest is at most canaryVerdictMaxAgeDays old. Verdicts come from Ryan reading the judge inbox (CAMPAIGN_CANARY_TO) and replying 'canary <label> <verdict>' on Telegram. requirePostmaster stays false until Postmaster Tools has the new domains and shows a reputation (weeks of volume) — 'reputation <label> <level>' records what the dashboard shows."
   ],
   "gates": {
     "minHealthyDays": 3,
@@ -15,8 +17,11 @@
     "bounceHoldRate": 0.01,
     "bounceRedRate": 0.02,
     "replyCheckMinSends": 40,
-    "requireCanaryVerdict": false,
-    "requirePostmaster": false
+    "requireCanaryVerdict": true,
+    "canaryVerdictMaxAgeDays": 7,
+    "requirePostmaster": false,
+    "autoPauseHours": 48,
+    "gapWarnDays": 2
   },
   "senders": {
     "ryan@lrghomesbuys.com": {

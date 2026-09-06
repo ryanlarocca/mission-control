@@ -1,5 +1,6 @@
 import { getLeadsClient } from "@/lib/leads"
 import { randomSendSlot } from "@/lib/campaignSlots"
+import { senderStatusLines } from "@/lib/campaignSenders"
 
 // Phase B guardrails (2026-08-21, Ryan: "one tap a day, not twenty" +
 // "draft the night before, I might be asleep"):
@@ -82,5 +83,8 @@ export async function campaignStatusLine(): Promise<string> {
     sb.from("campaign_events").select("id", { count: "exact", head: true }).eq("kind", "bounce").gte("occurred_at", startOfDay),
   ])
   const state = pause.paused ? `⏸ PAUSED (${pause.reason ?? "manual"}${pause.until ? ` until ${new Date(pause.until).toLocaleString("en-US", { timeZone: PT })}` : ""})` : "▶️ running"
-  return `${state} · sender ${process.env.CAMPAIGN_SEND_AS ?? "?"} · today: ${sentToday ?? 0} sent, ${bouncedToday ?? 0} bounced · queue: ${draft ?? 0} drafts awaiting ✅, ${approved ?? 0} approved`
+  // Per-sender lines (item 3, 2026-09-05) replace the old single
+  // CAMPAIGN_SEND_AS mention — senders live in config/campaign-senders.json.
+  const senders = await senderStatusLines()
+  return `${state} · today: ${sentToday ?? 0} sent, ${bouncedToday ?? 0} bounced · queue: ${draft ?? 0} drafts awaiting ✅, ${approved ?? 0} approved${senders.length ? `\n${senders.join("\n")}` : ""}`
 }

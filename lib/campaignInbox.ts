@@ -30,11 +30,25 @@ import { addSuppression } from "@/lib/suppression"
 export const CAMPAIGN_INBOX = "info@lrghomes.com"
 // + the consumer-Gmail sender (2026-08-21) when its OAuth env is present, so
 // its replies/bounces flow through the same pipeline + Telegram alerts.
+// + the September-rebuild senders (config/campaign-senders.json): replies
+// follow Reply-To (info@) but BOUNCES return to the sending mailbox, so each
+// new domain's mailbox must be a campaign inbox or its bounce rate is
+// invisible to the per-sender health gates. Listing them here is inert until
+// a Gmail watch exists — register with
+//   node scripts/add-email-mailbox.mjs ryan@lrghomesbuys.com AGENT-DRIP-BUYS
+//   node scripts/add-email-mailbox.mjs ryan@lrghomesoffers.com AGENT-DRIP-OFFERS
+// (--dry-run first), then deploy.
 export const CAMPAIGN_INBOXES = [
   "ryansvr@lrghomes.com",
   "info@lrghomes.com",
+  "ryan@lrghomesbuys.com",
+  "ryan@lrghomesoffers.com",
   ...(process.env.CAMPAIGN_GMAIL_OAUTH_USER ? [process.env.CAMPAIGN_GMAIL_OAUTH_USER.toLowerCase()] : []),
 ]
+// Every domain we send from — our own mail is never a reply or a bounce, and
+// never the "failed recipient" of a DSN.
+const OWN_DOMAINS = ["lrghomes.com", "lrghomesbuys.com", "lrghomesoffers.com"]
+const isOwnAddress = (email: string): boolean => OWN_DOMAINS.some((d) => email.endsWith(`@${d}`))
 
 const BOUNCE_SENDER_RE = /mailer-daemon@|postmaster@/i
 const BOUNCE_SUBJECT_RE = /delivery status notification|undeliverable|delivery incomplete|failure notice|returned mail/i
@@ -214,7 +228,7 @@ async function handleBounce(
   }
   if (!failed) {
     const anyEmail = body.match(/[a-z0-9._%+\-]+@[a-z0-9.\-]+\.[a-z]{2,}/gi) ?? []
-    failed = (anyEmail.map((e) => e.toLowerCase()).find((e) => !e.endsWith("@lrghomes.com") && !e.startsWith("mailer-daemon")) ?? "")
+    failed = (anyEmail.map((e) => e.toLowerCase()).find((e) => !isOwnAddress(e) && !e.startsWith("mailer-daemon")) ?? "")
   }
   if (!failed) {
     console.warn(`[campaign-inbox] bounce ${gmailId}: could not extract failed recipient`)
@@ -397,7 +411,7 @@ async function processOneCampaignInbox(mailbox: string): Promise<void> {
 
       // Our own mail (internal lrghomes.com, or a campaign mailbox's self-sent
       // copy, e.g. a redirected test) is never a reply or a bounce.
-      if (!sender || sender.endsWith("@lrghomes.com") || CAMPAIGN_INBOXES.includes(sender.toLowerCase())) continue
+      if (!sender || isOwnAddress(sender) || CAMPAIGN_INBOXES.includes(sender.toLowerCase())) continue
 
       const isBounce = BOUNCE_SENDER_RE.test(sender) || BOUNCE_SUBJECT_RE.test(subject)
       if (isBounce) {
