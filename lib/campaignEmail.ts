@@ -7,12 +7,17 @@ import { buildEmailMime, toGmailRaw } from "@/lib/emailMime"
 // proper threaded reply from info@ — with In-Reply-To/References so it
 // threads correctly on the agent's side too.
 
-// Sender migration 2026-08-06: new outbound goes out as ryansvr@ (info@'s
-// reputation is resting). Replies to PRE-migration threads still send from
-// info@ — the thread lives in info@'s mailbox and conversation continuity
-// wins; the reply event's raw.mailbox says which box owns the thread.
-const SEND_AS = process.env.CAMPAIGN_SEND_AS || "ryansvr@lrghomes.com"
+// The reply goes out from whichever mailbox owns the thread — the reply
+// event's raw.mailbox (info@, ryansvr@, or a September-rebuild sender).
+// Anything without the field predates the 2026-08-06 migration → info@.
+// (CAMPAIGN_SEND_AS is dead — removed 2026-09-06, rebuild item 4; senders
+// live in config/campaign-senders.json.)
 const LEGACY_SEND_AS = "info@lrghomes.com"
+// Mailboxes the DWD grant can impersonate. A thread owned by anything else
+// (the retired consumer Gmail, 2026-08-21 → 2026-09-01) can't be opened, so
+// the reply goes out fresh from info@ instead of failing on auth.
+const OWN_DOMAINS = ["lrghomes.com", "lrghomesbuys.com", "lrghomesoffers.com"]
+const isOwnMailbox = (m: string) => OWN_DOMAINS.some((d) => m.toLowerCase().endsWith(`@${d}`))
 
 export async function sendCampaignEmailReply(args: {
   contactName: string
@@ -39,13 +44,20 @@ export async function sendCampaignEmailReply(args: {
     .eq("kind", "email_reply")
     .order("occurred_at", { ascending: false })
     .limit(1)
-  const raw = (events?.[0]?.raw ?? {}) as { gmail_id?: string; thread_id?: string; subject?: string; mailbox?: string }
-  const threadId = raw.thread_id ?? contact.gmail_thread_id
-  if (!threadId) return { success: false, error: "no Gmail thread on file — reply from Gmail" }
-
-  // Which mailbox owns this thread? Post-migration events record it;
-  // anything without the field predates the migration → info@.
-  const sendAs = raw.mailbox ?? LEGACY_SEND_AS
+  const evRaw = (events?.[0]?.raw ?? {}) as { gmail_id?: string; thread_id?: string; subject?: string; mailbox?: string }
+  let raw = evRaw
+  let sendAs = evRaw.mailbox ?? LEGACY_SEND_AS
+  let threadId: string | undefined = evRaw.thread_id ?? contact.gmail_thread_id ?? undefined
+  if (!isOwnMailbox(sendAs)) {
+    // The retired sender owns this thread: no credentials for it, and its
+    // Gmail ids mean nothing to info@. Start a fresh thread from info@ with
+    // the same subject line rather than failing on auth.
+    raw = { subject: evRaw.subject }
+    sendAs = LEGACY_SEND_AS
+    threadId = undefined
+  } else if (!threadId) {
+    return { success: false, error: "no Gmail thread on file — reply from Gmail" }
+  }
   const gmail = getGmailClient(sendAs)
 
   // Pull threading headers + the actual sender address off their message.

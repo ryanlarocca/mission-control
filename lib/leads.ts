@@ -197,18 +197,10 @@ export function encodeEmailHeader(value: string): string {
 // with scripts/check-dwd-scopes.mjs (re-run it before trusting a new domain).
 // Used by both /api/leads/email (for inbound thread fetch) and
 // /api/leads/email-reply (for outbound send).
+// DWD only: the consumer-Gmail OAuth branch (ryan.lrghomes@gmail.com,
+// 2026-08-21) was retired 2026-09-01 and removed 2026-09-06 — that mailbox
+// never sends again and its CAMPAIGN_GMAIL_OAUTH_* env vars are gone.
 export function getGmailClient(userEmail: string): gmail_v1.Gmail {
-  // Consumer-Gmail campaign sender (2026-08-21): DWD can't impersonate
-  // gmail.com, so that one mailbox authenticates with an OAuth refresh token
-  // (minted by scripts/gmail-oauth-consent.mjs). Everything else stays DWD.
-  const oauthUser = (process.env.CAMPAIGN_GMAIL_OAUTH_USER || "").toLowerCase()
-  if (oauthUser && userEmail.toLowerCase() === oauthUser) {
-    const { CAMPAIGN_GMAIL_OAUTH_CLIENT_ID: id, CAMPAIGN_GMAIL_OAUTH_CLIENT_SECRET: secret, CAMPAIGN_GMAIL_OAUTH_REFRESH_TOKEN: refresh } = process.env
-    if (!id || !secret || !refresh) throw new Error(`CAMPAIGN_GMAIL_OAUTH_* incomplete for ${userEmail}`)
-    const oauth = new google.auth.OAuth2(id, secret)
-    oauth.setCredentials({ refresh_token: refresh })
-    return google.gmail({ version: "v1", auth: oauth })
-  }
   const key = process.env.GOOGLE_SERVICE_ACCOUNT_KEY
   if (!key) throw new Error("GOOGLE_SERVICE_ACCOUNT_KEY not set")
   const credentials = JSON.parse(key)

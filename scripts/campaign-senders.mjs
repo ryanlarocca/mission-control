@@ -73,13 +73,11 @@ export function loadSenderConfig({ env = process.env, configPath = SENDERS_CONFI
     })
   }
   for (const n of narrow) if (!senders.some((s) => s.email === n)) throw new Error(`CAMPAIGN_SENDERS names ${n}, which is not in config/campaign-senders.json`)
-  let enabled = senders.filter((s) => s.enabled)
-  // Legacy fallback: an env-only single sender keeps old deployments working
-  // until the config file is populated. It ramps on the workhorse ladder.
-  if (!enabled.length && env.CAMPAIGN_SEND_AS) {
-    const email = env.CAMPAIGN_SEND_AS.trim().toLowerCase()
-    enabled = [{ email, enabled: true, role: "workhorse", label: email.split("@")[0], ramp: [5, 10, 20, 35, 50, 75, 100], ceiling: 100, segment: "drip", segmentTiers: [], replyTo: null, legacy: true }]
-  }
+  const enabled = senders.filter((s) => s.enabled)
+  // No env-only fallback (removed 2026-09-06, rebuild item 4): the old
+  // CAMPAIGN_SEND_AS still names the retired consumer Gmail on some machines,
+  // and an empty config must mean "nothing sends", never "send as whatever
+  // the env says". config/campaign-senders.json is the only sender source.
   const workhorse = enabled.find((s) => s.role === "workhorse") ?? enabled[0] ?? null
   return { gates, all: senders, senders: enabled, workhorse }
 }
@@ -387,16 +385,16 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
     const st = states.get(s.email)
     const today = new Intl.DateTimeFormat("en-CA", { timeZone: "America/Los_Angeles", year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date())
     const canary = canaryGate(st, today, cfg.gates)
-    return { email: s.email, role: s.role, segment: s.segment, replyTo: s.replyTo, step: st.step, cap: capFor(s, st), ceiling: s.ceiling, ramp: s.ramp.join("→"), healthy_days: st.healthy_days, entered_step: st.entered_step, held: st.held_reason, paused: isSenderPaused(st) ? pauseLabel(st) : false, pause_expired: !!st.paused && !isSenderPaused(st), gap_days: st.gap_days ?? 0, canary: canary.note, canary_gate: cfg.gates.requireCanaryVerdict ? canary.pass : "advisory", postmaster: st.postmaster?.reputation ?? null, legacy: !!s.legacy }
+    return { email: s.email, role: s.role, segment: s.segment, replyTo: s.replyTo, step: st.step, cap: capFor(s, st), ceiling: s.ceiling, ramp: s.ramp.join("→"), healthy_days: st.healthy_days, entered_step: st.entered_step, held: st.held_reason, paused: isSenderPaused(st) ? pauseLabel(st) : false, pause_expired: !!st.paused && !isSenderPaused(st), gap_days: st.gap_days ?? 0, canary: canary.note, canary_gate: cfg.gates.requireCanaryVerdict ? canary.pass : "advisory", postmaster: st.postmaster?.reputation ?? null }
   })
   if (process.argv.includes("--json")) console.log(JSON.stringify({ gates: cfg.gates, senders: rows }, null, 2))
   else {
     console.log(`senders (${rows.length} enabled of ${cfg.all.length} configured; gates: ${cfg.gates.minHealthyDays} healthy days/step, ≤${cfg.gates.maxWeekOverWeek}× week-over-week, canary gate ${cfg.gates.requireCanaryVerdict ? "ENFORCED" : "advisory"}, Postmaster gate ${cfg.gates.requirePostmaster ? "ENFORCED" : "advisory"}, auto-pause ${cfg.gates.autoPauseHours}h)`)
     for (const r of rows) {
-      console.log(`  ${r.email}  [${r.role}${r.legacy ? ", legacy env fallback" : ""}]  segment=${r.segment}  reply-to=${r.replyTo ?? "none"}`)
+      console.log(`  ${r.email}  [${r.role}]  segment=${r.segment}  reply-to=${r.replyTo ?? "none"}`)
       console.log(`    step ${r.step} → cap ${r.cap}/day (ladder ${r.ramp}, ceiling ${r.ceiling}) · healthy days ${r.healthy_days} · since ${r.entered_step ?? "—"}${r.held ? ` · held: ${r.held}` : ""}${r.paused ? ` · PAUSED ${r.paused}` : r.pause_expired ? " · pause expired (resumes on the next pass)" : ""}${r.gap_days ? ` · ${r.gap_days} gap day${r.gap_days === 1 ? "" : "s"}` : ""}`)
       console.log(`    canary: ${r.canary} (gate ${r.canary_gate === "advisory" ? "advisory" : r.canary_gate ? "pass" : "FAIL"}) · Postmaster: ${r.postmaster ?? "not recorded"}`)
     }
-    if (!rows.length) console.log("  (none — populate config/campaign-senders.json or set CAMPAIGN_SEND_AS)")
+    if (!rows.length) console.log("  (none — populate config/campaign-senders.json)")
   }
 }

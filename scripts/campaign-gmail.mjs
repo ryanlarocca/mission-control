@@ -1,19 +1,16 @@
 // Shared Gmail sender for the agent campaign (engine + test batches).
 //
-// Two auth paths, picked by mailbox (2026-08-21, deliverability restart):
-//   - any Workspace-tenant mailbox (*@lrghomes.com, *@lrghomesbuys.com,
-//     *@lrghomesoffers.com) → service account with domain-wide delegation.
-//     DWD is per customer, so the secondary domains inherit the grant —
-//     verified 2026-09-03 via scripts/check-dwd-scopes.mjs (gmail.modify
-//     mints for all three; gmail.send is NOT granted but messages.send
-//     works under gmail.modify).
-//   - the consumer Gmail in CAMPAIGN_GMAIL_OAUTH_USER → OAuth refresh token
-//     (RETIRED 2026-09-01 — env vars removed; branch kept only until the
-//     Gmail strip lands in the September rebuild)
-//     (DWD cannot impersonate gmail.com). Token minted once via
-//     scripts/gmail-oauth-consent.mjs; env CAMPAIGN_GMAIL_OAUTH_{CLIENT_ID,
-//     CLIENT_SECRET,REFRESH_TOKEN,USER}. The same token lets the inbox
-//     watcher (lib/leads.ts getGmailClient) read that mailbox.
+// One auth path: service account with domain-wide delegation, impersonating a
+// mailbox on the lrghomes Workspace tenant (*@lrghomes.com,
+// *@lrghomesbuys.com, *@lrghomesoffers.com). DWD is per customer, so the
+// secondary domains inherit the grant — verified 2026-09-03 via
+// scripts/check-dwd-scopes.mjs (gmail.modify mints for all three;
+// gmail.send is NOT granted but messages.send works under gmail.modify).
+//
+// The consumer-Gmail OAuth path (ryan.lrghomes@gmail.com, 2026-08-21) was
+// retired 2026-09-01 and removed 2026-09-06 (September rebuild, item 4). That
+// address never sends again; a request to authenticate as any mailbox outside
+// the tenant is refused here, before any credential is touched.
 import { createHmac } from "node:crypto"
 import { google } from "googleapis"
 import emailMime from "./email-mime.js"
@@ -21,37 +18,28 @@ const { buildEmailMime } = emailMime
 
 export const GMAIL_SCOPES = ["https://www.googleapis.com/auth/gmail.modify"]
 
-export function oauthUser() {
-  return (process.env.CAMPAIGN_GMAIL_OAUTH_USER || "").toLowerCase()
+/** Domains the DWD grant can impersonate. Keep in sync with OWN_DOMAINS in lib/campaignInbox.ts and ALLOWED_DOMAINS in scripts/add-email-mailbox.mjs. */
+export const TENANT_DOMAINS = ["lrghomes.com", "lrghomesbuys.com", "lrghomesoffers.com"]
+
+export function isTenantMailbox(mailbox) {
+  const m = String(mailbox || "").trim().toLowerCase()
+  const at = m.lastIndexOf("@")
+  return at > 0 && TENANT_DOMAINS.includes(m.slice(at + 1))
 }
 
-export function isOAuthMailbox(mailbox) {
-  const u = oauthUser()
-  return !!u && String(mailbox || "").toLowerCase() === u
-}
-
-export function oauthClient() {
-  const { CAMPAIGN_GMAIL_OAUTH_CLIENT_ID: id, CAMPAIGN_GMAIL_OAUTH_CLIENT_SECRET: secret, CAMPAIGN_GMAIL_OAUTH_REFRESH_TOKEN: refresh } = process.env
-  if (!id || !secret) throw new Error("CAMPAIGN_GMAIL_OAUTH_CLIENT_ID/SECRET not set")
-  const auth = new google.auth.OAuth2(id, secret, "http://127.0.0.1")
-  if (refresh) auth.setCredentials({ refresh_token: refresh })
-  return auth
-}
-
-/** Authenticated Gmail client for `mailbox` (DWD or OAuth, by address). */
+/** Authenticated Gmail client for `mailbox` (DWD; tenant mailboxes only). */
 export async function gmailClientFor(mailbox) {
-  if (isOAuthMailbox(mailbox)) {
-    const auth = oauthClient()
-    if (!process.env.CAMPAIGN_GMAIL_OAUTH_REFRESH_TOKEN) throw new Error(`no CAMPAIGN_GMAIL_OAUTH_REFRESH_TOKEN for ${mailbox} — run scripts/gmail-oauth-consent.mjs`)
-    await auth.getAccessToken() // fail fast on a revoked/expired token
-    return google.gmail({ version: "v1", auth })
+  if (!isTenantMailbox(mailbox)) {
+    throw new Error(`refusing to authenticate as ${mailbox}: not on the lrghomes Workspace tenant (${TENANT_DOMAINS.join(", ")}) — the consumer-Gmail sender was retired 2026-09-01`)
   }
-  const credentials = JSON.parse(process.env.GOOGLE_SERVICE_ACCOUNT_KEY)
+  const keyJson = process.env.GOOGLE_SERVICE_ACCOUNT_KEY
+  if (!keyJson) throw new Error("GOOGLE_SERVICE_ACCOUNT_KEY not set")
+  const credentials = JSON.parse(keyJson)
   const auth = new google.auth.JWT({
     email: credentials.client_email,
     key: credentials.private_key,
     scopes: GMAIL_SCOPES,
-    subject: mailbox,
+    subject: String(mailbox).trim().toLowerCase(),
   })
   await auth.authorize()
   return google.gmail({ version: "v1", auth })

@@ -28,8 +28,8 @@ import { addSuppression } from "@/lib/suppression"
 // watched for replies to pre-migration threads and rests its reputation.
 // BOTH are campaign inboxes: campaign-check-first, never lead ingest.
 export const CAMPAIGN_INBOX = "info@lrghomes.com"
-// + the consumer-Gmail sender (2026-08-21) when its OAuth env is present, so
-// its replies/bounces flow through the same pipeline + Telegram alerts.
+// (The consumer-Gmail sender of 2026-08-21 is gone — retired 2026-09-01,
+// removed 2026-09-06. Its 7 sends' replies land in that mailbox unwatched.)
 // + the September-rebuild senders (config/campaign-senders.json): replies
 // follow Reply-To (info@) but BOUNCES return to the sending mailbox, so each
 // new domain's mailbox must be a campaign inbox or its bounce rate is
@@ -43,7 +43,6 @@ export const CAMPAIGN_INBOXES = [
   "info@lrghomes.com",
   "ryan@lrghomesbuys.com",
   "ryan@lrghomesoffers.com",
-  ...(process.env.CAMPAIGN_GMAIL_OAUTH_USER ? [process.env.CAMPAIGN_GMAIL_OAUTH_USER.toLowerCase()] : []),
 ]
 // Every domain we send from — our own mail is never a reply or a bounce, and
 // never the "failed recipient" of a DSN.

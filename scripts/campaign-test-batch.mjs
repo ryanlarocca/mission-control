@@ -4,7 +4,10 @@
 // 2026-08-21): unique bodies only, [Xn] subject tags, never a real agent.
 //
 //   node scripts/campaign-test-batch.mjs --file=briefs/tests/phaseA-1.json \
-//        --from=ryan.lrghomes@gmail.com --to=ryanlarocca44@gmail.com [--gap=2] [--dry-run]
+//        --from=ryan@lrghomesbuys.com --to=<one of Ryan's inboxes> [--gap=2] [--dry-run]
+//
+// --from must be a Workspace-tenant mailbox (DWD); gmailClientFor refuses
+// anything else. The consumer-Gmail sender was retired 2026-09-01.
 //
 // File = JSON array of { tag, subject, body, unsub?: boolean } — the tag is
 // prefixed to the subject as "[tag] ". Progress is logged per send.

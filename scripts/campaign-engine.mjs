@@ -507,7 +507,7 @@ async function gmailClient(sender) {
 }
 
 async function loadRamp() {
-  if (!SENDERS.length) throw new Error("no enabled sender — populate config/campaign-senders.json (or CAMPAIGN_SENDERS / CAMPAIGN_SEND_AS)")
+  if (!SENDERS.length) throw new Error("no enabled sender — populate config/campaign-senders.json (CAMPAIGN_SENDERS can only narrow it)")
   const states = await loadSenderStates(sb, SENDERS)
   for (const s of SENDERS) {
     let st = states.get(s.email)

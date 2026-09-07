@@ -15,7 +15,7 @@ count.
 - [x] **(1) DWD `gmail.send` scope tooling + relax `add-email-mailbox.mjs` for lrghomesbuys.com / lrghomesoffers.com** — done 2026-09-03 (night 1)
 - [x] **(2) Engine multi-sender** — `CAMPAIGN_SENDERS` config, per-sender daily caps, per-sender gated warm-up ramp 5→10→20→35→50→75+ advancing only on healthy days per the brief — done 2026-09-04 (night 2)
 - [x] **(3) Per-sender health checks, auto-pause, Telegram alerts** — done 2026-09-05 (night 3). Gmail watches for the two new mailboxes are NOT registered (live infra change, Q5 unanswered) — the exact two commands are in the night-3 log.
-- [ ] **(4) Strip retired Gmail sender** from `config/email-campaigns.json` + document which Vercel env vars to remove
+- [x] **(4) Strip retired Gmail sender** from `config/email-campaigns.json` + document which Vercel env vars to remove — done 2026-09-06 (night 4). The config file never held the Gmail address; the strip was the OAuth code path + the env-only sender fallback. Env-var removal list is in the night-4 log (Ryan runs it — production change).
 - [ ] **(4b) Reset the send-time scorecard window for the new domains** — `EXPERIMENT_START` in `scripts/campaign-engine.mjs` is hardcoded to 2026-07-31 (the Gmail run), so once lrghomesbuys/offers start sending, the Friday scorecard and the `/email-campaign` Performance tab mix dead-Gmail data into the new numbers. Either move the start to the first new-domain send day (read it from `campaign_sends` where `sender` is a new-domain mailbox, don't hardcode) or bin by sender. Check the Performance tab's query for the same hardcoded date. Added 2026-09-04 late after Ryan saw the leaked Friday scorecard (10a pile-up = hand-approved July batches; auto-approval randomizes 7a–5p so the spread self-corrects).
 - [ ] **(5) Email-verification tooling** for the ~2,100 contact list (SMTP-level checks; no paid services — if one is genuinely needed, recommend it here instead)
 - [ ] **(6) T2–T11 template pass** against `CAMPAIGN_VOICE.md` — proposed edits written here for Ryan's review, templates untouched
@@ -236,6 +236,81 @@ OAuth branch + `CAMPAIGN_GMAIL_OAUTH_*` reads; `lib/campaignInbox.ts` still
 appends `CAMPAIGN_GMAIL_OAUTH_USER`; `config/email-campaigns.json` never had
 the Gmail address (nothing to strip there — confirm and say so).
 
+### 2026-09-06 — night 4 — item (4) DONE
+
+**Confirmed first:** `config/email-campaigns.json` never contained
+`ryan.lrghomes@gmail.com` (checked `git log -p` over its whole history — the
+file has only ever listed lrghomes.com mailboxes; today: info@, ryansvg@,
+ryansvj@, ryansvr@). The Gmail mailbox reached the watch renewal through
+`CAMPAIGN_GMAIL_OAUTH_USER` in env, not the config — which is why commenting
+those vars out on 9/1 already stopped the daily `invalid_grant` failures
+(`/tmp/lrg-gmail-watch-renewal.log`: all four mailboxes ✓ on 9/5 and 9/6,
+err log empty). Prod state of the retired sender, read-only: 15
+`campaign_sends` rows carry it — 7 `sent` (8/25–8/27) + 8 `skipped` (the
+cancelled queue, 8/31); 0 draft/approved. Its 7 `campaign_events` are all
+`email_out`; no `email_reply` event names that mailbox.
+
+**Shipped (branch only, engine still unloaded, zero emails, zero prod writes):**
+- `scripts/campaign-gmail.mjs` — one auth path (DWD). New `TENANT_DOMAINS`
+  + `isTenantMailbox()`; `gmailClientFor()` **refuses any mailbox outside
+  lrghomes.com / lrghomesbuys.com / lrghomesoffers.com before touching a
+  credential**. `oauthUser` / `isOAuthMailbox` / `oauthClient` are gone.
+- `lib/leads.ts` `getGmailClient` — OAuth branch removed; DWD only (this is
+  the Vercel side: `/api/leads/email`, `/api/leads/email-reply`, Telegram
+  replies).
+- `lib/campaignInbox.ts` — `CAMPAIGN_INBOXES` no longer appends
+  `CAMPAIGN_GMAIL_OAUTH_USER`.
+- `scripts/renew-gmail-watch.js` — OAuth watch path removed; renews only the
+  tenant mailboxes in `config/email-campaigns.json`.
+- `scripts/gmail-oauth-consent.mjs` — **deleted** (Ryan 9/1: no publish, no
+  re-consent, zero further infrastructure for that account).
+- `scripts/campaign-senders.mjs` — the env-only `CAMPAIGN_SEND_AS` fallback
+  from D2 is **removed** (D11). `config/campaign-senders.json` is the only
+  sender source; an empty/disabled config means the engine refuses to run
+  ("no enabled sender"), never "send as whatever the env says". `_doc`,
+  status printer and the engine's error text updated.
+- `lib/campaignEmail.ts` — dead `SEND_AS` const dropped. Defensive fallback
+  (D12): if the thread's owning mailbox is not a tenant address (only the 7
+  retired-Gmail sends could ever produce this), the Telegram reply goes out
+  fresh from info@ with the same subject instead of failing on auth.
+- `scripts/campaign-test-batch.mjs` — usage example now names
+  `ryan@lrghomesbuys.com`; documents the tenant-only rule.
+- `tests/campaign-gmail.unit.test.ts` (new, 4 tests): tenant-domain check,
+  `gmailClientFor` rejects gmail.com before reading credentials, empty sender
+  config ignores `CAMPAIGN_SEND_AS`, both checked-in configs contain only
+  tenant mailboxes.
+
+**Verified:** `npx tsc --noEmit` clean; `npx vitest run` 74/74; `node
+--check` on the two CommonJS/ESM scripts. Live, read-only: `node
+scripts/campaign-senders.mjs` → 2 enabled senders, no "legacy" tag;
+`--send --dry-run --now` → `buys 0/5, offers 0/3`; `--draft --dry-run
+--mint-now --limit=3` → 3 T2 drafts from the workhorse, July repliers first;
+`gmailClientFor(<retired gmail>)` → refused with the tenant message, and
+`gmailClientFor("ryan@lrghomesbuys.com")` still mints (getProfile ok).
+
+**Env vars to remove — Ryan, production change, not done by the builder:**
+
+| where | variable | why it's dead |
+|---|---|---|
+| Vercel (Production) | `CAMPAIGN_GMAIL_OAUTH_CLIENT_ID` | OAuth client for the retired sender |
+| Vercel (Production) | `CAMPAIGN_GMAIL_OAUTH_CLIENT_SECRET` | same |
+| Vercel (Production) | `CAMPAIGN_GMAIL_OAUTH_REFRESH_TOKEN` | expired ~8/28 anyway (app was in Testing) |
+| Vercel (Production) | `CAMPAIGN_GMAIL_OAUTH_USER` | the only one current `main` still reads; unset = DWD for everything, so removing it is safe **before** this branch merges |
+| Vercel (Production) | `CAMPAIGN_SEND_AS` | never read by any Vercel code path (the const that read it was dead); after merge, read nowhere at all |
+| Mac mini `.env.local` | `CAMPAIGN_SEND_AS` | still set to the retired gmail address; inert once this branch merges (engine ignores it) — delete the line. The four `CAMPAIGN_GMAIL_OAUTH_*` lines were already commented out 9/1; delete them too |
+| Mac mini launchd | `~/Library/LaunchAgents/com.lrghomes.reminder-oauth-publish.plist` | one-shot Aug-23 "publish the OAuth app" reminder; obsolete, and it embeds the bot token in plain text — `launchctl unload` it, then delete the file (builder never runs launchctl) |
+
+All five Vercel vars were created the same day (16 days before 9/6 =
+2026-08-21, the Gmail restart) — nothing else on Vercel belongs to that
+experiment. Command, from the repo root (project is linked):
+`vercel env rm <NAME> production` ×5, then redeploy (env changes don't apply
+to the running deployment). Kept on purpose: `GOOGLE_SERVICE_ACCOUNT_KEY`
+(DWD, the real sender auth), `CAMPAIGN_BOT_TOKEN` / `CAMPAIGN_TG_SECRET` /
+`CAMPAIGN_UNSUB_SECRET` (Telegram + one-click unsub, still live).
+
+**Hand-off to item (4b):** `EXPERIMENT_START` in `scripts/campaign-engine.mjs`
+is still hardcoded 2026-07-31; the Performance tab needs the same check.
+
 ## Decisions taken by the builder (reversible, flag if wrong)
 
 - D1 (9/3): did **not** request or add `gmail.send` anywhere in code. All
@@ -276,6 +351,19 @@ the Gmail address (nothing to strip there — confirm and say so).
   touch `config/email-campaigns.json` — Q5 is unanswered and merging a
   config change would make the Mac mini renewal cron register the watches
   as a side effect. Code is ready; two commands remain (night-3 log).
+- D11 (9/6): the env-only `CAMPAIGN_SEND_AS` sender fallback (D2) is
+  **removed**, not just deprecated. The value still sitting in
+  `.env.local` is the retired gmail address — a fallback that resolves to a
+  sender Ryan retired "permanently and immediately" is a footgun, and the
+  DWD path would reject it anyway. Empty config = engine refuses to run.
+- D12 (9/6): Telegram replies to a thread owned by a non-tenant mailbox
+  (only the 7 retired-Gmail sends qualify, and none has a recorded reply)
+  go out **fresh from info@** with the same subject rather than erroring —
+  keeps the bot's "named ✅ or explained ⚠️" contract without touching the
+  dead account.
+- D13 (9/6): did **not** remove any Vercel env var or touch `.env.local` /
+  launchd — production and machine state are Ryan's; the exact list is in
+  the night-4 log.
 
 ## Questions for Ryan
 
@@ -336,3 +424,9 @@ the Gmail address (nothing to strip there — confirm and say so).
    expires Saturday — Friday is lost and Monday resumes; set on a Friday,
    only Monday morning is affected. Fine as is, or would you rather the
    pause be "next weekday only" (24h) so a single bad day costs one day?
+8. **Q8 (non-blocking, hygiene):** the 7 emails the retired Gmail sent
+   (8/25–8/27) can still draw replies into `ryan.lrghomes@gmail.com`, which
+   nothing watches any more. Zero-infrastructure option: in that account's
+   Gmail settings, forward all mail to `info@lrghomes.com` — replies then
+   ride the existing AGENT-DRIP pipeline + Telegram alerts. Or accept that
+   those 7 threads are dark. Your call; the builder won't touch that account.
