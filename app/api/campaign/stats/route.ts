@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server"
 import { getLeadsClient } from "@/lib/leads"
+import { listSenders } from "@/lib/campaignSenders"
 
 // Campaign Performance tab data: health counts, the send-time experiment
 // (reply rate by PT send hour since 7/31), touch funnel, recent replies.
@@ -12,7 +13,7 @@ const EXPERIMENT_START = "2026-07-31"
 const REPLY_WINDOW_MS = 14 * 86_400_000
 
 type SendRow = { contact_id: string | null; touch_number: number; sent_at: string
-  variant?: string | null | null }
+  variant?: string | null | null; sender?: string | null }
 
 async function pageAll<T>(fetchPage: (offset: number) => PromiseLike<{ data: T[] | null; error: { message: string } | null }>): Promise<T[]> {
   const all: T[] = []
@@ -36,7 +37,7 @@ export async function GET() {
     for (const c of contacts) contactsByStatus[c.status] = (contactsByStatus[c.status] ?? 0) + 1
 
     const sends = await pageAll<SendRow>((off) =>
-      sb.from("campaign_sends").select("contact_id, touch_number, sent_at, variant").eq("status", "sent").range(off, off + 999)
+      sb.from("campaign_sends").select("contact_id, touch_number, sent_at, variant, sender").eq("status", "sent").range(off, off + 999)
     )
     // triage null = genuine replies only (auto_reply / dead_mailbox /
     // unsubscribe rows are also kind=email_reply and must not count).
@@ -73,16 +74,26 @@ export async function GET() {
       if (repliedWithin(s)) b.replied++
     }
 
-    // Send-time experiment: PT-hour bins since EXPERIMENT_START
+    // Send-time experiment: PT-hour bins since EXPERIMENT_START, split by
+    // sender (rebuild item 4b, 2026-09-08). Rows minted before the
+    // multi-sender ship (2026-09-04) carry sender=null and mix dead-Gmail +
+    // old single-domain lrghomes.com data — a different domain-reputation
+    // regime from the new workhorse/understudy. Blending them into one hour
+    // bucket would misread a domain effect as a time-of-day effect.
     const hourFmt = new Intl.DateTimeFormat("en-US", { timeZone: "America/Los_Angeles", hour: "numeric", hour12: false })
-    const hours: Record<number, { sent: number; replied: number }> = {}
+    const senderLabel = (email: string | null | undefined): string =>
+      email ? listSenders().find((s) => s.email === email.toLowerCase())?.label ?? email : "legacy"
+    const hoursBySender: Record<string, Record<number, { sent: number; replied: number }>> = {}
     for (const s of sends) {
       if (!s.sent_at || s.sent_at < EXPERIMENT_START) continue
+      const label = senderLabel(s.sender)
       const h = Number(hourFmt.format(new Date(s.sent_at))) % 24
-      const b = (hours[h] ??= { sent: 0, replied: 0 })
+      const bucket = (hoursBySender[label] ??= {})
+      const b = (bucket[h] ??= { sent: 0, replied: 0 })
       b.sent++
       if (repliedWithin(s)) b.replied++
     }
+    const senderLabels = [...listSenders().map((s) => s.label), "legacy"]
 
     const { count: draftCount } = await sb.from("campaign_sends").select("id", { count: "exact", head: true }).eq("status", "draft")
     const { count: approvedCount } = await sb.from("campaign_sends").select("id", { count: "exact", head: true }).eq("status", "approved")
@@ -118,7 +129,8 @@ export async function GET() {
       },
       touches,
       variants,
-      hours,
+      hours_by_sender: hoursBySender,
+      sender_labels: senderLabels,
       recent_replies: (recent ?? []).map((r) => ({
         name: (r.contact as { name?: string } | null)?.name ?? "unknown",
         when: r.occurred_at,

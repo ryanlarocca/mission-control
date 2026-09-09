@@ -16,7 +16,7 @@ count.
 - [x] **(2) Engine multi-sender** — `CAMPAIGN_SENDERS` config, per-sender daily caps, per-sender gated warm-up ramp 5→10→20→35→50→75+ advancing only on healthy days per the brief — done 2026-09-04 (night 2)
 - [x] **(3) Per-sender health checks, auto-pause, Telegram alerts** — done 2026-09-05 (night 3). Gmail watches for the two new mailboxes are NOT registered (live infra change, Q5 unanswered) — the exact two commands are in the night-3 log.
 - [x] **(4) Strip retired Gmail sender** from `config/email-campaigns.json` + document which Vercel env vars to remove — done 2026-09-06 (night 4). The config file never held the Gmail address; the strip was the OAuth code path + the env-only sender fallback. Env-var removal list is in the night-4 log (Ryan runs it — production change).
-- [ ] **(4b) Reset the send-time scorecard window for the new domains** — `EXPERIMENT_START` in `scripts/campaign-engine.mjs` is hardcoded to 2026-07-31 (the Gmail run), so once lrghomesbuys/offers start sending, the Friday scorecard and the `/email-campaign` Performance tab mix dead-Gmail data into the new numbers. Either move the start to the first new-domain send day (read it from `campaign_sends` where `sender` is a new-domain mailbox, don't hardcode) or bin by sender. Check the Performance tab's query for the same hardcoded date. Added 2026-09-04 late after Ryan saw the leaked Friday scorecard (10a pile-up = hand-approved July batches; auto-approval randomizes 7a–5p so the spread self-corrects).
+- [x] **(4b) Reset the send-time scorecard window for the new domains** — done 2026-09-08 (night 5). Binned by sender rather than moving the date.
 - [ ] **(5) Email-verification tooling** for the ~2,100 contact list (SMTP-level checks; no paid services — if one is genuinely needed, recommend it here instead)
 - [ ] **(6) T2–T11 template pass** against `CAMPAIGN_VOICE.md` — proposed edits written here for Ryan's review, templates untouched
 
@@ -311,6 +311,67 @@ to the running deployment). Kept on purpose: `GOOGLE_SERVICE_ACCOUNT_KEY`
 **Hand-off to item (4b):** `EXPERIMENT_START` in `scripts/campaign-engine.mjs`
 is still hardcoded 2026-07-31; the Performance tab needs the same check.
 
+### 2026-09-08 — night 5 — item (4b) DONE
+
+**Chose "bin by sender" over "move the start date" (D14, see below).** The
+real problem isn't the date — `campaign_sends.sent_at >= EXPERIMENT_START`
+is still the right filter for "sends where the hour was actually
+randomized" (Ryan's 7/31 send-time experiment), unrelated to which domain
+sent. The mixing bug is that ALL sends since 7/31, across every sender,
+land in the same hour buckets — so once lrghomesbuys/offers start sending,
+their reply-rate-by-hour would get blended with the dead-Gmail /
+pre-multi-sender lrghomes.com data, misreading a domain-reputation
+difference as a time-of-day effect. A single "first new-domain send day"
+wouldn't even fix this: legacy data would still stop appearing in the
+report even though it's real history, and if a sender is ever added or
+retired again the cutoff would need another manual edit.
+
+**Shipped (branch only, zero prod writes):**
+- `scripts/campaign-engine.mjs` `scorecardPass()` — sends are now grouped
+  by sender label before hour-binning: `senderByEmail(row.sender)?.label`
+  for a recognized mailbox, the raw address for a since-retired one (so it
+  doesn't silently fold into another bucket), `"legacy"` for `sender IS
+  NULL` (every row minted before the 9/4 multi-sender ship — this is NOT
+  the same convention as `senderFilter()`'s budget-accounting shortcut a
+  few lines up, which treats null as "belongs to the workhorse" for
+  ramp-cap purposes only; scorecard history needs the true origin, so it
+  gets its own label instead). The Friday Telegram message now has one
+  `<b>label</b>` section per sender that actually has sends in the window;
+  empty sections (buys/offers before their first live send) are omitted
+  rather than printing ten "no sends yet" lines.
+- `app/api/campaign/stats/route.ts` — same grouping, using the TS
+  `listSenders()` mirror (`lib/campaignSenders.ts`) instead of duplicating
+  the config parser. Response shape: `hours` → `hours_by_sender` (keyed by
+  label) + `sender_labels` (a stable render order: configured senders in
+  file order, `"legacy"` last).
+- `components/widgets/EmailCampaignPerformance.tsx` — one "Send-time
+  experiment — `<label>`" card per sender-with-data instead of one global
+  card; a sender with zero sends in the window renders no card at all
+  (cleaner than 10 rows of "no sends yet" for buys/offers before Oct 1).
+
+**Verified:** `npx tsc --noEmit` clean; `npx vitest run` 74/74 (unchanged —
+no prior test exercised this path). Live, read-only (script deleted after):
+paged every `campaign_sends` row with `status='sent'` since 7/31 (553 rows)
+through the same `senderByEmail`/label logic as the shipped code — **546
+bucket under `"legacy"` (sender IS NULL, pre-9/4) and 7 bucket under the
+literal string `"ryan.lrghomes@gmail.com"`** (the 7 real sends from the
+retired Gmail account, which — unlike the bulk of the legacy rows — DO
+carry an explicit `sender` value that predates the account's removal from
+`config/campaign-senders.json` on 9/6; confirms the fallback-to-raw-address
+path is reachable with real data, not just a theoretical branch). Zero rows
+landed under `"buys"` or `"offers"` — correct, nothing has sent from the
+new domains yet (engine still unloaded). No new unit test added: the
+grouping logic is a straight `Map` keyed by a pure label function with no
+DB/timing dependency worth mocking, and the three-bucket live read above is
+stronger evidence than a synthetic fixture would be.
+
+**D14 (9/8):** did **not** move `EXPERIMENT_START` to a dynamically-computed
+"first new-domain send day." Binning by sender makes any such cutoff
+unnecessary (each sender's data is already isolated by construction) and
+avoids a second moving part that would need to track sender changes over
+time. Reversible in one function if Ryan would rather see a single merged
+chart with a vertical "domain switch" marker instead of separate cards.
+
 ## Decisions taken by the builder (reversible, flag if wrong)
 
 - D1 (9/3): did **not** request or add `gmail.send` anywhere in code. All
@@ -364,6 +425,12 @@ is still hardcoded 2026-07-31; the Performance tab needs the same check.
 - D13 (9/6): did **not** remove any Vercel env var or touch `.env.local` /
   launchd — production and machine state are Ryan's; the exact list is in
   the night-4 log.
+- D14 (9/8): item 4b's fix is **bin the send-time scorecard by sender**, not
+  move `EXPERIMENT_START` to a computed "first new-domain send day". Binning
+  makes the cutoff-tracking problem disappear entirely (each sender's data
+  is isolated by construction, no date to keep in sync as senders change);
+  see the night-5 log for the live-data verification. Reversible in one
+  function if Ryan prefers a single merged chart with a domain-switch marker.
 
 ## Questions for Ryan
 

@@ -1022,7 +1022,14 @@ const SCORECARD_STATE = path.join(__dirname, ".campaign-scorecard-state.json")
 async function scorecardPass() {
   // Fires once, Fridays after 4pm PT. Reply attribution: a sent email counts
   // as "replied" if its contact logged an email_reply within 14 days after
-  // that send. Bins by ACTUAL sent_at hour (PT) since EXPERIMENT_START.
+  // that send. Bins by ACTUAL sent_at hour (PT) since EXPERIMENT_START, and
+  // — separately — by sender (rebuild item 4b, 2026-09-08): rows minted
+  // before the multi-sender ship (2026-09-04) carry sender=null and mix
+  // dead-Gmail + old single-domain lrghomes.com data, a different
+  // domain-reputation regime from the new workhorse/understudy. Blending
+  // them into one hour bucket would misread a domain effect as a
+  // time-of-day effect, so each sender (plus "legacy" for the null rows)
+  // gets its own bins.
   if (dryRun) return // never post from a rehearsal
   const parts = ptDateParts(new Date())
   if (parts.weekday !== "Fri" || laHourNow() < 16) return
@@ -1037,7 +1044,7 @@ async function scorecardPass() {
   for (let off = 0; ; off += 1000) {
     const { data, error } = await sb
       .from("campaign_sends")
-      .select("contact_id, sent_at")
+      .select("contact_id, sent_at, sender")
       .eq("status", "sent")
       .gte("sent_at", EXPERIMENT_START)
       .range(off, off + 999)
@@ -1064,27 +1071,37 @@ async function scorecardPass() {
     }
     if (!data || data.length < 1000) break
   }
-  const bins = new Map() // pt hour -> {sent, replied}
+  const senderLabelOf = (email) => (email ? senderByEmail(email)?.label ?? email : "legacy")
+  const bySender = new Map() // label -> Map(hour -> {sent, replied})
   for (const s of sends) {
     const t = new Date(s.sent_at)
     const hour = Number(new Intl.DateTimeFormat("en-US", { timeZone: "America/Los_Angeles", hour: "numeric", hour12: false }).format(t)) % 24
+    const label = senderLabelOf(s.sender)
+    const bins = bySender.get(label) ?? new Map()
     const b = bins.get(hour) ?? { sent: 0, replied: 0 }
     b.sent++
     const rts = replies.get(s.contact_id) ?? []
     const sMs = t.getTime()
     if (rts.some((rt) => rt > sMs && rt - sMs < 14 * 86400_000)) b.replied++
     bins.set(hour, b)
+    bySender.set(label, bins)
   }
-  const lines = [...bins.entries()]
-    .sort((a, b) => a[0] - b[0])
-    .map(([h, b]) => {
-      const label = h < 12 ? `${h}a` : h === 12 ? "12p" : `${h - 12}p`
-      const pct = b.sent ? ((100 * b.replied) / b.sent).toFixed(1) : "0.0"
-      return `${label}: ${b.sent} sent, ${b.replied} replies (${pct}%)`
+  const order = [...SENDERS.map((s) => s.label), "legacy"]
+  const sections = order
+    .filter((label) => bySender.has(label))
+    .map((label) => {
+      const lines = [...bySender.get(label).entries()]
+        .sort((a, b) => a[0] - b[0])
+        .map(([h, b]) => {
+          const hourLabel = h < 12 ? `${h}a` : h === 12 ? "12p" : `${h - 12}p`
+          const pct = b.sent ? ((100 * b.replied) / b.sent).toFixed(1) : "0.0"
+          return `${hourLabel}: ${b.sent} sent, ${b.replied} replies (${pct}%)`
+        })
+      return `<b>${escHtml(label)}</b>\n${lines.join("\n")}`
     })
-  await telegram(`📊 <b>Send-time scorecard</b> (since ${EXPERIMENT_START}, replies within 14d)\n${lines.join("\n")}\n\nFull chart: /email-campaign → Performance`)
+  await telegram(`📊 <b>Send-time scorecard</b> (since ${EXPERIMENT_START}, replies within 14d)\n\n${sections.join("\n\n")}\n\nFull chart: /email-campaign → Performance`)
   fs.writeFileSync(SCORECARD_STATE, JSON.stringify({ last: today }))
-  log(`scorecard sent (${sends.length} sends analyzed)`)
+  log(`scorecard sent (${sends.length} sends analyzed, ${sections.length} sender group(s))`)
 }
 
 // ---------- main ----------

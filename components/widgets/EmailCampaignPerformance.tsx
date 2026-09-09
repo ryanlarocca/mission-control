@@ -23,7 +23,8 @@ type Stats = {
   }
   touches: Record<string, { sent: number; replied: number }>
   variants?: Record<string, { sent: number; replied: number }>
-  hours: Record<string, { sent: number; replied: number }>
+  hours_by_sender: Record<string, Record<string, { sent: number; replied: number }>>
+  sender_labels: string[]
   recent_replies: { name: string; when: string; snippet: string }[]
 }
 
@@ -53,12 +54,22 @@ export function EmailCampaignPerformance() {
   if (!stats) return <div className="p-4 text-sm text-zinc-500">Crunching campaign numbers…</div>
 
   const t = stats.totals
-  const hourRows = Array.from({ length: 10 }, (_, i) => i + 7).map((h) => ({
-    h,
-    sent: stats.hours[h]?.sent ?? 0,
-    replied: stats.hours[h]?.replied ?? 0,
-  }))
-  const maxRate = Math.max(0.001, ...hourRows.map((r) => (r.sent >= 10 ? r.replied / r.sent : 0)))
+  // One send-time block per sender (rebuild item 4b, 2026-09-08): dead-Gmail
+  // and pre-multi-sender data ("legacy") is a different domain-reputation
+  // regime from the new workhorse/understudy, so mixing them into one hour
+  // bucket would misread a domain effect as a time-of-day effect. Groups
+  // with no sends yet (buys/offers before their first send) are hidden.
+  const senderHourGroups = (stats.sender_labels ?? Object.keys(stats.hours_by_sender ?? {}))
+    .map((label) => {
+      const bucket = stats.hours_by_sender?.[label] ?? {}
+      const rows = Array.from({ length: 10 }, (_, i) => i + 7).map((h) => ({
+        h,
+        sent: bucket[h]?.sent ?? 0,
+        replied: bucket[h]?.replied ?? 0,
+      }))
+      return { label, rows, totalSent: rows.reduce((a, r) => a + r.sent, 0) }
+    })
+    .filter((g) => g.totalSent > 0)
   const touchRows = Object.entries(stats.touches)
     .map(([k, v]) => ({ touch: Number(k), ...v }))
     .sort((a, b) => a.touch - b.touch)
@@ -84,36 +95,41 @@ export function EmailCampaignPerformance() {
         ))}
       </div>
 
-      {/* Send-time experiment */}
-      <div className="rounded-lg border border-zinc-800 bg-zinc-900 p-4">
-        <div className="mb-1 text-sm font-semibold text-zinc-100">Send-time experiment</div>
-        <div className="mb-3 text-[11px] text-zinc-500">
-          Reply rate by the hour the email actually sent (PT) · randomized 7a–5p since {stats.experiment_start} · rates firm up as sends accumulate
-        </div>
-        <div className="flex flex-col gap-1">
-          {hourRows.map(({ h, sent, replied }) => {
-            const rate = sent ? replied / sent : 0
-            const width = sent >= 10 ? Math.max(2, Math.round((rate / maxRate) * 100)) : 0
-            return (
-              <div key={h} className="flex items-center gap-2 text-[12px]">
-                <span className="w-8 shrink-0 text-right font-mono text-zinc-500">{hourLabel(h)}</span>
-                <div className="h-4 flex-1 rounded bg-zinc-800/60">
-                  {sent > 0 && (
-                    <div
-                      className="flex h-4 items-center rounded bg-emerald-500/70 pl-1.5 text-[10px] font-semibold text-emerald-950"
-                      style={{ width: `${width}%`, minWidth: sent >= 10 && replied > 0 ? "2.5rem" : undefined }}
-                    />
-                  )}
-                </div>
-                <span className="w-40 shrink-0 font-mono text-zinc-400">
-                  {sent === 0 ? <span className="text-zinc-600">no sends yet</span> : `${sent} sent · ${replied} replies · ${pct(replied, sent)}`}
-                </span>
-              </div>
-            )
-          })}
-        </div>
-        <div className="mt-2 text-[11px] text-zinc-600">Bars scale to the best hour; hours under 10 sends show numbers only. Friday scorecard mirrors this in Telegram.</div>
-      </div>
+      {/* Send-time experiment, one block per sender */}
+      {senderHourGroups.map(({ label, rows }) => {
+        const maxRate = Math.max(0.001, ...rows.map((r) => (r.sent >= 10 ? r.replied / r.sent : 0)))
+        return (
+          <div key={label} className="rounded-lg border border-zinc-800 bg-zinc-900 p-4">
+            <div className="mb-1 text-sm font-semibold text-zinc-100">Send-time experiment — {label}</div>
+            <div className="mb-3 text-[11px] text-zinc-500">
+              Reply rate by the hour the email actually sent (PT) · randomized 7a–5p since {stats.experiment_start} · rates firm up as sends accumulate
+            </div>
+            <div className="flex flex-col gap-1">
+              {rows.map(({ h, sent, replied }) => {
+                const rate = sent ? replied / sent : 0
+                const width = sent >= 10 ? Math.max(2, Math.round((rate / maxRate) * 100)) : 0
+                return (
+                  <div key={h} className="flex items-center gap-2 text-[12px]">
+                    <span className="w-8 shrink-0 text-right font-mono text-zinc-500">{hourLabel(h)}</span>
+                    <div className="h-4 flex-1 rounded bg-zinc-800/60">
+                      {sent > 0 && (
+                        <div
+                          className="flex h-4 items-center rounded bg-emerald-500/70 pl-1.5 text-[10px] font-semibold text-emerald-950"
+                          style={{ width: `${width}%`, minWidth: sent >= 10 && replied > 0 ? "2.5rem" : undefined }}
+                        />
+                      )}
+                    </div>
+                    <span className="w-40 shrink-0 font-mono text-zinc-400">
+                      {sent === 0 ? <span className="text-zinc-600">no sends yet</span> : `${sent} sent · ${replied} replies · ${pct(replied, sent)}`}
+                    </span>
+                  </div>
+                )
+              })}
+            </div>
+            <div className="mt-2 text-[11px] text-zinc-600">Bars scale to the best hour; hours under 10 sends show numbers only. Friday scorecard mirrors this in Telegram.</div>
+          </div>
+        )
+      })}
 
       {/* Phase B copy test: reply rate per variant */}
       {stats.variants && Object.keys(stats.variants).length > 0 && (
