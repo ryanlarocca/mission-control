@@ -76,6 +76,8 @@ export async function POST(request: Request) {
 
   // ── Step 1: synchronously attach recording_url to the lead row ──
   let leadId: string | null = null
+  // Voicemail unless the matched row proves it was a live answered call.
+  let kind: "voicemail" | "call" = "voicemail"
   try {
     const sb = getLeadsClient()
 
@@ -100,6 +102,8 @@ export async function POST(request: Request) {
 
     let id: string | null = null
     if (explicitLeadId) {
+      const { data: rescued } = await sb.from("leads").select("lead_type").eq("id", explicitLeadId).maybeSingle()
+      if (rescued?.lead_type === "call") kind = "call"
       // Rescue path: caller (cron / batch script) already identified the
       // specific orphan row to attach to. Skip the time-window lookup
       // entirely so we don't fall back to inserting a new voicemail row
@@ -112,7 +116,7 @@ export async function POST(request: Request) {
       const sixtyMinAgo = new Date(Date.now() - 60 * 60 * 1000).toISOString()
       let lookup = sb
         .from("leads")
-        .select("id")
+        .select("id, lead_type")
         .eq("caller_phone", callerPhone)
         .in("lead_type", ["voicemail", "call"])
         .gte("created_at", sixtyMinAgo)
@@ -122,6 +126,10 @@ export async function POST(request: Request) {
       const { data, error } = await lookup
       if (error) console.error("[recording] Lookup failed:", error)
       id = data?.[0]?.id ?? null
+      // /no-answer promoted the row to "voicemail" when Ryan didn't pick up;
+      // a row still typed "call" means this is the live-conversation
+      // recording from <Dial record-from-answer>.
+      if (data?.[0]?.lead_type === "call") kind = "call"
     }
 
     if (id) {
@@ -168,6 +176,7 @@ export async function POST(request: Request) {
     source,
     leadId,
     direction: "inbound",
+    kind,
   }))
 
   return twimlResponse()

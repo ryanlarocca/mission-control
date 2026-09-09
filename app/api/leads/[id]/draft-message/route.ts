@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server"
 import { getLeadsClient, getMailboxForSource } from "@/lib/leads"
+import { completeText, extractJsonObject, hasLlmKey, HAIKU } from "@/lib/llm"
 
 // Phase 7C — Part 7: on-demand draft generator. Click "Draft Text" or
 // "Draft Email" on a lead card → AI returns a contextual draft. NOT
@@ -8,8 +9,6 @@ import { getLeadsClient, getMailboxForSource } from "@/lib/leads"
 //
 // Body: { channel: "imessage" | "email" }
 // Returns: { message: string, subject?: string }
-
-const HAIKU_MODEL = "anthropic/claude-haiku-4-5"
 
 interface ContextRow {
   created_at: string
@@ -124,9 +123,8 @@ export async function POST(
   }
   const channel = body.channel === "email" ? "email" : "imessage"
 
-  const apiKey = process.env.OPENROUTER_API_KEY
-  if (!apiKey) {
-    return NextResponse.json({ error: "OPENROUTER_API_KEY not set" }, { status: 500 })
+  if (!hasLlmKey()) {
+    return NextResponse.json({ error: "ANTHROPIC_API_KEY not set" }, { status: 500 })
   }
 
   try {
@@ -251,23 +249,13 @@ Respond as JSON only (no markdown):
 
 ${sharedContext}`
 
-    const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
-      method: "POST",
-      headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
-      body: JSON.stringify({
-        model: HAIKU_MODEL,
-        max_tokens: channel === "email" ? 600 : 200,
-        messages: [{ role: "user", content: prompt }],
-      }),
+    const out = await completeText({
+      model: HAIKU,
+      prompt,
+      maxTokens: channel === "email" ? 1500 : 400,
+      tag: "[draft-message]",
     })
-    if (!res.ok) {
-      return NextResponse.json(
-        { error: `OpenRouter ${res.status}: ${(await res.text()).slice(0, 300)}` },
-        { status: 502 }
-      )
-    }
-    const json = await res.json() as { choices?: { message?: { content?: string } }[] }
-    const content = json.choices?.[0]?.message?.content?.trim() || ""
+    const content = out.text
     if (!content) return NextResponse.json({ error: "empty model response" }, { status: 502 })
 
     if (channel === "imessage") {
@@ -276,7 +264,7 @@ ${sharedContext}`
     }
 
     // Email: parse JSON. Be lenient — strip code fences if present.
-    const cleaned = content.replace(/^```(?:json)?\s*/i, "").replace(/```\s*$/i, "").trim()
+    const cleaned = extractJsonObject(content)
     let parsed: { subject?: string; body?: string }
     try {
       parsed = JSON.parse(cleaned) as { subject?: string; body?: string }

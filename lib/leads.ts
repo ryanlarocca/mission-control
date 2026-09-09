@@ -2,6 +2,7 @@ import { createClient, type SupabaseClient } from "@supabase/supabase-js"
 import { google, gmail_v1 } from "googleapis"
 import emailCampaigns from "@/config/email-campaigns.json"
 import { isAnonymousCaller } from "./anonymous"
+import { completeText, extractJsonObject, hasLlmKey, HAIKU } from "./llm"
 
 export const CAMPAIGN_MAP: Record<string, string> = {
   "+16504364279": "MFM-A",
@@ -420,6 +421,51 @@ export function clusterKey(r: ClusterIdentity): string | null {
   if (r.email) return `email:${r.email.toLowerCase()}`
   return null
 }
+// ── Relationships membership ────────────────────────────────────────────────
+// Ryan, 2026-09-09: "if it goes to Relationships, it should just be in
+// Relationships." Promote already marks the cluster dead, but a later
+// outbound call inserts a fresh "contacted" row (Chris Shoemaker, 9/2), and
+// a revive script un-deaded a promoted contact (Cinepol, 9/1) — so status
+// alone can't keep them out of the tab. The Leads list and Follow Ups both
+// drop any row whose phone or email matches a Relationships contact.
+export interface RelationshipContactKeys {
+  phones: Set<string>
+  emails: Set<string>
+}
+
+export async function fetchRelationshipContactKeys(sb: SupabaseClient): Promise<RelationshipContactKeys> {
+  const phones = new Set<string>()
+  const emails = new Set<string>()
+  const PAGE = 1000
+  for (let from = 0; ; from += PAGE) {
+    const { data, error } = await sb
+      .from("relationships")
+      .select("phone, email")
+      .range(from, from + PAGE - 1)
+    if (error) {
+      console.error("[relationship-keys] query failed:", error.message)
+      break
+    }
+    for (const r of (data ?? []) as { phone: string | null; email: string | null }[]) {
+      const p = r.phone ? normalizePhone(r.phone) : ""
+      if (p) phones.add(p)
+      const e = (r.email ?? "").trim().toLowerCase()
+      if (e) emails.add(e)
+    }
+    if (!data || data.length < PAGE) break
+  }
+  return { phones, emails }
+}
+
+export function isRelationshipContact(
+  keys: RelationshipContactKeys,
+  row: { caller_phone?: string | null; email?: string | null }
+): boolean {
+  if (row.caller_phone && keys.phones.has(normalizePhone(row.caller_phone))) return true
+  const e = (row.email ?? "").trim().toLowerCase()
+  return !!e && keys.emails.has(e)
+}
+
 export function clusterKeyOrId(r: ClusterIdentity & { id: string }): string {
   return clusterKey(r) ?? `id:${r.id}`
 }
@@ -438,8 +484,7 @@ export async function detectOfferFromText(
   text: string,
   ctx?: { channel?: "email" | "sms" | "imessage"; lead_name?: string | null; property?: string | null }
 ): Promise<OfferDetectionResult | null> {
-  const apiKey = process.env.OPENROUTER_API_KEY
-  if (!apiKey) return null
+  if (!hasLlmKey()) return null
   const trimmed = (text || "").trim()
   if (trimmed.length < 10) return null
   // Cheap regex pre-filter — bail if there's no $-amount + Ryan-cue at all.
@@ -472,23 +517,8 @@ ${trimmed}
 
 Respond with ONLY the JSON object.`
   try {
-    const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
-      method: "POST",
-      headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
-      body: JSON.stringify({
-        model: "anthropic/claude-haiku-4-5",
-        max_tokens: 80,
-        messages: [{ role: "user", content: prompt }],
-      }),
-    })
-    if (!res.ok) {
-      console.warn(`[detect-offer] Haiku ${res.status}`)
-      return null
-    }
-    const j = await res.json() as { choices?: { message?: { content?: string } }[] }
-    const content = j.choices?.[0]?.message?.content?.trim() || ""
-    const cleaned = content.replace(/^```(?:json)?\s*/i, "").replace(/```\s*$/i, "").trim()
-    const parsed = JSON.parse(cleaned) as { offer_amount?: unknown; offer_verbalized?: unknown }
+    const out = await completeText({ model: HAIKU, prompt, maxTokens: 150, tag: "[detect-offer]" })
+    const parsed = JSON.parse(extractJsonObject(out.text)) as { offer_amount?: unknown; offer_verbalized?: unknown }
     return {
       offer_amount: typeof parsed.offer_amount === "number" && Number.isFinite(parsed.offer_amount) && parsed.offer_amount > 0
         ? parsed.offer_amount : null,
@@ -1439,9 +1469,17 @@ export async function processRecordingBackground(args: {
   source: string
   leadId: string | null
   direction?: "inbound" | "outbound"
+  // "voicemail" = the caller left a message after the greeting; "call" = a
+  // recorded live conversation (inbound answered, or Ryan's outbound call).
+  // Only voicemails go to Telegram (Ryan, 2026-09-09): he reads live-call
+  // transcripts in the Leads tab, and the 1,024-char caption limit was
+  // clipping them anyway. Defaults to "voicemail" so older callers keep
+  // their alert.
+  kind?: "voicemail" | "call"
 }): Promise<void> {
   const { fullUrl, callerPhone, source, leadId } = args
   const direction = args.direction ?? "inbound"
+  const kind = args.kind ?? (direction === "outbound" ? "call" : "voicemail")
   try {
     // Twilio fires the recording status callback the moment the recording
     // resource is created, but the MP3 at RecordingUrl may not be fully
@@ -1606,9 +1644,12 @@ export async function processRecordingBackground(args: {
       }
     }
 
-    const header = direction === "outbound"
-      ? `📤 Outbound call recording — <b>${source}</b> — ${callerPhone}`
-      : `🎙️ New recording — <b>${source}</b> — ${callerPhone}`
+    if (kind !== "voicemail") {
+      console.log(`[recording-bg] ${direction} live-call recording for lead ${leadId} — transcript saved, no Telegram post`)
+      return
+    }
+
+    const header = `🎙️ New voicemail — <b>${source}</b> — ${callerPhone}`
     const captionLines = [header]
     if (transcription) {
       captionLines.push("", `📝 ${transcription}`)
@@ -1642,40 +1683,30 @@ export async function processRecordingBackground(args: {
 export async function summarizeOutboundCall(
   transcription: string
 ): Promise<string | null> {
-  const apiKey = process.env.OPENROUTER_API_KEY
-  if (!apiKey) {
-    console.warn("[summarize] OPENROUTER_API_KEY not set; skipping outbound summary")
+  if (!hasLlmKey()) {
+    console.warn("[summarize] ANTHROPIC_API_KEY not set; skipping outbound summary")
     return null
   }
 
-  const prompt = `You are summarizing a phone call between Ryan (a real estate investor) and a lead. Based on the transcript below, write a brief 1-2 sentence summary of what was discussed and any next steps. No labels, no markdown, no quotes — just the summary text. Maximum 2 sentences.
+  // Until 2026-09-09 this asked for "1-2 sentences" under a 120-token cap.
+  // A voicemail fits; a 20-minute seller conversation does not — the notes
+  // were cut mid-sentence and the specifics Ryan actually needed (price
+  // history, rents, what was agreed) fell off the end. The length now
+  // scales with the call and the budget is generous; a short call still
+  // gets a short note because the prompt says so, not because the API
+  // clipped it.
+  const prompt = `You are summarizing a phone call between Ryan (a real estate investor) and a lead. Based on the transcript below, write the notes Ryan will read before his next call with this person. No labels, no markdown, no bullets, no quotes — plain prose.
 
-If the caller and Ryan discussed property specifics — bed/bath count, multi-unit mix (e.g. duplex: 1x 3bd/2ba + 1x 2bd/1ba), per-unit or total monthly rents, vacancy status — include them explicitly. They're load-bearing details for Ryan; don't drop them to save words.
+Length scales with the call: a voicemail or a quick "call me back" is one or two sentences; a real conversation is one paragraph (up to ~6 sentences). Never pad a short call.
+
+Always capture, when present: who Ryan spoke with, what the property is, anything the seller said about price, condition, tenants/rents, timeline or motivation, any number Ryan offered and how the seller responded, and the agreed next step. Property specifics — bed/bath count, multi-unit mix (e.g. duplex: 1x 3bd/2ba + 1x 2bd/1ba), per-unit or total monthly rents, vacancy status — go in explicitly. They're load-bearing details for Ryan; don't drop them to save words. Anchor on how the call ENDED (agreed / declined / undecided), not on how friendly the middle was.
 
 TRANSCRIPT:
 "${transcription}"`
 
   try {
-    const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        model: "anthropic/claude-haiku-4-5",
-        messages: [{ role: "user", content: prompt }],
-        max_tokens: 120,
-      }),
-    })
-
-    if (!res.ok) {
-      console.error(`[summarize] OpenRouter failed ${res.status}: ${(await res.text()).slice(0, 300)}`)
-      return null
-    }
-
-    const json = await res.json() as { choices?: { message?: { content?: string } }[] }
-    const content = json.choices?.[0]?.message?.content?.trim()
+    const out = await completeText({ model: HAIKU, prompt, maxTokens: 700, tag: "[summarize]" })
+    const content = out.text
     if (!content) return null
     // Strip surrounding quote marks if the model wrapped its response.
     return content.replace(/^["'`]+|["'`]+$/g, "").trim() || null
@@ -1896,9 +1927,8 @@ export async function analyzeCallTranscript(
   transcript: string,
   context?: { clusterHistory?: string | null }
 ): Promise<AnalyzeCallResult | null> {
-  const apiKey = process.env.OPENROUTER_API_KEY
-  if (!apiKey) {
-    console.warn("[analyze-call] OPENROUTER_API_KEY not set; skipping")
+  if (!hasLlmKey()) {
+    console.warn("[analyze-call] ANTHROPIC_API_KEY not set; skipping")
     return null
   }
   const today = new Date().toISOString().slice(0, 10)
@@ -2132,27 +2162,18 @@ ${historyBlock}FRESH TRANSCRIPT (this is the current call):
 "${transcript}"`
 
   try {
-    const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
-      method: "POST",
-      headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
-      body: JSON.stringify({
-        model: "anthropic/claude-haiku-4-5",
-        // Bumped 400 → 700 for the property_details array — a seller with two
-        // multi-unit properties can push the JSON past the old ceiling and
-        // truncate mid-object, failing the parse.
-        max_tokens: 700,
-        messages: [{ role: "user", content: prompt }],
-      }),
-    })
-    if (!res.ok) {
-      console.error(`[analyze-call] OpenRouter ${res.status}: ${(await res.text()).slice(0, 300)}`)
+    // 400 → 700 → 2500 (2026-09-09). The JSON carries a 2-6 sentence summary
+    // plus a property_details array; a long seller call overran 700 and the
+    // truncated object failed the parse, so the analysis was dropped and the
+    // lead kept stale notes. completeText retries once at 3x on max_tokens.
+    const out = await completeText({ model: HAIKU, prompt, maxTokens: 2500, tag: "[analyze-call]" })
+    const content = out.text
+    if (!content) return null
+    if (out.truncated) {
+      console.error("[analyze-call] response truncated even after retry; dropping")
       return null
     }
-    const json = await res.json() as { choices?: { message?: { content?: string } }[] }
-    const content = json.choices?.[0]?.message?.content?.trim() || ""
-    if (!content) return null
-    const cleaned = content.replace(/^```(?:json)?\s*/i, "").replace(/```\s*$/i, "").trim()
-    const parsed = JSON.parse(cleaned) as Partial<AnalyzeCallResult>
+    const parsed = JSON.parse(extractJsonObject(content)) as Partial<AnalyzeCallResult>
     if (
       !parsed.temperature ||
       !(VALID_TEMPERATURES as readonly string[]).includes(parsed.temperature)
@@ -2609,9 +2630,8 @@ export async function triageEmailLead(
   subject: string,
   body: string
 ): Promise<EmailTriageResult | null> {
-  const apiKey = process.env.OPENROUTER_API_KEY
-  if (!apiKey) {
-    console.warn("[triage-email] OPENROUTER_API_KEY not set; skipping triage")
+  if (!hasLlmKey()) {
+    console.warn("[triage-email] ANTHROPIC_API_KEY not set; skipping triage")
     return null
   }
 
@@ -2676,33 +2696,15 @@ FOLLOW-UP DATE
     hard no. If you set one field you must set the other.`
 
   try {
-    const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        model: "anthropic/claude-haiku-4-5",
-        messages: [{ role: "user", content: prompt }],
-        // 200 was already tight for summary + suggestedReply; adding the two
-        // follow-up fields would truncate the JSON and fail the parse, which
-        // reads as "triage returned null" rather than an error.
-        max_tokens: 700,
-      }),
-    })
-
-    if (!res.ok) {
-      console.error(`[triage-email] OpenRouter failed ${res.status}: ${(await res.text()).slice(0, 300)}`)
-      return null
-    }
-
-    const json = await res.json() as { choices?: { message?: { content?: string } }[] }
-    const content = json.choices?.[0]?.message?.content?.trim()
+    // 200 was already tight for summary + suggestedReply; the two follow-up
+    // fields pushed it to 700, and a truncated object reads as "triage
+    // returned null" rather than an error. 1500 + the 3x retry in
+    // completeText closes that hole.
+    const out = await completeText({ model: HAIKU, prompt, maxTokens: 1500, tag: "[triage-email]" })
+    const content = out.text
     if (!content) return null
 
-    const cleaned = content.replace(/^```(?:json)?\s*/i, "").replace(/```\s*$/i, "").trim()
-    const parsed = JSON.parse(cleaned) as {
+    const parsed = JSON.parse(extractJsonObject(content)) as {
       temperature?: string
       is_dead?: unknown
       summary?: string

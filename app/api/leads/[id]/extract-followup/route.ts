@@ -1,7 +1,6 @@
 import { NextRequest, NextResponse } from "next/server"
 import { getLeadsClient } from "@/lib/leads"
-
-const HAIKU_MODEL = "anthropic/claude-haiku-4-5"
+import { completeText, extractJsonObject, hasLlmKey, HAIKU } from "@/lib/llm"
 
 export async function POST(
   request: NextRequest,
@@ -10,8 +9,7 @@ export async function POST(
   const { id } = await ctx.params
   if (!id) return NextResponse.json({ error: "id required" }, { status: 400 })
 
-  const apiKey = process.env.OPENROUTER_API_KEY
-  if (!apiKey) return NextResponse.json({ error: "OPENROUTER_API_KEY not set" }, { status: 500 })
+  if (!hasLlmKey()) return NextResponse.json({ error: "ANTHROPIC_API_KEY not set" }, { status: 500 })
 
   let notes = ""
   try {
@@ -36,23 +34,13 @@ Respond with ONLY a JSON object — no markdown, no explanation:
 If no follow-up timeframe is mentioned, respond with:
 { "date": null, "reason": null }`
 
-  const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
-    method: "POST",
-    headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
-    body: JSON.stringify({
-      model: HAIKU_MODEL,
-      max_tokens: 100,
-      messages: [{ role: "user", content: prompt }],
-    }),
-  })
-
-  if (!res.ok) {
-    return NextResponse.json({ error: `OpenRouter ${res.status}` }, { status: 502 })
+  let content = ""
+  try {
+    const out = await completeText({ model: HAIKU, prompt, maxTokens: 200, tag: "[extract-followup]" })
+    content = extractJsonObject(out.text)
+  } catch (e) {
+    return NextResponse.json({ error: `model call failed: ${e instanceof Error ? e.message : String(e)}` }, { status: 502 })
   }
-
-  const json = await res.json() as { choices?: { message?: { content?: string } }[] }
-  const content = (json.choices?.[0]?.message?.content || "").trim()
-    .replace(/^```(?:json)?\s*/i, "").replace(/```\s*$/i, "").trim()
 
   let date: string | null = null
   let reason: string | null = null

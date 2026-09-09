@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server"
-import { getLeadsClient, clusterKeyOrId, isAnonymousCaller } from "@/lib/leads"
+import { getLeadsClient, clusterKeyOrId, isAnonymousCaller, fetchRelationshipContactKeys, isRelationshipContact } from "@/lib/leads"
 import {
   resolveNextTouch,
   touchSortKey,
@@ -185,7 +185,12 @@ export async function GET(_request: NextRequest) {
       console.error("[follow-ups:GET] candidates query failed:", cErr)
       return NextResponse.json({ error: cErr.message }, { status: 500 })
     }
-    const candidates = (candRows ?? []) as unknown as CandidateLead[]
+    // Promoted contacts belong to the Relationships cadence, not this
+    // worklist — drop them by phone/email match, not status (2026-09-09).
+    const relKeys = await fetchRelationshipContactKeys(sb)
+    const candidates = ((candRows ?? []) as unknown as CandidateLead[]).filter(
+      (l) => !isRelationshipContact(relKeys, l)
+    )
     const candIds = new Set(candidates.map((l) => l.id))
 
     const queueLeadIds = Array.from(new Set((queueRows ?? []).map((r) => r.lead_id as string)))

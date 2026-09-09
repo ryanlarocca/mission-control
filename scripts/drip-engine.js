@@ -25,6 +25,7 @@ const fs = require("node:fs")
 const path = require("node:path")
 const { google } = require("googleapis")
 const { createClient } = require("@supabase/supabase-js")
+const { Anthropic } = require("@anthropic-ai/sdk")
 const { buildEmailMime } = require("./email-mime.js")
 
 // ─── env loader (matches scripts/run-migration.mjs) ─────────────────────────
@@ -549,9 +550,11 @@ function detectSoftSignals(lead, history) {
   return reasons
 }
 
-// ─── content generation (Haiku via OpenRouter) ──────────────────────────────
+// ─── content generation (Haiku via the Anthropic SDK) ───────────────────────
+// Moved off OpenRouter 2026-09-09 — it was the last recurring charge on that
+// account. Same model, same prompt; only the transport changed.
 
-const HAIKU_MODEL = "anthropic/claude-haiku-4-5"
+const HAIKU_MODEL = "claude-haiku-4-5"
 
 function buildResponsivenessBlock(sig) {
   if (!sig) return ""
@@ -767,35 +770,30 @@ ${history || "(no prior conversation)"}
 Output ONLY the message body — no preamble, no quotes, no labels.`
 }
 
+let anthropicClient = null
+function getAnthropic() {
+  if (!anthropicClient) anthropicClient = new Anthropic()
+  return anthropicClient
+}
+
 async function generateMessage(args) {
-  const apiKey = process.env.OPENROUTER_API_KEY
-  if (!apiKey) {
-    console.warn("[drip] OPENROUTER_API_KEY not set — skipping generation")
+  if (!process.env.ANTHROPIC_API_KEY) {
+    console.warn("[drip] ANTHROPIC_API_KEY not set — skipping generation")
     return null
   }
   const systemPrompt = buildSystemPrompt(args)
   try {
-    const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        model: HAIKU_MODEL,
-        max_tokens: 250,
-        messages: [
-          { role: "system", content: systemPrompt },
-          { role: "user", content: `Generate touch #${args.touchNumber} for this lead.` },
-        ],
-      }),
+    const res = await getAnthropic().messages.create({
+      model: HAIKU_MODEL,
+      max_tokens: 400,
+      system: systemPrompt,
+      messages: [{ role: "user", content: `Generate touch #${args.touchNumber} for this lead.` }],
     })
-    if (!res.ok) {
-      console.error(`[drip] OpenRouter ${res.status}: ${(await res.text()).slice(0, 300)}`)
+    if (res.stop_reason === "refusal") {
+      console.error("[drip] model declined to generate")
       return null
     }
-    const json = await res.json()
-    const text = json?.choices?.[0]?.message?.content?.trim() || ""
+    const text = res.content.filter((b) => b.type === "text").map((b) => b.text).join("").trim()
     if (!text) return null
     return text.replace(/^["'`]+|["'`]+$/g, "").trim()
   } catch (e) {

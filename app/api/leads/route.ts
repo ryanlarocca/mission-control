@@ -2,6 +2,8 @@ import { NextRequest, NextResponse } from "next/server"
 import {
   getLeadsClient,
   normalizePhone,
+  fetchRelationshipContactKeys,
+  isRelationshipContact,
   VALID_LEAD_STATUSES,
   LEAD_FLAG_FIELDS,
   haltOutreachForCluster,
@@ -30,6 +32,10 @@ export async function GET(request: NextRequest) {
     const sb = getLeadsClient()
     const PAGE = 1000
     const rows: unknown[] = []
+    // Promoted contacts live in Relationships now — keep them out of the tab
+    // regardless of what status their lead rows carry (see
+    // fetchRelationshipContactKeys for the two ways status alone failed).
+    const relKeys = await fetchRelationshipContactKeys(sb)
     for (let from = 0; from < limit; from += PAGE) {
       const to = Math.min(from + PAGE, limit) - 1
       let q = sb.from("leads").select("*").range(from, to)
@@ -50,7 +56,9 @@ export async function GET(request: NextRequest) {
         console.error("[leads:GET] Query failed:", error)
         return NextResponse.json({ error: error.message }, { status: 500 })
       }
-      rows.push(...(data ?? []))
+      for (const row of (data ?? []) as { caller_phone?: string | null; email?: string | null }[]) {
+        if (!isRelationshipContact(relKeys, row)) rows.push(row)
+      }
       if (!data || data.length < to - from + 1) break // short page = done
     }
     return NextResponse.json({ leads: rows })

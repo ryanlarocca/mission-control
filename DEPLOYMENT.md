@@ -19,7 +19,7 @@ Phone → Vercel (UI + Next.js API)
 | --- | --- |
 | `GOOGLE_SERVICE_ACCOUNT_KEY` | JSON key for the service account with Editor access to the BoB sheet |
 | `SIDECAR_URL` | Current `*.trycloudflare.com` tunnel URL (updates on every Mac reboot — see below) |
-| `OPENROUTER_API_KEY` | For `/api/crms/generate` |
+| `ANTHROPIC_API_KEY` | Every model call — CRMS composer, lead triage/summaries, drip copy, calendar intake (OpenRouter retired 2026-09-09) |
 | `MC_PASSWORD` | Login password |
 | `MC_SESSION_SECRET` | Session cookie secret |
 | `TWILIO_ACCOUNT_SID` / `TWILIO_AUTH_TOKEN` | Twilio REST credentials for outbound click-to-call |

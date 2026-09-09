@@ -106,6 +106,7 @@ export async function POST(request: NextRequest) {
     source,
     leadId,
     direction: "outbound",
+    kind: "call",
   }))
 
   return twimlResponse()

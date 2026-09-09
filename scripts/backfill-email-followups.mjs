@@ -17,6 +17,7 @@
 //   node scripts/backfill-email-followups.mjs --id <uuid> --write
 import fs from "node:fs"
 import path from "node:path"
+import Anthropic from "@anthropic-ai/sdk"
 
 const envPath = [
   path.join(process.cwd(), ".env.local"),
@@ -27,6 +28,8 @@ for (const line of fs.readFileSync(envPath, "utf-8").split("\n")) {
   const m = line.match(/^([A-Z0-9_]+)=(.*)$/)
   if (m) env[m[1]] = m[2].replace(/^["']|["']$/g, "")
 }
+if (!env.ANTHROPIC_API_KEY) { console.error("missing ANTHROPIC_API_KEY"); process.exit(1) }
+const anthropic = new Anthropic({ apiKey: env.ANTHROPIC_API_KEY })
 const SB = env.LRG_SUPABASE_URL
 const H = {
   apikey: env.LRG_SUPABASE_SERVICE_KEY,
@@ -60,14 +63,13 @@ followup_reason quotes the sender in their own words — Ryan reads it in his wo
 Both null when the sender declined, opted out, is hostile, or gave nothing to
 act on. Never invent a date to look useful. If you set one field, set both.`
 
-  const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
-    method: "POST",
-    headers: { Authorization: `Bearer ${env.OPENROUTER_API_KEY}`, "Content-Type": "application/json" },
-    body: JSON.stringify({ model: "anthropic/claude-haiku-4-5", messages: [{ role: "user", content: prompt }], max_tokens: 300 }),
+  const res = await anthropic.messages.create({
+    model: "claude-haiku-4-5",
+    max_tokens: 400,
+    messages: [{ role: "user", content: prompt }],
   })
-  if (!res.ok) throw new Error(`OpenRouter ${res.status}: ${(await res.text()).slice(0, 200)}`)
-  const j = await res.json()
-  const raw = (j.choices?.[0]?.message?.content || "").trim().replace(/^```(?:json)?\s*/i, "").replace(/```\s*$/i, "")
+  if (res.stop_reason === "refusal") throw new Error("model declined")
+  const raw = res.content.filter((b) => b.type === "text").map((b) => b.text).join("").trim().replace(/^```(?:json)?\s*/i, "").replace(/```\s*$/i, "")
   // Haiku sometimes appends a sentence of commentary after the object, which
   // makes a bare JSON.parse throw. Take the first {...} block instead.
   const block = raw.match(/\{[\s\S]*?\}/)

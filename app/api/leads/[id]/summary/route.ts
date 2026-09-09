@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server"
 import { getLeadsClient, mergePropertyDetails, parsePropertyDetails, isPlaceholderName } from "@/lib/leads"
+import { completeText, extractJsonObject, hasLlmKey, HAIKU } from "@/lib/llm"
 
 // Phase 7D — cached lead summary, multi-event variant.
 //
@@ -18,8 +19,6 @@ import { getLeadsClient, mergePropertyDetails, parsePropertyDetails, isPlacehold
 //
 // Output: short plain paragraph (2-6 sentences). The UI prepends the
 // temperature badge from the lead row's own `temperature` column.
-
-const HAIKU_MODEL = "anthropic/claude-haiku-4-5"
 
 interface EventRow {
   id: string
@@ -66,9 +65,8 @@ export async function POST(
     /* empty body is fine */
   }
 
-  const apiKey = process.env.OPENROUTER_API_KEY
-  if (!apiKey) {
-    return NextResponse.json({ error: "OPENROUTER_API_KEY not set" }, { status: 500 })
+  if (!hasLlmKey()) {
+    return NextResponse.json({ error: "ANTHROPIC_API_KEY not set" }, { status: 500 })
   }
 
   try {
@@ -222,33 +220,16 @@ LEAD DATA:
 EVENTS (oldest → newest):
 ${transcript}`
 
-    const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
-      method: "POST",
-      headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
-      body: JSON.stringify({
-        model: HAIKU_MODEL,
-        // 400 → 700 to fit the property_details array (a seller with two
-        // multi-unit properties can otherwise truncate the JSON mid-object).
-        // 700 → 1200 (2026-09-03): a long summary plus a populated
-        // property_details `notes` field still overran it, and a truncated
-        // object fails JSON.parse — which used to dump the raw blob into the
-        // card.
-        max_tokens: 1200,
-        messages: [{ role: "user", content: prompt }],
-      }),
-    })
-    if (!res.ok) {
-      return NextResponse.json(
-        { error: `OpenRouter ${res.status}: ${(await res.text()).slice(0, 300)}` },
-        { status: 502 }
-      )
-    }
-    const json = await res.json() as { choices?: { message?: { content?: string } }[] }
-    const content = json.choices?.[0]?.message?.content?.trim() || ""
+    // 400 → 700 → 1200 → 2500 over the summer as the property_details array
+    // and its `notes` field kept overrunning the budget; a truncated object
+    // fails JSON.parse. completeText also retries once at 3x if the model
+    // still hits the ceiling, so a long cluster can't clip the summary.
+    const out = await completeText({ model: HAIKU, prompt, maxTokens: 2500, tag: "[summary]" })
+    const content = out.text
     if (!content) {
       return NextResponse.json({ error: "empty model response" }, { status: 502 })
     }
-    const cleaned = content.replace(/^```(?:json)?\s*/i, "").replace(/```\s*$/i, "").trim()
+    const cleaned = extractJsonObject(content)
 
     let summary: string | null = null
     let extractedName: string | null = null

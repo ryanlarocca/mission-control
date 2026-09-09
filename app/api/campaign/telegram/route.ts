@@ -487,7 +487,16 @@ export async function POST(request: Request) {
 
   // "cal: <what/when>" / "add to calendar …" / "put this on my calendar …"
   // → Google Calendar event. Standalone text, no reply-to needed.
-  if (/^(cal(endar)?:|add (this |it )?to (my )?calendar\b|put (this |it )?on (my )?calendar\b|schedule:)/i.test(body)) {
+  //
+  // 2026-09-09: the phrase no longer has to START the message. "Monday I
+  // have a meeting with my cpa at 11am please add to my calendar" fell
+  // through to the help text because the old regex was anchored at ^. A
+  // standalone message that mentions the calendar anywhere is a calendar
+  // request; replies to alerts keep the explicit prefix so "call him about
+  // the calendar invite" on a lead alert isn't hijacked.
+  const explicitCalendar = /^(cal(endar)?:|add (this |it )?to (my )?calendar\b|put (this |it )?on (my )?calendar\b|schedule:)/i.test(body)
+  const impliedCalendar = !msg.reply_to_message && /\b(calendar|cal:)/i.test(body)
+  if (explicitCalendar || impliedCalendar) {
     waitUntil(
       handleCalendar(chatId, msg, body).catch(async (e) => {
         console.error("[campaign-tg] calendar failed:", e instanceof Error ? e.message : String(e))

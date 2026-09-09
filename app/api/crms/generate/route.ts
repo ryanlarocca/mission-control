@@ -1,9 +1,11 @@
 import { NextResponse } from "next/server"
 import fs from "fs"
 import { getLeadsClient } from "@/lib/leads"
+import { completeText, SONNET } from "@/lib/llm"
 
-const OPENROUTER_KEY = process.env.OPENROUTER_API_KEY || ""
-const MODEL = "anthropic/claude-sonnet-4-5"
+// Sonnet 5 via the Anthropic SDK since 2026-09-09 (was Sonnet 4.5 through
+// OpenRouter — the last thing still billing that account).
+const MODEL = SONNET
 const DATA_DIR = "/Users/ryanlarocca/Projects/PROJECTS/comprehensive-relationship-management/data"
 const PREFS_FILE = `${DATA_DIR}/modality_prefs.json`
 
@@ -574,34 +576,21 @@ export async function POST(request: Request) {
     const voiceExamples = await fetchVoiceExamples(type, modality, 5)
     const prompt = buildPrompt(type, modality, firstName, notes, voiceExamples, everContacted, familiarity)
 
-    const reqBody = JSON.stringify({
-      model: MODEL,
-      max_tokens: 120,
-      messages: [{ role: "user", content: prompt }],
-    })
-
-    const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${OPENROUTER_KEY}`,
-        "Content-Type": "application/json",
-      },
-      body: reqBody,
-    })
-
-    // The fallback template — used whenever OpenRouter fails or returns
+    // The fallback template — used whenever the model call fails or returns
     // nothing usable, so the composer never silently shows a blank message.
     const fallbackMessage = () =>
       lookupPrompt(FALLBACKS, type, modality).replace(/{first}/g, firstName)
 
-    if (!res.ok) {
-      const errText = await res.text().catch(() => "")
-      console.error(`crms/generate: OpenRouter ${res.status}`, errText.slice(0, 300))
+    let raw = ""
+    try {
+      // Thinking off: this is a one-tap composer in the UI and the message is
+      // a few sentences — adaptive thinking would only add latency here.
+      const out = await completeText({ model: MODEL, prompt, maxTokens: 512, thinking: false, tag: "[crms/generate]" })
+      raw = out.text
+    } catch (e) {
+      console.error("crms/generate: model call failed:", e instanceof Error ? e.message : String(e))
       return NextResponse.json({ message: fallbackMessage(), modality, isFallback: true })
     }
-
-    const data = await res.json().catch(() => null)
-    const raw = data?.choices?.[0]?.message?.content?.trim() || ""
     const message = raw
       .replace(/\*\*/g, "")
       .replace(/[\r\n]+/g, " ")
@@ -609,7 +598,7 @@ export async function POST(request: Request) {
       .trim()
 
     if (!message) {
-      console.error("crms/generate: OpenRouter returned an empty message")
+      console.error("crms/generate: model returned an empty message")
       return NextResponse.json({ message: fallbackMessage(), modality, isFallback: true })
     }
 

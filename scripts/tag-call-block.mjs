@@ -62,6 +62,11 @@ async function sb(pathq, opts) {
 
 if (DO_REVIVE) {
   for (const { phone, who } of REVIVE) {
+    // A contact that lives in Relationships was promoted out of Leads on
+    // purpose; reviving its lead rows drags it back into the tab (Cinepol
+    // Subramanian, promoted 8/27, revived here 9/1). Skip those.
+    const rel = await sb(`relationships?phone=eq.${encodeURIComponent(phone)}&select=id,name&limit=1`)
+    if (rel?.length) { console.log(`skip revive ${phone} — already in Relationships as ${rel[0].name}`); continue }
     if (DRY) { console.log(`[dry] revive ${phone} — ${who}`); continue }
     const rows = await sb(`leads?caller_phone=eq.${encodeURIComponent(phone)}&status=eq.dead&select=id`, {
       method: "PATCH", headers: { ...H, Prefer: "return=representation" }, body: JSON.stringify({ status: "contacted" }),
