@@ -20,6 +20,7 @@ import {
   triageEmailLead,
 } from "@/lib/leads"
 import { scoreLeadSpam, spamAlertLines, spamReviewColumns } from "@/lib/lead-spam"
+import { isBounceEmail, parseBounce } from "@/lib/emailBounce"
 
 // Gmail Push → Pub/Sub → this route. Pub/Sub HTTP push delivers an
 // envelope of the form:
@@ -527,9 +528,11 @@ async function handleAppsScript(payload: AppsScriptPayload): Promise<NextRespons
     return NextResponse.json({ ok: true })
   }
 
-  // Don't ingest mailer-daemon bounces back from our own outbound sends.
+  // A mailer-daemon bounce is not a lead — but it IS news Ryan needs
+  // (2026-09-09: the 5/16 bounce to Bill Koester was skipped silently and he
+  // learned about it from the seller). Stamp the lead + alert, then stop.
   if (isBounceEmail(senderEmail, subject)) {
-    console.log(`[email] Skipping bounce from ${senderEmail} — ${subject}`)
+    await handleBounce({ mailbox, subject, body: bodyText })
     return NextResponse.json({ ok: true, skipped: "bounce" })
   }
 
@@ -760,13 +763,19 @@ async function processSingleMessage(args: {
     return
   }
 
-  // Don't ingest mailer-daemon bounces back from our own outbound sends.
+  const bodyText = extractPlainBody(message.payload)
+
+  // A mailer-daemon bounce is not a lead — but it IS news Ryan needs (see
+  // the Apps Script path). Stamp the lead + alert, then stop.
   if (isBounceEmail(senderEmail, subject)) {
-    console.log(`[email] Skipping ${messageId} — bounce from ${senderEmail}`)
+    await handleBounce({
+      mailbox: emailAddress,
+      subject,
+      body: bodyText,
+      failedRecipientsHeader: getHeader(headers, "X-Failed-Recipients") || null,
+    })
     return
   }
-
-  const bodyText = extractPlainBody(message.payload)
 
   // Google Voice forwards (legacy DM line) — dedicated parse/cluster/spam
   // path. See ingestGoogleVoice + the handleAppsScript call site.
@@ -993,23 +1002,89 @@ function extractNameFromBody(text: string): string | null {
   return null
 }
 
-// Recognize bounce notifications (mailer-daemon, postmaster DSNs, "Undelivered
-// Mail Returned to Sender") so we don't insert a lead for our own failed
-// outbound send. Sender-address check catches the standard Gmail/Workspace
-// envelope; the subject patterns are the belt-and-suspenders for forwarders
-// that rewrite the From header.
-function isBounceEmail(senderEmail: string, subject: string): boolean {
-  const addr = senderEmail.toLowerCase()
-  if (/^(mailer-daemon|postmaster|noreply-dsn|bounce(s|d)?)@/.test(addr)) return true
-  const sub = subject.toLowerCase()
-  return (
-    sub.includes("delivery status notification") ||
-    sub.includes("undelivered mail returned") ||
-    sub.includes("undeliverable") ||
-    sub.includes("mail delivery failed") ||
-    sub.includes("returned mail") ||
-    sub.startsWith("failure notice")
-  )
+// A bounce came back to one of the lead mailboxes. Find the lead by the
+// failed recipient, stamp a [BOUNCE] line on its notes so the card shows it,
+// and tell Ryan on Telegram — with the name and property so he knows who to
+// chase for a working address. Never silent: an unparseable DSN still alerts
+// with the subject. Best-effort throughout; a bounce must never 5xx the
+// webhook (Pub/Sub would retry and re-alert).
+async function handleBounce(args: {
+  mailbox: string
+  subject: string
+  body: string
+  failedRecipientsHeader?: string | null
+}): Promise<void> {
+  const { mailbox, subject } = args
+  try {
+    const { recipient, reason } = parseBounce({ body: args.body, failedRecipientsHeader: args.failedRecipientsHeader })
+    const why = reason || "no reason given by the remote server"
+    console.warn(`[email] BOUNCE in ${mailbox} — to=${recipient ?? "?"} — ${why} — ${subject}`)
+
+    if (!recipient) {
+      await sendTelegramAlert(
+        [
+          "⚠️ <b>Email bounced</b> — couldn't read who it was to",
+          `📮 from ${escapeHtml(mailbox)}`,
+          `📝 ${escapeHtml(subject)}`,
+          "Check the mailbox's inbox for the Mail Delivery Subsystem message.",
+        ].join("\n")
+      )
+      return
+    }
+
+    const sb = getLeadsClient()
+    const { data: rows } = await sb
+      .from("leads")
+      .select("id, name, property_address, caller_phone, twilio_number, notes, created_at")
+      .ilike("email", recipient)
+      .order("created_at", { ascending: false })
+      .limit(50)
+    const cluster = (rows ?? []) as {
+      id: string
+      name: string | null
+      property_address: string | null
+      caller_phone: string | null
+      twilio_number: string | null
+      notes: string | null
+      created_at: string
+    }[]
+
+    const name = cluster.map((r) => r.name).find((n) => n && n.trim()) || null
+    const property = cluster.map((r) => r.property_address).find((p) => p && p.trim()) || null
+    const phone = cluster.map((r) => r.caller_phone).find((p) => p && p.trim()) || null
+
+    if (cluster.length > 0) {
+      // The card reads notes off the most recent inbound row (groupLeads'
+      // statusSource); fall back to the newest row when there's no inbound.
+      const target = cluster.find((r) => r.twilio_number) ?? cluster[0]
+      const stamp = `[BOUNCE ${new Date().toISOString().slice(0, 10)}] ${recipient} — ${why}`
+      const notes = (target.notes || "").trim()
+      if (!notes.includes(stamp)) {
+        const { error } = await sb
+          .from("leads")
+          .update({ notes: notes ? `${stamp}\n${notes}` : stamp })
+          .eq("id", target.id)
+        if (error) console.error(`[email] bounce note failed for ${target.id}:`, error.message)
+      }
+    }
+
+    const lines = [
+      "⚠️ <b>Email bounced</b> — the lead did not get your message",
+      `👤 ${escapeHtml(name || "(lead not found by this email)")}${property ? ` · ${escapeHtml(property)}` : ""}`,
+      `📧 to ${escapeHtml(recipient)} · from ${escapeHtml(mailbox)}`,
+      `❌ ${escapeHtml(why)}`,
+      `📝 ${escapeHtml(subject)}`,
+    ]
+    if (phone) lines.push(`📞 ${formatPhoneForAlert(phone)}`)
+    lines.push(
+      cluster.length > 0
+        ? "Fix the email on the lead card (pencil next to the address), then resend."
+        : "No lead carries this email — it may have been edited since the send."
+    )
+    await sendTelegramAlert(lines.join("\n"))
+  } catch (e) {
+    console.error("[email] handleBounce threw:", e instanceof Error ? e.message : String(e))
+  }
 }
 
 // True when the sender is one of our own Workspace mailboxes. The exact

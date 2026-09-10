@@ -234,6 +234,29 @@ export async function PATCH(request: NextRequest) {
       }
     }
 
+    // Identity edits win across the whole contact (2026-09-09). Ryan fixed
+    // Bill Koester's email on the row the card was editing in May; two
+    // later inbound rows still carried the misspelt address, and because the
+    // card reads identity off the newest inbound row, the correction was
+    // buried and the wrong address kept showing. A name / email / address
+    // typed by Ryan is the truth for every row on that phone.
+    const identityUpdate: Record<string, unknown> = {}
+    for (const f of ["name", "email", "property_address"] as const) {
+      if (f in update) identityUpdate[f] = update[f]
+    }
+    if (Object.keys(identityUpdate).length > 0 && data.caller_phone) {
+      try {
+        const { error: propErr } = await sb
+          .from("leads")
+          .update(identityUpdate)
+          .eq("caller_phone", data.caller_phone)
+          .neq("id", id)
+        if (propErr) console.warn(`[leads:PATCH] identity propagation failed for ${id}:`, propErr.message)
+      } catch (propErr) {
+        console.warn(`[leads:PATCH] identity propagation threw for ${id}:`, propErr instanceof Error ? propErr.message : String(propErr))
+      }
+    }
+
     // Follow-up auto-supersession: when a recommended_followup_date is set
     // on this row, clear it on every OTHER row in the cluster. Ryan's mental
     // model is "one follow-up reminder per lead" — without this rule, the
