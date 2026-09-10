@@ -48,3 +48,7 @@ scripts/.missed-lead-scan.json
 scripts/.missed-lead-candidates.json
 scripts/.campaign-health-state.json
 scripts/.campaign-draft-starved-state.json
+# Email-verification report — names/emails for the ~2,100-contact drip list.
+# Regenerate with scripts/verify-email-list.mjs.
+scripts/.email-verify-report.json
+scripts/.email-verify-report.csv

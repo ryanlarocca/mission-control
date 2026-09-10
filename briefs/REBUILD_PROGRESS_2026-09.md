@@ -17,7 +17,7 @@ count.
 - [x] **(3) Per-sender health checks, auto-pause, Telegram alerts** — done 2026-09-05 (night 3). Gmail watches for the two new mailboxes are NOT registered (live infra change, Q5 unanswered) — the exact two commands are in the night-3 log.
 - [x] **(4) Strip retired Gmail sender** from `config/email-campaigns.json` + document which Vercel env vars to remove — done 2026-09-06 (night 4). The config file never held the Gmail address; the strip was the OAuth code path + the env-only sender fallback. Env-var removal list is in the night-4 log (Ryan runs it — production change).
 - [x] **(4b) Reset the send-time scorecard window for the new domains** — done 2026-09-08 (night 5). Binned by sender rather than moving the date.
-- [ ] **(5) Email-verification tooling** for the ~2,100 contact list (SMTP-level checks; no paid services — if one is genuinely needed, recommend it here instead)
+- [x] **(5) Email-verification tooling** for the ~2,100 contact list (SMTP-level checks; no paid services — if one is genuinely needed, recommend it here instead) — done 2026-09-09 (night 6). SMTP tier built + unit-tested but not run live: outbound port 25/587 is blocked on this network (confirmed). Shipped DNS+syntax tier instead, ran it live against all 2,183 active contacts: 0 dead domains, 0 syntax-invalid, 0 disposable. See D15 for the recommendation this produces.
 - [ ] **(6) T2–T11 template pass** against `CAMPAIGN_VOICE.md` — proposed edits written here for Ryan's review, templates untouched
 
 ## Night log
@@ -372,6 +372,77 @@ avoids a second moving part that would need to track sender changes over
 time. Reversible in one function if Ryan would rather see a single merged
 chart with a vertical "domain switch" marker instead of separate cards.
 
+### 2026-09-09 — night 6 — item (5) DONE
+
+**Tested SMTP reachability before building around it, live, twice:** a raw
+TCP connect from this host to `gmail-smtp-in.l.google.com` (Google's own
+inbound MX, which never blocks legitimate probes) on port 25 timed out —
+not refused, timed out, the signature of a network dropping the SYN rather
+than a mail server rejecting the connection. Same result on port 587.
+Repeated with the harness sandbox disabled (`dangerouslyDisableSandbox`) to
+rule out a sandbox-only restriction — identical timeout. Meanwhile HTTPS
+egress to the same host's domain works fine (tested separately). Conclusion:
+outbound SMTP is blocked at the network level on this machine (common for
+residential ISPs, to stop spam relaying) — true RCPT-TO mailbox
+verification cannot run from here, full stop, regardless of what the code
+does.
+
+**Shipped (branch only, zero prod writes, zero network egress beyond public
+DNS + Supabase reads):**
+- `scripts/verify-email-list.mjs` (new) — two tiers:
+  1. **Syntax + domain heuristics** (instant, no I/O): a practical
+     RFC-5322-ish regex (rejects the RFC's own pathological-but-technically-
+     legal cases no real mail system accepts anyway), a 20-domain disposable-
+     mail blocklist, an 18-prefix role-account list (advisory, not a
+     failure — CRM already treats these as "defer from touch," not bounces),
+     and a freemail-typo map (`gmial.com` → `gmail.com` etc., suggestion
+     only, never auto-corrects).
+  2. **DNS deliverability**: `dns.resolveMx` with the RFC 5321 §5.1 A/AAAA
+     fallback for domains with no MX record. This is the check that actually
+     catches "dead domain," the real hard-bounce cause on this kind of list.
+     A DNS timeout/SERVFAIL is reported as `dns_unknown` (retry-worthy), never
+     folded into a bounce verdict — a resolver hiccup must not read as "bad
+     address."
+  3. **SMTP tier, built but not run**: `buildProbeCommands` (EHLO/MAIL
+     FROM/RCPT TO/QUIT — no DATA ever, so nothing is ever sent even in
+     principle) and `classifySmtpCode` (2xx valid, 5xx invalid, 4xx/garbage
+     unknown — greylisting is never a verdict) are pure functions, fully
+     unit-tested. `selfTestSmtpReachable()` does the live reachability probe
+     above at startup when `--smtp` is passed; on this network it reports
+     unreachable and the tool falls back to tiers 1–2 automatically. Even on
+     a network where it succeeded, the real per-contact RCPT loop is
+     deliberately NOT wired up — opening live connections to ~672 real
+     third-party mail servers is a supervised-session decision, not
+     something a nightly unattended run should switch on by discovering a
+     network where it happens to work.
+  - Read-only: pages `campaign_contacts` (`.range()`, respects the
+    PostgREST 1000-row cap), writes NOTHING back to Supabase. Output is a
+    local report (`scripts/.email-verify-report.{json,csv}`, gitignored —
+    it holds real names/emails) for a human to review; applying any
+    classification to `campaign_contacts.status` is left to a supervised
+    session (see D15).
+  - `node scripts/verify-email-list.mjs [--limit=N] [--status=a,b] [--smtp] [--json]`.
+- `tests/verify-email-list.unit.test.ts` (new, 13 tests): syntax edge cases
+  (whitespace, double `@`, 250+ chars, no-TLD), domain extraction, disposable/
+  role/typo detection, DNS-result classification (ok/dead/unknown), the SMTP
+  command sequence never contains `DATA`, SMTP code classification including
+  the greylist-is-never-a-verdict rule, and `classifyEmail` end-to-end with
+  an injected resolver (syntax/disposable short-circuit before any DNS call
+  — verified via a spy that must NOT be called).
+- `.gitignore` — the two report files (PII, regenerable).
+
+**Verified:** `npx tsc --noEmit` clean; `npx vitest run` 87/87 (74 prior +
+13 new, all pure/offline per this repo's unit-test rule — no live socket in
+any test, per vitest.config.ts's "no network" contract; the real socket
+path is exercised only by the self-test above, manually, not by `npm test`).
+Dry runs: `--limit=15` and `--limit=5 --smtp` (confirms the reachable=false
+fallback message and that it still completes tiers 1–2). **Then ran for
+real against the live list (read-only Supabase + public DNS, no email
+sent):** all 2,183 `status=active` contacts across 672 unique domains —
+**0 dead_domain, 0 syntax_invalid, 0 disposable, 26 role_account
+(advisory), 0 typo_suspect.** Report written to
+`scripts/.email-verify-report.json` / `.csv` (gitignored, not committed).
+
 ## Decisions taken by the builder (reversible, flag if wrong)
 
 - D1 (9/3): did **not** request or add `gmail.send` anywhere in code. All
@@ -431,6 +502,27 @@ chart with a vertical "domain switch" marker instead of separate cards.
   is isolated by construction, no date to keep in sync as senders change);
   see the night-5 log for the live-data verification. Reversible in one
   function if Ryan prefers a single merged chart with a domain-switch marker.
+- D15 (9/9): shipped DNS+syntax verification instead of true SMTP RCPT-TO
+  checks, because the latter is not possible from this machine's network —
+  tested, not assumed (see night-6 log). **Recommendation, not an action
+  taken:** the list is domain-clean (0/2,183 dead domains) but that only
+  rules out one class of bounce; a mailbox-level check (does
+  `hhackett@baileyproperties.com` specifically still exist, not just does
+  `baileyproperties.com` accept mail) needs either (a) real RCPT-TO probing
+  from a host with open outbound port 25 — the code is ready
+  (`buildProbeCommands`/`classifySmtpCode` in `verify-email-list.mjs`), it
+  would just need wiring into the per-contact loop and a rate limiter, run
+  from somewhere other than this network (note: several cloud providers,
+  e.g. AWS, also block port 25 outbound by default and require a support
+  request to lift it — check before assuming a VM solves this), or (b) a
+  paid SMTP-verification API reached over HTTPS (unaffected by the port-25
+  block) — categorically like ZeroBounce/NeverBounce, no specific vendor
+  evaluated, no signup made per the "no paid services" instruction. Given
+  the list is otherwise clean and item 3's per-sender bounce gate
+  (auto-pause at 2%, drop-a-rung at the red line) already exists as a live
+  backstop once sending starts, my read is this is a "ship it, let the
+  health gates catch the rest" situation rather than a blocker — but it's
+  Ryan's list and Ryan's call (Q9).
 
 ## Questions for Ryan
 
@@ -497,3 +589,12 @@ chart with a vertical "domain switch" marker instead of separate cards.
    Gmail settings, forward all mail to `info@lrghomes.com` — replies then
    ride the existing AGENT-DRIP pipeline + Telegram alerts. Or accept that
    those 7 threads are dark. Your call; the builder won't touch that account.
+9. **Q9 (item 5 finding, non-blocking):** true SMTP mailbox-level
+   verification isn't possible from this network (D15) — the list is
+   confirmed domain-clean (0/2,183) but individual-mailbox existence is
+   unverified. Ship as-is and lean on item 3's live bounce gate, or spend
+   time on a port-25-open host / a paid HTTPS verifier first? Builder's
+   read: ship as-is, the gate is a real backstop.
+   `scripts/.email-verify-report.csv` (gitignored, regenerate with
+   `node scripts/verify-email-list.mjs`) has the 26 role-account addresses
+   if you want to eyeball those before first touch.
