@@ -197,7 +197,11 @@ export async function GET(_request: NextRequest) {
     const missingIds = queueLeadIds.filter((id) => !candIds.has(id))
     if (missingIds.length > 0) {
       const { data: extras } = await sb.from("leads").select(LEAD_COLS).in("id", missingIds)
-      for (const e of (extras ?? []) as unknown as CandidateLead[]) candidates.push(e)
+      for (const e of (extras ?? []) as unknown as CandidateLead[]) {
+        // Same Relationships guard as the candidate set — a queued drip on a
+        // promoted contact must not smuggle them back into the worklist.
+        if (!isRelationshipContact(relKeys, e)) candidates.push(e)
+      }
     }
 
     // 3. Name fallback maps — a follow-up/drip row often has name=null while
