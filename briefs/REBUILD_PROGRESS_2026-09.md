@@ -18,7 +18,7 @@ count.
 - [x] **(4) Strip retired Gmail sender** from `config/email-campaigns.json` + document which Vercel env vars to remove — done 2026-09-06 (night 4). The config file never held the Gmail address; the strip was the OAuth code path + the env-only sender fallback. Env-var removal list is in the night-4 log (Ryan runs it — production change).
 - [x] **(4b) Reset the send-time scorecard window for the new domains** — done 2026-09-08 (night 5). Binned by sender rather than moving the date.
 - [x] **(5) Email-verification tooling** for the ~2,100 contact list (SMTP-level checks; no paid services — if one is genuinely needed, recommend it here instead) — done 2026-09-09 (night 6). SMTP tier built + unit-tested but not run live: outbound port 25/587 is blocked on this network (confirmed). Shipped DNS+syntax tier instead, ran it live against all 2,183 active contacts: 0 dead domains, 0 syntax-invalid, 0 disposable. See D15 for the recommendation this produces.
-- [ ] **(6) T2–T11 template pass** against `CAMPAIGN_VOICE.md` — proposed edits written here for Ryan's review, templates untouched
+- [x] **(6) T2–T11 template pass** against `CAMPAIGN_VOICE.md` — done 2026-09-10 (night 7). Proposed edits for T2/T6/T9 written below; templates untouched (checked against the live `campaign_templates` DB, not just the file fallback — found a rule-4 violation already sitting in production T1, out of this item's scope, flagged separately).
 
 ## Night log
 
@@ -443,6 +443,88 @@ sent):** all 2,183 `status=active` contacts across 672 unique domains —
 (advisory), 0 typo_suspect.** Report written to
 `scripts/.email-verify-report.json` / `.csv` (gitignored, not committed).
 
+### 2026-09-10 — night 7 — item (6) DONE
+
+**Method:** re-read `CAMPAIGN_VOICE.md`'s 7 locked rules, then pulled the
+**live** `campaign_templates` DB rows (read-only, `touch_number` 1–11) rather
+than trusting `scripts/campaign-touches.mjs`'s `TOUCHES` array — that file is
+explicitly "seed and fallback when no DB row exists," and T1/T2 have live
+Telegram `copy:` edits from 8/6 that predate it. T10 is still the deliberate
+`null`/`null` placeholder (unchanged, correct). No template row was written;
+no code or config touched.
+
+**Live DB text differs from the checked-in file for T2** (T1 too — see the
+out-of-scope note below): the 8/6 proof-of-funds edit reordered/reworded it.
+Verdicts below are against the DB text, since that's what the engine will
+actually render.
+
+**No changes needed (7 of 9 in scope) — T3, T4, T5, T7, T8, T9's history/ask
+mechanics check out, T11:**
+- T3, T4, T5, T8: each carries exactly one clear ask ("I'm a text away" /
+  "send it my way" / "text me before you put it back on" / "Worth a text
+  before the sign goes up"), no meeting/coffee offers, no email-contrast
+  phrasing, no invented relationship history. T3's three named addresses are
+  Ryan's own closed deals offered as proof, not a claim about the recipient's
+  history — rule 3's "address in the data is an MLS tie, not history" is
+  about not implying personal history with the recipient, which this
+  doesn't do.
+- T7, T11: both are deliberately pitch-free (mid-year check-in, year-end
+  thanks) and correctly carry no "send it my way" ask — consistent with
+  their own labels, not a rule-5 gap.
+
+**Proposed edits (2 of 9) — written here only, not applied:**
+
+1. **T2** ("the buyer who actually closes") — two issues:
+   - Timing: opens "quick follow-up on my note a couple weeks back," but the
+     locked cadence (Ryan, 2026-08-24) is 30 days between every touch, so T2
+     will always land a month after T1, never "a couple weeks." Minor, but
+     it's a factual claim the recipient can notice.
+   - Rule 2 ("a reassurance is fine; do not pile several on"): the live body
+     stacks five in one paragraph — no repair negotiations, no financing
+     contingencies, dual-side commission ("welcome to both sides"), proof of
+     funds ready, and "I close what I put under contract." Proposed trim
+     (keeps the three most concrete/distinct claims, drops the two most
+     redundant):
+     > Hi {{first_name}}, quick follow-up on my note last month. When I say
+     > I make it easy, here's what I mean: no financing contingencies to
+     > sweat, and if it's your listing you're welcome to both sides. I close
+     > what I put under contract. That's the whole reputation I'm trying to
+     > keep.
+     >
+     > One relationship, multiple closings. Keep me in mind next time
+     > something fits.
+
+2. **T6** ("Not just apartments") — rule 5 ("the ask is 'send it my way'"):
+   this is a pitch touch (buy-box refresher) but the current close is an open
+   question with no explicit ask ("What are you working on these days?").
+   Every other pitch touch has one. Proposed: keep the question, add the ask:
+   > Same deal as always: as-is, fast, easy. What are you working on these
+   > days? If anything fits, send it my way.
+
+3. **T9** ("The complicated ones") — rule 5 ("a call is only offered to
+   discuss a specific property"): the close offers a phone call as the
+   default CTA — "I'm probably the easiest phone call you'll make on it" —
+   attached to a general "if you've got one of these," not one already-named
+   property, and it's the only touch whose primary ask is a call rather than
+   text/reply. Proposed (keeps the "easiest call" voice, makes text the
+   actual action):
+   > If you've got one of these in your pipeline, text me the details, I'll
+   > make it the easiest call you make on it.
+
+**Out of scope, flagging only — did not touch:** the live T1 (`campaign_templates`,
+`updated_at` 2026-08-06, an earlier Telegram `copy:` edit) reads "We've
+crossed paths before, so I wanted to reconnect" — this is close to rule 4's
+own banned-phrase example ("we spoke before") and predates the 2026-08-24
+rule lock that added it. The checked-in file fallback (`scripts/campaign-touches.mjs`)
+does NOT have this line ("I'm an investor buying directly from agents and
+wanted to get on your radar"), so the two sources have quietly diverged. This
+item's scope is T2–T11 only, so no edit is proposed here — see Q10.
+
+**Minor doc note, not fixed:** `scripts/campaign-touches.mjs`'s header comment
+("NO em dashes, NO middle dots... Keep it that way," 2026-07-20) is now stale
+— `CAMPAIGN_VOICE.md` v3 (2026-08-24) explicitly overrides that ban for this
+drip. Cosmetic; flagging for whoever next edits that file.
+
 ## Decisions taken by the builder (reversible, flag if wrong)
 
 - D1 (9/3): did **not** request or add `gmail.send` anywhere in code. All
@@ -523,6 +605,12 @@ sent):** all 2,183 `status=active` contacts across 672 unique domains —
   backstop once sending starts, my read is this is a "ship it, let the
   health gates catch the rest" situation rather than a blocker — but it's
   Ryan's list and Ryan's call (Q9).
+- D16 (9/10): reviewed the **live `campaign_templates` DB rows**, not the
+  `scripts/campaign-touches.mjs` file, since 8/6 Telegram `copy:` edits had
+  already diverged T1 and T2 from the checked-in seed. Did not propose an
+  edit for T1's "we've crossed paths before" line even though it reads as a
+  rule-4 violation, because item 6's assigned scope is T2–T11 only —
+  flagged for Ryan instead of guessed at (Q10).
 
 ## Questions for Ryan
 
@@ -598,3 +686,14 @@ sent):** all 2,183 `status=active` contacts across 672 unique domains —
    `scripts/.email-verify-report.csv` (gitignored, regenerate with
    `node scripts/verify-email-list.mjs`) has the 26 role-account addresses
    if you want to eyeball those before first touch.
+10. **Q10 (item 6 finding, T1 — technically out of this item's scope):** the
+    live T1 template (`campaign_templates`, edited 8/6) opens "We've crossed
+    paths before, so I wanted to reconnect" — close to rule 4's own
+    banned-phrase example ("we spoke before") and written before the
+    2026-08-24 rule lock added that ban. It has already been sending under
+    this wording (T1 is touch 1, sent at import) to some slice of the list.
+    Want this folded into a T1 pass along with T2/T6/T9, or handled
+    separately via `copy: T1 <guidance>` in Telegram? Builder's suggested
+    replacement, matching the checked-in file's non-history opener: "Ryan
+    LaRocca with LRG Homes. I'm an investor buying directly from agents and
+    wanted to get on your radar."
