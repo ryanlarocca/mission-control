@@ -612,7 +612,43 @@ drip. Cosmetic; flagging for whoever next edits that file.
   rule-4 violation, because item 6's assigned scope is T2–T11 only —
   flagged for Ryan instead of guessed at (Q10).
 
-## Questions for Ryan
+## Ryan's answers — 2026-09-16 (supervised session, all ten resolved)
+
+Branch merged to `main` (fast-forward, `f87512a`) after tsc clean + 101/101
+vitest. Engine is STILL UNLOADED; zero emails sent. Aging clock unchanged —
+earliest first send ~Oct 1.
+
+| Q | Answer | Done in this session |
+|---|---|---|
+| Q1 gmail.send scope | **Skip.** | — |
+| Q2 Reply-To | **info@lrghomes.com** (as built). | config `_doc` updated |
+| Q3 understudy volume | **Import Relationships Agent tiers A–C as cohort `relationships` AND let the understudy overflow into the general pool** once its segment + the workhorse budget are spent. Agents only — no personal contacts, no vendors. | `scripts/import-relationships-agents.mjs` ran `--commit`: **141 inserted** (A 1 / B 56 / C 84; 10 already in the drip by email, 4 by phone, 0 suppressed). `overflow: true` on offers; `assignSender()` takes the budgets map; 6 unit tests. Live dry run: buys takes 5 July repliers, offers the next 3. (Import flag reads `relationships-import-2026-09-17` — UTC date, cosmetic.) |
+| Q4 ceilings | **100 / 40 confirmed.** | — |
+| Q5 Gmail watches | **Yes.** | `add-email-mailbox.mjs` run for real on both: `ryan@lrghomesbuys.com → AGENT-DRIP-BUYS`, `ryan@lrghomesoffers.com → AGENT-DRIP-OFFERS`; watches registered on topic `lrg-gmail-leads`; config committed + deployed. Renewal cron picks them up from the JSON. |
+| Q6 judge inbox | **Fresh consumer Gmail** — Ryan creates it; then set `CAMPAIGN_CANARY_TO=<address>` in `.env.local`. **OPEN until Ryan sends the address.** Canary gate stays enforced. | — |
+| Q7 auto-pause | **Keep 48h.** | — |
+| Q8 dead Gmail | **Forward ryan.lrghomes@gmail.com → info@lrghomes.com** (Gmail Settings → Forwarding and POP/IMAP → Add a forwarding address → confirm from info@ → "Forward a copy of incoming mail"). **OPEN — Ryan's clicks.** | — |
+| Q9 verification | **Ship as-is**, lean on the per-sender 2% bounce auto-pause. | — |
+| Q10 copy | **All four applied** to live `campaign_templates` (T1 opener → "I'm an investor buying directly from agents and wanted to get on your radar."; T2 → "last month" + three reassurances incl. Ryan's proof-of-funds line; T6 + "If anything fits, send it my way."; T9 → text-first close). Seed file `campaign-touches.mjs` matches. Queue was empty (0 draft/approved), so nothing to re-render. | Ryan also said: keep the approval gate on and interactive early so the system learns from his edits — `CAMPAIGN_AUTO_SEND_TOUCHES` is empty (every touch gated), queue edits still land in `campaign_send_edits`. |
+
+**Production chores from the night-4 list — done 2026-09-16:** the five
+Vercel env vars (`CAMPAIGN_GMAIL_OAUTH_*` ×4, `CAMPAIGN_SEND_AS`) removed
+from Production (`vercel env rm`, 0 remaining); `.env.local`
+`CAMPAIGN_SEND_AS` + the four commented OAuth lines deleted (backup
+`.env.local.bak-2026-09-16`); `CAMPAIGN_COHORT` cleared from `phaseB` to
+empty so the restart drafts the whole pool (the 60 phase-B rows keep their
+A/B/C variant and still get Claude-composed T1s — gated); launchd
+`com.lrghomes.reminder-oauth-publish` unloaded, plist moved to
+`~/Library/LaunchAgents/_retired/`. Nightly builder routine
+`trig_01XTdiXwyA2UNHmaDnAjs4Gu` **disabled** (it had fired 9/11–9/16 with an
+empty queue).
+
+**Still open before the engine is reloaded (~Oct 1):** (1) judge inbox
+address → `CAMPAIGN_CANARY_TO`; (2) Q8 forwarding; (3) a supervised
+first-day run: `launchctl load` the engine, watch the 6pm mint, approve by
+hand.
+
+## Questions for Ryan (answered 2026-09-16 — kept for the record)
 
 1. **Q1 (non-blocking, hygiene):** do you want `gmail.send` added to the DWD
    client's scope list for least privilege? Engine works without it. If yes:

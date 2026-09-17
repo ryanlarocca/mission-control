@@ -3,6 +3,14 @@
     "source": "AGENT-DRIP",
     "source_type": "direct_mail"
   },
+  "ryan@lrghomesbuys.com": {
+    "source": "AGENT-DRIP-BUYS",
+    "source_type": "direct_mail"
+  },
+  "ryan@lrghomesoffers.com": {
+    "source": "AGENT-DRIP-OFFERS",
+    "source_type": "direct_mail"
+  },
   "ryansvg@lrghomes.com": {
     "source": "MFM-A",
     "source_type": "direct_mail"
