@@ -41,7 +41,7 @@ If you've got a listing that fits, especially one that's rough, stuck, or gettin
     dayOffset: 30,
     label: "Why agents send me deals",
     subject: "The buyer who actually closes",
-    body: `Hi {{first_name}}, quick follow-up on my note a couple weeks back. When I say I make it easy, here's what I mean: proof of funds with every offer, no repair negotiations, no financing contingencies to sweat, and if it's your listing you're welcome to both sides. I close what I put under contract. That's the whole reputation I'm trying to keep.
+    body: `Hi {{first_name}}, quick follow-up on my note last month. When I say I make it easy, here's what I mean: no financing contingencies to sweat, proof of funds ready whenever you need it, and if it's your listing you're welcome to both sides. I close what I put under contract. That's the whole reputation I'm trying to keep.
 
 One relationship, multiple closings. Keep me in mind next time something fits.`,
   },
@@ -79,7 +79,7 @@ Hope you never need this email. But you probably will.`,
     subject: "Not just apartments",
     body: `Hi {{first_name}}, quick reminder since most of your business is residential: I buy single-family too, not just units. Estates, tenant-occupied, dated, fire-damaged, all fine. Anywhere in the Bay under $4M.
 
-Same deal as always: as-is, fast, easy. What are you working on these days?`,
+Same deal as always: as-is, fast, easy. What are you working on these days? If anything fits, send it my way.`,
   },
   {
     touch: 7,
@@ -106,7 +106,7 @@ Worth a text before the sign goes up.`,
     subject: "The complicated ones",
     body: `Hi {{first_name}}, probate, trusts, estates, divorce sales: the deals with messy paperwork and messier timelines. I've closed them, I'm patient with courts, and thirty years of deferred maintenance is fine by me.
 
-If you've got one of these in your pipeline, I'm probably the easiest phone call you'll make on it.`,
+If you've got one of these in your pipeline, text me the details. I'll make it the easiest call you make on it.`,
   },
   {
     touch: 10,

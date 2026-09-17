@@ -105,3 +105,43 @@ describe("consistency rule", () => {
     expect(back.state.gap_days).toBe(0)
   })
 })
+
+describe("understudy overflow (Ryan 2026-09-16, rebuild Q3)", () => {
+  const { assignSender } = sendersModule as unknown as Record<string, any>
+  const workhorse = { email: "ryan@lrghomesbuys.com", label: "buys", role: "workhorse", segment: "drip", overflow: false }
+  const understudy = { email: "ryan@lrghomesoffers.com", label: "offers", role: "understudy", segment: "relationships", overflow: true }
+  const senders = [workhorse, understudy]
+  const relEmails = new Set(["warm@agent.com"])
+  const stranger = { id: "c1", email: "new@agent.com", touch_number: 0 }
+
+  it("a Relationships match always goes to the understudy, budget or not", () => {
+    const budgets = new Map([[workhorse.email, 5], [understudy.email, 0]])
+    expect(assignSender({ contact: { id: "c2", email: "warm@agent.com" }, senders, relEmails, budgets })).toBe(understudy)
+  })
+
+  it("a stranger goes to the workhorse while it has budget", () => {
+    const budgets = new Map([[workhorse.email, 1], [understudy.email, 3]])
+    expect(assignSender({ contact: stranger, senders, relEmails, budgets })).toBe(workhorse)
+  })
+
+  it("a stranger overflows to the understudy only once the workhorse budget is spent", () => {
+    const budgets = new Map([[workhorse.email, 0], [understudy.email, 3]])
+    expect(assignSender({ contact: stranger, senders, relEmails, budgets })).toBe(understudy)
+  })
+
+  it("no overflow when the understudy opted out or has no budget left", () => {
+    const noOpt = [workhorse, { ...understudy, overflow: false }]
+    expect(assignSender({ contact: stranger, senders: noOpt, relEmails, budgets: new Map([[workhorse.email, 0], [understudy.email, 3]]) })).toBe(workhorse)
+    expect(assignSender({ contact: stranger, senders, relEmails, budgets: new Map([[workhorse.email, 0], [understudy.email, 0]]) })).toBe(workhorse)
+  })
+
+  it("without a budgets map (status printer, tests) the old rule holds", () => {
+    expect(assignSender({ contact: stranger, senders, relEmails })).toBe(workhorse)
+  })
+
+  it("sticky-to-thread beats overflow: a contact already on the workhorse stays there", () => {
+    const lastSender = new Map([["c1", workhorse.email]])
+    const budgets = new Map([[workhorse.email, 0], [understudy.email, 3]])
+    expect(assignSender({ contact: stranger, senders, relEmails, lastSender, budgets })).toBe(workhorse)
+  })
+})

@@ -396,9 +396,11 @@ async function draftPass() {
     const auto = AUTO_SEND_TOUCHES.has(touch)
     if (!auto && !gatedAllowed) continue // gated touches mint once daily, first pass after MINT_HOUR PT
     // Which mailbox carries this contact: sticky to the thread's mailbox,
-    // else the understudy's segment claim, else the workhorse. A sender whose
-    // budget is spent skips the contact — it stays due for the next pass.
-    const sender = assignSender({ contact: c, senders: SENDERS, relEmails, lastSender })
+    // else the understudy's segment claim, else the workhorse, else (once the
+    // workhorse budget is spent) an overflow-enabled sender with budget left.
+    // A sender whose budget is spent skips the contact — it stays due for
+    // the next pass.
+    const sender = assignSender({ contact: c, senders: SENDERS, relEmails, lastSender, budgets })
     if (!sender || (budgets.get(sender.email) ?? 0) <= 0) continue
     if (!auto) gatedTouches.add(touch)
     // Phase B: cohort contacts with a variant get a UNIQUE Claude-composed

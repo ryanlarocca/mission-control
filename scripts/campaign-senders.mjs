@@ -70,6 +70,10 @@ export function loadSenderConfig({ env = process.env, configPath = SENDERS_CONFI
       segment: cfg.segment === "relationships" ? "relationships" : "drip",
       segmentTiers: Array.isArray(cfg.segmentTiers) ? cfg.segmentTiers.map(String) : ["A", "B", "C"],
       replyTo: cfg.replyTo === null ? null : String(cfg.replyTo || "").trim().toLowerCase() || null,
+      // Ryan 2026-09-16 (Q3): an understudy with overflow:true fills the rest
+      // of its daily budget from the general pool once its own segment is
+      // spent for the day. Never the reverse — segment contacts stay put.
+      overflow: cfg.overflow === true,
     })
   }
   for (const n of narrow) if (!senders.some((s) => s.email === n)) throw new Error(`CAMPAIGN_SENDERS names ${n}, which is not in config/campaign-senders.json`)
@@ -348,7 +352,7 @@ export async function fetchLastSenderByContact(sb, contactIds) {
  * Which sender carries this contact. Sticky first (the mailbox that already
  * holds the thread), then the understudy's segment claim, then the workhorse.
  */
-export function assignSender({ contact, senders, relEmails, lastSender }) {
+export function assignSender({ contact, senders, relEmails, lastSender, budgets = null }) {
   const email = String(contact.email ?? "").trim().toLowerCase()
   const prior = lastSender?.get?.(contact.id) ?? null
   if (prior) {
@@ -357,7 +361,19 @@ export function assignSender({ contact, senders, relEmails, lastSender }) {
   }
   const understudy = senders.find((s) => s.segment === "relationships")
   if (understudy && relEmails?.has(email)) return understudy
-  return senders.find((s) => s.segment === "drip") ?? senders[0] ?? null
+  const workhorse = senders.find((s) => s.segment === "drip") ?? senders[0] ?? null
+  // Overflow (Ryan 2026-09-16, Q3): the Relationships segment alone can never
+  // keep the understudy busy (≈230 agents with an email vs a 40/day cap), so
+  // once the workhorse's budget for the day is spent, an unclaimed contact
+  // may go to a sender that opted into overflow and still has budget. The
+  // due list is sorted segment-first, so the understudy's own people always
+  // consume its budget before any overflow does. Sticky-to-thread above
+  // keeps the contact on that mailbox for every later touch.
+  if (budgets && workhorse && (budgets.get(workhorse.email) ?? 0) <= 0) {
+    const spare = senders.find((s) => s !== workhorse && s.overflow && (budgets.get(s.email) ?? 0) > 0)
+    if (spare) return spare
+  }
+  return workhorse
 }
 
 /** 0 = replied before, 1 = Relationships match, 2 = everyone else. Lower sends first. */
@@ -385,13 +401,13 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
     const st = states.get(s.email)
     const today = new Intl.DateTimeFormat("en-CA", { timeZone: "America/Los_Angeles", year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date())
     const canary = canaryGate(st, today, cfg.gates)
-    return { email: s.email, role: s.role, segment: s.segment, replyTo: s.replyTo, step: st.step, cap: capFor(s, st), ceiling: s.ceiling, ramp: s.ramp.join("→"), healthy_days: st.healthy_days, entered_step: st.entered_step, held: st.held_reason, paused: isSenderPaused(st) ? pauseLabel(st) : false, pause_expired: !!st.paused && !isSenderPaused(st), gap_days: st.gap_days ?? 0, canary: canary.note, canary_gate: cfg.gates.requireCanaryVerdict ? canary.pass : "advisory", postmaster: st.postmaster?.reputation ?? null }
+    return { email: s.email, role: s.role, segment: s.segment, overflow: s.overflow, replyTo: s.replyTo, step: st.step, cap: capFor(s, st), ceiling: s.ceiling, ramp: s.ramp.join("→"), healthy_days: st.healthy_days, entered_step: st.entered_step, held: st.held_reason, paused: isSenderPaused(st) ? pauseLabel(st) : false, pause_expired: !!st.paused && !isSenderPaused(st), gap_days: st.gap_days ?? 0, canary: canary.note, canary_gate: cfg.gates.requireCanaryVerdict ? canary.pass : "advisory", postmaster: st.postmaster?.reputation ?? null }
   })
   if (process.argv.includes("--json")) console.log(JSON.stringify({ gates: cfg.gates, senders: rows }, null, 2))
   else {
     console.log(`senders (${rows.length} enabled of ${cfg.all.length} configured; gates: ${cfg.gates.minHealthyDays} healthy days/step, ≤${cfg.gates.maxWeekOverWeek}× week-over-week, canary gate ${cfg.gates.requireCanaryVerdict ? "ENFORCED" : "advisory"}, Postmaster gate ${cfg.gates.requirePostmaster ? "ENFORCED" : "advisory"}, auto-pause ${cfg.gates.autoPauseHours}h)`)
     for (const r of rows) {
-      console.log(`  ${r.email}  [${r.role}]  segment=${r.segment}  reply-to=${r.replyTo ?? "none"}`)
+      console.log(`  ${r.email}  [${r.role}]  segment=${r.segment}${r.overflow ? "+overflow" : ""}  reply-to=${r.replyTo ?? "none"}`)
       console.log(`    step ${r.step} → cap ${r.cap}/day (ladder ${r.ramp}, ceiling ${r.ceiling}) · healthy days ${r.healthy_days} · since ${r.entered_step ?? "—"}${r.held ? ` · held: ${r.held}` : ""}${r.paused ? ` · PAUSED ${r.paused}` : r.pause_expired ? " · pause expired (resumes on the next pass)" : ""}${r.gap_days ? ` · ${r.gap_days} gap day${r.gap_days === 1 ? "" : "s"}` : ""}`)
       console.log(`    canary: ${r.canary} (gate ${r.canary_gate === "advisory" ? "advisory" : r.canary_gate ? "pass" : "FAIL"}) · Postmaster: ${r.postmaster ?? "not recorded"}`)
     }
