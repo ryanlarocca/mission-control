@@ -277,12 +277,6 @@ class CRMSErrorBoundary extends Component<{ children: ReactNode }, { hasError: b
 const SEND_TIMEOUT_MS = 30000
 const GENERATE_DEBOUNCE_MS = 300
 
-// Pre-fetch fallback only — the API's dailyTarget (lib/relationships
-// DAILY_TARGETS) overwrites this on load. Keep the two in sync.
-const DEFAULT_DAILY_TARGET: Record<ContactType, number> = {
-  Agent: 2, Vendor: 1, Personal: 1, PM: 0, Investor: 0, PrivateMoney: 1, Seller: 0,
-}
-
 function formatAbsoluteDate(iso: string | null): string {
   if (!iso) return "—"
   const d = new Date(iso)
@@ -312,8 +306,6 @@ export function CRMSTab() {
 function CRMSTabInner() {
   // ── Data state ──
   const [contacts, setContacts]               = useState<CRMSContact[]>([])
-  const [total, setTotal]                     = useState(0)
-  const [dailyTarget, setDailyTarget]         = useState<Record<ContactType, number>>(DEFAULT_DAILY_TARGET)
   const [loadingContacts, setLoadingContacts] = useState(true)
   const [contactsError, setContactsError]     = useState<string | null>(null)
 
@@ -431,8 +423,6 @@ function CRMSTabInner() {
         category: coerceType(c.type ?? c.category),
       }))
       setContacts(loaded)
-      setTotal(data.total || 0)
-      if (data.dailyTarget) setDailyTarget({ ...DEFAULT_DAILY_TARGET, ...data.dailyTarget })
 
       // Auto-select first contact not already sent/skipped
       const firstDue = loaded.find(c => !sent.has(c.id) && !skipped.has(c.id))
@@ -451,7 +441,7 @@ function CRMSTabInner() {
   }
 
   // Lazy-load the full BoB sheet the first time the search box is focused.
-  // Separate from fetchContacts (which only returns today's capped queue).
+  // Separate from fetchContacts (which only returns today's due list).
   async function ensureAllContacts() {
     if (allLoadRef.current || loadingAll) return
     allLoadRef.current = true
@@ -922,21 +912,19 @@ function CRMSTabInner() {
   const dueContacts     = contacts.filter(c => !sent.has(c.id) && !skipped.has(c.id) && !removed.has(c.id))
   const selectedContact = dueContacts.find(c => c.id === selectedId) ?? null
 
-  // Per-type sent counts (for progress bar)
-  const sentByType = useMemo(() => {
-    const counts: Record<ContactType, number> = {
-      Agent: 0, Vendor: 0, Personal: 0, PM: 0, Investor: 0, PrivateMoney: 0, Seller: 0,
-    }
-    for (const c of contacts) {
-      if (sent.has(c.id)) counts[c.type] = (counts[c.type] || 0) + 1
-    }
-    return counts
-  }, [contacts, sent])
+  // Worked-through meter (2026-09-21): the queue is the whole due list, so
+  // progress is how much of it has been handled (sent, skipped, or removed)
+  // out of what was due at load. Green only when nothing is left.
+  const listTotal = contacts.length
+  const handled = listTotal - dueContacts.length
+  const allDone = listTotal > 0 && dueContacts.length === 0
+  const progressPct = listTotal > 0 ? Math.min(100, Math.round((handled / listTotal) * 100)) : 0
 
-  const totalTarget = ALL_TYPES.reduce((s, t) => s + (dailyTarget[t] || 0), 0)
-  const totalSent = ALL_TYPES.reduce((s, t) => s + sentByType[t], 0)
-  const allDone = totalSent >= totalTarget && totalTarget > 0
-  const progressPct = totalTarget > 0 ? Math.min(100, Math.round((totalSent / totalTarget) * 100)) : 0
+  // What's still left, by type — the shape of the rest of the day.
+  const leftByType: Record<ContactType, number> = {
+    Agent: 0, Vendor: 0, Personal: 0, PM: 0, Investor: 0, PrivateMoney: 0, Seller: 0,
+  }
+  for (const c of dueContacts) leftByType[c.type] = (leftByType[c.type] || 0) + 1
 
   const isGenerating   = generatingFor === selectedContact?.id
   const isEnriching    = enrichingFor  === selectedContact?.id
@@ -1036,11 +1024,11 @@ function CRMSTabInner() {
           {allDone ? (
             <div className="flex items-center gap-1.5 text-xs text-emerald-400 font-medium">
               <CheckCircle2 className="w-3.5 h-3.5" />
-              Done for today
+              All caught up
             </div>
           ) : (
             <span className="text-xs text-zinc-300 font-medium">
-              {totalSent} / {totalTarget} done today
+              {handled} / {listTotal} worked today
             </span>
           )}
           <div className="flex-1 h-1.5 bg-zinc-800 rounded overflow-hidden">
@@ -1053,28 +1041,26 @@ function CRMSTabInner() {
             <RefreshCw className="w-3.5 h-3.5" />
           </button>
         </div>
-        <div className="flex flex-wrap gap-x-3 gap-y-1 text-xs text-zinc-500">
-          {ALL_TYPES.map(t => {
-            const target = dailyTarget[t] || 0
-            if (target === 0) return null
-            const done = sentByType[t] || 0
-            const hit = done >= target
-            return (
-              <span key={t} className={hit ? "text-emerald-400" : ""}>
-                {TYPE_LABEL_PLURAL[t]}: {done}/{target}
-              </span>
-            )
-          })}
-        </div>
+        {!allDone && (
+          <div className="flex flex-wrap gap-x-3 gap-y-1 text-xs text-zinc-500">
+            <span className="text-zinc-600">Left:</span>
+            {ALL_TYPES.map(t => {
+              const left = leftByType[t] || 0
+              if (left === 0) return null
+              return (
+                <span key={t}>
+                  {TYPE_LABEL_PLURAL[t]}: {left}
+                </span>
+              )
+            })}
+          </div>
+        )}
       </div>
 
       {/* Header bar */}
       <div className="flex items-center gap-3 flex-wrap">
         <div className="bg-amber-500/10 border border-amber-500/20 rounded px-3 py-1.5">
-          <p className="text-xs text-amber-400 font-medium">{dueContacts.length} contacts due now</p>
-        </div>
-        <div className="bg-red-500/10 border border-red-500/20 rounded px-3 py-1.5">
-          <p className="text-xs text-red-400 font-medium">{total} total overdue</p>
+          <p className="text-xs text-amber-400 font-medium">{dueContacts.length} left to call</p>
         </div>
         {sent.size > 0 && (
           <div className="bg-emerald-500/10 border border-emerald-500/20 rounded px-3 py-1.5">

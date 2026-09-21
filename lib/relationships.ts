@@ -1,8 +1,9 @@
 // Shared Relationships-tab (Book of Business) logic. Backed by the Supabase
 // `relationships` table since the 2026-05-22 migration off the BoB Google
-// Sheet (briefs/RELATIONSHIPS_SUPABASE_MIGRATION.md). The cadence constants
-// and interleave() were previously copy-pasted across app/api/crms/contacts
-// and all-contacts — single source of truth lives here now.
+// Sheet (briefs/RELATIONSHIPS_SUPABASE_MIGRATION.md). Single source of truth
+// for the cadence constants and queue ordering used by app/api/crms/*.
+// (The 5/day per-category targets + weighted interleave were retired
+// 2026-09-21 — the queue is now the whole due list.)
 
 import type { SupabaseClient } from "@supabase/supabase-js"
 import type { RelationshipCategory } from "@/lib/crms"
@@ -10,14 +11,6 @@ import { normalizeCategory } from "@/lib/crms"
 
 // Cadence days by tier — how long after the last touch a contact is "due".
 export const CADENCE: Record<string, number> = { A: 30, B: 45, C: 60, D: 365 }
-
-// Per-category daily queue targets. PM/Investor/Seller never surface
-// proactively (target 0); Agent backfills any shortfall.
-// 2026-07-17: total 18 → 5 to match the Board's 5-solid-contacts/day goal —
-// post-Cleanup the queue is only people Ryan actually wants to talk to.
-export const DAILY_TARGETS: Record<RelationshipCategory, number> = {
-  Agent: 2, Vendor: 1, Personal: 1, PM: 0, Investor: 0, PrivateMoney: 1, Seller: 0,
-}
 
 export const RELATIONSHIP_TYPES: readonly RelationshipCategory[] = [
   "Agent", "Vendor", "Personal", "PM", "Investor", "PrivateMoney", "Seller",
@@ -143,36 +136,6 @@ export function queueOrder(a: ApiContact, b: ApiContact): number {
   if (a.daysOverdue !== b.daysOverdue) return a.daysOverdue - b.daysOverdue
   if (a.hasNotes !== b.hasNotes) return a.hasNotes ? -1 : 1
   return 0
-}
-
-export function emptyBuckets(): Record<RelationshipCategory, ApiContact[]> {
-  return { Agent: [], Vendor: [], Personal: [], PM: [], Investor: [], PrivateMoney: [], Seller: [] }
-}
-
-// Weighted round-robin: repeatedly pick the bucket whose progress/target
-// ratio is smallest. Naturally interleaves agents ~4x more often than
-// vendors etc., matching DAILY_TARGETS.
-export function interleave(buckets: Record<RelationshipCategory, ApiContact[]>): ApiContact[] {
-  const cursors: Record<string, number> = {}
-  for (const t of RELATIONSHIP_TYPES) cursors[t] = 0
-  const out: ApiContact[] = []
-  const totalRemaining = () =>
-    RELATIONSHIP_TYPES.reduce((s, t) => s + Math.max(0, buckets[t].length - cursors[t]), 0)
-
-  while (totalRemaining() > 0) {
-    let bestType: RelationshipCategory | null = null
-    let bestRatio = Infinity
-    for (const t of RELATIONSHIP_TYPES) {
-      if (cursors[t] >= buckets[t].length) continue
-      const target = DAILY_TARGETS[t] || 1
-      const ratio = cursors[t] / target
-      if (ratio < bestRatio) { bestRatio = ratio; bestType = t }
-    }
-    if (!bestType) break
-    out.push(buckets[bestType][cursors[bestType]])
-    cursors[bestType]++
-  }
-  return out
 }
 
 // Fetch every relationships row. Supabase's PostgREST caps a single response
