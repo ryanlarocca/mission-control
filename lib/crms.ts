@@ -13,6 +13,9 @@ export type RelationshipCategory =
   | "PrivateMoney"
   | "Seller"
 
+// "Seller" retired 2026-09-23 — sellers are Leads, not relationships. The 35
+// phone-book-import sellers were moved to the Leads tab that day; the type
+// union keeps the value so any straggler row still renders.
 export const RELATIONSHIP_CATEGORIES: readonly RelationshipCategory[] = [
   "Agent",
   "Vendor",
@@ -20,7 +23,6 @@ export const RELATIONSHIP_CATEGORIES: readonly RelationshipCategory[] = [
   "PM",
   "Investor",
   "PrivateMoney",
-  "Seller",
 ] as const
 
 // Display labels for the UI picker. "PM" → "Property Mgr" so users don't
@@ -45,7 +47,6 @@ export const RELATIONSHIP_CATEGORY_PICKER_ORDER: readonly RelationshipCategory[]
   "PrivateMoney",
   "PM",
   "Personal",
-  "Seller",
 ] as const
 
 export function isValidCategory(s: string): s is RelationshipCategory {

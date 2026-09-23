@@ -23,8 +23,13 @@ import { fetchAllRelationships, to10Digit } from "@/lib/relationships"
 // re-delivers slow updates, which risks double-adds).
 const MODEL = "claude-sonnet-5"
 
-export const CATEGORIES = ["Agent", "Vendor", "Personal", "PM", "Investor", "PrivateMoney", "Seller"] as const
+export const CATEGORIES = ["Agent", "Vendor", "Personal", "PM", "Investor", "PrivateMoney"] as const
 export type Category = (typeof CATEGORIES)[number]
+// normalizeCategory still knows the retired "Seller" value; a seller is a lead,
+// not a relationship, so the intake drops it and asks again.
+function asIntakeCategory(c: string): Category | null {
+  return (CATEGORIES as readonly string[]).includes(c) ? (c as Category) : null
+}
 export type Tier = "A" | "B" | "C" | "D" | "E"
 
 export interface ExtractedContact {
@@ -47,7 +52,7 @@ Rules:
 - name: the person's full name as shown. null if no name is visible.
 - phone: the primary phone as exactly 10 digits (strip +1, punctuation). If the card shows the same number twice, that's one number. null if none.
 - email: lowercase. null if none.
-- category: map the caption's wording — "personal"/"friend"/"family" → Personal; "agent"/"realtor"/"broker" → Agent; "vendor"/"contractor"/"plumber"/"lender" → Vendor; "property manager"/"pm" → PM; "investor"/"wholesaler"/"buyer" → Investor; "private money"/"hard money" → PrivateMoney; "seller"/"owner" → Seller. If the caption doesn't say and the image makes it obvious (e.g. a Redfin agent page) use that; otherwise null.
+- category: map the caption's wording — "personal"/"friend"/"family" → Personal; "agent"/"realtor"/"broker" → Agent; "vendor"/"contractor"/"plumber"/"lender" → Vendor; "property manager"/"pm" → PM; "investor"/"wholesaler"/"buyer" → Investor; "private money"/"hard money" → PrivateMoney. A seller or property owner is a lead, not a relationship — leave category null. If the caption doesn't say and the image makes it obvious (e.g. a Redfin agent page) use that; otherwise null.
 - tier: the caption's "A level" / "tier B" / "level c" → that letter. null if not stated.
 - source: one of Business Card, Referral, Redfin, iMessage, Networking, Email Thread, Other — infer from the image type (iPhone contact card → Other, iMessage → iMessage, business card → Business Card, Redfin → Redfin, email → Email Thread) unless the caption says.
 - notes: useful context from the caption or image (title, company, how they know each other). Short. Do NOT restate category or tier. null if nothing.
@@ -115,7 +120,7 @@ export async function extractContactFromImage(args: {
       name: typeof raw.name === "string" && raw.name.trim() ? raw.name.trim() : null,
       phone: phone10.length === 10 ? phone10 : null,
       email: typeof raw.email === "string" && raw.email.includes("@") ? raw.email.trim().toLowerCase() : null,
-      category: typeof raw.category === "string" ? normalizeCategory(raw.category) : null,
+      category: typeof raw.category === "string" ? asIntakeCategory(normalizeCategory(raw.category)) : null,
       tier: typeof raw.tier === "string" && /^[A-E]$/.test(raw.tier) ? (raw.tier as Tier) : null,
       source: typeof raw.source === "string" && raw.source.trim() ? raw.source.trim() : null,
       notes: typeof raw.notes === "string" && raw.notes.trim() ? raw.notes.trim() : null,
@@ -139,7 +144,6 @@ export function parseCaptionHints(caption: string): { category: Category | null;
   else if (/\b(investor|wholesaler|buyer)\b/.test(c)) category = "Investor"
   else if (/\b(vendor|contractor|plumber|electrician|lender|inspector)\b/.test(c)) category = "Vendor"
   else if (/\b(agent|realtor|broker)\b/.test(c)) category = "Agent"
-  else if (/\b(seller|owner)\b/.test(c)) category = "Seller"
   const t = /\b(?:tier|level)\s*[-:]?\s*([a-e])\b|\b([a-e])[\s-]*(?:level|tier)\b/i.exec(caption)
   const tier = t ? ((t[1] || t[2]).toUpperCase() as Tier) : null
   return { category, tier }
@@ -255,7 +259,7 @@ export function parsePending(text: string): { contact: ExtractedContact; dupIds:
     name: get("Name"),
     phone: phone10.length === 10 ? phone10 : null,
     email: get("Email"),
-    category: cat ? normalizeCategory(cat) : null,
+    category: cat ? asIntakeCategory(normalizeCategory(cat)) : null,
     tier: tier && /^[A-E]$/.test(tier) ? (tier as Tier) : null,
     source: get("Source"),
     notes: get("Notes"),

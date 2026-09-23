@@ -251,7 +251,7 @@ async function handleContactPhoto(chatId: number, msg: TgMessage): Promise<void>
   const missing: string[] = []
   if (!contact.name) missing.push("name")
   if (!contact.phone && !contact.email) missing.push("a phone or email")
-  if (!contact.category) missing.push("category (Agent / Vendor / Personal / PM / Investor / PrivateMoney / Seller)")
+  if (!contact.category) missing.push("category (Agent / Vendor / Personal / PM / Investor / PrivateMoney)")
   if (missing.length) {
     await tg("sendMessage", {
       chat_id: chatId,

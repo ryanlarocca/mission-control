@@ -41,12 +41,12 @@ interface Props {
   onTierChanged?: (id: string, tier: string) => void
 }
 
-const CATEGORY_OPTIONS = ["Agent", "Vendor", "Personal", "PM", "Investor", "PrivateMoney", "Seller"] as const
+const CATEGORY_OPTIONS = ["Agent", "Vendor", "Personal", "PM", "Investor", "PrivateMoney"] as const
 type CategoryOption = typeof CATEGORY_OPTIONS[number]
 
 const categoryIcon: Record<CategoryOption, LucideIcon> = {
   Agent: UserCheck, Personal: User, Vendor: Wrench,
-  Investor: TrendingUp, Seller: Home, PM: Building2, PrivateMoney: Banknote,
+  Investor: TrendingUp, PM: Building2, PrivateMoney: Banknote,
 }
 
 const categoryColor: Record<CategoryOption, string> = {
@@ -55,7 +55,6 @@ const categoryColor: Record<CategoryOption, string> = {
   Vendor:   "text-orange-400",
   Investor: "text-blue-400",
   PrivateMoney: "text-lime-400",
-  Seller:   "text-emerald-400",
   PM:       "text-teal-400",
 }
 
@@ -65,7 +64,6 @@ const categoryBadge: Record<CategoryOption, string> = {
   Vendor:   "bg-orange-500/15 text-orange-300 border-orange-500/30",
   Investor: "bg-blue-500/15 text-blue-300 border-blue-500/30",
   PrivateMoney: "bg-lime-500/15 text-lime-300 border-lime-500/30",
-  Seller:   "bg-emerald-500/15 text-emerald-300 border-emerald-500/30",
   PM:       "bg-teal-500/15 text-teal-300 border-teal-500/30",
 }
 
@@ -73,7 +71,7 @@ const categoryBadge: Record<CategoryOption, string> = {
 // so "PrivateMoney" shows as "Private Money".
 const CATEGORY_LABEL: Record<CategoryOption, string> = {
   Agent: "Agent", Vendor: "Vendor", Personal: "Personal",
-  PM: "PM", Investor: "Investor", PrivateMoney: "Private Money", Seller: "Seller",
+  PM: "PM", Investor: "Investor", PrivateMoney: "Private Money",
 }
 
 const TIERS = ["A", "B", "C", "D", "E"] as const

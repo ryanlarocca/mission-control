@@ -27,7 +27,7 @@ interface CleanupContact {
   avoidance: number
 }
 
-const ALL_TYPES: ContactType[] = ["Agent", "Vendor", "Personal", "PM", "Investor", "PrivateMoney", "Seller"]
+const ALL_TYPES: ContactType[] = ["Agent", "Vendor", "Personal", "PM", "Investor", "PrivateMoney"]
 
 const TYPE_LABEL: Record<ContactType, string> = {
   Agent: "Agent", Personal: "Personal", Vendor: "Vendor",

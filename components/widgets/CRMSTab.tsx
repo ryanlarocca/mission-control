@@ -113,7 +113,7 @@ const TYPE_LABEL_PLURAL: Record<ContactType, string> = {
   PM: "PMs", Investor: "Investors", PrivateMoney: "Private Money", Seller: "Sellers",
 }
 
-const ALL_TYPES: ContactType[] = ["Agent", "Vendor", "Personal", "PM", "Investor", "PrivateMoney", "Seller"]
+const ALL_TYPES: ContactType[] = ["Agent", "Vendor", "Personal", "PM", "Investor", "PrivateMoney"]
 
 const QUICK_EMOJIS = ["👍", "🙏", "💪", "😂", "🔥", "✅"]
 

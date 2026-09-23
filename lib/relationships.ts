@@ -13,7 +13,7 @@ import { normalizeCategory } from "@/lib/crms"
 export const CADENCE: Record<string, number> = { A: 30, B: 45, C: 60, D: 365 }
 
 export const RELATIONSHIP_TYPES: readonly RelationshipCategory[] = [
-  "Agent", "Vendor", "Personal", "PM", "Investor", "PrivateMoney", "Seller",
+  "Agent", "Vendor", "Personal", "PM", "Investor", "PrivateMoney",
 ] as const
 
 // Column list for `select()` against the relationships table.
