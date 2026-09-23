@@ -13,6 +13,12 @@ import type { TouchesSummary } from "./ContactDetailModal"
 import type { ThreadMessage } from "@/lib/relationship-messages"
 
 type ThreadState = { ok: boolean; total: number; messages: ThreadMessage[] }
+type LiveCall = {
+  contactId: string
+  touchId: string | null
+  phase: "dialing" | "transcribing" | "done" | "error"
+  text: string
+}
 import { CleanupMode } from "./CleanupMode"
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -339,6 +345,10 @@ function CRMSTabInner() {
   const threadEndRef = useRef<HTMLDivElement>(null)
   const [detailPhone, setDetailPhone] = useState<string | null>(null)
   const [callPanelOpen, setCallPanelOpen] = useState(false)
+  // Click-to-call (Twilio rings Ryan's cell, then the contact). One live call
+  // at a time; the status line under the buttons follows it via polling.
+  const [liveCall, setLiveCall] = useState<LiveCall | null>(null)
+  const liveCallPollRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const [callNote, setCallNote]       = useState("")
 
   // ── Message state ──
@@ -860,6 +870,61 @@ function CRMSTabInner() {
       setActionPending(false)
     }
   }
+
+  // ── Call: Twilio rings Ryan's cell, bridges to the contact from Ryan's own
+  // number, records, and the transcript summary lands in notes by itself.
+  function stopLiveCallPoll() {
+    if (liveCallPollRef.current) clearInterval(liveCallPollRef.current)
+    liveCallPollRef.current = null
+  }
+  async function handleCall() {
+    if (!selectedContact || liveCall?.phase === "dialing") return
+    const contact = selectedContact
+    stopLiveCallPoll()
+    setLiveCall({ contactId: contact.id, touchId: null, phase: "dialing", text: "Ringing your cell…" })
+    try {
+      const res = await fetch("/api/crms/call", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: contact.id, phone: contact.phone, tier: contact.tier, category: contact.type }),
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok || !data.success) throw new Error(data.error || `HTTP ${res.status}`)
+      const touchId: string = data.touchId
+      setLiveCall({ contactId: contact.id, touchId, phase: "dialing", text: `Ringing your cell… answer to connect to ${contact.name}` })
+      // Poll the touch: outcome arrives from Twilio's status callback, the
+      // summary a minute or two after hang-up. Give up after 20 minutes.
+      const started = Date.now()
+      liveCallPollRef.current = setInterval(async () => {
+        if (Date.now() - started > 20 * 60_000) { stopLiveCallPoll(); return }
+        try {
+          const r = await fetch(`/api/crms/call?touchId=${encodeURIComponent(touchId)}`, { cache: "no-store" })
+          const d = await r.json()
+          if (d.summary) {
+            stopLiveCallPoll()
+            setLiveCall({ contactId: contact.id, touchId, phase: "done", text: `Call summary saved to notes` })
+            const stamp = new Date().toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })
+            const line = `[${stamp} call] ${d.summary}`
+            const patch = (c: CRMSContact) =>
+              c.id === contact.id ? { ...c, notes: c.notes ? `${c.notes}\n\n${line}` : line, hasNotes: true, notesStale: false } : c
+            setContacts(prev => prev.map(patch))
+            setAllContacts(prev => prev.map(patch))
+            setSent(prev => new Set(prev).add(contact.id))
+          } else if (d.outcome) {
+            stopLiveCallPoll()
+            setLiveCall({ contactId: contact.id, touchId, phase: "done", text: d.outcome })
+          } else if (d.status === "completed") {
+            const mins = d.durationSec ? ` (${Math.floor(d.durationSec / 60)}:${String(d.durationSec % 60).padStart(2, "0")})` : ""
+            setLiveCall({ contactId: contact.id, touchId, phase: "transcribing", text: `Call ended${mins} — transcribing, summary will land in notes…` })
+            setSent(prev => new Set(prev).add(contact.id))
+          }
+        } catch {}
+      }, 5000)
+    } catch (e) {
+      setLiveCall({ contactId: contact.id, touchId: null, phase: "error", text: `Call failed: ${e instanceof Error ? e.message : String(e)}` })
+    }
+  }
+  useEffect(() => () => stopLiveCallPoll(), []) // eslint-disable-line react-hooks/exhaustive-deps
 
   async function handleEnrich() {
     if (!selectedContact || enrichingFor) return
@@ -1507,6 +1572,19 @@ function CRMSTabInner() {
                 )}
               </div>
 
+              {/* Live call status — follows the Twilio call through to the saved summary */}
+              {liveCall && liveCall.contactId === selectedContact?.id && (
+                <div className={`px-4 py-2 border-t border-zinc-800 text-xs flex items-center gap-2 ${
+                  liveCall.phase === "error" ? "text-red-400" : liveCall.phase === "done" ? "text-emerald-400" : "text-sky-300"
+                }`}>
+                  {(liveCall.phase === "dialing" || liveCall.phase === "transcribing") && <Loader2 className="w-3 h-3 animate-spin shrink-0" />}
+                  <span className="flex-1">{liveCall.text}</span>
+                  {liveCall.phase !== "dialing" && (
+                    <button onClick={() => { stopLiveCallPoll(); setLiveCall(null) }} className="text-zinc-500 hover:text-zinc-300"><X className="w-3 h-3" /></button>
+                  )}
+                </div>
+              )}
+
               {/* Log Call panel — summary of a phone call made outside the app */}
               {callPanelOpen && (
                 <div className="px-4 py-3 border-t border-zinc-800 bg-zinc-900/60">
@@ -1580,6 +1658,17 @@ function CRMSTabInner() {
                 >
                   <PhoneCall className="w-3.5 h-3.5" />
                   Log Call
+                </button>
+                <button
+                  onClick={handleCall}
+                  disabled={actionPending || liveCall?.phase === "dialing" || !selectedContact?.phone}
+                  title="Call them — rings your cell first, they see your number; recorded and summarized into notes"
+                  className="flex items-center gap-1.5 text-xs text-emerald-400 hover:text-emerald-300 bg-emerald-500/10 border border-emerald-500/30 hover:border-emerald-500/50 px-3 py-1.5 rounded transition-colors disabled:opacity-50"
+                >
+                  {liveCall?.phase === "dialing" && liveCall.contactId === selectedContact?.id
+                    ? <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                    : <Phone className="w-3.5 h-3.5" />}
+                  Call
                 </button>
                 <button
                   onClick={regenerate}

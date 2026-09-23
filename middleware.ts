@@ -15,6 +15,11 @@ const PUBLIC_PATHS = [
   "/api/leads/call/bridge",
   "/api/leads/call/recording",
   "/api/leads/call/status",
+  // Same relay for calls placed from the Relationships card (/api/crms/call
+  // stays auth-gated).
+  "/api/crms/call/bridge",
+  "/api/crms/call/recording",
+  "/api/crms/call/status",
   // Google Cloud Pub/Sub pushes Gmail-watch notifications here without
   // a session cookie. Auth on this path is enforced by Pub/Sub itself
   // (subscription origin) — see scripts/setup-gmail-watch.js.
