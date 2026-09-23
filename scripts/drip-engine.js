@@ -809,15 +809,56 @@ function missedCallTouch0Body() {
 
 // ─── senders ────────────────────────────────────────────────────────────────
 
-// Drip texts go out via the Twilio Messaging API from the outbound caller-ID
-// number (TWILIO_NUMBER, +16502043247) — the same approved A2P 10DLC path the
-// manual compose box uses (app/api/leads/send/route.ts). Migrated off the
-// Mac-mini sidecar (iMessage) on 2026-05-21 so a lead sees ONE number for
-// every call + text. The "imessage" channel label is kept everywhere else in
-// this engine (campaign cadence defs, the drip_imessage lead_type, the UI
-// timeline) — it now just means "the texting channel"; only the transport
-// underneath changed. Throwing here marks the drip_queue row `failed`, which
-// surfaces in the Drips tab's Failed bucket with a Retry button.
+// Drip texts go out via the Twilio Messaging API through the verified A2P
+// 10DLC messaging service, FROM the line the lead contacted (2026-09-22:
+// a lead who texted the mailer number on their postcard must not get the
+// reply from a different number — mirrors lib/leads.ts sendTwilioSms). If
+// that line isn't in the service's sender pool the carriers drop the text
+// AFTER Twilio accepts it (error 30034), so membership is checked up front
+// (read-only, cached per run) and we fall back to TWILIO_NUMBER.
+// Migrated off the Mac-mini sidecar (iMessage) on 2026-05-21. The
+// "imessage" channel label is kept everywhere else in this engine (campaign
+// cadence defs, the drip_imessage lead_type, the UI timeline) — it now just
+// means "the texting channel". Throwing here marks the drip_queue row
+// `failed`, which surfaces in the Drips tab's Failed bucket with a Retry.
+const A2P_MESSAGING_SERVICE_SID = "MG70a9310fb28d0aa7926e87a5e3941c2b"
+let senderPoolCache = null // Set of E.164 numbers registered under the campaign, per run
+async function getSenderPool() {
+  if (senderPoolCache) return senderPoolCache
+  const sid = process.env.TWILIO_ACCOUNT_SID
+  const token = process.env.TWILIO_AUTH_TOKEN
+  const service = (process.env.TWILIO_MESSAGING_SERVICE_SID || "").trim() || A2P_MESSAGING_SERVICE_SID
+  try {
+    const res = await fetch(`https://messaging.twilio.com/v1/Services/${service}/PhoneNumbers?PageSize=100`, {
+      headers: { Authorization: `Basic ${Buffer.from(`${sid}:${token}`).toString("base64")}` },
+    })
+    if (!res.ok) { console.warn(`[drip] sender-pool lookup HTTP ${res.status}`); return null }
+    const json = await res.json()
+    senderPoolCache = new Set((json.phone_numbers || []).map(p => p.phone_number).filter(Boolean))
+    return senderPoolCache
+  } catch (e) {
+    console.warn("[drip] sender-pool lookup threw:", e.message)
+    return null
+  }
+}
+
+// Most recent line this lead called/texted (inbound rows carry it in
+// twilio_number; "email:<mailbox>" markers are skipped). Null → default line.
+async function resolveReplyLine(sb, phone) {
+  if (!phone) return null
+  const { data } = await sb
+    .from("leads")
+    .select("twilio_number")
+    .eq("caller_phone", phone)
+    .not("twilio_number", "is", null)
+    .order("created_at", { ascending: false })
+    .limit(10)
+  for (const row of data || []) {
+    const n = String(row.twilio_number || "").trim()
+    if (n.startsWith("+")) return n
+  }
+  return null
+}
 function normalizeE164(raw) {
   const trimmed = String(raw || "").trim()
   if (trimmed.startsWith("+") && /^\+\d{10,15}$/.test(trimmed)) return trimmed
@@ -827,37 +868,47 @@ function normalizeE164(raw) {
   return null
 }
 
-async function sendSms(phone, message) {
+async function sendSms(phone, message, preferredFrom) {
   const sid = process.env.TWILIO_ACCOUNT_SID
   const token = process.env.TWILIO_AUTH_TOKEN
-  const from = (process.env.TWILIO_NUMBER || "").trim()
-  if (!sid || !token || !from) {
+  const defaultFrom = (process.env.TWILIO_NUMBER || "").trim()
+  if (!sid || !token || !defaultFrom) {
     throw new Error("TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN and TWILIO_NUMBER must be set")
   }
   const to = normalizeE164(phone)
   if (!to) throw new Error(`invalid phone: ${phone}`)
-
-  // MessagingServiceSid routes through the approved campaign explicitly; if it
-  // isn't set we send From the number, which is attached to the same campaign.
-  const form = new URLSearchParams({ To: to, Body: message })
-  const msgService = (process.env.TWILIO_MESSAGING_SERVICE_SID || "").trim()
-  if (msgService) form.set("MessagingServiceSid", msgService)
-  else form.set("From", from)
-
+  const service = (process.env.TWILIO_MESSAGING_SERVICE_SID || "").trim() || A2P_MESSAGING_SERVICE_SID
   const auth = Buffer.from(`${sid}:${token}`).toString("base64")
-  const res = await fetch(`https://api.twilio.com/2010-04-01/Accounts/${sid}/Messages.json`, {
-    method: "POST",
-    headers: {
-      Authorization: `Basic ${auth}`,
-      "Content-Type": "application/x-www-form-urlencoded",
-    },
-    body: form.toString(),
-  })
-  const json = await res.json().catch(() => ({}))
-  if (!res.ok) {
-    throw new Error(`twilio send ${res.status}: ${(json && json.message) || "unknown error"}`)
+
+  const attempt = async (from) => {
+    const form = new URLSearchParams({ To: to, Body: message, MessagingServiceSid: service, From: from })
+    const res = await fetch(`https://api.twilio.com/2010-04-01/Accounts/${sid}/Messages.json`, {
+      method: "POST",
+      headers: { Authorization: `Basic ${auth}`, "Content-Type": "application/x-www-form-urlencoded" },
+      body: form.toString(),
+    })
+    const json = await res.json().catch(() => ({}))
+    return { ok: res.ok, status: res.status, json }
   }
-  return { sid: json.sid || null, status: json.status || null }
+
+  let preferred = preferredFrom && preferredFrom !== defaultFrom ? preferredFrom : null
+  if (preferred) {
+    const pool = await getSenderPool()
+    if (!pool || !pool.has(preferred)) {
+      console.warn(`[drip] ${preferred} is not in the A2P sender pool${pool ? "" : " (pool unreadable)"} — sending from ${defaultFrom}`)
+      preferred = null
+    }
+  }
+  if (preferred) {
+    const r = await attempt(preferred)
+    if (r.ok) return { sid: r.json.sid || null, status: r.json.status || null, from: preferred }
+    const rejectedLine = r.json.code === 21712 || r.json.code === 21606
+    if (!rejectedLine) throw new Error(`twilio send ${r.status}: ${(r.json && r.json.message) || "unknown error"}`)
+    console.warn(`[drip] ${preferred} rejected (${r.json.code}); sending from ${defaultFrom}`)
+  }
+  const r = await attempt(defaultFrom)
+  if (!r.ok) throw new Error(`twilio send ${r.status}: ${(r.json && r.json.message) || "unknown error"}`)
+  return { sid: r.json.sid || null, status: r.json.status || null, from: defaultFrom }
 }
 
 function getGmailClient(userEmail) {
@@ -1021,7 +1072,9 @@ async function drainApprovedQueue(sb) {
 async function sendDripTouch({ lead, channel, message, subject, sb, queueRow }) {
   if (channel === "imessage") {
     if (!lead.caller_phone) throw new Error("no phone")
-    await sendSms(lead.caller_phone, message)
+    const preferredFrom = await resolveReplyLine(sb, lead.caller_phone).catch(() => null)
+    const sent = await sendSms(lead.caller_phone, message, preferredFrom)
+    console.log(`[drip] text → ${lead.caller_phone} from ${sent.from}`)
   } else if (channel === "email") {
     const subj = subject || dripEmailSubject(lead)
     await sendDripEmail({ lead, body: message, subject: subj })

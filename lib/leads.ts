@@ -246,6 +246,138 @@ export function getTwilioNumber(): string {
   return n
 }
 
+// The verified US A2P 10DLC messaging service ("Low Volume Mixed", campaign
+// VERIFIED). Every line we text FROM must sit in its sender pool or carriers
+// drop the message AFTER the API accepted it (status "undelivered", error
+// 30034) — verified 2026-09-22 with a probe from 408-357-3835: Twilio said
+// "accepted", the text never arrived. So pool membership is checked up
+// front (read-only, cached) rather than inferred from a rejection.
+export const A2P_MESSAGING_SERVICE_SID = "MG70a9310fb28d0aa7926e87a5e3941c2b"
+export function getMessagingServiceSid(): string {
+  return process.env.TWILIO_MESSAGING_SERVICE_SID?.trim() || A2P_MESSAGING_SERVICE_SID
+}
+
+let senderPoolCache: { at: number; numbers: Set<string> } | null = null
+const SENDER_POOL_TTL_MS = 10 * 60 * 1000
+
+// Numbers registered under the A2P campaign (the messaging service's sender
+// pool). Null when Twilio can't be reached — callers must then treat every
+// non-default line as unregistered rather than risk a 30034 drop.
+export async function getSenderPool(): Promise<Set<string> | null> {
+  if (senderPoolCache && Date.now() - senderPoolCache.at < SENDER_POOL_TTL_MS) return senderPoolCache.numbers
+  const sid = process.env.TWILIO_ACCOUNT_SID
+  const token = process.env.TWILIO_AUTH_TOKEN
+  if (!sid || !token) return null
+  try {
+    const auth = Buffer.from(`${sid}:${token}`).toString("base64")
+    const res = await fetch(
+      `https://messaging.twilio.com/v1/Services/${getMessagingServiceSid()}/PhoneNumbers?PageSize=100`,
+      { headers: { Authorization: `Basic ${auth}` }, cache: "no-store" }
+    )
+    if (!res.ok) {
+      console.error(`[sender-pool] Twilio ${res.status} listing the messaging service sender pool`)
+      return null
+    }
+    const json = (await res.json()) as { phone_numbers?: { phone_number?: string }[] }
+    const numbers = new Set((json.phone_numbers ?? []).map((p) => p.phone_number ?? "").filter(Boolean))
+    senderPoolCache = { at: Date.now(), numbers }
+    return numbers
+  } catch (e) {
+    console.error("[sender-pool] fetch threw:", e instanceof Error ? e.message : String(e))
+    return null
+  }
+}
+
+// Which of OUR lines should a text to this lead come from? The one they
+// last contacted. A lead who texted the mailer number on their postcard
+// and got a reply from a different number sees a stranger (Ryan,
+// 2026-09-22, Glenda McGovern: she texted 408-357-3835, the reply came from
+// 650-204-3247). Inbound rows carry the line they hit in `twilio_number`;
+// "email:<mailbox>" markers and anything we don't own are skipped. Null
+// when the lead has never texted/called a line (the default line is used).
+export async function resolveReplyLine(
+  sb: SupabaseClient,
+  phone: string
+): Promise<string | null> {
+  const { data } = await sb
+    .from("leads")
+    .select("twilio_number")
+    .eq("caller_phone", phone)
+    .not("twilio_number", "is", null)
+    .order("created_at", { ascending: false })
+    .limit(10)
+  for (const row of data ?? []) {
+    const n = typeof row.twilio_number === "string" ? row.twilio_number.trim() : ""
+    if (!n.startsWith("+")) continue
+    if (!isOwnedNumber(n)) continue
+    return n
+  }
+  return null
+}
+
+// One warning per line per process — the fallback works, but Ryan should
+// know a line isn't in the A2P pool so replies from it aren't landing.
+const replyLineWarned = new Set<string>()
+
+export interface TwilioSmsResult {
+  sid: string | null
+  from: string
+  fellBack: boolean
+}
+
+// Send one SMS through the A2P messaging service, from `preferredFrom`
+// (the line the lead contacted) when that line is registered in the
+// service's sender pool, otherwise from the default outbound line so the
+// text still lands. A synchronous Twilio rejection of the preferred line
+// (21712 / 21606) also falls back. Throws on any other failure.
+export async function sendTwilioSms(args: {
+  to: string
+  body: string
+  preferredFrom?: string | null
+}): Promise<TwilioSmsResult> {
+  const sid = process.env.TWILIO_ACCOUNT_SID
+  const token = process.env.TWILIO_AUTH_TOKEN
+  if (!sid || !token) throw new Error("TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN must be set")
+  const defaultFrom = getTwilioNumber()
+  const service = getMessagingServiceSid()
+  const auth = Buffer.from(`${sid}:${token}`).toString("base64")
+
+  let preferred = args.preferredFrom && args.preferredFrom !== defaultFrom ? args.preferredFrom : null
+  if (preferred) {
+    const pool = await getSenderPool()
+    if (!pool || !pool.has(preferred)) {
+      console.warn(`[sendTwilioSms] ${preferred} is not in the A2P sender pool${pool ? "" : " (pool unreadable)"} — sending from ${defaultFrom}`)
+      if (pool && !replyLineWarned.has(preferred)) {
+        replyLineWarned.add(preferred)
+        sendTelegramAlert(`⚠️ Text sent from ${defaultFrom} instead of ${preferred} — that line isn't registered under the A2P campaign. Add it in Twilio → Messaging → Services → "Low Volume Mixed" → Sender Pool so replies come from the line the lead contacted.`).catch(() => {})
+      }
+      preferred = null
+    }
+  }
+
+  const attempt = async (from: string) => {
+    const form = new URLSearchParams({ To: args.to, Body: args.body, MessagingServiceSid: service, From: from })
+    const res = await fetch(`https://api.twilio.com/2010-04-01/Accounts/${sid}/Messages.json`, {
+      method: "POST",
+      headers: { Authorization: `Basic ${auth}`, "Content-Type": "application/x-www-form-urlencoded" },
+      body: form.toString(),
+    })
+    const json = (await res.json().catch(() => ({}))) as { sid?: string; code?: number; message?: string }
+    return { ok: res.ok, status: res.status, json }
+  }
+
+  if (preferred) {
+    const r = await attempt(preferred)
+    if (r.ok) return { sid: r.json.sid ?? null, from: preferred, fellBack: false }
+    const rejectedLine = r.json.code === 21712 || r.json.code === 21606
+    if (!rejectedLine) throw new Error(r.json.message || `Twilio HTTP ${r.status}`)
+    console.warn(`[sendTwilioSms] ${preferred} rejected (${r.json.code}); falling back to ${defaultFrom}`)
+  }
+  const r = await attempt(defaultFrom)
+  if (!r.ok) throw new Error(r.json.message || `Twilio HTTP ${r.status}`)
+  return { sid: r.json.sid ?? null, from: defaultFrom, fellBack: !!args.preferredFrom && args.preferredFrom !== defaultFrom }
+}
+
 export type LeadType =
   | "call"
   | "voicemail"
@@ -1148,54 +1280,22 @@ export async function sendLeadSms(input: {
     }
     // The sidecar returns no message SID; the outbound row below is the record.
   } else {
-    // Send via the Twilio Messaging API. fetch + Basic Auth (no twilio SDK).
-    const sid = process.env.TWILIO_ACCOUNT_SID
-    const token = process.env.TWILIO_AUTH_TOKEN
-    if (!sid || !token) {
-      return { success: false, status: 500, error: "TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN must be set" }
-    }
-    let fromNumber: string
+    // Send via the Twilio Messaging API, from the line the lead contacted
+    // (falls back to the default outbound line — see sendTwilioSms).
+    let preferredFrom: string | null = null
     try {
-      fromNumber = getTwilioNumber()
+      preferredFrom = await resolveReplyLine(getLeadsClient(), phone)
     } catch (e) {
-      return { success: false, status: 500, error: e instanceof Error ? e.message : String(e) }
+      console.error("[sendLeadSms] reply-line lookup threw:", e)
     }
-
-    // MessagingServiceSid routes through the approved A2P campaign explicitly
-    // and is the carrier-preferred path; if it's not configured we send From
-    // the number directly — attached to the same campaign, equally compliant.
-    const messagingServiceSid = process.env.TWILIO_MESSAGING_SERVICE_SID?.trim()
-    const form = new URLSearchParams({ To: phone, Body: message })
-    if (messagingServiceSid) {
-      form.set("MessagingServiceSid", messagingServiceSid)
-    } else {
-      form.set("From", fromNumber)
-    }
-
     try {
-      const auth = Buffer.from(`${sid}:${token}`).toString("base64")
-      const res = await fetch(
-        `https://api.twilio.com/2010-04-01/Accounts/${sid}/Messages.json`,
-        {
-          method: "POST",
-          headers: {
-            Authorization: `Basic ${auth}`,
-            "Content-Type": "application/x-www-form-urlencoded",
-          },
-          body: form.toString(),
-        }
-      )
-      const json = await res.json().catch(() => ({}))
-      if (!res.ok) {
-        const errMsg = (json as { message?: string })?.message || `HTTP ${res.status}`
-        console.error("[sendLeadSms] Twilio message create failed:", errMsg, json)
-        return { success: false, status: 502, error: errMsg }
-      }
-      messageSid = (json as { sid?: string })?.sid ?? null
+      const sent = await sendTwilioSms({ to: phone, body: message, preferredFrom })
+      messageSid = sent.sid
+      console.log(`[sendLeadSms] → ${phone} from ${sent.from}${sent.fellBack ? " (fallback)" : ""}`)
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e)
-      console.error("[sendLeadSms] Twilio fetch threw:", msg)
-      return { success: false, status: 503, error: "Twilio unavailable" }
+      console.error("[sendLeadSms] Twilio message create failed:", msg)
+      return { success: false, status: 502, error: msg }
     }
   }
 
