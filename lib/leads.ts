@@ -39,11 +39,11 @@ export const CAMPAIGN_MAP: Record<string, string> = {
   "+14083654925": "Legacy DM",
   "+14084186294": "Legacy DM",
   "+14084188450": "Legacy DM",
-  // Office/administrative lines (same port): Ryan's old office number (ex
-  // ryan@ Voice) and his old personal Google Voice number (the "Info" label
-  // is historical — info@'s own GV line was 408-337-6857 and was NOT ported).
-  // See OFFICE_NUMBERS below: callers here are business contacts / returning
-  // outreach, never fresh direct-mail leads.
+  // Office/administrative lines (same port): ryan@'s Google Voice number and
+  // info@'s. info@ had 408-337-6857 until Nov 2025 (released when the seat
+  // was reassigned), then 408-493-0632 from Mar 2026 — that is the line that
+  // ported. See OFFICE_NUMBERS below: callers here are business contacts /
+  // returning outreach, never fresh direct-mail leads.
   "+14084585442": "Office — Ryan",
   "+14084930632": "Office — Info",
 }
