@@ -17,22 +17,28 @@ export const CAMPAIGN_MAP: Record<string, string> = {
   // source_type=google_ads and routed to the google_ads_form drip (see
   // voice/sms route handlers).
   "+16506703914": "Google",
-  // Legacy direct-mail response lines ported in from Google Voice (Twilio
-  // shows them created 2026-07-27). Each was the Google Voice line behind one
-  // of the ryansv*@ mailer mailboxes — mapped 2026-09-22 from the GV
-  // text-forward sender addresses (`<gv line>.<sender>.<hash>@txt.voice.
-  // google.com`) still sitting in those inboxes. A line that was a campaign
-  // mailbox's number carries that campaign's label, exactly as the mailbox
-  // does in config/email-campaigns.json, so a caller and an emailer from the
-  // same mailer land in one bucket and resolveCampaignId attributes both.
-  // Long-tail numbers — a postcard can ring years after the send.
-  "+14083419402": "MFM-A",            // ex ryansvg@ Voice — pink envelope
-  "+14083654925": "MFM-B",            // ex ryansvj@ Voice — white envelope
-  "+14083573835": "Mailer 357-3835",  // ex ryansvr@ Voice — pre-MFM mailer
-  "+14083573440": "Mailer 357-3440",  // ex ryansva@ Voice — pre-MFM mailer
-  "+14084186294": "Mailer 418-6294",  // ex ryansvb@ Voice — pre-MFM mailer
-  "+14083372785": "Mailer 337-2785",  // ex ryansvc@ or ryansvd@ Voice (no text forwards left to tell)
-  "+14084188450": "Mailer 418-8450",  // ex ryansvc@ or ryansvd@ Voice (no text forwards left to tell)
+  // Legacy response lines ported in from Google Voice (Twilio shows them
+  // created 2026-07-27) — the numbers printed on Ryan's old mailer campaigns
+  // and agent marketing over the years. Ryan (2026-09-22): one universal
+  // label for all of them. "Legacy DM" is the label the Google Voice email
+  // ingest already gave every lead that came through these same lines
+  // before the port (app/api/leads/email/route.ts), so pre- and post-port
+  // history reads as one bucket. Not campaign-attributed (resolveCampaignId
+  // returns null) — the specific mailer is long gone. Long-tail numbers: a
+  // postcard can ring years after the send.
+  // Which Google Voice mailbox each line belonged to (mapped from the GV
+  // text-forward sender addresses `<gv line>.<sender>.<hash>@txt.voice.
+  // google.com` still in those inboxes) — kept for forensics only:
+  //   341-9402 ryansvg@ · 365-4925 ryansvj@ · 357-3835 ryansvr@ (Glenda
+  //   McGovern's letter) · 357-3440 ryansva@ · 418-6294 ryansvb@ ·
+  //   337-2785 / 418-8450 ryansvc@/ryansvd@ (no forwards left to tell apart).
+  "+14083372785": "Legacy DM",
+  "+14083419402": "Legacy DM",
+  "+14083573440": "Legacy DM",
+  "+14083573835": "Legacy DM",
+  "+14083654925": "Legacy DM",
+  "+14084186294": "Legacy DM",
+  "+14084188450": "Legacy DM",
   // Office/administrative lines (same port): Ryan's old office number (ex
   // ryan@ Voice) and his old personal Google Voice number (the "Info" label
   // is historical — info@'s own GV line was 408-337-6857 and was NOT ported).
