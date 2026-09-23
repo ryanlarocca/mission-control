@@ -10,6 +10,9 @@ import {
 import type { LucideIcon } from "lucide-react"
 import { ContactDetailModal } from "./ContactDetailModal"
 import type { TouchesSummary } from "./ContactDetailModal"
+import type { ThreadMessage } from "@/lib/relationship-messages"
+
+type ThreadState = { ok: boolean; messages: ThreadMessage[] }
 import { CleanupMode } from "./CleanupMode"
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -330,6 +333,10 @@ function CRMSTabInner() {
   const [sendError, setSendError]     = useState<string | null>(null)
   const [sendToast, setSendToast]     = useState<string | null>(null)
   const [touchesByPhone, setTouchesByPhone] = useState<Record<string, TouchesSummary>>({})
+  // Live text thread per phone (read-through from chat.db via the sidecar).
+  // `null` = still loading; `{ ok:false }` = sidecar unreachable.
+  const [threadByPhone, setThreadByPhone] = useState<Record<string, ThreadState | null>>({})
+  const threadEndRef = useRef<HTMLDivElement>(null)
   const [detailPhone, setDetailPhone] = useState<string | null>(null)
   const [callPanelOpen, setCallPanelOpen] = useState(false)
   const [callNote, setCallNote]       = useState("")
@@ -378,7 +385,20 @@ function CRMSTabInner() {
     toastTimerRef.current = setTimeout(() => setSendToast(null), 5000)
   }
 
+  async function fetchThread(phone: string) {
+    if (!phone || phone in threadByPhone) return
+    setThreadByPhone(prev => ({ ...prev, [phone]: null }))
+    try {
+      const res = await fetch(`/api/crms/messages?phone=${encodeURIComponent(phone)}`, { cache: "no-store" })
+      const data = await res.json()
+      setThreadByPhone(prev => ({ ...prev, [phone]: { ok: data.ok !== false, messages: data.messages ?? [] } }))
+    } catch {
+      setThreadByPhone(prev => ({ ...prev, [phone]: { ok: false, messages: [] } }))
+    }
+  }
+
   async function fetchTouches(phone: string) {
+    fetchThread(phone)
     if (!phone || touchesByPhone[phone]) return
     try {
       const res = await fetch(`/api/crms/touches?phone=${encodeURIComponent(phone)}`, { cache: "no-store" })
@@ -931,6 +951,12 @@ function CRMSTabInner() {
   const isChangingTier = tierChangingFor === selectedContact?.id
   const currentMessage = selectedContact ? getMessage(selectedContact) : ""
   const touches        = selectedContact ? touchesByPhone[selectedContact.phone] : undefined
+  const thread         = selectedContact ? threadByPhone[selectedContact.phone] : undefined
+  const threadLen      = thread?.messages.length ?? 0
+  // Newest message at the bottom, in view, whenever a thread lands.
+  useEffect(() => {
+    threadEndRef.current?.scrollIntoView({ block: "end" })
+  }, [selectedId, threadLen])
   const detailContact  = detailPhone
     ? (contacts.find(c => c.phone === detailPhone)
         ?? allContacts.find(c => c.phone === detailPhone)
@@ -1336,6 +1362,51 @@ function CRMSTabInner() {
                     </button>
                   </div>
                 )}
+
+                {/* Live text thread — auto-loads with the card, newest at bottom */}
+                <div className="mt-3">
+                  <p className="text-xs text-zinc-600 mb-1 flex items-center gap-1.5">
+                    Messages
+                    {thread === null && <Loader2 className="w-3 h-3 animate-spin" />}
+                    {thread && thread.ok && threadLen > 0 && (
+                      <span className="text-zinc-700">
+                        · {threadLen} · last {daysAgoHint(thread.messages[threadLen - 1].at).replace(/[()]/g, "") || "today"}
+                      </span>
+                    )}
+                  </p>
+                  {thread && !thread.ok && (
+                    <p className="text-xs text-zinc-600 italic">Message history unavailable (Mac mini offline)</p>
+                  )}
+                  {thread && thread.ok && threadLen === 0 && (
+                    <p className="text-xs text-zinc-600 italic">No texts with this number</p>
+                  )}
+                  {thread && thread.ok && threadLen > 0 && (
+                    <div className="max-h-64 overflow-y-auto rounded border border-zinc-800 bg-zinc-950/40 p-2 space-y-1.5">
+                      {thread.messages.map((m, i) => {
+                        const prev = thread.messages[i - 1]
+                        const day = m.at.slice(0, 10)
+                        const showDay = !prev || prev.at.slice(0, 10) !== day
+                        return (
+                          <div key={i}>
+                            {showDay && (
+                              <p className="text-[10px] text-zinc-600 text-center my-1">{formatAbsoluteDate(m.at)}</p>
+                            )}
+                            <div className={`flex ${m.fromMe ? "justify-end" : "justify-start"}`}>
+                              <p
+                                className={`max-w-[80%] text-xs leading-snug px-2.5 py-1.5 rounded-lg whitespace-pre-wrap break-words ${
+                                  m.fromMe ? "bg-blue-500/15 text-blue-100" : "bg-zinc-800 text-zinc-200"
+                                }`}
+                              >
+                                {m.text}
+                              </p>
+                            </div>
+                          </div>
+                        )
+                      })}
+                      <div ref={threadEndRef} />
+                    </div>
+                  )}
+                </div>
               </div>
 
               {/* Intent + Familiarity selector */}

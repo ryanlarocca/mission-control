@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server"
+import { fetchThread, formatThreadForPrompt } from "@/lib/relationship-messages"
 import fs from "fs"
 import { getLeadsClient } from "@/lib/leads"
 import { completeText, SONNET } from "@/lib/llm"
@@ -460,7 +461,8 @@ function buildPrompt(
   notes: string,
   voiceExamples: string[] = [],
   everContacted = true,
-  familiarity: Familiarity = "Reintro"
+  familiarity: Familiarity = "Reintro",
+  threadBlock = ""
 ): string {
   const base = lookupPrompt(PROMPTS, type, modality)
   const currentYear = String(new Date().getFullYear())
@@ -469,7 +471,7 @@ function buildPrompt(
   // The opener directive is authoritative over whatever the base template says
   // about introducing Ryan — that's how one Deal template covers warm + reintro.
   const familiarityRule = FAMILIARITY_RULE[familiarity]
-  return (newContactRule + CONTEXT_FILTER_PREAMBLE + familiarityRule + voiceBlock + base)
+  return (newContactRule + CONTEXT_FILTER_PREAMBLE + familiarityRule + threadBlock + voiceBlock + base)
     .replace(/{currentYear}/g, currentYear)
     .replace(/{name}/g, firstName)
     .replace(/{notes}/g, notes || "No notes available.")
@@ -573,8 +575,17 @@ export async function POST(request: Request) {
     }
 
     // Voice few-shot examples (dynamic — from Log tab, 5-min cache)
-    const voiceExamples = await fetchVoiceExamples(type, modality, 5)
-    const prompt = buildPrompt(type, modality, firstName, notes, voiceExamples, everContacted, familiarity)
+    // Recent real texts with this contact (live from chat.db via the sidecar),
+    // so the draft continues the actual conversation instead of restarting it.
+    const [voiceExamples, thread] = await Promise.all([
+      fetchVoiceExamples(type, modality, 5),
+      phone ? fetchThread(String(phone), 6000) : Promise.resolve([]),
+    ])
+    const transcript = formatThreadForPrompt(thread, 8)
+    const threadBlock = transcript
+      ? `RECENT TEXT HISTORY with ${firstName} (oldest first — continue this conversation naturally; do not repeat what Ryan already said, do not re-introduce Ryan if he already has, and if they asked something unanswered, address it):\n${transcript}\n\n`
+      : ""
+    const prompt = buildPrompt(type, modality, firstName, notes, voiceExamples, everContacted, familiarity, threadBlock)
 
     // The fallback template — used whenever the model call fails or returns
     // nothing usable, so the composer never silently shows a blank message.
