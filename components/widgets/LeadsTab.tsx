@@ -3222,7 +3222,12 @@ function TimelineEvent({ ev }: { ev: Lead }) {
           </div>
           {isOutboundCall ? (
             <>
-              {ev.message && (
+              {ev.message && ev.message.startsWith("📵") && (
+                // Call outcome stamped by /api/leads/call/status (no answer,
+                // busy, failed) — an outcome line, not a transcript.
+                <div className="text-sm text-zinc-300 italic">{ev.message}</div>
+              )}
+              {ev.message && !ev.message.startsWith("📵") && (
                 <div>
                   <div className="text-sm text-zinc-100 whitespace-pre-wrap break-words max-h-48 overflow-y-auto pr-1">
                     {ev.message}

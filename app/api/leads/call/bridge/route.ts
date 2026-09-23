@@ -19,10 +19,12 @@ import { getTwilioNumber, isOwnedNumber } from "@/lib/leads"
 
 const PROD_BASE = "https://mission-control-three-chi.vercel.app"
 
-function buildTwiml(leadPhone: string, recordingUrl: string, callerId: string): string {
+// `action` fires when the lead's leg ends (answered-and-hung-up OR never
+// answered) so an unanswered call is recorded as such — see /call/status.
+function buildTwiml(leadPhone: string, recordingUrl: string, statusUrl: string, callerId: string): string {
   return `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-  <Dial timeout="30" callerId="${callerId}" record="record-from-answer" recordingStatusCallback="${recordingUrl}" recordingStatusCallbackMethod="POST">
+  <Dial timeout="30" callerId="${callerId}" action="${statusUrl}" method="POST" record="record-from-answer" recordingStatusCallback="${recordingUrl}" recordingStatusCallbackMethod="POST">
     <Number>${leadPhone}</Number>
   </Dial>
 </Response>`
@@ -47,6 +49,8 @@ function handle(request: NextRequest): NextResponse {
 
   const recordingUrl =
     `${PROD_BASE}/api/leads/call/recording?leadId=${encodeURIComponent(leadId)}`
+  const statusUrl =
+    `${PROD_BASE}/api/leads/call/status?leadId=${encodeURIComponent(leadId)}`
 
   let callerId: string
   try {
@@ -59,7 +63,7 @@ function handle(request: NextRequest): NextResponse {
   if (requested && isOwnedNumber(requested)) callerId = requested
   else if (requested) console.warn(`[call/bridge] ignoring non-owned callerId ${requested}`)
 
-  return new NextResponse(buildTwiml(leadPhone, recordingUrl, callerId), {
+  return new NextResponse(buildTwiml(leadPhone, recordingUrl, statusUrl, callerId), {
     headers: { "Content-Type": "text/xml" },
   })
 }

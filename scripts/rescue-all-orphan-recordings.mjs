@@ -13,6 +13,12 @@
 // Whisper / function budget failed. Replays the same callback; the webhook
 // re-runs the pipeline on a row whose transcript never landed.
 //
+// Phase D — unanswered outbound calls: outbound `call` rows (twilio_number
+// NULL) with no recording and no message. Asks Twilio what happened to the
+// lead's leg and stamps the outcome (no-answer / busy / failed) into
+// `message`, the same thing /api/leads/call/status does live. Before this
+// (2026-09-23) such rows read "awaiting recording" forever.
+//
 // Phase C — unanalyzed: inbound rows with a transcript but no ai_summary
 // (the AI analyzer failed after Whisper succeeded). POSTs the card's own
 // re-analyze route with {silent:true}. Needs MC_PASSWORD in .env.local.
@@ -48,6 +54,8 @@ for (const line of envText.split("\n")) {
 
 const args = process.argv.slice(2)
 const execute = args.includes("--execute")
+// --phase=D runs a single phase (used for one-off backfills).
+const onlyPhase = (args.find(a => a.startsWith("--phase=")) || "").split("=")[1] || null
 const hoursArg = args.find(a => a.startsWith("--hours="))
 const hours = hoursArg ? parseInt(hoursArg.split("=")[1], 10) : 72
 
@@ -67,6 +75,14 @@ const callEnded = call => !call || !["queued", "ringing", "in-progress"].include
 // Under ~12s there's nothing to transcribe (hang-up on the greeting); the
 // webhook applies its cold default to those itself, so don't loop on them.
 const MIN_TRANSCRIBABLE_SEC = 12
+// Phase D outcome text for an outbound leg the lead never answered (same
+// strings as app/api/leads/call/status/route.ts).
+const OUTCOME = {
+  "no-answer": "📵 No answer — rang out",
+  busy: "📵 Busy",
+  failed: "📵 Call failed — did not connect",
+  canceled: "📵 Call canceled before it connected",
+}
 // Give Twilio's real recordingStatusCallback + the webhook's own pipeline
 // (10s settle + download + Whisper on a 30-min call + analysis ≈ 3-4 min)
 // time to finish before we step in.
@@ -123,9 +139,18 @@ const { data: orphans, error } = await sb
   .order("created_at", { ascending: false })
 if (error) { console.error("orphan lookup failed:", error.message); process.exit(1) }
 console.log(`Found ${orphans.length} orphaned call/voicemail row(s).`)
+if (onlyPhase) {
+  if (onlyPhase === "B") await phaseB()
+  else if (onlyPhase === "C") await phaseC()
+  else if (onlyPhase === "D") await phaseD()
+  else console.error(`unknown --phase=${onlyPhase}`)
+  persistAttempts()
+  process.exit(0)
+}
 if (orphans.length === 0) {
   await phaseB()
   await phaseC()
+  await phaseD()
   persistAttempts()
   process.exit(0)
 }
@@ -203,6 +228,7 @@ if (!execute) {
   console.log("\nDry-run — re-run with --execute to perform the rescues.")
   await phaseB()
   await phaseC()
+  await phaseD()
   process.exit(0)
 }
 
@@ -224,7 +250,44 @@ for (const p of plan) {
 console.log(`\nDone. ${ok} rescued, ${fail} failed.`)
 await phaseB()
 await phaseC()
+await phaseD()
 persistAttempts()
+
+// ── Phase D: outbound calls that were never answered ────────────────────────
+async function phaseD() {
+  const { data: rows, error: qErr } = await sb
+    .from("leads")
+    .select("id, caller_phone, name, created_at")
+    .eq("lead_type", "call")
+    .is("twilio_number", null)
+    .is("recording_url", null)
+    .is("message", null)
+    .gte("created_at", sinceIso)
+    .order("created_at", { ascending: false })
+  if (qErr) { console.error("phase D lookup failed:", qErr.message); return }
+  const due = rows.filter(r => settled(r.created_at))
+  console.log(`\nPhase D: ${due.length} outbound call row(s) with no recording and no outcome.`)
+  let ok = 0, skipped = 0
+  for (const row of due) {
+    const tag = `${String(row.created_at).slice(0, 16)} ${(row.name || row.caller_phone || row.id).padEnd(15)}`
+    const t0 = new Date(row.created_at).getTime()
+    const q = `To=${encodeURIComponent(row.caller_phone)}&StartTime%3E=${new Date(t0 - 5 * 60e3).toISOString().slice(0, 10)}&StartTime%3C=${new Date(t0 + 36 * 3600e3).toISOString().slice(0, 10)}&PageSize=50`
+    const cr = await fetch(`https://api.twilio.com/2010-04-01/Accounts/${tw.sid}/Calls.json?${q}`, { headers: { Authorization: `Basic ${auth}` } })
+    if (!cr.ok) { console.log(`  SKIP ${tag} Twilio ${cr.status}`); skipped++; continue }
+    const calls = ((await cr.json()).calls || [])
+      .filter(c => c.parent_call_sid && Math.abs(new Date(c.start_time).getTime() - t0) < 15 * 60e3)
+      .sort((a, b) => Math.abs(new Date(a.start_time).getTime() - t0) - Math.abs(new Date(b.start_time).getTime() - t0))
+    const leg = calls[0]
+    if (!leg) { console.log(`  SKIP ${tag} no bridged leg to ${row.caller_phone} within 15 min in Twilio`); skipped++; continue }
+    const outcome = OUTCOME[leg.status]
+    if (!outcome) { console.log(`  SKIP ${tag} leg ${leg.sid} status=${leg.status} dur=${leg.duration}s — answered; leave for the recording sweep`); skipped++; continue }
+    console.log(`  ${execute ? "STAMP" : "WOULD STAMP"} ${tag} ${leg.status} (${leg.sid})`)
+    if (!execute) continue
+    const { error } = await sb.from("leads").update({ message: outcome }).eq("id", row.id).is("message", null).is("recording_url", null)
+    if (error) console.log(`  ✗ ${row.id} ${error.message}`); else ok++
+  }
+  if (execute) console.log(`Phase D done. ${ok} stamped, ${skipped} skipped.`)
+}
 
 // ── Phase B: recording attached, transcript never landed ────────────────────
 async function phaseB() {
