@@ -15,8 +15,11 @@ import {
 } from "@/lib/leads"
 import { scoreLeadSpam, spamAlertLines, spamReviewColumns, type SpamScore } from "@/lib/lead-spam"
 
-// Twilio fires this when a lead texts MFM-A, MFM-B, or the outbound caller-ID
-// number. We log it and alert Ryan; no auto-reply for now.
+// Twilio fires this when a lead texts any of our lead-facing lines (the
+// campaign lines, the ported mailer lines, the Google Ads line, the office
+// lines or the outbound caller-ID number — see CAMPAIGN_MAP). We log it and
+// alert Ryan; no auto-reply for now. Replies go back from the same line
+// (resolveReplyLine).
 //
 // Phase 7C-may8 Bug 6: STOP / unsubscribe keywords flip is_dnc + status=dead
 // on the matched intake row and skip the normal drip-eligible insert.

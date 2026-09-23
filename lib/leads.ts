@@ -17,22 +17,27 @@ export const CAMPAIGN_MAP: Record<string, string> = {
   // source_type=google_ads and routed to the google_ads_form drip (see
   // voice/sms route handlers).
   "+16506703914": "Google",
-  // Legacy direct-mail response lines ported in from Google Voice 2026-08-03
-  // (ex ryansva–j@ shell seats). Long-tail mailer numbers — a postcard can ring
-  // years after the send. Labels are the number itself until Ryan maps each to
-  // its original mailer campaign; when he does, swap the label here in place
-  // (rows already written keep the old label).
-  "+14083372785": "Mailer 337-2785",
-  "+14083419402": "Mailer 341-9402",
-  "+14083573440": "Mailer 357-3440",
-  "+14083573835": "Mailer 357-3835",
-  "+14083654925": "Mailer 365-4925",
-  "+14084186294": "Mailer 418-6294",
-  "+14084188450": "Mailer 418-8450",
-  // Office/administrative lines (also ported 2026-08-03): Ryan's old office
-  // number (ex ryan@ Voice) and the info@ line — used on email campaigns and
-  // website-era materials. See OFFICE_NUMBERS below: callers here are business
-  // contacts / returning outreach, never fresh direct-mail leads.
+  // Legacy direct-mail response lines ported in from Google Voice (Twilio
+  // shows them created 2026-07-27). Each was the Google Voice line behind one
+  // of the ryansv*@ mailer mailboxes — mapped 2026-09-22 from the GV
+  // text-forward sender addresses (`<gv line>.<sender>.<hash>@txt.voice.
+  // google.com`) still sitting in those inboxes. A line that was a campaign
+  // mailbox's number carries that campaign's label, exactly as the mailbox
+  // does in config/email-campaigns.json, so a caller and an emailer from the
+  // same mailer land in one bucket and resolveCampaignId attributes both.
+  // Long-tail numbers — a postcard can ring years after the send.
+  "+14083419402": "MFM-A",            // ex ryansvg@ Voice — pink envelope
+  "+14083654925": "MFM-B",            // ex ryansvj@ Voice — white envelope
+  "+14083573835": "Mailer 357-3835",  // ex ryansvr@ Voice — pre-MFM mailer
+  "+14083573440": "Mailer 357-3440",  // ex ryansva@ Voice — pre-MFM mailer
+  "+14084186294": "Mailer 418-6294",  // ex ryansvb@ Voice — pre-MFM mailer
+  "+14083372785": "Mailer 337-2785",  // ex ryansvc@ or ryansvd@ Voice (no text forwards left to tell)
+  "+14084188450": "Mailer 418-8450",  // ex ryansvc@ or ryansvd@ Voice (no text forwards left to tell)
+  // Office/administrative lines (same port): Ryan's old office number (ex
+  // ryan@ Voice) and his old personal Google Voice number (the "Info" label
+  // is historical — info@'s own GV line was 408-337-6857 and was NOT ported).
+  // See OFFICE_NUMBERS below: callers here are business contacts / returning
+  // outreach, never fresh direct-mail leads.
   "+14084585442": "Office — Ryan",
   "+14084930632": "Office — Info",
 }

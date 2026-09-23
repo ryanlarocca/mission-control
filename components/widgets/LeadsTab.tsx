@@ -196,8 +196,21 @@ const SOURCE_BADGE: Record<string, string> = {
   "SVJ-B":      "bg-purple-900/60 text-purple-200",
   "Google Ads": "bg-green-900/60 text-green-200",
   "DM-Legacy":  "bg-zinc-700 text-zinc-300",
+  // Pre-MFM mailer lines ported from Google Voice + their email siblings.
+  "Legacy DM":  "bg-orange-900/50 text-orange-200",
   "Website":    "bg-violet-900/60 text-violet-200",
+  "Outbound":   "bg-teal-900/60 text-teal-200",
+  "Office — Ryan": "bg-zinc-700 text-zinc-200",
+  "Office — Info": "bg-zinc-700 text-zinc-200",
   Unknown:      "bg-zinc-800 text-zinc-400",
+}
+
+// "Mailer 357-3835"-style labels (one per ported tracking line) share the
+// Legacy DM colour so every pre-MFM mailer reads as one family.
+function sourceBadgeClass(label: string): string {
+  if (SOURCE_BADGE[label]) return SOURCE_BADGE[label]
+  if (label.startsWith("Mailer ")) return SOURCE_BADGE["Legacy DM"]
+  return SOURCE_BADGE.Unknown
 }
 
 const SOURCE_TYPE_BADGE: Record<string, string> = {
@@ -1836,7 +1849,7 @@ function LeadCard(p: LeadCardProps) {
   // the historical source. Untouched legacy rows that aren't relabeled fall
   // through to "Unknown".
   const displayCampaign = group.campaignLabel || group.source || "Unknown"
-  const sourceClass = SOURCE_BADGE[displayCampaign] || SOURCE_BADGE.Unknown
+  const sourceClass = sourceBadgeClass(displayCampaign)
   const sourceTypeClass = group.sourceType ? SOURCE_TYPE_BADGE[group.sourceType] : null
   const phoneDisplay = group.contactPhone ? formatPhone(group.contactPhone) : null
   const onDrip = !!group.events.find(e => e.drip_campaign_type)?.drip_campaign_type

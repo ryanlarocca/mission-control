@@ -5,7 +5,8 @@ import { sendLeadSms } from "@/lib/leads"
 // lib/leads `sendLeadSms`, which owns the actual send + logging so the same
 // behavior is shared with the Telegram reply webhook
 // (/api/telegram/webhook). It sends via the Twilio Messaging API from the
-// outbound caller-ID number (+16502043247) so leads see ONE number for both
+// line the lead contacted (resolveReplyLine, 2026-09-22; previously always
+// the outbound caller-ID number +16502043247) so leads see ONE number for both
 // calls and texts, logs the outbound message with twilio_number=null (the
 // outbound marker), auto-detects offers, promotes the intake row
 // new→contacted, and resets the drip cadence clock.
