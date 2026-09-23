@@ -1,15 +1,18 @@
 import { NextRequest, NextResponse } from "next/server"
-import { FORWARD_TO, getLeadsClient, getTwilioNumber, isOwnedNumber, registerManualTouch } from "@/lib/leads"
+import { FORWARD_TO, getLeadsClient, getTwilioNumber, isOwnedNumber, registerManualTouch, resolveReplyLine } from "@/lib/leads"
 
 // Outbound call relay. Click "Call" on a lead card →
 //   1. Insert an outbound `lead_type=call` row (twilio_number=null per the
 //      outbound convention; status="contacted") so the timeline shows it
 //      immediately.
-//   2. POST to Twilio's REST API to dial Ryan's cell with the
-//      `TWILIO_NUMBER` env (see lib/leads.ts getTwilioNumber()) as the
-//      from-number.
+//   2. POST to Twilio's REST API to dial Ryan's cell. The from-number is
+//      the line the lead originally called/texted (resolveReplyLine) —
+//      Ryan's cell shows which line the lead knows — falling back to the
+//      `TWILIO_NUMBER` env when the lead has never contacted a line.
 //   3. When Ryan answers, Twilio fetches the bridge URL (TwiML) which
-//      `<Dial>`s the lead's number with record-from-answer. Recording is
+//      `<Dial>`s the lead's number with record-from-answer and the SAME
+//      line as callerId, so the lead sees the number on their postcard,
+//      not a stranger (Ryan, 2026-09-22 — same rule as texts). Recording is
 //      delivered back to /api/leads/call/recording?leadId=… which attaches
 //      it to the row inserted in step 1.
 //
@@ -80,6 +83,14 @@ export async function POST(request: NextRequest) {
       { status: 500 }
     )
   }
+  // Present the line the lead already knows. Voice caller ID has no A2P
+  // registration requirement, so any line we own is usable as-is.
+  try {
+    const line = await resolveReplyLine(getLeadsClient(), leadPhone)
+    if (line) fromNumber = line
+  } catch (e) {
+    console.error("[leads/call] reply-line lookup threw:", e)
+  }
 
   // Insert the outbound call row first so we have a leadId to thread
   // through to the recording callback. twilio_number=null (outbound marker
@@ -117,7 +128,8 @@ export async function POST(request: NextRequest) {
   const bridgeUrl =
     `${PROD_BASE}/api/leads/call/bridge` +
     `?leadPhone=${encodeURIComponent(leadPhone)}` +
-    `&leadId=${encodeURIComponent(leadId)}`
+    `&leadId=${encodeURIComponent(leadId)}` +
+    `&callerId=${encodeURIComponent(fromNumber)}`
 
   const auth = Buffer.from(`${sid}:${token}`).toString("base64")
   const form = new URLSearchParams({
@@ -207,5 +219,5 @@ export async function POST(request: NextRequest) {
     console.error("[leads/call] manual-touch cadence reset threw:", e)
   }
 
-  return NextResponse.json({ success: true, callSid, leadId })
+  return NextResponse.json({ success: true, callSid, leadId, from: fromNumber })
 }

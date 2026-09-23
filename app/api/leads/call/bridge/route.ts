@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server"
-import { getTwilioNumber } from "@/lib/leads"
+import { getTwilioNumber, isOwnedNumber } from "@/lib/leads"
 
 // Twilio fetches this URL when Ryan answers the outbound leg of a call
 // initiated by /api/leads/call. We return TwiML that <Dial>s the lead's
@@ -7,8 +7,12 @@ import { getTwilioNumber } from "@/lib/leads"
 // leadId back through so /api/leads/call/recording can attach the audio
 // to the right Supabase row.
 //
-// callerId is set to the same Twilio number used as `From` on the REST
-// call so the lead sees the LRG Homes number, not Ryan's cell.
+// callerId is the line /api/leads/call chose (the one the lead originally
+// called/texted), passed through the `callerId` query param and accepted
+// only if it is one of our own numbers — this route is public, so an
+// arbitrary value must never become a spoofed caller ID. Falls back to the
+// `TWILIO_NUMBER` env. The lead sees the LRG Homes line they know, not
+// Ryan's cell.
 //
 // Public route — no `mc_session` required (Twilio webhook). Listed in
 // middleware.ts PUBLIC_PATHS.
@@ -51,6 +55,9 @@ function handle(request: NextRequest): NextResponse {
     console.error("[call/bridge]", e)
     return emptyTwiml()
   }
+  const requested = url.searchParams.get("callerId")?.trim()
+  if (requested && isOwnedNumber(requested)) callerId = requested
+  else if (requested) console.warn(`[call/bridge] ignoring non-owned callerId ${requested}`)
 
   return new NextResponse(buildTwiml(leadPhone, recordingUrl, callerId), {
     headers: { "Content-Type": "text/xml" },
