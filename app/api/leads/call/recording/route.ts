@@ -44,11 +44,14 @@ export async function POST(request: NextRequest) {
 
   let recordingUrl = ""
   let recordingSid = ""
+  let recordingDurationSec: number | null = null
   try {
     const body = await request.text()
     const params = parseTwilioBody(body)
     recordingUrl = params.get("RecordingUrl") || ""
     recordingSid = params.get("RecordingSid") || ""
+    const dur = Number(params.get("RecordingDuration") || "")
+    recordingDurationSec = Number.isFinite(dur) && dur >= 0 ? dur : null
   } catch (e) {
     console.error("[call/recording] Failed to parse Twilio body:", e)
     return twimlResponse()
@@ -107,6 +110,7 @@ export async function POST(request: NextRequest) {
     leadId,
     direction: "outbound",
     kind: "call",
+    recordingDurationSec,
   }))
 
   return twimlResponse()

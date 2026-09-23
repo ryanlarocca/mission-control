@@ -1382,7 +1382,9 @@ export async function fetchTwilioAudio(url: string): Promise<Buffer | null> {
   // network blip silently stamps Cold with no orphan row to recover from
   // (recording_url IS set, so retranscribe-missing won't find it unless
   // message remains null after the cold default fires).
-  for (let attempt = 1; attempt <= 3; attempt++) {
+  const MAX_ATTEMPTS = 4
+  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+    let notReady = false
     try {
       // Defensive cache: no-store. Twilio recording URLs are unique per
       // recording so cache hits would return the same audio (not stale
@@ -1393,12 +1395,16 @@ export async function fetchTwilioAudio(url: string): Promise<Buffer | null> {
         const ab = await res.arrayBuffer()
         return Buffer.from(ab)
       }
-      console.error(`[twilio-audio] Fetch failed ${res.status} (attempt ${attempt}/3): ${url}`)
-      if (res.status < 500) return null // 4xx won't improve on retry
+      console.error(`[twilio-audio] Fetch failed ${res.status} (attempt ${attempt}/${MAX_ATTEMPTS}): ${url}`)
+      // 404 on the .mp3 means Twilio hasn't finished transcoding it yet —
+      // the MP3 is produced on demand and long recordings lag the status
+      // callback. Wait longer and retry. Any other 4xx won't improve.
+      notReady = res.status === 404
+      if (res.status < 500 && !notReady) return null
     } catch (e) {
-      console.error(`[twilio-audio] Fetch threw (attempt ${attempt}/3):`, e)
+      console.error(`[twilio-audio] Fetch threw (attempt ${attempt}/${MAX_ATTEMPTS}):`, e)
     }
-    if (attempt < 3) await new Promise(r => setTimeout(r, 2000 * attempt))
+    if (attempt < MAX_ATTEMPTS) await new Promise(r => setTimeout(r, (notReady ? 8000 : 2000) * attempt))
   }
   return null
 }
@@ -1471,6 +1477,13 @@ export async function processRecordingBackground(args: {
   // clipping them anyway. Defaults to "voicemail" so older callers keep
   // their alert.
   kind?: "voicemail" | "call"
+  // Twilio's RecordingDuration (seconds) from the status callback. It is
+  // the authoritative "was there a real conversation" signal — the byte
+  // count of whatever we managed to download is not (a failed or partial
+  // download looks exactly like a hang-up). See 2026-09-22 Glenda McGovern:
+  // a 20-min live call was stamped "left no message" because the audio
+  // fetch came back empty.
+  recordingDurationSec?: number | null
 }): Promise<void> {
   const { fullUrl, callerPhone, source, leadId } = args
   const direction = args.direction ?? "inbound"
@@ -1590,13 +1603,21 @@ export async function processRecordingBackground(args: {
         // lose; otherwise leave it untouched for the reconciliation pass
         // (scripts/retranscribe-missing.mjs) to recover.
         const audioBytes = audio?.length ?? 0
+        const durationSec = args.recordingDurationSec ?? 0
         // 50 KB ≈ 12 seconds at Twilio's 32 kbps — anything above that is a
         // real voicemail worth preserving. Previous threshold (300 KB) missed
         // short but genuine voicemails (~30s = 120 KB) and stamped them cold.
-        const transcriptionFailedOnRealAudio = !!audio && !transcription && audioBytes > 50_000
-        if (transcriptionFailedOnRealAudio) {
-          console.error(`[analyze-call] Lead ${leadId} → transcription FAILED on ${audioBytes} bytes of audio — NOT stamping cold; left for re-transcription.`)
-          sendTelegramAlert(`⚠️ Transcription failed — lead ${leadId} (${callerPhone}) has a real recording (${Math.round(audioBytes / 1024)} KB) but Whisper returned nothing. Run retranscribe-missing.mjs to recover.`).catch(() => {})
+        // Twilio's own duration is checked too: if the download failed or
+        // came back partial, the byte count lies but the duration doesn't.
+        const realRecording = audioBytes > 50_000 || durationSec > 12
+        if (!transcription && realRecording) {
+          const why = !audio
+            ? "the audio download failed"
+            : audioBytes <= 50_000
+              ? `only ${Math.round(audioBytes / 1024)} KB downloaded (partial file)`
+              : "Whisper returned nothing"
+          console.error(`[analyze-call] Lead ${leadId} → NO transcript for a real ${durationSec}s recording (${why}) — NOT stamping cold; left for the rescue sweep.`)
+          sendTelegramAlert(`⚠️ Transcription failed — lead ${leadId} (${callerPhone}) has a real ${durationSec ? `${Math.round(durationSec / 60)}-min ` : ""}${kind} recording but ${why}. The 15-min rescue sweep will retry; run scripts/retranscribe-missing.mjs to force it.`).catch(() => {})
         } else if (transcription) {
           // Transcript exists but analyzer returned null (AI 500, JSON parse
           // failure, etc.). The transcript IS saved so the lead is recoverable

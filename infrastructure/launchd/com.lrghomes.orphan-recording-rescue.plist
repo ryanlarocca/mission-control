@@ -7,6 +7,11 @@
   recordingStatusCallback against /api/leads/voice/recording so the
   existing Whisper + AI + Telegram pipeline runs end-to-end.
 
+  Since 2026-09-22 it also retries rows whose recording is attached but
+  never transcribed (message IS NULL), max 3 attempts each, and it only
+  ever touches COMPLETED recordings — it once "rescued" a live 20-min
+  call 11 minutes in and the lead was stamped "left no message".
+
   Why this lives here: Vercel Hobby caps cron schedules at one/day, which
   is too slow for a recovery mechanism. The Mac mini already runs the
   drip engine, gmail-watch renewal, and the Cloudflare tunnel on launchd

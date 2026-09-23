@@ -49,6 +49,8 @@ export async function POST(request: Request) {
   let callerPhone = ""
   let twilioNumber = ""
   let recordingSid = ""
+  let recordingStatus = ""
+  let recordingDurationSec: number | null = null
   let explicitLeadId = ""
   try {
     const body = await request.text()
@@ -57,6 +59,9 @@ export async function POST(request: Request) {
     callerPhone = params.get("From") || params.get("Caller") || ""
     twilioNumber = params.get("To") || params.get("Called") || ""
     recordingSid = params.get("RecordingSid") || ""
+    recordingStatus = params.get("RecordingStatus") || ""
+    const dur = Number(params.get("RecordingDuration") || "")
+    recordingDurationSec = Number.isFinite(dur) && dur >= 0 ? dur : null
     // Non-Twilio rescue scripts can pass LeadId to bypass the time-windowed
     // lookup and attach to a specific row. Twilio never sends this param.
     explicitLeadId = params.get("LeadId") || ""
@@ -67,6 +72,17 @@ export async function POST(request: Request) {
 
   if (!recordingUrl || !callerPhone) {
     console.warn(`[recording] Missing fields — url:${!!recordingUrl} from:${!!callerPhone}`)
+    return twimlResponse()
+  }
+
+  // Only a finished recording can be transcribed. Twilio's real callback
+  // only fires for `completed` (the default event), but a replay from the
+  // rescue script — or a future callback-event change — could hand us an
+  // in-progress recording. Processing one attaches recording_url, fails
+  // the download, and (before 2026-09-22) stamped a live 20-min call cold;
+  // the real callback then hit the idempotency check and was dropped.
+  if (recordingStatus && recordingStatus !== "completed") {
+    console.warn(`[recording] ${recordingSid} status=${recordingStatus} — not processing until completed`)
     return twimlResponse()
   }
 
@@ -83,25 +99,38 @@ export async function POST(request: Request) {
 
     // Idempotency for Twilio retries: if this RecordingUrl is already
     // attached AND the attached row is the same as the one we're about to
-    // target, skip. We deliberately do NOT skip on the rescue path where
-    // a recording got attached to a fallback row earlier (we want to
-    // re-attach to the explicit LeadId); a follow-up cleanup deletes the
-    // stale fallback row.
+    // target, skip — but ONLY if that row actually got its transcript. A
+    // row with the URL attached and `message` still NULL means an earlier
+    // run attached the URL and then failed downstream (download / Whisper
+    // / function recycled); re-running the pipeline on that same row is
+    // exactly what we want, and it's what the rescue sweep replays.
+    // We deliberately do NOT skip on the rescue path where a recording got
+    // attached to a fallback row earlier (we want to re-attach to the
+    // explicit LeadId); a follow-up cleanup deletes the stale fallback row.
     const { data: existing } = await sb
       .from("leads")
-      .select("id")
+      .select("id, lead_type, message")
       .eq("recording_url", fullUrl)
       .limit(1)
+    let retryRowId: string | null = null
     if (existing && existing.length > 0) {
       if (!explicitLeadId || existing[0].id === explicitLeadId) {
-        console.log(`[recording] ${recordingSid} already processed; skipping`)
-        return twimlResponse()
+        if (existing[0].message) {
+          console.log(`[recording] ${recordingSid} already processed; skipping`)
+          return twimlResponse()
+        }
+        console.warn(`[recording] ${recordingSid} attached to lead ${existing[0].id} but never transcribed; re-running the pipeline`)
+        retryRowId = existing[0].id
+        if (existing[0].lead_type === "call") kind = "call"
+      } else {
+        console.log(`[recording] ${recordingSid} attached elsewhere (lead ${existing[0].id}); rescue path re-attaching to ${explicitLeadId}`)
       }
-      console.log(`[recording] ${recordingSid} attached elsewhere (lead ${existing[0].id}); rescue path re-attaching to ${explicitLeadId}`)
     }
 
     let id: string | null = null
-    if (explicitLeadId) {
+    if (retryRowId) {
+      id = retryRowId
+    } else if (explicitLeadId) {
       const { data: rescued } = await sb.from("leads").select("lead_type").eq("id", explicitLeadId).maybeSingle()
       if (rescued?.lead_type === "call") kind = "call"
       // Rescue path: caller (cron / batch script) already identified the
@@ -177,6 +206,7 @@ export async function POST(request: Request) {
     leadId,
     direction: "inbound",
     kind,
+    recordingDurationSec,
   }))
 
   return twimlResponse()
