@@ -6,6 +6,8 @@ import {
   UserCheck, User, Wrench, TrendingUp, Home, Building2, Banknote,
 } from "lucide-react"
 import type { LucideIcon } from "lucide-react"
+import { RelationshipThread } from "./RelationshipThread"
+import { useRelationshipCall, CallButton, CallStatusLine } from "./RelationshipCall"
 
 export interface TouchesSummary {
   count: number
@@ -19,6 +21,10 @@ interface InteractionEntry {
   modality: string
   message: string
   action: string
+  replied?: boolean
+  callStatus?: string | null
+  callDurationSec?: number | null
+  hasRecording?: boolean
 }
 
 export interface ContactDetailContact {
@@ -117,6 +123,25 @@ export function ContactDetailModal({ contact, onClose, onSendToast, onNotesSaved
   const categoryPickerRef = useRef<HTMLDivElement>(null)
 
   const currentCategory = coerceCategory(contact.category)
+
+  function reloadHistory() {
+    fetch(`/api/crms/touches?phone=${encodeURIComponent(contact.phone)}&full=1`, { cache: "no-store" })
+      .then(r => r.json())
+      .then(d => setHistory(Array.isArray(d.history) ? d.history : []))
+      .catch(() => {})
+  }
+
+  // Click-to-call — same control as the queue card. The summary lands in
+  // notes server-side; patch the editor + parent list, then refresh history.
+  const { liveCall, startCall, dismiss: dismissCall } = useRelationshipCall({
+    onConnected: () => reloadHistory(),
+    onSummary: (_id, _summary, line) => {
+      setNotes(prev => (prev.trim() ? `${prev.trim()}\n\n${line}` : line))
+      onNotesSaved(contact.id, notes.trim() ? `${notes.trim()}\n\n${line}` : line)
+      reloadHistory()
+    },
+  })
+  const callContact = { id: contact.id, name: contact.name, phone: contact.phone, tier: contact.tier, category: contact.category }
 
   // Click-outside for the category picker. pointerdown + setTimeout(0) so the
   // opening tap doesn't immediately close it on iOS Safari.
@@ -378,10 +403,15 @@ export function ContactDetailModal({ contact, onClose, onSendToast, onNotesSaved
               {savingTier && <Loader2 className="w-3 h-3 text-zinc-500 animate-spin" />}
             </div>
           </div>
-          <button onClick={onClose} className="text-zinc-500 hover:text-zinc-200 p-1">
-            <X className="w-4 h-4" />
-          </button>
+          <div className="flex items-center gap-2 shrink-0">
+            <CallButton liveCall={liveCall} contact={callContact} onClick={() => startCall(callContact)} />
+            <button onClick={onClose} className="text-zinc-500 hover:text-zinc-200 p-1">
+              <X className="w-4 h-4" />
+            </button>
+          </div>
         </div>
+
+        <CallStatusLine liveCall={liveCall} contactId={contact.id} onDismiss={dismissCall} className="px-4 py-2 border-b border-zinc-800 bg-zinc-900/60" />
 
         <div className="px-4 py-4 space-y-5">
           {/* Contact info */}
@@ -467,6 +497,9 @@ export function ContactDetailModal({ contact, onClose, onSendToast, onNotesSaved
             </div>
           </div>
 
+          {/* Live text thread */}
+          <RelationshipThread phone={contact.phone} />
+
           {/* Interaction history */}
           <div>
             <p className="text-xs text-zinc-600 mb-2">
@@ -477,7 +510,7 @@ export function ContactDetailModal({ contact, onClose, onSendToast, onNotesSaved
                 <Loader2 className="w-3.5 h-3.5 animate-spin" /> Loading history…
               </div>
             ) : history.length === 0 ? (
-              <p className="text-xs text-zinc-600 italic py-2">No recorded outreach yet.</p>
+              <p className="text-xs text-zinc-600 italic py-2">No logged outreach yet — texts show in Messages above.</p>
             ) : (
               <div className="space-y-2">
                 {history.map((h, idx) => (
@@ -491,6 +524,14 @@ export function ContactDetailModal({ contact, onClose, onSendToast, onNotesSaved
                         {h.action || "—"}
                       </span>
                       {h.modality && <span className="text-[10px] text-zinc-500">{h.modality}</span>}
+                      {h.callStatus && (
+                        <span className="text-[10px] text-zinc-500">
+                          {h.callStatus === "completed"
+                            ? `connected${h.callDurationSec ? ` · ${Math.floor(h.callDurationSec / 60)}:${String(h.callDurationSec % 60).padStart(2, "0")}` : ""}`
+                            : h.callStatus === "dialing" ? "in progress" : h.callStatus}
+                        </span>
+                      )}
+                      {h.replied && <span className="text-[10px] text-emerald-500">replied</span>}
                       <span className="text-[10px] text-zinc-600 ml-auto">{formatDateTime(h.timestamp)}</span>
                     </div>
                     {h.message && (

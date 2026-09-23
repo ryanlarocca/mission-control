@@ -4,62 +4,65 @@ import { getLeadsClient } from "@/lib/leads"
 export const dynamic = "force-dynamic"
 export const revalidate = 0
 
-const SIDECAR_URL = process.env.SIDECAR_URL || "http://localhost:5799"
+// Touch summary + full interaction history for a contact, read from Supabase
+// `relationship_touches`. Until 2026-09-23 this proxied the sidecar, which
+// was still reading a 7-entry outreach_log.json frozen on 2026-04-12 — the
+// card's "# of touches" / "Last message" and the modal's interaction history
+// had been blind to every touch since the Supabase migration (415 rows: sends,
+// Log Call notes, Twilio calls). No sidecar dependency now, so it also works
+// when the Mac mini is down.
 
-async function checkHasReply(phone: string): Promise<boolean> {
-  try {
-    const supabase = getLeadsClient()
-    const norm = phone.replace(/\D/g, "").slice(-10)
-
-    // Find the relationship by phone (last 10 digits match)
-    const { data: rels } = await supabase
-      .from("relationships")
-      .select("id, phone")
-      .not("phone", "is", null)
-
-    const rel = (rels ?? []).find((r: { id: string; phone: string }) => {
-      const rNorm = String(r.phone ?? "").replace(/\D/g, "").slice(-10)
-      return rNorm === norm
-    })
-    if (!rel) return false
-
-    // Check if any touch for this relationship has a replied_at
-    const { data: touches } = await supabase
-      .from("relationship_touches")
-      .select("id")
-      .eq("relationship_id", rel.id)
-      .not("replied_at", "is", null)
-      .limit(1)
-
-    return (touches ?? []).length > 0
-  } catch {
-    return false
-  }
-}
+const MANUAL_MARK = "[marked contacted manually]"
 
 export async function GET(request: Request) {
+  const url = new URL(request.url)
+  const phone = url.searchParams.get("phone") || ""
+  const full = url.searchParams.get("full") === "1"
+  if (!phone) return NextResponse.json({ error: "phone required" }, { status: 400 })
+  const norm = phone.replace(/\D/g, "").slice(-10)
+  const empty = { count: 0, lastSentAt: null, lastMessagePreview: null, hasReply: false, history: [] }
+  if (norm.length < 10) return NextResponse.json(empty)
+
   try {
-    const url = new URL(request.url)
-    const phone = url.searchParams.get("phone") || ""
-    const full = url.searchParams.get("full") === "1" ? "1" : "0"
-    if (!phone) return NextResponse.json({ error: "phone required" }, { status: 400 })
+    const sb = getLeadsClient()
+    // Phones are stored E.164; a last-10-digit LIKE matches the row.
+    const { data: rels } = await sb.from("relationships").select("id").like("phone", `%${norm}`).limit(5)
+    const ids = (rels ?? []).map(r => r.id)
+    if (ids.length === 0) return NextResponse.json(empty)
 
-    // Fetch sidecar touch summary and reply status in parallel
-    const [sidecarRes, hasReply] = await Promise.all([
-      fetch(`${SIDECAR_URL}/touches?phone=${encodeURIComponent(phone)}&full=${full}`, {
-        signal: AbortSignal.timeout(10000),
-        cache: "no-store",
-      }),
-      checkHasReply(phone),
-    ])
+    const { data: rows, error } = await sb
+      .from("relationship_touches")
+      .select("id, occurred_at, modality, action, message, replied_at, call_status, call_duration_sec, recording_url")
+      .in("relationship_id", ids)
+      .order("occurred_at", { ascending: false })
+      .limit(500)
+    if (error) throw error
+    const touches = rows ?? []
 
-    if (!sidecarRes.ok) {
-      return NextResponse.json({ error: "sidecar unavailable", count: 0, lastSentAt: null, lastMessagePreview: null, hasReply: false, history: [] }, { status: 503 })
+    const sent = touches.filter(t => t.action === "sent")
+    const lastSent = sent[0] ?? null
+    const preview = sent.find(t => t.message && t.message !== MANUAL_MARK)?.message ?? null
+    const out = {
+      count: sent.length,
+      lastSentAt: lastSent?.occurred_at ?? null,
+      lastMessagePreview: preview ? String(preview).slice(0, 140) : null,
+      hasReply: touches.some(t => !!t.replied_at),
+      history: full
+        ? touches.map(t => ({
+            id: t.id,
+            timestamp: t.occurred_at,
+            modality: t.modality || "",
+            action: t.action || "",
+            message: t.message || "",
+            replied: !!t.replied_at,
+            callStatus: t.call_status ?? null,
+            callDurationSec: t.call_duration_sec ?? null,
+            hasRecording: !!t.recording_url,
+          }))
+        : [],
     }
-
-    const data = await sidecarRes.json()
-    return NextResponse.json({ ...data, hasReply })
+    return NextResponse.json(out)
   } catch (err) {
-    return NextResponse.json({ error: String(err), count: 0, lastSentAt: null, lastMessagePreview: null, hasReply: false, history: [] }, { status: 503 })
+    return NextResponse.json({ ...empty, error: String(err) }, { status: 500 })
   }
 }

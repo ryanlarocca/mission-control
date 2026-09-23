@@ -10,15 +10,8 @@ import {
 import type { LucideIcon } from "lucide-react"
 import { ContactDetailModal } from "./ContactDetailModal"
 import type { TouchesSummary } from "./ContactDetailModal"
-import type { ThreadMessage } from "@/lib/relationship-messages"
-
-type ThreadState = { ok: boolean; total: number; messages: ThreadMessage[] }
-type LiveCall = {
-  contactId: string
-  touchId: string | null
-  phase: "dialing" | "transcribing" | "done" | "error"
-  text: string
-}
+import { RelationshipThread } from "./RelationshipThread"
+import { useRelationshipCall, CallButton, CallStatusLine } from "./RelationshipCall"
 import { CleanupMode } from "./CleanupMode"
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -339,16 +332,19 @@ function CRMSTabInner() {
   const [sendError, setSendError]     = useState<string | null>(null)
   const [sendToast, setSendToast]     = useState<string | null>(null)
   const [touchesByPhone, setTouchesByPhone] = useState<Record<string, TouchesSummary>>({})
-  // Live text thread per phone (read-through from chat.db via the sidecar).
-  // `null` = still loading; `{ ok:false }` = sidecar unreachable.
-  const [threadByPhone, setThreadByPhone] = useState<Record<string, ThreadState | null>>({})
-  const threadEndRef = useRef<HTMLDivElement>(null)
   const [detailPhone, setDetailPhone] = useState<string | null>(null)
   const [callPanelOpen, setCallPanelOpen] = useState(false)
-  // Click-to-call (Twilio rings Ryan's cell, then the contact). One live call
-  // at a time; the status line under the buttons follows it via polling.
-  const [liveCall, setLiveCall] = useState<LiveCall | null>(null)
-  const liveCallPollRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  // Click-to-call (shared with the detail modal): a connected call counts as
+  // today's touch; the transcript summary patches notes in place when it lands.
+  const { liveCall, startCall, dismiss: dismissCall } = useRelationshipCall({
+    onConnected: (id) => setSent(prev => new Set(prev).add(id)),
+    onSummary: (id, _summary, line) => {
+      const patch = (c: CRMSContact) =>
+        c.id === id ? { ...c, notes: c.notes ? `${c.notes}\n\n${line}` : line, hasNotes: true, notesStale: false } : c
+      setContacts(prev => prev.map(patch))
+      setAllContacts(prev => prev.map(patch))
+    },
+  })
   const [callNote, setCallNote]       = useState("")
 
   // ── Message state ──
@@ -395,20 +391,7 @@ function CRMSTabInner() {
     toastTimerRef.current = setTimeout(() => setSendToast(null), 5000)
   }
 
-  async function fetchThread(phone: string) {
-    if (!phone || phone in threadByPhone) return
-    setThreadByPhone(prev => ({ ...prev, [phone]: null }))
-    try {
-      const res = await fetch(`/api/crms/messages?phone=${encodeURIComponent(phone)}`, { cache: "no-store" })
-      const data = await res.json()
-      setThreadByPhone(prev => ({ ...prev, [phone]: { ok: data.ok !== false, total: data.total ?? (data.messages ?? []).length, messages: data.messages ?? [] } }))
-    } catch {
-      setThreadByPhone(prev => ({ ...prev, [phone]: { ok: false, total: 0, messages: [] } }))
-    }
-  }
-
   async function fetchTouches(phone: string) {
-    fetchThread(phone)
     if (!phone || touchesByPhone[phone]) return
     try {
       const res = await fetch(`/api/crms/touches?phone=${encodeURIComponent(phone)}`, { cache: "no-store" })
@@ -871,61 +854,6 @@ function CRMSTabInner() {
     }
   }
 
-  // ── Call: Twilio rings Ryan's cell, bridges to the contact from Ryan's own
-  // number, records, and the transcript summary lands in notes by itself.
-  function stopLiveCallPoll() {
-    if (liveCallPollRef.current) clearInterval(liveCallPollRef.current)
-    liveCallPollRef.current = null
-  }
-  async function handleCall() {
-    if (!selectedContact || liveCall?.phase === "dialing") return
-    const contact = selectedContact
-    stopLiveCallPoll()
-    setLiveCall({ contactId: contact.id, touchId: null, phase: "dialing", text: "Ringing your cell…" })
-    try {
-      const res = await fetch("/api/crms/call", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ id: contact.id, phone: contact.phone, tier: contact.tier, category: contact.type }),
-      })
-      const data = await res.json().catch(() => ({}))
-      if (!res.ok || !data.success) throw new Error(data.error || `HTTP ${res.status}`)
-      const touchId: string = data.touchId
-      setLiveCall({ contactId: contact.id, touchId, phase: "dialing", text: `Ringing your cell… answer to connect to ${contact.name}` })
-      // Poll the touch: outcome arrives from Twilio's status callback, the
-      // summary a minute or two after hang-up. Give up after 20 minutes.
-      const started = Date.now()
-      liveCallPollRef.current = setInterval(async () => {
-        if (Date.now() - started > 20 * 60_000) { stopLiveCallPoll(); return }
-        try {
-          const r = await fetch(`/api/crms/call?touchId=${encodeURIComponent(touchId)}`, { cache: "no-store" })
-          const d = await r.json()
-          if (d.summary) {
-            stopLiveCallPoll()
-            setLiveCall({ contactId: contact.id, touchId, phase: "done", text: `Call summary saved to notes` })
-            const stamp = new Date().toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })
-            const line = `[${stamp} call] ${d.summary}`
-            const patch = (c: CRMSContact) =>
-              c.id === contact.id ? { ...c, notes: c.notes ? `${c.notes}\n\n${line}` : line, hasNotes: true, notesStale: false } : c
-            setContacts(prev => prev.map(patch))
-            setAllContacts(prev => prev.map(patch))
-            setSent(prev => new Set(prev).add(contact.id))
-          } else if (d.outcome) {
-            stopLiveCallPoll()
-            setLiveCall({ contactId: contact.id, touchId, phase: "done", text: d.outcome })
-          } else if (d.status === "completed") {
-            const mins = d.durationSec ? ` (${Math.floor(d.durationSec / 60)}:${String(d.durationSec % 60).padStart(2, "0")})` : ""
-            setLiveCall({ contactId: contact.id, touchId, phase: "transcribing", text: `Call ended${mins} — transcribing, summary will land in notes…` })
-            setSent(prev => new Set(prev).add(contact.id))
-          }
-        } catch {}
-      }, 5000)
-    } catch (e) {
-      setLiveCall({ contactId: contact.id, touchId: null, phase: "error", text: `Call failed: ${e instanceof Error ? e.message : String(e)}` })
-    }
-  }
-  useEffect(() => () => stopLiveCallPoll(), []) // eslint-disable-line react-hooks/exhaustive-deps
-
   async function handleEnrich() {
     if (!selectedContact || enrichingFor) return
     setEnrichingFor(selectedContact.id)
@@ -1016,12 +944,6 @@ function CRMSTabInner() {
   const isChangingTier = tierChangingFor === selectedContact?.id
   const currentMessage = selectedContact ? getMessage(selectedContact) : ""
   const touches        = selectedContact ? touchesByPhone[selectedContact.phone] : undefined
-  const thread         = selectedContact ? threadByPhone[selectedContact.phone] : undefined
-  const threadLen      = thread?.messages.length ?? 0
-  // Newest message at the bottom, in view, whenever a thread lands.
-  useEffect(() => {
-    threadEndRef.current?.scrollIntoView({ block: "end" })
-  }, [selectedId, threadLen])
   const detailContact  = detailPhone
     ? (contacts.find(c => c.phone === detailPhone)
         ?? allContacts.find(c => c.phone === detailPhone)
@@ -1430,47 +1352,7 @@ function CRMSTabInner() {
 
                 {/* Live text thread — auto-loads with the card, newest at bottom */}
                 <div className="mt-3">
-                  <p className="text-xs text-zinc-600 mb-1 flex items-center gap-1.5">
-                    Messages
-                    {thread === null && <Loader2 className="w-3 h-3 animate-spin" />}
-                    {thread && thread.ok && threadLen > 0 && (
-                      <span className="text-zinc-700">
-                        · {thread.total > threadLen ? `last ${threadLen} of ${thread.total}` : threadLen} · last text {daysAgoHint(thread.messages[threadLen - 1].at).replace(/[()]/g, "") || "today"}
-                      </span>
-                    )}
-                  </p>
-                  {thread && !thread.ok && (
-                    <p className="text-xs text-zinc-600 italic">Message history unavailable (Mac mini offline)</p>
-                  )}
-                  {thread && thread.ok && threadLen === 0 && (
-                    <p className="text-xs text-zinc-600 italic">No texts with this number</p>
-                  )}
-                  {thread && thread.ok && threadLen > 0 && (
-                    <div className="max-h-64 overflow-y-auto rounded border border-zinc-800 bg-zinc-950/40 p-2 space-y-1.5">
-                      {thread.messages.map((m, i) => {
-                        const prev = thread.messages[i - 1]
-                        const day = m.at.slice(0, 10)
-                        const showDay = !prev || prev.at.slice(0, 10) !== day
-                        return (
-                          <div key={i}>
-                            {showDay && (
-                              <p className="text-[10px] text-zinc-600 text-center my-1">{formatAbsoluteDate(m.at)}</p>
-                            )}
-                            <div className={`flex ${m.fromMe ? "justify-end" : "justify-start"}`}>
-                              <p
-                                className={`max-w-[80%] text-xs leading-snug px-2.5 py-1.5 rounded-lg whitespace-pre-wrap break-words ${
-                                  m.fromMe ? "bg-blue-500/15 text-blue-100" : "bg-zinc-800 text-zinc-200"
-                                }`}
-                              >
-                                {m.text}
-                              </p>
-                            </div>
-                          </div>
-                        )
-                      })}
-                      <div ref={threadEndRef} />
-                    </div>
-                  )}
+                  <RelationshipThread phone={selectedContact.phone} />
                 </div>
               </div>
 
@@ -1573,17 +1455,7 @@ function CRMSTabInner() {
               </div>
 
               {/* Live call status — follows the Twilio call through to the saved summary */}
-              {liveCall && liveCall.contactId === selectedContact?.id && (
-                <div className={`px-4 py-2 border-t border-zinc-800 text-xs flex items-center gap-2 ${
-                  liveCall.phase === "error" ? "text-red-400" : liveCall.phase === "done" ? "text-emerald-400" : "text-sky-300"
-                }`}>
-                  {(liveCall.phase === "dialing" || liveCall.phase === "transcribing") && <Loader2 className="w-3 h-3 animate-spin shrink-0" />}
-                  <span className="flex-1">{liveCall.text}</span>
-                  {liveCall.phase !== "dialing" && (
-                    <button onClick={() => { stopLiveCallPoll(); setLiveCall(null) }} className="text-zinc-500 hover:text-zinc-300"><X className="w-3 h-3" /></button>
-                  )}
-                </div>
-              )}
+              <CallStatusLine liveCall={liveCall} contactId={selectedContact?.id} onDismiss={dismissCall} className="px-4 py-2 border-t border-zinc-800" />
 
               {/* Log Call panel — summary of a phone call made outside the app */}
               {callPanelOpen && (
@@ -1659,17 +1531,12 @@ function CRMSTabInner() {
                   <PhoneCall className="w-3.5 h-3.5" />
                   Log Call
                 </button>
-                <button
-                  onClick={handleCall}
-                  disabled={actionPending || liveCall?.phase === "dialing" || !selectedContact?.phone}
-                  title="Call them — rings your cell first, they see your number; recorded and summarized into notes"
-                  className="flex items-center gap-1.5 text-xs text-emerald-400 hover:text-emerald-300 bg-emerald-500/10 border border-emerald-500/30 hover:border-emerald-500/50 px-3 py-1.5 rounded transition-colors disabled:opacity-50"
-                >
-                  {liveCall?.phase === "dialing" && liveCall.contactId === selectedContact?.id
-                    ? <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                    : <Phone className="w-3.5 h-3.5" />}
-                  Call
-                </button>
+                <CallButton
+                  liveCall={liveCall}
+                  contact={selectedContact ? { id: selectedContact.id, name: selectedContact.name, phone: selectedContact.phone, tier: selectedContact.tier, category: selectedContact.type } : null}
+                  onClick={() => selectedContact && startCall({ id: selectedContact.id, name: selectedContact.name, phone: selectedContact.phone, tier: selectedContact.tier, category: selectedContact.type })}
+                  disabled={actionPending}
+                />
                 <button
                   onClick={regenerate}
                   disabled={!!generatingFor}
