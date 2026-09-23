@@ -23,6 +23,7 @@ export function relationshipCallerId(): string {
 }
 
 export const CALL_OUTCOME_PREFIX = "📵 "
+export const MIN_TRANSCRIBE_SEC = 15
 
 export function callOutcomeMessage(status: string): string | null {
   switch (status) {
@@ -87,6 +88,18 @@ export async function processRelationshipRecording(args: {
     const { data } = await sb.from("relationships").select("name, category").eq("id", relationshipId).single()
     if (data) { name = data.name || name; category = data.category ?? null }
   } catch {}
+
+  // Under MIN_TRANSCRIBE_SEC there was no conversation — a voicemail
+  // greeting, a wrong-number hang-up, a test call. Not worth a Whisper +
+  // Haiku round trip; stamp the touch and leave notes alone (Ryan, 2026-09-23).
+  if (recordingDurationSec !== null && recordingDurationSec < MIN_TRANSCRIBE_SEC) {
+    const { error } = await sb
+      .from("relationship_touches")
+      .update({ message: `${CALL_OUTCOME_PREFIX}Connected ${recordingDurationSec}s — too short to transcribe (voicemail or hang-up)` })
+      .eq("id", touchId)
+    if (error) console.error("[crms/call] short-call stamp failed:", error.message)
+    return
+  }
 
   try {
     // Same encoding-lag + partial-file guard as the Leads pipeline.
