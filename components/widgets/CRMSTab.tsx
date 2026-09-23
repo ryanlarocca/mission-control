@@ -12,7 +12,7 @@ import { ContactDetailModal } from "./ContactDetailModal"
 import type { TouchesSummary } from "./ContactDetailModal"
 import type { ThreadMessage } from "@/lib/relationship-messages"
 
-type ThreadState = { ok: boolean; messages: ThreadMessage[] }
+type ThreadState = { ok: boolean; total: number; messages: ThreadMessage[] }
 import { CleanupMode } from "./CleanupMode"
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -391,9 +391,9 @@ function CRMSTabInner() {
     try {
       const res = await fetch(`/api/crms/messages?phone=${encodeURIComponent(phone)}`, { cache: "no-store" })
       const data = await res.json()
-      setThreadByPhone(prev => ({ ...prev, [phone]: { ok: data.ok !== false, messages: data.messages ?? [] } }))
+      setThreadByPhone(prev => ({ ...prev, [phone]: { ok: data.ok !== false, total: data.total ?? (data.messages ?? []).length, messages: data.messages ?? [] } }))
     } catch {
-      setThreadByPhone(prev => ({ ...prev, [phone]: { ok: false, messages: [] } }))
+      setThreadByPhone(prev => ({ ...prev, [phone]: { ok: false, total: 0, messages: [] } }))
     }
   }
 
@@ -1370,7 +1370,7 @@ function CRMSTabInner() {
                     {thread === null && <Loader2 className="w-3 h-3 animate-spin" />}
                     {thread && thread.ok && threadLen > 0 && (
                       <span className="text-zinc-700">
-                        · {threadLen} · last {daysAgoHint(thread.messages[threadLen - 1].at).replace(/[()]/g, "") || "today"}
+                        · {thread.total > threadLen ? `last ${threadLen} of ${thread.total}` : threadLen} · last text {daysAgoHint(thread.messages[threadLen - 1].at).replace(/[()]/g, "") || "today"}
                       </span>
                     )}
                   </p>
