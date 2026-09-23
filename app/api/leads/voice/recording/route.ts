@@ -17,8 +17,8 @@ import {
 //      transcription → AI triage → Telegram voice note. waitUntil keeps
 //      the Vercel function alive past the response so the work finishes.
 //
-// Lookup window is 60 minutes because live calls can run long, and the
-// recordingStatusCallback fires after the call ends.
+// Lookup window is 4 hours: the row is created at call start and this
+// callback fires after the call ends, so it must outlast any live call.
 //
 // Twilio's recording params on an `action`/recordingStatusCallback:
 //   RecordingUrl, RecordingSid, RecordingDuration
@@ -141,14 +141,16 @@ export async function POST(request: Request) {
     } else {
       // Filter by twilio_number too — without it, a caller who hits both
       // numbers within the window would have the second call's recording
-      // overwrite the first call's row. 60 min covers long live calls.
-      const sixtyMinAgo = new Date(Date.now() - 60 * 60 * 1000).toISOString()
+      // overwrite the first call's row. The row is created when the call
+      // STARTS and this callback fires when it ENDS, so the window must
+      // exceed the longest call Ryan will ever take — 4h, not 60 min.
+      const windowStart = new Date(Date.now() - 4 * 60 * 60 * 1000).toISOString()
       let lookup = sb
         .from("leads")
         .select("id, lead_type")
         .eq("caller_phone", callerPhone)
         .in("lead_type", ["voicemail", "call"])
-        .gte("created_at", sixtyMinAgo)
+        .gte("created_at", windowStart)
         .order("created_at", { ascending: false })
         .limit(1)
       if (twilioNumber) lookup = lookup.eq("twilio_number", twilioNumber)

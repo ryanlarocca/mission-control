@@ -13,7 +13,14 @@
 // Whisper / function budget failed. Replays the same callback; the webhook
 // re-runs the pipeline on a row whose transcript never landed.
 //
-// Both phases only touch COMPLETED recordings on COMPLETED calls. On
+// Phase C — unanalyzed: inbound rows with a transcript but no ai_summary
+// (the AI analyzer failed after Whisper succeeded). POSTs the card's own
+// re-analyze route with {silent:true}. Needs MC_PASSWORD in .env.local.
+//
+// Every phase only touches COMPLETED recordings on COMPLETED calls, and
+// waits SETTLE_MIN minutes after the call ends so Twilio's own callback
+// gets first crack (otherwise the sweep and the callback run the same
+// Whisper + analysis twice within seconds of each other). On
 // 2026-09-22 this sweep fired 11 minutes into a live 20-minute call
 // (Glenda McGovern, 533 Vine St): the row had no recording_url yet because
 // the call hadn't ended, Twilio listed an in-progress recording
@@ -60,8 +67,27 @@ const callEnded = call => !call || !["queued", "ringing", "in-progress"].include
 // Under ~12s there's nothing to transcribe (hang-up on the greeting); the
 // webhook applies its cold default to those itself, so don't loop on them.
 const MIN_TRANSCRIBABLE_SEC = 12
+// Give Twilio's real recordingStatusCallback + the webhook's own pipeline
+// (10s settle + download + Whisper on a 30-min call + analysis ≈ 3-4 min)
+// time to finish before we step in.
+const SETTLE_MIN = 6
+const settled = iso => !iso || (Date.now() - new Date(iso).getTime()) > SETTLE_MIN * 60 * 1000
+// Bounded retries per row across every phase (state in /tmp — a reboot
+// just grants a few extra attempts). A row that fails every time already
+// raised a Telegram alert from the webhook; stop hammering after 3.
+const STATE_PATH = "/tmp/lrg-retranscribe-attempts.json"
+const MAX_ATTEMPTS = 3
+let attempts = {}
+try { if (existsSync(STATE_PATH)) attempts = JSON.parse(readFileSync(STATE_PATH, "utf8")) } catch { attempts = {} }
+function persistAttempts() {
+  if (!execute) return
+  try { writeFileSync(STATE_PATH, JSON.stringify(attempts)) } catch (e) { console.warn("could not persist attempt state:", e.message) }
+}
 
 // Replay Twilio's recordingStatusCallback for one (row, recording) pair.
+// Outbound rows (twilio_number NULL — the /api/leads/call convention) go
+// to the outbound webhook so they get the outbound summary path, not
+// inbound triage.
 async function replayCallback({ leadId, callerPhone, twilioNumber, rec }) {
   const recordingBaseUrl = `https://api.twilio.com/2010-04-01/Accounts/${tw.sid}/Recordings/${rec.sid}`
   const form = new URLSearchParams({
@@ -72,11 +98,14 @@ async function replayCallback({ leadId, callerPhone, twilioNumber, rec }) {
     From: callerPhone,
     To: twilioNumber || "",
     CallSid: rec.call_sid || "",
-    // Tells the webhook to skip its time-windowed lookup and attach to
-    // this exact row instead of creating a fallback voicemail row.
+    // Tells the inbound webhook to skip its time-windowed lookup and
+    // attach to this exact row instead of creating a fallback row.
     LeadId: leadId,
   })
-  const wr = await fetch(`${prodBase}/api/leads/voice/recording`, {
+  const endpoint = twilioNumber
+    ? `${prodBase}/api/leads/voice/recording`
+    : `${prodBase}/api/leads/call/recording?leadId=${encodeURIComponent(leadId)}`
+  const wr = await fetch(endpoint, {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
     body: form.toString(),
@@ -96,6 +125,8 @@ if (error) { console.error("orphan lookup failed:", error.message); process.exit
 console.log(`Found ${orphans.length} orphaned call/voicemail row(s).`)
 if (orphans.length === 0) {
   await phaseB()
+  await phaseC()
+  persistAttempts()
   process.exit(0)
 }
 
@@ -143,7 +174,8 @@ for (const o of orphans) {
     const call = callBySid.get(rec.call_sid)
     if (!call) continue
     // Still recording / still on the phone → not an orphan, just in flight.
-    if (!recordingReady(rec) || !callEnded(call)) continue
+    // Just ended → Twilio's own callback is probably mid-pipeline; wait.
+    if (!recordingReady(rec) || !callEnded(call) || !settled(call.end_time)) continue
     const fromMatch = call.from === o.caller_phone
     const toMatch = o.twilio_number ? call.to === o.twilio_number : true
     if (!fromMatch || !toMatch) continue
@@ -170,6 +202,7 @@ for (const u of unmatched) {
 if (!execute) {
   console.log("\nDry-run — re-run with --execute to perform the rescues.")
   await phaseB()
+  await phaseC()
   process.exit(0)
 }
 
@@ -190,17 +223,11 @@ for (const p of plan) {
 }
 console.log(`\nDone. ${ok} rescued, ${fail} failed.`)
 await phaseB()
+await phaseC()
+persistAttempts()
 
 // ── Phase B: recording attached, transcript never landed ────────────────────
-// Bounded retries per row (state in /tmp — a reboot just grants a few
-// extra attempts). A row that fails every time already raised a Telegram
-// alert from the webhook; we stop hammering Whisper after MAX_ATTEMPTS.
 async function phaseB() {
-  const STATE_PATH = "/tmp/lrg-retranscribe-attempts.json"
-  const MAX_ATTEMPTS = 3
-  let attempts = {}
-  try { if (existsSync(STATE_PATH)) attempts = JSON.parse(readFileSync(STATE_PATH, "utf8")) } catch { attempts = {} }
-
   const { data: rows, error: qErr } = await sb
     .from("leads")
     .select("id, caller_phone, twilio_number, lead_type, created_at, name, recording_url")
@@ -224,6 +251,7 @@ async function phaseB() {
     const rec = await rr.json()
     if (!recordingReady(rec)) { console.log(`  ${rec.status === "in-progress" ? "WAIT" : "SKIP"} ${tag} ${sid} status=${rec.status} dur=${rec.duration}s — not a finished recording`); skipped++; continue }
     if (Number(rec.duration) < MIN_TRANSCRIBABLE_SEC) { console.log(`  SKIP ${tag} ${sid} only ${rec.duration}s — nothing to transcribe`); skipped++; continue }
+    if (!settled(rec.date_updated)) { console.log(`  WAIT ${tag} ${sid} finished <${SETTLE_MIN} min ago — webhook pipeline likely still running`); skipped++; continue }
     const n = attempts[row.id] || 0
     if (n >= MAX_ATTEMPTS) { console.log(`  GIVE UP ${tag} ${sid} after ${n} attempts`); skipped++; continue }
     console.log(`  ${execute ? "RETRY" : "WOULD RETRY"} ${tag} ${sid} dur=${rec.duration}s attempt=${n + 1}/${MAX_ATTEMPTS}`)
@@ -238,8 +266,58 @@ async function phaseB() {
     }
     await new Promise(r => setTimeout(r, 3000))
   }
+  if (execute) console.log(`Phase B done. ${ok} replayed, ${fail} failed, ${skipped} skipped.`)
+}
+
+// ── Phase C: transcript saved, AI analysis never ran ────────────────────────
+// Inbound rows only (outbound rows use a different summary path). A row
+// with `message` but no `ai_summary` after SETTLE_MIN means the analyzer
+// threw / timed out after Whisper succeeded. Re-run it through the same
+// route the card's re-analyze button uses.
+async function phaseC() {
+  const pw = process.env.MC_PASSWORD
+  const { data: rows, error: qErr } = await sb
+    .from("leads")
+    .select("id, caller_phone, twilio_number, lead_type, created_at, name, message")
+    .not("recording_url", "is", null)
+    .not("message", "is", null)
+    .is("ai_summary", null)
+    .not("twilio_number", "is", null)
+    .in("lead_type", ["call", "voicemail"])
+    .gte("created_at", sinceIso)
+    .order("created_at", { ascending: false })
+  if (qErr) { console.error("phase C lookup failed:", qErr.message); return }
+  const due = rows.filter(r => (r.message || "").trim().length >= 40 && settled(r.created_at))
+  console.log(`\nPhase C: ${due.length} row(s) with a transcript but no AI analysis.`)
+  if (due.length === 0) return
+  if (!pw) { console.warn("  MC_PASSWORD not set in .env.local — cannot call analyze-call; skipping Phase C"); return }
+
+  let cookie = null
   if (execute) {
-    try { writeFileSync(STATE_PATH, JSON.stringify(attempts)) } catch (e) { console.warn("could not persist attempt state:", e.message) }
-    console.log(`Phase B done. ${ok} replayed, ${fail} failed, ${skipped} skipped.`)
+    const lr = await fetch(`${prodBase}/api/auth`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ password: pw }) })
+    if (!lr.ok) { console.error(`  login failed HTTP ${lr.status}; skipping Phase C`); return }
+    cookie = (lr.headers.get("set-cookie") || "").split(";")[0]
   }
+  let ok = 0, fail = 0, skipped = 0
+  for (const row of due) {
+    const tag = `${String(row.created_at).slice(0, 16)} ${row.lead_type.padEnd(9)} ${(row.name || row.caller_phone || row.id).padEnd(15)}`
+    const key = `analyze:${row.id}`
+    const n = attempts[key] || 0
+    if (n >= MAX_ATTEMPTS) { console.log(`  GIVE UP ${tag} after ${n} attempts`); skipped++; continue }
+    console.log(`  ${execute ? "ANALYZE" : "WOULD ANALYZE"} ${tag} ${row.message.length} chars attempt=${n + 1}/${MAX_ATTEMPTS}`)
+    if (!execute) continue
+    attempts[key] = n + 1
+    try {
+      const ar = await fetch(`${prodBase}/api/leads/${row.id}/analyze-call`, { method: "POST", headers: { "Content-Type": "application/json", Cookie: cookie }, body: JSON.stringify({ silent: true }) })
+      const aj = await ar.json().catch(() => ({}))
+      if (!ar.ok) throw new Error(`HTTP ${ar.status}: ${aj.error || ""}`)
+      console.log(`  ✓ ${row.id} → ${aj.temperature || "?"}`)
+      ok++
+    } catch (e) {
+      console.log(`  ✗ ${row.id}  ${e.message}`)
+      fail++
+    }
+    await new Promise(r => setTimeout(r, 3000))
+  }
+  if (execute) console.log(`Phase C done. ${ok} analyzed, ${fail} failed, ${skipped} skipped.`)
 }

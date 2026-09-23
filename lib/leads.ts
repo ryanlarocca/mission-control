@@ -1495,7 +1495,27 @@ export async function processRecordingBackground(args: {
     // returns a partial or empty file, causing Whisper to return null.
     // 10 seconds covers encoding lag for any realistic call length.
     await new Promise(r => setTimeout(r, 10_000))
-    const audio = await fetchTwilioAudio(fullUrl)
+    let audio = await fetchTwilioAudio(fullUrl)
+
+    // Partial-file guard. Twilio serves the .mp3 while it is still being
+    // encoded on long recordings, so a 200 with fewer bytes than the
+    // duration implies is a truncated file — Whisper would happily return
+    // a transcript of the first N minutes and nothing downstream would
+    // know it was cut off. 32 kbps ≈ 4,000 B/s; require 90% of that.
+    const durationSecForSize = args.recordingDurationSec ?? 0
+    const expectedBytes = durationSecForSize > 0 ? Math.floor(durationSecForSize * 3600) : 0
+    let partial = !!audio && expectedBytes > 0 && audio.length < expectedBytes
+    for (let i = 1; i <= 3 && partial; i++) {
+      console.warn(`[recording-bg] Lead ${leadId} audio is ${audio!.length} bytes but ${durationSecForSize}s implies ≥${expectedBytes} — partial file, re-downloading (${i}/3)`)
+      await new Promise(r => setTimeout(r, 15_000))
+      const again = await fetchTwilioAudio(fullUrl)
+      if (again && again.length > audio!.length) audio = again
+      partial = !!audio && audio.length < expectedBytes
+    }
+    if (partial) {
+      console.error(`[recording-bg] Lead ${leadId} audio still partial after retries (${audio!.length}/${expectedBytes} bytes) — not transcribing a truncated file; left for the rescue sweep`)
+      audio = null
+    }
 
     let transcription: string | null = null
     if (audio) {
@@ -1623,6 +1643,7 @@ export async function processRecordingBackground(args: {
           // failure, etc.). The transcript IS saved so the lead is recoverable
           // — leave temperature untouched rather than stamping cold incorrectly.
           console.error(`[analyze-call] Lead ${leadId} → analyzer failed on real transcript; temperature left untouched.`)
+          sendTelegramAlert(`⚠️ Call analysis failed — lead ${leadId} (${callerPhone}) has its ${kind} transcript saved but the AI summary/temperature didn't run. The 15-min rescue sweep will retry; the card's re-analyze button also works.`).catch(() => {})
         } else {
           await applyColdNoSignalDefault(leadId)
           console.log(`[analyze-call] Lead ${leadId} → cold (no-signal default: no transcript, ${audioBytes} bytes)`)

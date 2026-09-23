@@ -70,15 +70,20 @@ export async function POST(request: NextRequest) {
   try {
     const sb = getLeadsClient()
 
-    // Idempotency — bail if this SID already attached.
+    // Idempotency — bail if this SID is already attached AND the row got
+    // its transcript. URL attached + message NULL means an earlier run
+    // died downstream; let the replay (rescue sweep Phase B) re-run it.
     const { data: existing } = await sb
       .from("leads")
-      .select("id")
+      .select("id, message")
       .eq("recording_url", fullUrl)
       .limit(1)
     if (existing && existing.length > 0) {
-      console.log(`[call/recording] ${recordingSid} already processed; skipping`)
-      return twimlResponse()
+      if (existing[0].message) {
+        console.log(`[call/recording] ${recordingSid} already processed; skipping`)
+        return twimlResponse()
+      }
+      console.warn(`[call/recording] ${recordingSid} attached to lead ${existing[0].id} but never transcribed; re-running the pipeline`)
     }
 
     const { data: lead, error: lookupErr } = await sb
