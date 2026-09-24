@@ -20,7 +20,7 @@
           "at": "2026-09-02T19:11:01.310738+00:00",
           "from": "them",
           "channel": "email",
-          "text": "Subject: Quote on property at 555 Nido Dr campbell ca 95008\nReceived: 2025-12-15 7:31 PM PT — to ryansvj@lrghomes.com\n\nHi\nI received your letter on above property that I own\nYou offer a free quote on the value of my property .\nI appreciate your offer and I am curious how much is it on the market now.\nThank you\nVirginia Slater\n\nSent from my iPhone"
+          "text": "Subject: Quote on property at 555 Nido Dr campbell ca 95008\nReceived: 2025-12-15 7:31 PM PT \u2014 to ryansvj@lrghomes.com\n\nHi\nI received your letter on above property that I own\nYou offer a free quote on the value of my property .\nI appreciate your offer and I am curious how much is it on the market now.\nThank you\nVirginia Slater\n\nSent from my iPhone"
         },
         {
           "at": "2026-09-09T22:37:03.016614+00:00",
@@ -38,17 +38,18 @@
           "at": "2026-09-24T01:52:11.930265+00:00",
           "from": "them",
           "channel": "email",
-          "text": "Re: Subject: Quote on property at 555 Nido Dr campbell ca 95008\n\nRyan\n\nAt this moment I’m not interested in selling my rental\nThank you\nVirginia"
+          "text": "Re: Subject: Quote on property at 555 Nido Dr campbell ca 95008\n\nRyan\n\nAt this moment I\u2019m not interested in selling my rental\nThank you\nVirginia"
         }
       ],
       "inbound": {
         "at": "2026-09-24T01:52:11.930265+00:00",
-        "text": "Re: Subject: Quote on property at 555 Nido Dr campbell ca 95008\n\nRyan\n\nAt this moment I’m not interested in selling my rental\nThank you\nVirginia"
+        "text": "Re: Subject: Quote on property at 555 Nido Dr campbell ca 95008\n\nRyan\n\nAt this moment I\u2019m not interested in selling my rental\nThank you\nVirginia"
       },
       "reference_reply": "Got it, Virginia, and thanks for letting me know, I appreciate the reply. No problem at all. If anything changes with the rental down the road, a tenant moving out or just a change in plans, I'm a quick email away. I'll check in once in a while to stay in touch.\n\nRyan",
       "reference_source": "agreed_2026-09-24",
-      "grade": null,
-      "why": null
+      "grade": "keep",
+      "why": "warm, friendly, leaves the door open for later",
+      "graded_at": "2026-09-24"
     },
     {
       "id": "soft_no:Dennis_Connally:2026-05-11",
@@ -77,8 +78,9 @@
       },
       "reference_reply": "Got it, Dennis. Thanks for letting us know. If anything changes down the road, feel free to reach out.",
       "reference_source": "ryan_sent",
-      "grade": null,
-      "why": null
+      "grade": "keep",
+      "why": "warm, friendly, leaves the door open for later",
+      "graded_at": "2026-09-24"
     },
     {
       "id": "soft_no:Terry_Chandler:2026-05-12",
@@ -105,10 +107,11 @@
         "at": "2026-05-12T19:26:17.34002+00:00",
         "text": "314 Trescony\n\nThank you for your letter of interest in purchasing our property at 314 Trescony in Santa Cruz. It would be an excellent investment if we were considering selling. However, the property is not for sale at this time. We have stable tenants, excellent occupancy, and minimal maintenance. A sale would result in an uncomfortable long term gains tax load. I agree with you Santa Cruz is a great area with housing in high demand. Best of luck concluding your 1031 exchange."
       },
-      "reference_reply": "Hey Terry, thanks for getting back to me and laying out why you're holding onto 314 Trescony. That makes total sense, especially with stable tenants and the tax situation you mentioned. I totally understand the long-term capital gains piece. I'll keep you on my radar in case circumstances ever shift down the road, but I appreciate you taking the time to clarify where things stand. — Ryan",
+      "reference_reply": "Hey Terry, thanks for getting back to me and laying out why you're holding onto 314 Trescony. That makes total sense, especially with stable tenants and the tax situation you mentioned. I totally understand the long-term capital gains piece. I'll keep you on my radar in case circumstances ever shift down the road, but I appreciate you taking the time to clarify where things stand. \u2014 Ryan",
       "reference_source": "ryan_sent",
-      "grade": null,
-      "why": null
+      "grade": "keep",
+      "why": "warm, friendly, leaves the door open for later",
+      "graded_at": "2026-09-24"
     },
     {
       "id": "soft_no:+18185363213:2026-05-30",
@@ -137,8 +140,9 @@
       },
       "reference_reply": "Thanks for getting back to me. How many units is the property at 1367 Madison, and is it currently occupied? That'll help me put together a solid estimate for you.",
       "reference_source": "ryan_sent",
-      "grade": null,
-      "why": null
+      "grade": "fix",
+      "why": "Do not promise a solid estimate; offer a range or a ballpark. Low interest but something there: a no that still asks for a number gets a rough range, not a valuation workup. Ryan says his real reply could have been better (lead volume at the time).",
+      "graded_at": "2026-09-24"
     },
     {
       "id": "offer_requested:Mehran_Beheshti:2026-05-19",
@@ -173,8 +177,9 @@
       },
       "reference_reply": "Hi Mehran,\n\nThanks for reaching out so quickly - I appreciate the direct question. I'm ready to move forward with an offer on your property.\n\nBefore I put a number on the table, I want to make sure I'm in the right ballpark. A few quick things that'll help me get you the best offer: what's the current condition of the house? Any major work needed, or is it pretty well maintained? And roughly how many bedrooms and bathrooms are we working with?\n\nOnce I have those details, I can put together a solid cash offer. Based on what I'm seeing in the area, I'm thinking somewhere in the 1.4 to 1.6 million range, but the exact number really depends on what we're looking at.\n\nLet me know and we can move this along quickly.\n\nRyan",
       "reference_source": "ryan_sent",
-      "grade": null,
-      "why": null
+      "grade": "keep",
+      "why": null,
+      "graded_at": "2026-09-24"
     },
     {
       "id": "offer_requested:Grace_Chang:2026-05-18",
@@ -203,8 +208,9 @@
       },
       "reference_reply": "Hi Grace,\n\nThanks for getting back to me so fast - I appreciate it. Before I put together an offer on 956 Paula, I need to dial in a few details so I can run accurate numbers for you.\n\nCan you fill me in on:\n\n- How many units are in the building?\n- What's the current unit mix (bedrooms/bathrooms)?\n- What are the rents running right now, or what's the total monthly income?\n\nOnce I have that info I'll crunch the numbers and get you a solid offer to review. Should only take me a day or two.\n\nThanks,\nRyan",
       "reference_source": "ryan_sent",
-      "grade": null,
-      "why": null
+      "grade": "keep",
+      "why": null,
+      "graded_at": "2026-09-24"
     },
     {
       "id": "info_provided:Yanhui_Liu:2026-05-30",
@@ -251,8 +257,9 @@
       },
       "reference_reply": "Hi Yanhui,\n\nThanks for getting me those details on the duplex. The rental income looks solid, and I like what I'm seeing with the property overall.\n\nBased on the unit configuration, current rents, and the lease situation on unit 134, I'd like to move forward with an offer around 700k for the full property. I think that's a fair number given the market and what you've got generating in income.\n\nIf that's in the ballpark and makes sense to you, we can take this to the next step and work out the details. I'm ready to move quickly on this.\n\nLet me know your thoughts.\n\nRyan",
       "reference_source": "ryan_sent",
-      "grade": null,
-      "why": null
+      "grade": "keep",
+      "why": null,
+      "graded_at": "2026-09-24"
     },
     {
       "id": "info_provided:+14084311054:2026-05-28",
@@ -266,7 +273,7 @@
         "source": "MFM-A",
         "temperature": null
       },
-      "note": "'3/2 and 2/1' → Ryan floats ~$1M and asks for a call.",
+      "note": "'3/2 and 2/1' \u2192 Ryan floats ~$1M and asks for a call.",
       "thread": [
         {
           "at": "2026-05-24T00:55:46.799932+00:00",
@@ -293,8 +300,9 @@
       },
       "reference_reply": "Thanks for the details on 3903 Boise Dr. With that layout I'm thinking around the $1M range and can close in a week if the numbers work. You got a few minutes to jump on a quick call so I can ask you a couple more things about the property?",
       "reference_source": "ryan_sent",
-      "grade": null,
-      "why": null
+      "grade": "keep",
+      "why": null,
+      "graded_at": "2026-09-24"
     },
     {
       "id": "price_pushback:Greg_Hammer:2026-05-17",
@@ -304,7 +312,7 @@
       "contact": {
         "name": "Greg Hammer",
         "key": "greghammermd@gmail.com",
-        "property_address": "745–749 Stanford Avenue",
+        "property_address": "745\u2013749 Stanford Avenue",
         "source": "MFM-A",
         "temperature": "warm"
       },
@@ -314,17 +322,18 @@
           "at": "2026-05-17T22:29:22.444118+00:00",
           "from": "them",
           "channel": "email",
-          "text": "745-749 Stanford Avenue\n\nYou expressed interest in buying my property. The price is $4M. There is a comp (less favorable - 3 parcels) on Stanford Ave and Bowdoin listed for $4.75M.\n\nThe income on the 3 rentals is over $13K.\n\n￼\n\nProfessor (Ret), Anesthesiology, Perioperative and Pain Medicine, and Pediatrics \nStanford University School of Medicine\ngreghammermd@gmail.com\nhttp://greghammermd.com/"
+          "text": "745-749 Stanford Avenue\n\nYou expressed interest in buying my property. The price is $4M. There is a comp (less favorable - 3 parcels) on Stanford Ave and Bowdoin listed for $4.75M.\n\nThe income on the 3 rentals is over $13K.\n\n\ufffc\n\nProfessor (Ret), Anesthesiology, Perioperative and Pain Medicine, and Pediatrics \nStanford University School of Medicine\ngreghammermd@gmail.com\nhttp://greghammermd.com/"
         }
       ],
       "inbound": {
         "at": "2026-05-17T22:29:22.444118+00:00",
-        "text": "745-749 Stanford Avenue\n\nYou expressed interest in buying my property. The price is $4M. There is a comp (less favorable - 3 parcels) on Stanford Ave and Bowdoin listed for $4.75M.\n\nThe income on the 3 rentals is over $13K.\n\n￼\n\nProfessor (Ret), Anesthesiology, Perioperative and Pain Medicine, and Pediatrics \nStanford University School of Medicine\ngreghammermd@gmail.com\nhttp://greghammermd.com/"
+        "text": "745-749 Stanford Avenue\n\nYou expressed interest in buying my property. The price is $4M. There is a comp (less favorable - 3 parcels) on Stanford Ave and Bowdoin listed for $4.75M.\n\nThe income on the 3 rentals is over $13K.\n\n\ufffc\n\nProfessor (Ret), Anesthesiology, Perioperative and Pain Medicine, and Pediatrics \nStanford University School of Medicine\ngreghammermd@gmail.com\nhttp://greghammermd.com/"
       },
       "reference_reply": "Hey Greg,\n\nThanks for sending over those details on the property. I appreciate you being upfront about the numbers and the comp.\n\nRight now I'm actually looking at a few other candidates in the area that are generating a bit more cashflow for what I'm looking to do, so the timing isn't quite lining up on this one. That said, I think you've got a solid asset there, and I'd definitely like to stay in touch. If things change on my end or you decide to explore options down the line, I'm interested.\n\nThanks again.\n\nRyan",
       "reference_source": "ryan_sent",
-      "grade": null,
-      "why": null
+      "grade": "keep",
+      "why": null,
+      "graded_at": "2026-09-24"
     },
     {
       "id": "price_pushback:Augustine:2026-07-20",
@@ -387,7 +396,7 @@
         "at": "2026-07-20T00:35:31.264911+00:00",
         "text": ""
       },
-      "reference_reply": "Hey Augustine it’s Ryan. Sorry we keep missing each other. I was able to drive by the property over the weekend. I would have strong interest in buying your 4plex around $2.8m. If it’s something you’d like to entertain I can have an offer drafted with full proof of funds by tomorrow and sent to you.\n\nHave a good day!",
+      "reference_reply": "Hey Augustine it\u2019s Ryan. Sorry we keep missing each other. I was able to drive by the property over the weekend. I would have strong interest in buying your 4plex around $2.8m. If it\u2019s something you\u2019d like to entertain I can have an offer drafted with full proof of funds by tomorrow and sent to you.\n\nHave a good day!",
       "reference_source": "ryan_sent",
       "grade": null,
       "why": null
@@ -422,7 +431,7 @@
           "at": "2026-05-19T22:11:28.45485+00:00",
           "from": "ryan",
           "channel": "sms",
-          "text": "Hey, I got your voicemail about 79 Union Street – my system didn't let me leave a message back. Can you give me a quick call at your earliest convenience so we can chat about the property?"
+          "text": "Hey, I got your voicemail about 79 Union Street \u2013 my system didn't let me leave a message back. Can you give me a quick call at your earliest convenience so we can chat about the property?"
         },
         {
           "at": "2026-05-19T23:20:44.58875+00:00",
@@ -446,13 +455,13 @@
           "at": "2026-05-28T20:23:20.83821+00:00",
           "from": "ryan",
           "channel": "call",
-          "text": "📵 No answer — rang out"
+          "text": "\ud83d\udcf5 No answer \u2014 rang out"
         },
         {
           "at": "2026-05-28T20:23:40.592815+00:00",
           "from": "ryan",
           "channel": "call",
-          "text": "📵 No answer — rang out"
+          "text": "\ud83d\udcf5 No answer \u2014 rang out"
         },
         {
           "at": "2026-05-28T20:24:15.426158+00:00",
@@ -476,7 +485,7 @@
           "at": "2026-06-05T19:00:28.074822+00:00",
           "from": "ryan",
           "channel": "sms",
-          "text": "Hey Jesus, I've had time to think through 79 Union and the numbers work well for a cash deal. I'm looking at around 800k and wanted to run that by you before things get more complicated with your wife's decisions—want to hop on a quick call this week so we can talk through what that means for your situation?"
+          "text": "Hey Jesus, I've had time to think through 79 Union and the numbers work well for a cash deal. I'm looking at around 800k and wanted to run that by you before things get more complicated with your wife's decisions\u2014want to hop on a quick call this week so we can talk through what that means for your situation?"
         },
         {
           "at": "2026-06-05T19:07:18.711346+00:00",
@@ -489,7 +498,7 @@
         "at": "2026-06-05T19:07:18.711346+00:00",
         "text": "The property was evaluated at 1,500,000.00 within a year ago. I think you offer is to low. Tank you any way."
       },
-      "reference_reply": "Right now you could buy a duplex in Campbell or West San Jose for around that price. I'd check the comps — I wouldn't put too much stock in what an appraiser says.",
+      "reference_reply": "Right now you could buy a duplex in Campbell or West San Jose for around that price. I'd check the comps \u2014 I wouldn't put too much stock in what an appraiser says.",
       "reference_source": "ryan_sent",
       "grade": null,
       "why": null
@@ -506,7 +515,7 @@
         "source": "MFM-B",
         "temperature": "warm"
       },
-      "note": "Seller quotes 1.5–1.9M comps after remodel.",
+      "note": "Seller quotes 1.5\u20131.9M comps after remodel.",
       "thread": [
         {
           "at": "2026-05-18T16:08:31.728443+00:00",
@@ -530,12 +539,12 @@
           "at": "2026-05-20T07:45:56.869876+00:00",
           "from": "them",
           "channel": "email",
-          "text": "Re: 1220 Burkette Dr.\n\nHi Ryan,\nIt is a duplex. Total square feet is 1939.. Each unit is 2 bedroom and one bath with attached garage. the units are rented. The total rental income monthly is around $6,500. The Duplex has been updated in December 2025 as follows:\n1- All windows and Patio doors replaced with high efficient grade with 10years warranty.2- Copper re-pipe, with city permit and 40 years warranty.3- Sewer and drain lines replaced with city permit and 40 years warranty.4-  Water heaters for both units replaced with city permit.5- Furnace in unit 1220 replaced with high efficiency. 6- Unit 1222 completely remodeled. The images are in the link below:       - Flooring replaced with high grade laminate        - Carpets replaced in both bedrooms       - The unit electric wires updated and rewired.      -  Lighting updated with recess lights  through out the unit.      - Fresh paints through out including the garage.      - Landscape was designed and updated with highest grade commercial concrete that does not crack for life.      - All inside doors and closet doors were replaced and updated.      - Ceiling fans in all units installed.      - Garage door opener and all mechanical parts replaced.      - Kitchen was updated including the sink.        - Currently managed by professional property management company. The lease is through November 2026. Misc. information:1- Unit 1220 has a fireplace in the living room.2- Unit 1220- Two  years ago the bathroom was updated with walking shower with tiles floor to ceiling.3- Unit 1220- The lease is ending August 1st.   4-  High efficiency fans installed in attic for both units. There is no need for A/C anymore.  .    Condition is perfect. All major items were replaced in 2025 with city permit and years of warranty. It is a turn key property with monthly income of around $6,500 \nMehran\nhttps://www.zillow.com/view-3d-home/8e14aebc-8956-4880-8f5d-0bf550682de9"
+          "text": "Re: 1220 Burkette Dr.\n\nHi Ryan,\nIt is a duplex. Total square feet is 1939.. Each unit is 2 bedroom and one bath with attached garage. the units are rented. The total rental income monthly is around $6,500.\u00a0The Duplex has been updated in December 2025 as follows:\n1- All windows and Patio doors replaced with high efficient grade with 10years warranty.2- Copper re-pipe, with city permit and 40 years warranty.3- Sewer and drain lines replaced with city permit and 40 years warranty.4-\u00a0 Water heaters for both units replaced with city permit.5- Furnace in unit 1220 replaced with high efficiency.\u00a06- Unit 1222 completely remodeled. The images are in the link below:\u00a0 \u00a0 \u00a0 \u00a0- Flooring replaced with high grade laminate\u00a0\u00a0 \u00a0 \u00a0 \u00a0- Carpets replaced in both bedrooms\u00a0 \u00a0 \u00a0 \u00a0- The unit electric wires updated and rewired.\u00a0 \u00a0 \u00a0 -\u00a0 Lighting updated with recess lights\u00a0 through out the unit.\u00a0 \u00a0 \u00a0 - Fresh paints through out including the garage.\u00a0 \u00a0 \u00a0 - Landscape was designed and updated with highest grade commercial concrete that does not crack for life.\u00a0 \u00a0 \u00a0 - All inside doors and closet doors were replaced and updated.\u00a0 \u00a0 \u00a0 - Ceiling fans in all units installed.\u00a0 \u00a0 \u00a0 - Garage door opener and all mechanical parts replaced.\u00a0 \u00a0 \u00a0 - Kitchen was updated including the sink.\u00a0\u00a0\u00a0 \u00a0 \u00a0 - Currently managed by professional property management company. The lease is through November 2026.\u00a0Misc. information:1- Unit 1220 has a fireplace in the living room.2- Unit 1220- Two\u00a0 years ago the bathroom was updated with walking shower with tiles floor to ceiling.3- Unit 1220- The lease is ending August 1st.\u00a0 \u00a04-\u00a0 High efficiency fans installed in attic for both units. There is no need for A/C anymore.\u00a0\u00a0.\u00a0 \u00a0\u00a0Condition is perfect. All major items were replaced in 2025 with city permit and years of warranty. It is a turn key property with monthly income of around $6,500\u00a0\nMehran\nhttps://www.zillow.com/view-3d-home/8e14aebc-8956-4880-8f5d-0bf550682de9"
         }
       ],
       "inbound": {
         "at": "2026-05-20T07:45:56.869876+00:00",
-        "text": "Re: 1220 Burkette Dr.\n\nHi Ryan,\nIt is a duplex. Total square feet is 1939.. Each unit is 2 bedroom and one bath with attached garage. the units are rented. The total rental income monthly is around $6,500. The Duplex has been updated in December 2025 as follows:\n1- All windows and Patio doors replaced with high efficient grade with 10years warranty.2- Copper re-pipe, with city permit and 40 years warranty.3- Sewer and drain lines replaced with city permit and 40 years warranty.4-  Water heaters for both units replaced with city permit.5- Furnace in unit 1220 replaced with high efficiency. 6- Unit 1222 completely remodeled. The images are in the link below:       - Flooring replaced with high grade laminate        - Carpets replaced in both bedrooms       - The unit electric wires updated and rewired.      -  Lighting updated with recess lights  through out the unit.      - Fresh paints through out including the garage.      - Landscape was designed and updated with highest grade commercial concrete that does not crack for life.      - All inside doors and closet doors were replaced and updated.      - Ceiling fans in all units installed.      - Garage door opener and all mechanical parts replaced.      - Kitchen was updated including the sink.        - Currently managed by professional property management company. The lease is through November 2026. Misc. information:1- Unit 1220 has a fireplace in the living room.2- Unit 1220- Two  years ago the bathroom was updated with walking shower with tiles floor to ceiling.3- Unit 1220- The lease is ending August 1st.   4-  High efficiency fans installed in attic for both units. There is no need for A/C anymore.  .    Condition is perfect. All major items were replaced in 2025 with city permit and years of warranty. It is a turn key property with monthly income of around $6,500 \nMehran\nhttps://www.zillow.com/view-3d-home/8e14aebc-8956-4880-8f5d-0bf550682de9"
+        "text": "Re: 1220 Burkette Dr.\n\nHi Ryan,\nIt is a duplex. Total square feet is 1939.. Each unit is 2 bedroom and one bath with attached garage. the units are rented. The total rental income monthly is around $6,500.\u00a0The Duplex has been updated in December 2025 as follows:\n1- All windows and Patio doors replaced with high efficient grade with 10years warranty.2- Copper re-pipe, with city permit and 40 years warranty.3- Sewer and drain lines replaced with city permit and 40 years warranty.4-\u00a0 Water heaters for both units replaced with city permit.5- Furnace in unit 1220 replaced with high efficiency.\u00a06- Unit 1222 completely remodeled. The images are in the link below:\u00a0 \u00a0 \u00a0 \u00a0- Flooring replaced with high grade laminate\u00a0\u00a0 \u00a0 \u00a0 \u00a0- Carpets replaced in both bedrooms\u00a0 \u00a0 \u00a0 \u00a0- The unit electric wires updated and rewired.\u00a0 \u00a0 \u00a0 -\u00a0 Lighting updated with recess lights\u00a0 through out the unit.\u00a0 \u00a0 \u00a0 - Fresh paints through out including the garage.\u00a0 \u00a0 \u00a0 - Landscape was designed and updated with highest grade commercial concrete that does not crack for life.\u00a0 \u00a0 \u00a0 - All inside doors and closet doors were replaced and updated.\u00a0 \u00a0 \u00a0 - Ceiling fans in all units installed.\u00a0 \u00a0 \u00a0 - Garage door opener and all mechanical parts replaced.\u00a0 \u00a0 \u00a0 - Kitchen was updated including the sink.\u00a0\u00a0\u00a0 \u00a0 \u00a0 - Currently managed by professional property management company. The lease is through November 2026.\u00a0Misc. information:1- Unit 1220 has a fireplace in the living room.2- Unit 1220- Two\u00a0 years ago the bathroom was updated with walking shower with tiles floor to ceiling.3- Unit 1220- The lease is ending August 1st.\u00a0 \u00a04-\u00a0 High efficiency fans installed in attic for both units. There is no need for A/C anymore.\u00a0\u00a0.\u00a0 \u00a0\u00a0Condition is perfect. All major items were replaced in 2025 with city permit and years of warranty. It is a turn key property with monthly income of around $6,500\u00a0\nMehran\nhttps://www.zillow.com/view-3d-home/8e14aebc-8956-4880-8f5d-0bf550682de9"
       },
       "reference_reply": "Hi Mehran,\n\nThanks for all that detail - that's really helpful. I can see this property is in solid shape, especially with all the recent updates in 2025. The fact that it's professionally managed and bringing in consistent rental income is a big plus.\n\nBased on what you've described - the duplex configuration, the condition after those renovations, the current rents, and the lease terms you mentioned - I'm ready to put together a cash offer. Given everything, I'm looking at somewhere in that price range.\n\nLet me know if that works for you and we can move forward. Since you're looking to sell, I'm set up to close quickly and handle this smoothly.\n\nRyan",
       "reference_source": "ryan_sent",
@@ -710,7 +719,7 @@
           "at": "2026-05-28T20:55:13.988541+00:00",
           "from": "ryan",
           "channel": "sms",
-          "text": "Hey Steve, I know we've been playing phone tag on the Penitentiary Street fourplex—let me know what time works best this week and I'll make sure to connect. I've got a solid offer structure in mind for you."
+          "text": "Hey Steve, I know we've been playing phone tag on the Penitentiary Street fourplex\u2014let me know what time works best this week and I'll make sure to connect. I've got a solid offer structure in mind for you."
         },
         {
           "at": "2026-05-28T21:51:28.781316+00:00",
@@ -831,7 +840,7 @@
       },
       "note": "Ryan edited the AI draft before sending. Reference = what he sent.",
       "thread": [],
-      "generated_draft": "Hey Paige, any luck digging up something else after that Mountain View one? Also curious about that Cupertino townhome site you mentioned — I do work on projects that size, so let's talk details if it's still available.",
+      "generated_draft": "Hey Paige, any luck digging up something else after that Mountain View one? Also curious about that Cupertino townhome site you mentioned \u2014 I do work on projects that size, so let's talk details if it's still available.",
       "reference_reply": "Hey Paige, been a while since we last connected! Hope all is well\n\nI have a couple of new projects im working on - one i could share now over by oakridge mall. And as always im looking for more projects!",
       "reference_source": "ryan_sent_edited",
       "replied": true,
@@ -851,7 +860,7 @@
       },
       "note": "Ryan edited the AI draft before sending. Reference = what he sent.",
       "thread": [],
-      "generated_draft": "Hey Marjan — been too long man. How are you doing?",
+      "generated_draft": "Hey Marjan \u2014 been too long man. How are you doing?",
       "reference_reply": "Hi Marjan, how's it going? Looks like that Suffolk one sold for $4.78m. Not bad for being on the market. Have you seen any new ones lately?",
       "reference_source": "ryan_sent_edited",
       "replied": true,
@@ -867,12 +876,12 @@
         "name": "Alfredo Barajas",
         "category": "Agent",
         "tier": "C",
-        "notes": "Ryan reached out to Alfredo in March asking if he'd come across anything interesting, specifically mentioning he's actively buying value-add single-family residential (SFR) and multi-unit properties in the Bay Area. Alfredo responded in July with \"Perfect 👌\" but there's no context for what he was confirming. No clear follow-up or active deal discussion is evident from these messages."
+        "notes": "Ryan reached out to Alfredo in March asking if he'd come across anything interesting, specifically mentioning he's actively buying value-add single-family residential (SFR) and multi-unit properties in the Bay Area. Alfredo responded in July with \"Perfect \ud83d\udc4c\" but there's no context for what he was confirming. No clear follow-up or active deal discussion is evident from these messages."
       },
       "note": "Ryan edited the AI draft before sending. Reference = what he sent.",
       "thread": [],
-      "generated_draft": "Hey Alfredo, this is Ryan LaRocca — I had your contact saved from a while back. I'm an investor in the area looking to buy some homes around the Bay Area. Are you still active in real estate?",
-      "reference_reply": "Hey Alfredo, this is Ryan LaRocca. We met a while back at the permit desk for Santa Clara county 😂. Hope all is well, I am looking for a project right now Im not sure if you ever sell deals to investors but I can close quick with stellar terms.\n\nAnyway hope you're well",
+      "generated_draft": "Hey Alfredo, this is Ryan LaRocca \u2014 I had your contact saved from a while back. I'm an investor in the area looking to buy some homes around the Bay Area. Are you still active in real estate?",
+      "reference_reply": "Hey Alfredo, this is Ryan LaRocca. We met a while back at the permit desk for Santa Clara county \ud83d\ude02. Hope all is well, I am looking for a project right now Im not sure if you ever sell deals to investors but I can close quick with stellar terms.\n\nAnyway hope you're well",
       "reference_source": "ryan_sent_edited",
       "replied": false,
       "grade": null,
@@ -891,12 +900,17 @@
       },
       "note": "Ryan edited the AI draft before sending. Reference = what he sent.",
       "thread": [],
-      "generated_draft": "Hey Tyler, how are you? Was going through my phone and noticed we hadn't connected in a while — looking for a project right now, let me know if you come across anything.",
-      "reference_reply": "Hey Tyler, it's Ryan with LRG Homes. Hope business is treating you well. I'm actively buying again and probate properties are right in my wheelhouse — cash, as-is, flexible on timeline for the estate. If you've got anything coming up that needs a clean, fast close, I'd love a shot at it.",
+      "generated_draft": "Hey Tyler, how are you? Was going through my phone and noticed we hadn't connected in a while \u2014 looking for a project right now, let me know if you come across anything.",
+      "reference_reply": "Hey Tyler, it's Ryan with LRG Homes. Hope business is treating you well. I'm actively buying again and probate properties are right in my wheelhouse \u2014 cash, as-is, flexible on timeline for the estate. If you've got anything coming up that needs a clean, fast close, I'd love a shot at it.",
       "reference_source": "ryan_sent_edited",
       "replied": true,
       "grade": null,
       "why": null
     }
-  ]
+  ],
+  "grading": {
+    "status": "stopped by Ryan 2026-09-24 after item 9",
+    "graded": 9,
+    "note": "Items 10-22 ungraded; the live Not-right loop on the card replaces the rest."
+  }
 }

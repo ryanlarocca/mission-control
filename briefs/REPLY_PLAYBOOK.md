@@ -37,7 +37,13 @@ Principles:
 7. Next action defaults to long-term nurture. A nurture touch after a soft no
    may not re-pitch or ask whether they are ready to sell.
 
-Pending whys: (none yet)
+Pending whys:
+- 2026-09-24, eval item 4 (1367 Madison, "not selling but curious what it's
+  worth"): "I don't like promising a solid estimate. Maybe more so a range or
+  a ballpark. Low interest, but there is something there." → candidate: when
+  a soft no still asks for a number, give a rough range in one line, never
+  promise an estimate or a workup. (1 of 3 needed before it becomes a
+  principle.)
 
 ### hard_no_optout
 Explicit stop, hostile, or "good luck with your search" after a price gap.
