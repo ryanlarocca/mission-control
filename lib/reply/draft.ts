@@ -110,6 +110,9 @@ Write the reply the conversation is actually waiting for. Respond with the JSON 
     const parsed = JSON.parse(extractJsonObject(out.text)) as { subject?: unknown; body?: unknown }
     body = typeof parsed.body === "string" ? parsed.body.trim() : ""
     subject = channel === "email" && typeof parsed.subject === "string" && parsed.subject.trim() ? parsed.subject.trim() : null
+    // Inbound email rows store "Subject: <x>" as their first line, so the
+    // model can echo it into "Re: Subject: <x>". Strip the literal prefix.
+    if (subject) subject = subject.replace(/^(re:\s*)?subject:\s*/i, (m) => (/^re:/i.test(m) ? "Re: " : "")).trim() || subject
     if (!body) throw new Error("empty body")
   } catch (e) {
     console.error("[reply/draft] failed:", e instanceof Error ? e.message : String(e))
