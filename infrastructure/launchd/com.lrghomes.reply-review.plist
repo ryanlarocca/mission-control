@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Reply Planner weekly review (Phase 6, briefs/BRIEF_REPLY_PLANNER_2026-09-24.md).
+  Mondays 8:30am PT: scoreboard (drafts sent untouched), new whys by moment,
+  candidate principles (>=3 whys that rhyme), Telegram summary to Ryan.
+
+  Install (Mac mini):
+    cp infrastructure/launchd/com.lrghomes.reply-review.plist ~/Library/LaunchAgents/
+    launchctl load ~/Library/LaunchAgents/com.lrghomes.reply-review.plist
+  Run once:  launchctl start com.lrghomes.reply-review
+  Logs:      /tmp/lrg-reply-review.log, /tmp/lrg-reply-review-err.log
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.lrghomes.reply-review</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/opt/homebrew/bin/node</string>
+    <string>scripts/reply-review.mjs</string>
+  </array>
+  <key>WorkingDirectory</key>
+  <string>/Users/ryanlarocca/Projects/PROJECTS/mission-control</string>
+  <key>StartCalendarInterval</key>
+  <dict>
+    <key>Weekday</key>
+    <integer>1</integer>
+    <key>Hour</key>
+    <integer>8</integer>
+    <key>Minute</key>
+    <integer>30</integer>
+  </dict>
+  <key>StandardOutPath</key>
+  <string>/tmp/lrg-reply-review.log</string>
+  <key>StandardErrorPath</key>
+  <string>/tmp/lrg-reply-review-err.log</string>
+  <key>RunAtLoad</key>
+  <false/>
+</dict>
+</plist>
