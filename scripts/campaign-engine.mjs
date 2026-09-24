@@ -493,15 +493,20 @@ async function draftPass() {
 }
 
 // ---------- SEND pass ----------
-// One-click unsubscribe (RFC 8058, 2026-08-06 deliverability work): Gmail
-// strongly favors bulk mail with these headers; the POST target writes
-// straight to the master DNC.
+// One-click unsubscribe (RFC 8058, 2026-08-06 deliverability work): the POST
+// target writes straight to the master DNC.
 // Auth + MIME live in scripts/campaign-gmail.mjs (shared with the test-batch
-// sender): DWD for lrghomes.com mailboxes, OAuth for the consumer Gmail.
-// T1 sends carry NO List-Unsubscribe headers (2026-08-21 finding: headers
-// alone flipped Primary → Promotions; the body's "reply remove" line covers
-// opt-out). T2+ keep the one-click headers.
+// sender): DWD for every Workspace mailbox.
+// List-Unsubscribe headers are OFF on every touch by default (Ryan,
+// 2026-09-24). The 2026-08-21 test showed the headers alone flip Primary →
+// Promotions, and the goal of the two-domain stack is Primary placement; the
+// body's "reply remove" line is the opt-out (Google only requires the
+// one-click header above 5,000/day; CAN-SPAM needs a working opt-out, not a
+// header). Set CAMPAIGN_UNSUB_HEADERS=1 to put them back on every touch —
+// do that if Postmaster ever shows a spam rate above 0.1% (complaints hurt
+// more than Promotions does).
 // One authenticated client per sender, minted lazily (DWD token per mailbox).
+const UNSUB_HEADERS = process.env.CAMPAIGN_UNSUB_HEADERS === "1"
 const gmailClients = new Map()
 async function gmailClient(sender) {
   if (!gmailClients.has(sender.email)) gmailClients.set(sender.email, await gmailClientFor(sender.email))
@@ -713,7 +718,7 @@ async function sendPass() {
         subject: row.subject,
         body: row.body,
         contactId: row.contact_id,
-        unsubHeaders: row.touch_number !== 1,
+        unsubHeaders: UNSUB_HEADERS,
         extraHeaders: sender.replyTo ? [`Reply-To: ${sender.replyTo}`] : [],
       })
       const nowIso = new Date().toISOString()

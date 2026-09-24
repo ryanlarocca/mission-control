@@ -53,8 +53,10 @@ export function unsubToken(contactId) {
 /**
  * Full RFC822 message for a campaign send. `contactId` + CAMPAIGN_UNSUB_SECRET
  * → RFC 8058 one-click List-Unsubscribe headers; pass `unsubHeaders:false`
- * to suppress them (T1 plan, 2026-08-21: headers alone flipped Primary →
- * Promotions; body "reply remove" line only on touch 1).
+ * to suppress them. The engine passes false on every touch unless
+ * CAMPAIGN_UNSUB_HEADERS=1 (2026-09-24: the 8/21 test showed the headers
+ * alone flip Primary → Promotions; the body's "reply remove" line is the
+ * opt-out).
  */
 export function buildCampaignMime({ from, to, subject, body, contactId, unsubHeaders = true, extraHeaders = [] }) {
   const headers = [...extraHeaders]

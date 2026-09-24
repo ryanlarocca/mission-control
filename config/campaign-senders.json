@@ -6,7 +6,7 @@
     "ceiling = list-sized steady state; raise it when Ryan adds contacts (volume follows the list, never the reverse). The ramp stops at min(ramp step, ceiling).",
     "segment: 'drip' = the pool nobody else claims; 'relationships' = campaign contacts whose email is in the Relationships table (tiers below). A contact stays on whichever sender sent its last touch (thread continuity).",
     "overflow (Ryan 2026-09-16, rebuild Q3): true = once this sender's own segment is exhausted for the day, it fills the rest of its daily budget from the general pool, but only after the workhorse's budget is spent. The Relationships segment alone (~230 agents with an email, imported via scripts/import-relationships-agents.mjs as cohort 'relationships') could never keep the understudy busy at 40/day; overflow is how the second domain earns real sending history. Segment contacts never flow the other way.",
-    "replyTo: header on every send. info@lrghomes.com (the existing watched campaign inbox) — confirmed by Ryan 2026-09-16 (rebuild Q2). null = no Reply-To.",
+    "replyTo: header on every send. null = no Reply-To, so replies come back to the sending mailbox — Ryan's call 2026-09-24 (reverses rebuild Q2's info@): the new domains need two-way conversation history of their own, and a Reply-To on the spam-flagged lrghomes.com was a negative signal. Both new mailboxes are in CAMPAIGN_INBOXES (lib/campaignInbox.ts) so replies/bounces/unsubs are ingested exactly like info@.",
     "CAMPAIGN_SENDERS env (comma list of addresses) narrows the enabled set at runtime; unset = every sender with enabled:true. This file is the ONLY sender source — CAMPAIGN_SEND_AS is dead (removed 2026-09-06, rebuild item 4); no enabled sender here = the engine refuses to run.",
     "Per-sender health + auto-pause (rebuild item 3, 2026-09-05): each mailbox pauses ON ITS OWN — bounce red day, Gmail throttle, DWD auth failure, or canary in Spam two days running — for autoPauseHours, then resumes by itself; the other sender keeps sending. Telegram: 'pause buys' / 'resume offers' / 'canary buys primary|promotions|spam' / 'reputation offers high|medium|low|bad' / 'campaign status'.",
     "requireCanaryVerdict: the brief's 'canary Primary 3 days running' gate. true = a sender cannot advance a rung until its last minHealthyDays recorded canary verdicts are all 'primary' and the newest is at most canaryVerdictMaxAgeDays old. Verdicts come from Ryan reading the judge inbox (CAMPAIGN_CANARY_TO) and replying 'canary <label> <verdict>' on Telegram. requirePostmaster stays false until Postmaster Tools has the new domains and shows a reputation (weeks of volume) — 'reputation <label> <level>' records what the dashboard shows."
@@ -32,7 +32,7 @@
       "ramp": [5, 10, 20, 35, 50, 75, 100],
       "ceiling": 100,
       "segment": "drip",
-      "replyTo": "info@lrghomes.com"
+      "replyTo": null
     },
     "ryan@lrghomesoffers.com": {
       "enabled": true,
@@ -43,7 +43,7 @@
       "segment": "relationships",
       "segmentTiers": ["A", "B", "C"],
       "overflow": true,
-      "replyTo": "info@lrghomes.com"
+      "replyTo": null
     }
   }
 }
