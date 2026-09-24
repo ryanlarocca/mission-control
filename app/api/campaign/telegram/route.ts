@@ -424,7 +424,7 @@ export async function POST(request: Request) {
       }
       await tg("sendMessage", {
         chat_id: chatId,
-        text: out.success ? `✅ Emailed ${out.label} — same thread, from info@.` : `⚠️ Not sent — ${out.error}`,
+        text: out.success ? `✅ Emailed ${out.label} — same thread, from ${out.mailbox ?? "info@"}.` : `⚠️ Not sent — ${out.error}`,
         reply_to_message_id: cb.message?.message_id,
       })
     } else if (/^capply:/.test(cb.data)) {
@@ -756,7 +756,9 @@ export async function POST(request: Request) {
   const to10 = extractPhone(repliedText)
   if (!to10) {
     // Email AGENT REPLY alerts: typed replies SEND as a threaded email from
-    // info@ (2026-07-27 — "Thank you Mary!" should just go). Call intents
+    // the mailbox that received the reply — info@ for legacy threads, the
+    // sending domain's mailbox for the two-domain stack (2026-07-27 — "Thank
+    // you Mary!" should just go). Call intents
     // look up the contact's phone and relay instead.
     const nameMatch = /AGENT REPLY[^—]*—\s*(.+?)\s*\(after T/i.exec(repliedText)
     if (nameMatch) {
@@ -781,7 +783,7 @@ export async function POST(request: Request) {
       await tg("sendMessage", {
         chat_id: chatId,
         text: out.success
-          ? `✅ Emailed ${out.label} — same thread, from info@.`
+          ? `✅ Emailed ${out.label} — same thread, from ${out.mailbox ?? "info@"}.`
           : `⚠️ Not sent — ${out.error}`,
         reply_to_message_id: msg.message_id,
       })

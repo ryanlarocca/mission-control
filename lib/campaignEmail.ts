@@ -22,7 +22,7 @@ const isOwnMailbox = (m: string) => OWN_DOMAINS.some((d) => m.toLowerCase().ends
 export async function sendCampaignEmailReply(args: {
   contactName: string
   body: string
-}): Promise<{ success: boolean; error?: string; label?: string }> {
+}): Promise<{ success: boolean; error?: string; label?: string; mailbox?: string }> {
   const { contactName, body } = args
   if (!body.trim()) return { success: false, error: "empty message" }
   const sb = getLeadsClient()
@@ -109,7 +109,7 @@ export async function sendCampaignEmailReply(args: {
     body: body.slice(0, 1000),
     raw: { via: "telegram_reply", thread_id: threadId, mailbox: sendAs },
   })
-  return { success: true, label: `${contact.name} <${toAddr}>` }
+  return { success: true, label: `${contact.name} <${toAddr}>`, mailbox: sendAs }
 }
 
 /** Contact phone lookup by name — lets "call him back" work on email alerts. */

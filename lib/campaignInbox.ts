@@ -364,7 +364,7 @@ async function handleContactMessage(
   const truncated = alertBody.length > 3200
   if (truncated) alertBody = alertBody.slice(0, 3200)
   await sendCampaignAlert(sb,
-    `✉️ <b>AGENT REPLY</b> — <b>${esc(contact.name ?? contact.email ?? "")}</b> (after T${contact.touch_number})\n"${esc(alertBody)}"${truncated ? "\n… [message truncated — full email in Gmail]" : ""}\n\nDrip continues as scheduled. Reply from Gmail or /email-campaign.`
+    `✉️ <b>AGENT REPLY</b> — <b>${esc(contact.name ?? contact.email ?? "")}</b> (after T${contact.touch_number})\n"${esc(alertBody)}"${truncated ? "\n… [message truncated — full email in Gmail]" : ""}\n\nDrip continues as scheduled. Reply to this message to send it as a threaded email from ${esc(mailbox)}, or "draft: your guidance" for a Claude draft first.`
   )
 }
 
