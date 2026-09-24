@@ -218,7 +218,7 @@ export async function reviseCampaignDraft(args: {
   return { success: true, draft, label: raw.contact_name, eventId: String(row.id), oldTgMessageId: raw.tg_message_id }
 }
 
-export async function sendPendingDraft(eventId: string): Promise<{ success: boolean; error?: string; label?: string }> {
+export async function sendPendingDraft(eventId: string): Promise<{ success: boolean; error?: string; label?: string; mailbox?: string }> {
   const sb = getLeadsClient()
   const { data: ev } = await sb
     .from("campaign_events")
@@ -238,7 +238,7 @@ export async function sendPendingDraft(eventId: string): Promise<{ success: bool
   if (!out.success) return { success: false, error: out.error }
 
   await sb.from("campaign_events").update({ triage: "draft_sent" }).eq("id", eventId)
-  return { success: true, label: out.label }
+  return { success: true, label: out.label, mailbox: out.mailbox }
 }
 
 export async function discardPendingDraft(eventId: string): Promise<{ success: boolean; error?: string }> {
