@@ -16,6 +16,8 @@ import { isAnonymousCaller } from "@/lib/anonymous"
 import { handleSessionExpired } from "@/lib/session-expired"
 import type { LeadStatus, PropertyDetail } from "@/lib/leads"
 import { formatPhone } from "@/lib/utils"
+import { ReplyPlanner } from "./ReplyPlanner"
+import { type Plan, requestDraft, executePlan, sendSuffixFor, defaultNextAction } from "@/lib/reply-client"
 import {
   type RelationshipCategory,
   RELATIONSHIP_CATEGORY_LABELS,
@@ -58,6 +60,8 @@ interface Lead {
   // per property the seller owns. AI-populated + Ryan-editable on the card.
   property_details?: PropertyDetail[] | null
   suggested_reply: string | null
+  // Reply Planner: the moment the latest inbound message created (stamped at intake).
+  moment?: string | null
   // Set on email leads at insertion (route.ts) so /api/leads/sync-email can
   // look up the full Gmail thread on card expand. Null on call/sms/form rows.
   gmail_thread_id?: string | null
@@ -119,6 +123,7 @@ interface LeadGroup {
   notes: string | null
   aiNotes: string | null
   suggestedReply: string | null
+  moment: string | null
   name: string | null
   email: string | null
   propertyAddress: string | null
@@ -331,6 +336,7 @@ function groupLeads(leads: Lead[]): LeadGroup[] {
     // Suggested reply travels with the email row that produced it. Take the
     // newest non-null one so a follow-up email's draft replaces a stale one.
     const suggestedReply = newestFirst.map(e => e.suggested_reply).find(v => v && v.trim()) || null
+    const moment = newestFirst.map(e => e.moment).find(v => v && v.trim()) || null
     // Pick the LATEST inbound non-null phone so corrections in a Gmail
     // thread ("sorry my real number is X") override earlier guesses. Falls
     // back to the oldest non-null phone (any direction) for safety.
@@ -377,6 +383,7 @@ function groupLeads(leads: Lead[]): LeadGroup[] {
       notes: statusSource.notes,
       aiNotes,
       suggestedReply,
+      moment,
       name,
       email,
       propertyAddress,
@@ -757,34 +764,74 @@ export function LeadsTab() {
   // endpoint short-circuits to the cached row when nothing's changed,
   // and ensures the user sees a freshly-regenerated summary if a new
   // event landed since the last fetch.
-  // Phase 7C — Part 7: on-demand draft generation. Fills the existing
-  // composer textarea so Ryan can edit before sending.
-  const generateDraft = useCallback(async (group: LeadGroup, channel: "imessage" | "email") => {
+  // Reply Planner (2026-09-24). Replaces the Phase 7C draft-message call.
+  // One plan per contact (moment · temperature · next action), one draft per
+  // channel. The chips drive the draft; "Not right" sends Ryan's one-sentence
+  // why and chains the redraft to the rejected one; sends carry the draftId.
+  const [replyPlan, setReplyPlan] = useState<Record<string, Plan | null>>({})
+  const [replyDraftId, setReplyDraftId] = useState<Record<string, string | null>>({})
+  const [replyStatus, setReplyStatus] = useState<Record<string, string | null>>({})
+  const plannerStarted = useRef<Set<string>>(new Set())
+
+  const plannerDraft = useCallback(async (
+    group: LeadGroup,
+    channel: "imessage" | "email",
+    opts?: { why?: string; plan?: Plan | null }
+  ) => {
     const key = `${group.phone}:${channel}`
     setDraftingFor(key)
     setDraftError(null)
     try {
-      const res = await fetch(`/api/leads/${group.mostRecentId}/draft-message`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ channel }),
+      const plan = opts?.plan !== undefined
+        ? opts.plan
+        : replyPlan[group.phone]
+          ?? (group.moment
+            ? { moment: group.moment, temperature: group.temperature, next_action: defaultNextAction(group.moment), reason: "", source: "ai" as const }
+            : null)
+      const previous = channel === "email"
+        ? { subject: emailSubject[group.phone] ?? null, body: emailDraft[group.phone] ?? group.suggestedReply ?? "" }
+        : { body: draftMessage[group.phone] ?? group.suggestedReply ?? "" }
+      const data = await requestDraft({
+        leadId: group.mostRecentId,
+        channel: channel === "imessage" ? "sms" : "email",
+        surface: "leads_card",
+        plan,
+        why: opts?.why ?? null,
+        parentDraftId: opts?.why ? replyDraftId[key] ?? null : null,
+        previousDraft: opts?.why && previous.body.trim() ? previous : null,
       })
-      const data = await res.json().catch(() => ({}))
-      if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`)
+      setReplyPlan(prev => ({ ...prev, [group.phone]: data.plan }))
+      setReplyDraftId(prev => ({ ...prev, [key]: data.draftId }))
+      setReplyStatus(prev => ({
+        ...prev,
+        [group.phone]: data.critic?.rewritten ? `checked: ${data.critic.issues.join("; ")}` : opts?.why ? "redrafted from your note" : null,
+      }))
       if (channel === "imessage") {
-        setDraftMessage(prev => ({ ...prev, [group.phone]: data.message || "" }))
+        setDraftMessage(prev => ({ ...prev, [group.phone]: data.body || "" }))
       } else {
-        setEmailDraft(prev => ({ ...prev, [group.phone]: data.message || "" }))
-        // The route returns an AI-suggested subject too — wire it in (it was
-        // being dropped before). Harmless for thread replies (subject unused).
-        if (data.subject) setEmailSubject(prev => ({ ...prev, [group.phone]: data.subject }))
+        setEmailDraft(prev => ({ ...prev, [group.phone]: data.body || "" }))
+        if (data.subject) setEmailSubject(prev => ({ ...prev, [group.phone]: data.subject! }))
       }
     } catch (e) {
       setDraftError(e instanceof Error ? e.message : String(e))
     } finally {
       setDraftingFor(null)
     }
-  }, [])
+  }, [replyPlan, replyDraftId, emailSubject, emailDraft, draftMessage])
+
+  // Auto-draft on expand when the conversation is waiting on Ryan (last event
+  // inbound) and he hasn't typed anything yet. Once per card per session.
+  const autoPlanDraft = useCallback((group: LeadGroup) => {
+    if (plannerStarted.current.has(group.phone)) return
+    const last = group.events[group.events.length - 1]
+    if (!last || isOutbound(last)) return
+    if ((emailDraft[group.phone] ?? "").trim() || (draftMessage[group.phone] ?? "").trim()) return
+    const hasInboundEmail = group.events.some(e => e.lead_type === "email" && !isOutbound(e))
+    const channel: "imessage" | "email" | null = hasInboundEmail ? "email" : group.contactPhone ? "imessage" : group.email ? "email" : null
+    if (!channel) return
+    plannerStarted.current.add(group.phone)
+    void plannerDraft(group, channel)
+  }, [plannerDraft, emailDraft, draftMessage])
 
   const fetchSummary = useCallback(async (group: LeadGroup, opts?: { force?: boolean }) => {
     const key = group.phone
@@ -1020,7 +1067,7 @@ export function LeadsTab() {
         res = await fetch("/api/leads/email-reply", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ leadId: emailLead.id, message: text }),
+          body: JSON.stringify({ leadId: emailLead.id, message: text, draftId: replyDraftId[`${group.phone}:email`] ?? undefined }),
         })
       } else {
         const subject = (emailSubject[group.phone] ?? "").trim()
@@ -1032,7 +1079,7 @@ export function LeadsTab() {
         res = await fetch(`/api/leads/${group.mostRecentId}/send-email`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ subject, body: text }),
+          body: JSON.stringify({ subject, body: text, draftId: replyDraftId[`${group.phone}:email`] ?? undefined }),
         })
       }
       const data = await res.json().catch(() => ({}))
@@ -1041,8 +1088,16 @@ export function LeadsTab() {
       }
       setEmailDraft(prev => ({ ...prev, [group.phone]: "" }))
       setEmailSubject(prev => ({ ...prev, [group.phone]: "" }))
+      setReplyDraftId(prev => ({ ...prev, [`${group.phone}:email`]: null }))
       setEmailSendSuccess(group.phone)
       setTimeout(() => setEmailSendSuccess(null), 2500)
+      // Send executes the plan (nurture / drip / call reminder / close).
+      try {
+        const done = await executePlan(group.mostRecentId, replyPlan[group.phone])
+        if (done) setReplyStatus(prev => ({ ...prev, [group.phone]: done }))
+      } catch (e) {
+        setEmailSendError(`Sent, but the plan step failed: ${e instanceof Error ? e.message : String(e)}`)
+      }
       // Refetch to pick up the outbound email row that the route just inserted.
       void fetchLeads(true)
     } catch (e) {
@@ -1066,6 +1121,7 @@ export function LeadsTab() {
           phone: group.contactPhone,
           message: text,
           source: group.source,
+          draftId: replyDraftId[`${group.phone}:imessage`] ?? undefined,
         }),
       })
       const data = await res.json().catch(() => ({}))
@@ -1073,8 +1129,15 @@ export function LeadsTab() {
         throw new Error(data.error || `HTTP ${res.status}`)
       }
       setDraftMessage(prev => ({ ...prev, [group.phone]: "" }))
+      setReplyDraftId(prev => ({ ...prev, [`${group.phone}:imessage`]: null }))
       setSendSuccess(group.phone)
       setTimeout(() => setSendSuccess(null), 2500)
+      try {
+        const done = await executePlan(group.mostRecentId, replyPlan[group.phone])
+        if (done) setReplyStatus(prev => ({ ...prev, [group.phone]: done }))
+      } catch (e) {
+        setSendError(`Sent, but the plan step failed: ${e instanceof Error ? e.message : String(e)}`)
+      }
       // Refetch to pick up the new outbound row in the timeline
       void fetchLeads(true)
     } catch (e) {
@@ -1599,6 +1662,7 @@ export function LeadsTab() {
                 setDraftError(null)
                 setSendSuccess(null); setCallSuccess(null); setEmailSendSuccess(null)
                 setExpandedPhone(willExpand ? group.phone : null)
+                if (willExpand) autoPlanDraft(group)
                 if (willExpand) {
                   void syncOnExpand(group)
                   // Auto-refresh the AI summary on every expand (force:true).
@@ -1615,8 +1679,15 @@ export function LeadsTab() {
               onRefreshSummary={() => fetchSummary(group, { force: true })}
               onRefreshMessages={() => void refreshSyncForGroup(group)}
               refreshingMessages={refreshingSyncFor === group.phone}
-              onDraftText={() => generateDraft(group, "imessage")}
-              onDraftEmail={() => generateDraft(group, "email")}
+              onDraftText={() => plannerDraft(group, "imessage")}
+              onDraftEmail={() => plannerDraft(group, "email")}
+              plan={replyPlan[group.phone] ?? null}
+              planStatus={replyStatus[group.phone] ?? null}
+              onPlanChange={(plan, channel) => {
+                setReplyPlan(prev => ({ ...prev, [group.phone]: plan }))
+                void plannerDraft(group, channel, { plan })
+              }}
+              onRegenerate={(channel, why) => plannerDraft(group, channel, why ? { why } : undefined)}
               draftingText={draftingFor === `${group.phone}:imessage`}
               draftingEmail={draftingFor === `${group.phone}:email`}
               draftError={expandedPhone === group.phone ? draftError : null}
@@ -1771,6 +1842,11 @@ interface LeadCardProps {
   draftingText: boolean
   draftingEmail: boolean
   draftError: string | null
+  // Reply Planner: the contact's plan (shared by every composer on the card).
+  plan: Plan | null
+  planStatus: string | null
+  onPlanChange: (plan: Plan, channel: "imessage" | "email") => void
+  onRegenerate: (channel: "imessage" | "email", why?: string) => void
   onPatchField: (field: "name" | "property_address" | "email", value: string) => void
   // Offer amount edit — separate from onPatchField because the value is a
   // number (or null to clear), not a string. PATCH /api/leads coerces.
@@ -2156,6 +2232,21 @@ function LeadCard(p: LeadCardProps) {
             />
           </div>
 
+          {(hasEmail || group.contactPhone) && (() => {
+            const primary: "imessage" | "email" = hasEmail && (hasInboundEmail || !group.contactPhone) ? "email" : "imessage"
+            return (
+              <ReplyPlanner
+                kind="lead"
+                plan={p.plan}
+                busy={p.draftingEmail || p.draftingText}
+                error={p.draftError}
+                status={p.planStatus}
+                onPlanChange={(plan) => p.onPlanChange(plan, primary)}
+                onRegenerate={(why) => p.onRegenerate(primary, why)}
+              />
+            )
+          })()}
+
           {hasEmail ? (
             // Email composer: shows whenever the lead has an email address.
             //  - hasInboundEmail → reply via Gmail API on the existing thread.
@@ -2165,7 +2256,9 @@ function LeadCard(p: LeadCardProps) {
             <div>
               <div className="flex items-center justify-between mb-1.5">
                 <div className="text-xs text-zinc-500">
-                  {group.suggestedReply
+                  {p.plan
+                    ? "✨ Draft from plan"
+                    : group.suggestedReply
                     ? "💡 Suggested Reply"
                     : hasInboundEmail ? "Email Reply" : "New Email"}
                 </div>
@@ -2225,7 +2318,7 @@ function LeadCard(p: LeadCardProps) {
                   className="inline-flex items-center gap-1.5 px-4 py-2 min-h-[44px] rounded bg-blue-600 hover:bg-blue-500 disabled:bg-zinc-800 disabled:text-zinc-600 text-white text-sm font-medium transition-colors"
                 >
                   {p.sendingEmail ? <Loader2 className="w-4 h-4 animate-spin" /> : <Mail className="w-4 h-4" />}
-                  Send Email
+                  Send Email{sendSuffixFor(p.plan) ? ` ${sendSuffixFor(p.plan)}` : ""}
                 </button>
               </div>
               {group.contactPhone && (
@@ -2266,7 +2359,7 @@ function LeadCard(p: LeadCardProps) {
                       className="inline-flex items-center gap-1.5 px-4 py-2 min-h-[44px] rounded bg-emerald-600 hover:bg-emerald-500 disabled:bg-zinc-800 disabled:text-zinc-600 text-white text-sm font-medium transition-colors"
                     >
                       {p.sending ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
-                      iMessage
+                      iMessage{sendSuffixFor(p.plan) ? ` ${sendSuffixFor(p.plan)}` : ""}
                     </button>
                   </div>
                 </div>
@@ -2317,7 +2410,7 @@ function LeadCard(p: LeadCardProps) {
                   className="inline-flex items-center gap-1.5 px-4 py-2 min-h-[44px] rounded bg-emerald-600 hover:bg-emerald-500 disabled:bg-zinc-800 disabled:text-zinc-600 text-white text-sm font-medium transition-colors"
                 >
                   {p.sending ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
-                  Send
+                  Send{sendSuffixFor(p.plan) ? ` ${sendSuffixFor(p.plan)}` : ""}
                 </button>
               </div>
             </div>
@@ -2338,6 +2431,11 @@ function LeadCard(p: LeadCardProps) {
               sendError={p.emailSendError}
               sendSuccess={p.emailSendSuccess}
               onClose={() => setEmailPopout(false)}
+              plan={p.plan}
+              planStatus={p.planStatus}
+              draftError={p.draftError}
+              onPlanChange={(plan) => p.onPlanChange(plan, "email")}
+              onRegenerate={(why) => p.onRegenerate("email", why)}
             />
           )}
 
@@ -2586,6 +2684,11 @@ function EmailComposerModal(props: {
   sendError: string | null
   sendSuccess: boolean
   onClose: () => void
+  plan: Plan | null
+  planStatus: string | null
+  draftError: string | null
+  onPlanChange: (plan: Plan) => void
+  onRegenerate: (why?: string) => void
 }) {
   const {
     leadName, hasInboundEmail, subject, onEditSubject, body, onEditBody,
@@ -2636,6 +2739,15 @@ function EmailComposerModal(props: {
         </div>
 
         <div className="px-4 py-3 space-y-3 overflow-y-auto">
+          <ReplyPlanner
+            kind="lead"
+            plan={props.plan}
+            busy={drafting}
+            error={props.draftError}
+            status={props.planStatus}
+            onPlanChange={props.onPlanChange}
+            onRegenerate={props.onRegenerate}
+          />
           {!hasInboundEmail && (
             <div>
               <div className="text-xs text-zinc-500 mb-1">Subject</div>
@@ -2686,7 +2798,7 @@ function EmailComposerModal(props: {
             className="inline-flex items-center gap-1.5 px-4 py-2 min-h-[44px] rounded bg-blue-600 hover:bg-blue-500 disabled:bg-zinc-800 disabled:text-zinc-600 text-white text-sm font-medium transition-colors"
           >
             {sending ? <Loader2 className="w-4 h-4 animate-spin" /> : <Mail className="w-4 h-4" />}
-            Send Email
+            Send Email{sendSuffixFor(props.plan) ? ` ${sendSuffixFor(props.plan)}` : ""}
           </button>
         </div>
       </div>

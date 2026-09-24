@@ -1,6 +1,6 @@
 # Reply Planner — plan first, draft second, learn from "why"
 
-**Status:** green-lit by Ryan 2026-09-24. Phase 0 built (awaiting Ryan's grades). **Phase 1 built 2026-09-24** — engine, table, routes, intake moments, send linkage, eval runner; first eval run: plan matched 17/22 of my provisional moment labels, soft-no drafts on principle with 0 critic rewrites after tuning. Phase 2 (Leads card UI) next.
+**Status:** green-lit by Ryan 2026-09-24. Phase 0 built (awaiting Ryan's grades). **Phase 1 built 2026-09-24** — engine, table, routes, intake moments, send linkage, eval runner; first eval run: plan matched 17/22 of my provisional moment labels, soft-no drafts on principle with 0 critic rewrites after tuning. **Phase 2 built 2026-09-24** — plan chips, Not right + why (mic), Send executes plan, on all four Leads composers + the Follow Ups modal; auto-draft on expand when the last message is theirs. Ryan graded eval items 1–9 (8 keep; item 4 fix → first pending why) and stopped: the live loop replaces the rest. Phase 3 (Relationships) next.
 **Owning project memo:** `../lead-pipeline/` (Leads + Follow Ups + drips) with a
 cross-entry in `../comprehensive-relationship-management/` (Relationships).
 **Origin:** Virginia Slater's soft-no draft, 2026-09-24. The conversation
@@ -222,12 +222,12 @@ then principles), and by surface so nothing is left at one card.
 
 | Surface | Plan row | Draft from full thread | Not right + why | Pair stored | Send executes plan | Critic |
 |---|---|---|---|---|---|---|
-| Leads card — email composer | ☐ | ☐ | ☐ | ☐ | ☐ | ☐ |
-| Leads card — iMessage sub-composer | ☐ | ☐ | ☐ | ☐ | ☐ | ☐ |
-| Leads card — phone-only composer | ☐ | ☐ | ☐ | ☐ | ☐ | ☐ |
-| Leads card — email pop-out | ☐ | ☐ | ☐ | ☐ | ☐ | ☐ |
-| Follow Ups compose modal | ☐ | ☐ | ☐ | ☐ | ☐ | ☐ |
-| Intake `suggested_reply` (email) | ☑ moment stamped (P1) | ☐ (still triage's one-email draft until P2) | n/a | ☐ | n/a | ☐ |
+| Leads card — email composer | ☑ P2 | ☑ P2 | ☑ P2 (shared row) | ☑ P2 | ☑ P2 | ☑ P2 |
+| Leads card — iMessage sub-composer | ☑ P2 (shared row) | ☑ P2 | ☑ P2 (shared row) | ☑ P2 | ☑ P2 | ☑ P2 |
+| Leads card — phone-only composer | ☑ P2 | ☑ P2 | ☑ P2 | ☑ P2 | ☑ P2 | ☑ P2 |
+| Leads card — email pop-out | ☑ P2 | ☑ P2 | ☑ P2 | ☑ P2 | ☑ P2 | ☑ P2 |
+| Follow Ups compose modal | ☑ P2 (auto on open) | ☑ P2 | ☑ P2 | ☑ P2 | ☑ P2 | ☑ P2 |
+| Intake `suggested_reply` (email) | ☑ moment stamped (P1) | ☑ P2: card auto-drafts from the plan on expand (triage text is only the placeholder) | n/a | ☐ | n/a | ☐ |
 | Intake — inbound SMS | ☑ plan proposed + moment stamped (P1) | ☐ | n/a | ☐ | n/a | ☐ |
 | Intake — call transcript | ☑ moment from analyzer (P1) | ☐ | n/a | ☐ | n/a | ☐ |
 | Relationships card | ☐ | ☐ | ☐ | ☐ | ☐ | ☐ |

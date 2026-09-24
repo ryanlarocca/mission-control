@@ -8,6 +8,8 @@ import {
 } from "lucide-react"
 import { formatPhone } from "@/lib/utils"
 import { handleSessionExpired } from "@/lib/session-expired"
+import { ReplyPlanner } from "./ReplyPlanner"
+import { type Plan, requestDraft, executePlan, sendSuffixFor } from "@/lib/reply-client"
 import {
   classifyUrgency, describeTouchWhen, touchSortKey,
   type NextTouch, type NextTouchUrgency,
@@ -1711,6 +1713,10 @@ function ComposeModal({
   const [drafting, setDrafting] = useState(false)
   const [sending, setSending] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  // Reply Planner: plan chips + the draft they produced.
+  const [plan, setPlan] = useState<Plan | null>(null)
+  const [draftId, setDraftId] = useState<string | null>(null)
+  const [planStatus, setPlanStatus] = useState<string | null>(null)
 
   useEffect(() => {
     function onKey(e: KeyboardEvent) { if (e.key === "Escape") onClose() }
@@ -1718,25 +1724,38 @@ function ComposeModal({
     return () => document.removeEventListener("keydown", onKey)
   }, [onClose])
 
-  async function aiDraft() {
+  const aiDraft = useCallback(async (opts?: { why?: string; plan?: Plan | null }) => {
     setDrafting(true)
     setError(null)
     try {
-      const res = await fetch(`/api/leads/${row.leadId}/draft-message`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ channel: isEmail ? "email" : "imessage" }),
+      const data = await requestDraft({
+        leadId: row.leadId,
+        channel: isEmail ? "email" : "sms",
+        surface: "followups",
+        plan: opts?.plan !== undefined ? opts.plan : plan,
+        why: opts?.why ?? null,
+        parentDraftId: opts?.why ? draftId : null,
+        previousDraft: opts?.why && body.trim() ? { subject: subject || null, body } : null,
       })
-      const data = await res.json().catch(() => ({}))
-      if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`)
-      setBody(data.message || "")
+      setPlan(data.plan)
+      setDraftId(data.draftId)
+      setPlanStatus(data.critic?.rewritten ? `checked: ${data.critic.issues.join("; ")}` : opts?.why ? "redrafted from your note" : null)
+      setBody(data.body || "")
       if (isEmail && data.subject && !threaded) setSubject(data.subject)
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
     } finally {
       setDrafting(false)
     }
-  }
+  }, [row.leadId, isEmail, threaded, plan, draftId, body, subject])
+
+  // The modal exists to write this reply: plan + draft as soon as it opens.
+  const openedRef = useRef(false)
+  useEffect(() => {
+    if (openedRef.current) return
+    openedRef.current = true
+    void aiDraft()
+  }, [aiDraft])
 
   async function send() {
     const text = body.trim()
@@ -1758,13 +1777,13 @@ function ComposeModal({
         res = await fetch("/api/leads/send", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ phone: row.phone, message: text, source: row.source }),
+          body: JSON.stringify({ phone: row.phone, message: text, source: row.source, draftId: draftId ?? undefined }),
         })
       } else if (threaded) {
         res = await fetch("/api/leads/email-reply", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ leadId: row.emailReplyLeadId, message: text }),
+          body: JSON.stringify({ leadId: row.emailReplyLeadId, message: text, draftId: draftId ?? undefined }),
         })
       } else {
         res = await fetch(`/api/leads/${row.leadId}/send-email`, {
@@ -1774,7 +1793,7 @@ function ComposeModal({
           // uses it as the recipient and saves it back to the lead so future
           // touches know it. When the lead already has an email, omit it and
           // let the route resolve it server-side (handles cluster siblings).
-          body: JSON.stringify({ subject: subject.trim(), body: text, ...(needsRecipient ? { to: recipient } : {}) }),
+          body: JSON.stringify({ subject: subject.trim(), body: text, draftId: draftId ?? undefined, ...(needsRecipient ? { to: recipient } : {}) }),
         })
       }
       const data = await res.json().catch(() => ({}))
@@ -1787,7 +1806,14 @@ function ComposeModal({
       // campaign carries the next touch, else roll ~1wk). So there's no extra
       // PATCH here — the old one double-advanced the drip counter and only
       // handled follow-ups on this one UI path.
-      onSent(isEmail ? "Email sent" : "Text sent")
+      // Send executes the plan (nurture / drip / call reminder / close).
+      let planNote: string | null = null
+      try {
+        planNote = await executePlan(row.leadId, plan)
+      } catch (e) {
+        console.error("executePlan failed:", e)
+      }
+      onSent(`${isEmail ? "Email sent" : "Text sent"}${planNote ? ` · ${planNote}` : ""}`)
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
       setSending(false)
@@ -1818,6 +1844,15 @@ function ComposeModal({
           </button>
         </div>
         <div className="px-4 py-3 space-y-2.5">
+          <ReplyPlanner
+            kind="lead"
+            plan={plan}
+            busy={drafting}
+            error={null}
+            status={planStatus}
+            onPlanChange={(next) => { setPlan(next); void aiDraft({ plan: next }) }}
+            onRegenerate={(why) => void aiDraft(why ? { why } : undefined)}
+          />
           {row.notes && (
             <div className="text-xs text-zinc-400 bg-zinc-900/60 rounded px-2.5 py-1.5">
               <span className="text-zinc-500">📝 Notes:</span> {row.notes}
@@ -1854,7 +1889,7 @@ function ComposeModal({
         </div>
         <div className="px-4 py-3 border-t border-zinc-800 flex items-center gap-2">
           <button
-            onClick={aiDraft}
+            onClick={() => void aiDraft()}
             disabled={drafting || sending}
             title="Generate a context-aware draft from the conversation + notes"
             className="inline-flex items-center gap-1.5 px-3 py-1.5 min-h-[34px] rounded bg-sky-900/40 border border-sky-900/60 text-sky-200 hover:bg-sky-900/60 text-xs font-medium transition-colors disabled:opacity-60"
@@ -1868,7 +1903,7 @@ function ComposeModal({
             className="ml-auto inline-flex items-center gap-1.5 px-4 py-1.5 min-h-[34px] rounded bg-emerald-600 hover:bg-emerald-500 disabled:bg-zinc-800 disabled:text-zinc-600 text-white text-xs font-medium transition-colors"
           >
             {sending ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Send className="w-3.5 h-3.5" />}
-            Send {isEmail ? "email" : "text"}
+            Send {isEmail ? "email" : "text"}{sendSuffixFor(plan) ? ` ${sendSuffixFor(plan)}` : ""}
           </button>
         </div>
       </div>
