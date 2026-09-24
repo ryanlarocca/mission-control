@@ -48,6 +48,7 @@ export interface RelationshipContext {
   tier: string | null
   notes: string | null
   last_contacted_at: string | null
+  everContacted: boolean
   thread: ThreadItem[]
   lastInbound: ThreadItem | null
 }
@@ -240,6 +241,7 @@ export async function buildRelationshipContext(relationshipId: string): Promise<
     tier: r.tier,
     notes: r.notes,
     last_contacted_at: r.last_contacted_at,
+    everContacted: !!r.last_contacted_at || thread.some((t) => t.from === "ryan"),
     thread,
     lastInbound: [...thread].reverse().find((t) => t.from === "them") ?? null,
   }

@@ -20,7 +20,7 @@ export const dynamic = "force-dynamic"
 export async function POST(request: NextRequest) {
   let body: {
     leadId?: unknown; relationshipId?: unknown; channel?: unknown; surface?: unknown
-    plan?: { moment?: unknown; temperature?: unknown; next_action?: unknown; reason?: unknown }
+    plan?: { moment?: unknown; temperature?: unknown; next_action?: unknown; reason?: unknown; familiarity?: unknown; intent?: unknown }
     why?: unknown; parentDraftId?: unknown; previousDraft?: { subject?: unknown; body?: unknown }
   }
   try {
@@ -53,6 +53,10 @@ export async function POST(request: NextRequest) {
         next_action: typeof p.next_action === "string" && actions.includes(p.next_action) ? p.next_action : ctx.kind === "lead" ? "reply_only" : "send",
         reason: typeof p.reason === "string" ? p.reason : "",
         source: "ryan",
+        ...(ctx.kind === "relationship" ? {
+          familiarity: p.familiarity === "Knows" || p.familiarity === "Reintro" ? p.familiarity : ctx.everContacted ? "Knows" as const : "Reintro" as const,
+          intent: p.intent === "CatchUp" || p.intent === "Deal" || p.intent === "Referral" || p.intent === "Portfolio" ? p.intent : null,
+        } : {}),
       }
     } else {
       plan = await proposePlan(ctx)

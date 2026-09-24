@@ -35,6 +35,9 @@ export function ReplyPlanner(p: {
   onPlanChange: (plan: Plan) => void
   onRegenerate: (why?: string) => void
   status?: string | null
+  // Relationships queue: the tab's own intent/familiarity pickers are the
+  // chips, so only the Not right / Redraft controls render.
+  hideChips?: boolean
 }) {
   const { kind, plan, busy } = p
   const [open, setOpen] = useState(false)
@@ -80,7 +83,7 @@ export function ReplyPlanner(p: {
   return (
     <div className="mb-2">
       <div className="flex items-center justify-between gap-2 mb-1">
-        <div className="text-xs text-zinc-500">Plan</div>
+        <div className="text-xs text-zinc-500">{p.hideChips ? "Draft" : "Plan"}</div>
         <div className="flex items-center gap-3">
           {busy && (
             <span className="text-[11px] text-zinc-500 inline-flex items-center gap-1">
@@ -107,7 +110,7 @@ export function ReplyPlanner(p: {
         </div>
       </div>
 
-      {plan ? (
+      {p.hideChips ? null : plan ? (
         <div className="flex flex-wrap items-center gap-1.5">
           <select value={plan.moment} onChange={e => set({ moment: e.target.value })} disabled={busy} className={chip} title="What kind of moment this is">
             {momentOptions(kind).map(m => <option key={m} value={m}>{MOMENT_LABELS[m] ?? m}</option>)}

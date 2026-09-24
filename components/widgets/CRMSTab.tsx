@@ -13,6 +13,8 @@ import type { TouchesSummary } from "./ContactDetailModal"
 import { RelationshipThread } from "./RelationshipThread"
 import { useRelationshipCall, CallButton, CallStatusLine } from "./RelationshipCall"
 import { CleanupMode } from "./CleanupMode"
+import { ReplyPlanner } from "./ReplyPlanner"
+import { requestDraft } from "@/lib/reply-client"
 
 // ══════════════════════════════════════════════════════════════════════════════
 // TYPES
@@ -350,6 +352,9 @@ function CRMSTabInner() {
   // ── Message state ──
   const [generatedMessages, setGeneratedMessages] = useState<Record<string, string>>({})
   const [editedMessages, setEditedMessages]       = useState<Record<string, string>>({})
+  // Reply Planner: reply_drafts id per message key + the last "why" status.
+  const [draftIds, setDraftIds]                   = useState<Record<string, string | null>>({})
+  const [draftStatus, setDraftStatus]             = useState<string | null>(null)
   const [generatingFor, setGeneratingFor]         = useState<string | null>(null)
   const [enrichingFor, setEnrichingFor]           = useState<string | null>(null)
   const [tierChangingFor, setTierChangingFor]     = useState<string | null>(null)
@@ -477,8 +482,11 @@ function CRMSTabInner() {
     }
   }
 
-  // ── Core generate — aborts any prior in-flight request ──
-  async function generate(contact: CRMSContact, mod: Modality, force = false, famOverride?: Familiarity) {
+  // ── Core generate — Reply Planner (2026-09-24). The intent × familiarity
+  // pickers ARE the plan; the draft comes from /api/reply/draft with the
+  // full chat.db thread, the playbook, and Ryan's edited sends as register.
+  // "Not right" passes his sentence as `why`, chained to the rejected draft.
+  async function generate(contact: CRMSContact, mod: Modality, force = false, famOverride?: Familiarity, why?: string) {
     const fam = famOverride ?? familiarity
     const msgKey = `${contact.id}::${mod}`
     if (!force && (editedMessages[msgKey] || generatedMessages[msgKey])) return
@@ -489,28 +497,28 @@ function CRMSTabInner() {
 
     setGeneratingFor(contact.id)
     try {
-      const res = await fetch("/api/crms/generate", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          name:          contact.name,
-          phone:         contact.phone,
-          tier:          contact.tier,
-          category:      contact.type,
-          modality:      mod,
-          intent:        modalityToIntent(mod),
-          familiarity:   fam,
-          notes:         contact.notes,
-          hasNotes:      contact.hasNotes,
-          everContacted: contact.lastContact !== "never",
-        }),
-        signal: controller.signal,
+      const intent = modalityToIntent(mod)
+      const moment = intent === "CatchUp" ? "check_in" : intent === "Referral" ? "referral_ask" : "re_engagement"
+      const previous = editedMessages[msgKey] ?? generatedMessages[msgKey] ?? ""
+      const data = await requestDraft({
+        relationshipId: contact.id,
+        channel: "imessage",
+        surface: "relationships",
+        plan: { moment, temperature: null, next_action: "send", reason: "", source: "ryan", familiarity: fam, intent },
+        why: why ?? null,
+        parentDraftId: why ? draftIds[msgKey] ?? null : null,
+        previousDraft: why && previous ? { body: previous } : null,
       })
-      const data = await res.json()
-      if (data.message) {
-        setGeneratedMessages(prev => ({ ...prev, [msgKey]: data.message }))
+      if (controller.signal.aborted) return
+      if (data.body) {
+        setGeneratedMessages(prev => ({ ...prev, [msgKey]: data.body }))
+        setEditedMessages(prev => { const n = { ...prev }; delete n[msgKey]; return n })
+        setDraftIds(prev => ({ ...prev, [msgKey]: data.draftId }))
+        setDraftStatus(data.critic?.rewritten ? `checked: ${data.critic.issues.join("; ")}` : why ? "redrafted from your note" : null)
       }
-    } catch {}
+    } catch (e) {
+      if (!controller.signal.aborted) setSendError(`Draft failed: ${e instanceof Error ? e.message : String(e)}`)
+    }
     finally {
       if (generateAbortRef.current === controller) {
         setGeneratingFor(null)
@@ -568,12 +576,14 @@ function CRMSTabInner() {
     generate(selectedContact, m, true, nextFam)
   }
 
-  async function regenerate() {
+  async function regenerate(why?: string) {
     if (!selectedContact || generatingFor) return
     const msgKey = `${selectedContact.id}::${modality}`
-    setEditedMessages(prev => { const n = { ...prev }; delete n[msgKey]; return n })
-    setGeneratedMessages(prev => { const n = { ...prev }; delete n[msgKey]; return n })
-    await generate(selectedContact, modality, true)
+    if (!why) {
+      setEditedMessages(prev => { const n = { ...prev }; delete n[msgKey]; return n })
+      setGeneratedMessages(prev => { const n = { ...prev }; delete n[msgKey]; return n })
+    }
+    await generate(selectedContact, modality, true, undefined, why)
   }
 
   // ── Category change: PATCH sheet + update local state ──
@@ -648,6 +658,7 @@ function CRMSTabInner() {
     const msgKey = `${contact.id}::${mod}`
     const generatedMessage = generatedMessages[msgKey] || ""
     const wasEdited = editedMessages[msgKey] !== undefined
+    const draftId = draftIds[msgKey] ?? null
     setSendError(null)
 
     // Optimistic: mark sent and advance immediately
@@ -677,7 +688,7 @@ function CRMSTabInner() {
             body: JSON.stringify({
               id: contact.id, modality: mod, message,
               action: "sent", tier: contact.tier, category: contact.type,
-              generatedMessage, wasEdited,
+              generatedMessage, wasEdited, draftId,
             }),
           })
           if (!logRes.ok) {
@@ -1398,6 +1409,16 @@ function CRMSTabInner() {
 
               {/* Message */}
               <div className="px-4 py-3">
+                <ReplyPlanner
+                  kind="relationship"
+                  hideChips
+                  plan={{ moment: modalityToIntent(modality) === "CatchUp" ? "check_in" : modalityToIntent(modality) === "Referral" ? "referral_ask" : "re_engagement", temperature: null, next_action: "send", reason: "", source: "ryan", familiarity, intent: modalityToIntent(modality) }}
+                  busy={isGenerating}
+                  error={null}
+                  status={draftStatus}
+                  onPlanChange={() => {}}
+                  onRegenerate={(why) => void regenerate(why)}
+                />
                 {isGenerating ? (
                   <div className="flex items-center justify-center gap-2 bg-zinc-800 border border-zinc-700 rounded h-20">
                     <Loader2 className="w-4 h-4 text-zinc-500 animate-spin" />
@@ -1538,7 +1559,7 @@ function CRMSTabInner() {
                   disabled={actionPending}
                 />
                 <button
-                  onClick={regenerate}
+                  onClick={() => void regenerate()}
                   disabled={!!generatingFor}
                   aria-label="Regenerate message"
                   title="Regenerate message"

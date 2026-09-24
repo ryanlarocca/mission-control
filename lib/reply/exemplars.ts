@@ -39,6 +39,8 @@ export async function loadExemplars(args: {
   moment: string | null
   channel: string | null
   surface: "leads" | "relationships"
+  // Relationships: narrow Ryan's edited sends by category (Agent, Vendor…).
+  category?: string | null
   excludeLeadId?: string | null
   // Eval runs pass the item's own reference so it can't leak into its exemplars.
   excludeReply?: string | null
@@ -69,6 +71,33 @@ export async function loadExemplars(args: {
   }
   const norm = (t: string) => t.replace(/\s+/g, " ").trim().toLowerCase()
   const excluded = args.excludeReply ? norm(args.excludeReply) : null
+  // Relationships: the sends Ryan edited before sending are his register
+  // (drafts sent untouched are excluded on purpose — they're the model's
+  // voice, not his). Same rule the old /api/crms/generate few-shot used.
+  if (args.surface === "relationships" && out.length < limit) {
+    try {
+      const sb = getLeadsClient()
+      let q = sb
+        .from("relationship_touches")
+        .select("message, generated_message, category_at_touch, modality, occurred_at")
+        .eq("action", "sent")
+        .not("generated_message", "is", null)
+        .neq("generated_message", "")
+        .order("occurred_at", { ascending: false })
+        .limit(80)
+      if (args.category) q = q.eq("category_at_touch", args.category)
+      const { data } = await q
+      const banned = /fixers?\s+and\s+value-?add|value-?add\s+(deals?|properties)/i
+      for (const r of data || []) {
+        const sent = (r.message || "").trim()
+        if (!sent || sent === (r.generated_message || "").trim()) continue
+        if (banned.test(sent) || /\[marked contacted/i.test(sent)) continue
+        if (out.some((o) => o.reply === sent)) continue
+        out.push({ moment: args.moment || "re_engagement", channel: "imessage", inbound: null, reply: sent, source: "sent" })
+        if (out.length >= limit) break
+      }
+    } catch { /* fall through */ }
+  }
   if (out.length < limit) {
     const pool = evalExemplars().filter((e) => (!args.moment || e.moment === args.moment) && (!excluded || norm(e.reply) !== excluded))
     const sameChannel = pool.filter((e) => !args.channel || e.channel === args.channel)

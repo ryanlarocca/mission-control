@@ -12,7 +12,7 @@ Rules of this file:
   principles or drops them.
 - Change the `version` when a principle changes; it is stamped on every draft.
 
-version: 2026-09-24.2
+version: 2026-09-24.3
 
 ---
 
@@ -107,6 +107,32 @@ Pending whys: (none yet)
 ---
 
 ## Relationships
+
+### relationships_shared
+Applies to every Relationships touch on top of the moment's principles.
+Ported 2026-09-24 from the retired per-type prompt table.
+
+Principles:
+1. Only reference what is current. Nothing about showings, listings, offers
+   or deals older than two years; nothing about unanswered messages or
+   failed follow-ups (it reads passive-aggressive); no expired events.
+2. Never a street address or neighbourhood-level location in outreach.
+   City level is fine. Notes that mention a property without a date in the
+   last six months are stale: leave them out. A warm general message beats a
+   specific wrong one.
+3. Specifics come from the thread or the notes, never guessed. No invented
+   spouse, project, or memory.
+4. Short sentences, eight to twelve words, never past twenty. "Hey" not
+   "Hi". Reads like a text, not an email.
+5. Never: "I know it's been a while", "I hope this finds you well", "I've
+   been keeping a lower profile", "I was just thinking about you" (business
+   contacts), "I hope you're doing well" (except close friends), "fixers and
+   value-add".
+6. One real thing beats a generic line. Ryan's edited sends add one shared
+   memory or a piece of news and cut the generic "looking for my next
+   project" line (observation from 60 edits, 2026-09-24).
+
+Pending whys: (none yet)
 
 ### re_engagement
 Reaching out to a known contact (agent, vendor, private money, personal)

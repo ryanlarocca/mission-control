@@ -11,6 +11,9 @@ export interface Plan {
   next_action: string
   reason: string
   source: "ai" | "ryan"
+  // Relationships only: the CRMS tab's two knobs travel with the plan.
+  familiarity?: "Knows" | "Reintro" | null
+  intent?: "CatchUp" | "Deal" | "Referral" | "Portfolio" | null
 }
 
 export interface DraftResponse {

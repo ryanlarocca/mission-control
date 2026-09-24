@@ -8,6 +8,8 @@ import {
 import type { LucideIcon } from "lucide-react"
 import { RelationshipThread } from "./RelationshipThread"
 import { useRelationshipCall, CallButton, CallStatusLine } from "./RelationshipCall"
+import { ReplyPlanner } from "./ReplyPlanner"
+import { type Plan, requestDraft } from "@/lib/reply-client"
 
 export interface TouchesSummary {
   count: number
@@ -115,6 +117,37 @@ export function ContactDetailModal({ contact, onClose, onSendToast, onNotesSaved
   const [savingNotes, setSavingNotes] = useState(false)
   const [notesSaved, setNotesSaved] = useState(false)
   const [quickMessage, setQuickMessage] = useState("")
+  // Reply Planner: plan chips + the draft they produced (quick-send used to
+  // be typed-only; now it can draft from the plan like every other composer).
+  const [plan, setPlan] = useState<Plan | null>(null)
+  const [draftId, setDraftId] = useState<string | null>(null)
+  const [drafting, setDrafting] = useState(false)
+  const [draftError, setDraftError] = useState<string | null>(null)
+  const [draftStatus, setDraftStatus] = useState<string | null>(null)
+
+  async function aiDraft(opts?: { why?: string; plan?: Plan | null }) {
+    setDrafting(true)
+    setDraftError(null)
+    try {
+      const data = await requestDraft({
+        relationshipId: contact.id,
+        channel: "imessage",
+        surface: "relationships",
+        plan: opts?.plan !== undefined ? opts.plan : plan,
+        why: opts?.why ?? null,
+        parentDraftId: opts?.why ? draftId : null,
+        previousDraft: opts?.why && quickMessage.trim() ? { body: quickMessage } : null,
+      })
+      setPlan(data.plan)
+      setDraftId(data.draftId)
+      setDraftStatus(data.critic?.rewritten ? `checked: ${data.critic.issues.join("; ")}` : opts?.why ? "redrafted from your note" : null)
+      setQuickMessage(data.body || "")
+    } catch (e) {
+      setDraftError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setDrafting(false)
+    }
+  }
   const [callNote, setCallNote] = useState("")
   const [savingCall, setSavingCall] = useState(false)
   const [categoryPickerOpen, setCategoryPickerOpen] = useState(false)
@@ -286,7 +319,10 @@ export function ContactDetailModal({ contact, onClose, onSendToast, onNotesSaved
   function handleQuickSend() {
     const msg = quickMessage.trim()
     if (!msg) return
+    const sentDraftId = draftId
+    const sentGenerated = draftId ? msg : ""
     setQuickMessage("")
+    setDraftId(null)
 
     // Optimistic — fire send in background, toast on failure
     fetch("/api/crms/send", {
@@ -306,7 +342,9 @@ export function ContactDetailModal({ contact, onClose, onSendToast, onNotesSaved
             body: JSON.stringify({
               id: contact.id, modality: "Reconnect", message: msg,
               action: "sent", tier: contact.tier, category: contact.category,
-              generatedMessage: "", wasEdited: true,
+              // With a planner draft the server computes was_edited on the
+              // reply_drafts row; keep the touch-log convention too.
+              generatedMessage: sentGenerated, wasEdited: !sentDraftId, draftId: sentDraftId,
             }),
           })
           if (!logRes.ok) {
@@ -474,9 +512,29 @@ export function ContactDetailModal({ contact, onClose, onSendToast, onNotesSaved
             </div>
           </div>
 
-          {/* Quick send */}
+          {/* Quick send — with the Reply Planner (plan chips, AI draft, Not right) */}
           <div>
-            <p className="text-xs text-zinc-600 mb-1.5">Quick send</p>
+            <div className="flex items-center justify-between mb-1.5">
+              <p className="text-xs text-zinc-600">Quick send</p>
+              <button
+                onClick={() => void aiDraft()}
+                disabled={drafting}
+                className="text-[11px] text-purple-300 hover:text-purple-200 inline-flex items-center gap-1 disabled:opacity-50"
+                title="Draft from the plan (full thread + your past sends)"
+              >
+                {drafting ? <Loader2 className="w-3 h-3 animate-spin" /> : null}
+                {drafting ? "Drafting…" : "AI draft"}
+              </button>
+            </div>
+            <ReplyPlanner
+              kind="relationship"
+              plan={plan}
+              busy={drafting}
+              error={draftError}
+              status={draftStatus}
+              onPlanChange={(next) => { setPlan(next); void aiDraft({ plan: next }) }}
+              onRegenerate={(why) => void aiDraft(why ? { why } : undefined)}
+            />
             <textarea
               value={quickMessage}
               onChange={e => setQuickMessage(e.target.value)}

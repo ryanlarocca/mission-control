@@ -10,6 +10,7 @@ import { loadExemplars, formatExemplars } from "./exemplars"
 import { critique, type CriticVerdict } from "./critic"
 import { recordDraft } from "./record"
 import type { Plan } from "./plan"
+import { relationshipGuidance, intentForMoment, normalizeCategory } from "./relationship"
 
 export const DRAFT_PROMPT_VERSION = "draft-v1-2026-09-24"
 
@@ -62,11 +63,24 @@ export async function draftReply(args: DraftArgs): Promise<DraftResult | null> {
   if (!hasLlmKey()) return null
   const { ctx, plan, channel } = args
   const pb = loadPlaybook()
-  const principles = principlesFor(pb, plan.moment)
+  const category = ctx.kind === "relationship" ? normalizeCategory(ctx.category) : null
+  const shared = ctx.kind === "relationship" ? principlesFor(pb, "relationships_shared") : null
+  const momentPrinciples = principlesFor(pb, plan.moment)
+  const guidance = ctx.kind === "relationship"
+    ? relationshipGuidance({
+        category: category!,
+        intent: plan.intent ?? intentForMoment(plan.moment),
+        familiarity: plan.familiarity ?? (ctx.everContacted ? "Knows" : "Reintro"),
+        everContacted: ctx.everContacted,
+        moment: plan.moment,
+      })
+    : null
+  const principles = [shared, momentPrinciples, guidance].filter(Boolean).join("\n\n") || null
   const exemplars = await loadExemplars({
     moment: plan.moment,
     channel: channel === "imessage" ? "sms" : channel,
     surface: ctx.kind === "lead" ? "leads" : "relationships",
+    category,
     excludeLeadId: ctx.kind === "lead" ? ctx.leadId : null,
     excludeReply: args.excludeExemplarReply ?? null,
   })
@@ -76,7 +90,7 @@ export async function draftReply(args: DraftArgs): Promise<DraftResult | null> {
   const prompt = `TODAY IS ${today}.
 
 THE PLAN (decided before this draft; the reply must serve it)
-  moment: ${plan.moment}${plan.temperature ? ` · temperature: ${plan.temperature}` : ""} · next action: ${plan.next_action}
+  moment: ${plan.moment}${plan.temperature ? ` · temperature: ${plan.temperature}` : ""}${ctx.kind === "relationship" ? ` · contact type: ${category} · they ${plan.familiarity === "Reintro" ? "may not remember Ryan" : "know Ryan"}` : ""} · next action: ${plan.next_action}
   why this plan: ${plan.reason || "(not stated)"}
 
 PRINCIPLES FOR THIS MOMENT (from Ryan's playbook)

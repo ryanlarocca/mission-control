@@ -17,6 +17,9 @@ export interface Plan {
   next_action: string
   reason: string
   source: "ai" | "ryan"
+  // Relationships only — the CRMS tab's two knobs travel with the plan.
+  familiarity?: "Knows" | "Reintro" | null
+  intent?: "CatchUp" | "Deal" | "Referral" | "Portfolio" | null
 }
 
 export const PLAN_PROMPT_VERSION = "plan-v1-2026-09-24"
@@ -98,6 +101,7 @@ moment:
       next_action,
       reason: typeof parsed.reason === "string" ? parsed.reason.trim() : "",
       source: "ai",
+      ...(ctx.kind === "relationship" ? { familiarity: ctx.last_contacted_at ? "Knows" as const : "Reintro" as const, intent: null } : {}),
     }
   } catch (e) {
     console.error("[reply/plan] failed:", e instanceof Error ? e.message : String(e))
