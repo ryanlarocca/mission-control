@@ -187,7 +187,9 @@ export async function dismissPlannerDraft(draftId: string): Promise<void> {
 /** Fire-and-forget hook for intake webhooks: asks the planner route to post a draft without blocking the webhook. */
 export async function triggerTelegramDraft(leadId: string | null | undefined): Promise<void> {
   if (!leadId) return
-  const base = process.env.NEXT_PUBLIC_BASE_URL || (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : null) || "http://localhost:3000"
+  // The prod alias, not VERCEL_URL: per-deployment URLs can sit behind
+  // Vercel's deployment protection and would 401 the server-to-server call.
+  const base = process.env.MC_BASE_URL || (process.env.VERCEL ? "https://mission-control-three-chi.vercel.app" : "http://localhost:3000")
   const secret = process.env.REPLY_INTERNAL_SECRET || process.env.MC_PASSWORD || ""
   try {
     await fetch(`${base}/api/reply/telegram-draft`, {
