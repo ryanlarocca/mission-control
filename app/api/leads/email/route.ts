@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server"
 import { gmail_v1 } from "googleapis"
+import { triggerTelegramDraft } from "@/lib/reply/telegram"
 
 // Pub/Sub push ack timeout is 10s by default; Gmail history.list + message.get
 // + Haiku triage + Supabase insert can blow past Vercel's 10s default. Bump it.
@@ -428,6 +429,9 @@ async function ingestGoogleVoice(args: {
     lines.push(`🤖 AI: <b>${tempLabel}</b> — ${escapeHtml(triage.summary)}`)
   }
   await sendTelegramAlert(lines.join("\n"))
+  // Reply Planner: post the plan + draft as a second Telegram message,
+  // without blocking the webhook (the target route keeps running).
+  if (triage && !triage.is_dead) await triggerTelegramDraft(inserted?.id)
 
   return { leadId: inserted?.id }
 }
@@ -698,6 +702,8 @@ async function handleAppsScript(payload: AppsScriptPayload): Promise<NextRespons
   // note with all the context, not a second message. No-op when clean.
   if (spam) lines.push(...spamAlertLines(spam))
   await sendTelegramAlert(lines.join("\n"))
+  // Reply Planner: plan + draft as a second message (non-blocking).
+  if (triage && !triage.is_dead && !(spam && spam.suspicious)) await triggerTelegramDraft(inserted?.id)
 
   return NextResponse.json({ ok: true, leadId: inserted?.id })
 }
@@ -943,6 +949,8 @@ async function processSingleMessage(args: {
   // Append the fake-lead warning to the alert — no-op when clean.
   if (spam) lines.push(...spamAlertLines(spam))
   await sendTelegramAlert(lines.join("\n"))
+  // Reply Planner: plan + draft as a second message (non-blocking).
+  if (triage && !triage.is_dead && !(spam && spam.suspicious)) await triggerTelegramDraft(inserted?.id)
 }
 
 // ─── Gmail helpers (lib/leads.ts owns the JWT client; helpers here stay

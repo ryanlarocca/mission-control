@@ -10,6 +10,9 @@ const PUBLIC_PATHS = [
   "/api/auth",
   "/api/leads/voice",
   "/api/leads/sms",
+  // Reply Planner: intake webhooks ask this route to post the plan + draft
+  // to Telegram; it checks a shared secret header instead of the cookie.
+  "/api/reply/telegram-draft",
   // Twilio fetches these for outbound call relay (initiated from /api/leads/call,
   // which itself stays auth-gated).
   "/api/leads/call/bridge",

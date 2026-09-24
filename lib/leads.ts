@@ -1819,6 +1819,11 @@ export async function processRecordingBackground(args: {
     } else {
       await sendTelegramAlert(caption)
     }
+    // Reply Planner: plan + draft as a second message (non-blocking).
+    if (analysis && !analysis.is_dnc) {
+      const { triggerTelegramDraft } = await import("@/lib/reply/telegram")
+      await triggerTelegramDraft(leadId)
+    }
   } catch (e) {
     console.error("[recording-bg] Threw:", e)
   }

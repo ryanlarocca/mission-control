@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server"
+import { triggerTelegramDraft } from "@/lib/reply/telegram"
 import {
   OFFICE_NUMBERS,
   OUTBOUND_TWILIO_NUMBER,
@@ -78,6 +79,7 @@ export async function POST(request: Request) {
     // we have a Supabase client. Null for a brand-new caller (no prior row
     // carries a name yet); the alert falls back to the phone number.
     let leadName: string | null = null
+    let newLeadId: string | null = null
     try {
       const sb = getLeadsClient()
 
@@ -205,6 +207,7 @@ export async function POST(request: Request) {
         .select("id")
         .single()
       if (error) console.error("[sms] Supabase insert failed:", error)
+      newLeadId = insertedRow?.id ?? null
 
       // Re-engagement carried the cluster's drip stamp onto this new event
       // row. Sweep the cluster so exactly ONE row drives the drip engine —
@@ -263,6 +266,8 @@ export async function POST(request: Request) {
     // Append the fake-lead warning to the same note — no-op when clean.
     if (spam) smsAlert.push(...spamAlertLines(spam))
     await sendTelegramAlert(smsAlert.join("\n"))
+    // Reply Planner: plan + draft as a second message (non-blocking).
+    if (newLeadId && !(spam && spam.suspicious)) await triggerTelegramDraft(newLeadId)
   }
 
   return new NextResponse(EMPTY_TWIML, {

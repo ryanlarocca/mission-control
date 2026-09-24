@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server"
+import { findPlannerDraftByTgMessage, redraftFromTelegram, sendPlannerDraft, dismissPlannerDraft } from "@/lib/reply/telegram"
 import { getLeadsClient, lookupLeadName, normalizeE164, sendLeadSms } from "@/lib/leads"
 import { approveBatch, setPaused, campaignStatusLine } from "@/lib/campaignBatch"
 import { resolveSender, setSenderPaused, recordCanaryVerdict, recordPostmaster } from "@/lib/campaignSenders"
@@ -378,6 +379,34 @@ export async function POST(request: Request) {
     }
     const dsend = /^dsend:([0-9a-f-]{36})$/.exec(cb.data)
     const ddisc = /^ddisc:([0-9a-f-]{36})$/.exec(cb.data)
+    // Reply Planner drafts (lead alerts): ✅ send / 🔁 redraft / ❌ dismiss.
+    const rsend = /^rsend:([0-9a-f-]{36})$/.exec(cb.data)
+    const rredo = /^rredo:([0-9a-f-]{36})$/.exec(cb.data)
+    const rdisc = /^rdisc:([0-9a-f-]{36})$/.exec(cb.data)
+    if (rsend) {
+      await tg("answerCallbackQuery", { callback_query_id: cb.id, text: "Sending…" })
+      const out = await sendPlannerDraft(rsend[1])
+      if (out.ok) {
+        await tg("editMessageReplyMarkup", { chat_id: chatId, message_id: cb.message?.message_id, reply_markup: { inline_keyboard: [] } })
+      }
+      await tg("sendMessage", {
+        chat_id: chatId,
+        text: out.ok ? `✅ Sent to ${out.label}${out.planNote ? ` · ${out.planNote}` : ""}` : `⚠️ Not sent — ${out.error}`,
+        reply_to_message_id: cb.message?.message_id,
+      })
+      return NextResponse.json({ ok: true })
+    }
+    if (rredo) {
+      await tg("answerCallbackQuery", { callback_query_id: cb.id, text: "Redrafting…" })
+      const out = await redraftFromTelegram(rredo[1], null, cb.message?.message_id)
+      if (!out.ok) await tg("sendMessage", { chat_id: chatId, text: `⚠️ Couldn't redraft — ${out.error}`, reply_to_message_id: cb.message?.message_id })
+      return NextResponse.json({ ok: true })
+    }
+    if (rdisc) {
+      await tg("answerCallbackQuery", { callback_query_id: cb.id, text: "Dismissed" })
+      await dismissPlannerDraft(rdisc[1])
+      return NextResponse.json({ ok: true })
+    }
     if (call) {
       await tg("answerCallbackQuery", { callback_query_id: cb.id, text: "Calling your cell now — answer to connect." })
       const out = await startAgentsLineRelayCall(call[1])
@@ -603,6 +632,15 @@ export async function POST(request: Request) {
   // the old version is superseded (buttons cleared), v2 posts fresh buttons.
   const repliedTgId = msg.reply_to_message?.message_id
   if (typeof repliedTgId === "number") {
+    // Reply Planner draft (lead alert): the reply text is Ryan's "why" —
+    // redraft with it and post v2. Checked first so the lead-phone branch
+    // below never sends his note to the lead as a text.
+    const planner = await findPlannerDraftByTgMessage(repliedTgId)
+    if (planner) {
+      const out = await redraftFromTelegram(planner.id, body, msg.message_id)
+      if (!out.ok) await tg("sendMessage", { chat_id: chatId, text: `⚠️ Couldn't redraft — ${out.error}`, reply_to_message_id: msg.message_id })
+      return NextResponse.json({ ok: true })
+    }
     const known = await findDraftByTgMessage(repliedTgId)
     if (known && (known.triage === "pending_copy" || known.triage.startsWith("copy_"))) {
       // Reply to a template-copy preview = template tweaks. Live pending
