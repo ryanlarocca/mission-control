@@ -354,6 +354,39 @@ export function FollowUpsTab() {
     }
   }
 
+  // "Not right" on a queued drip — redraft through the shared reply engine
+  // with Ryan's one-sentence why; the queued text is replaced in place.
+  async function redraftDrip(row: ContactRow, queueId: string, why?: string) {
+    setActingOn(row.clusterKey)
+    try {
+      const res = await fetch(`/api/drips/${queueId}/redraft`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ why: why ?? null }),
+      })
+      const body = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error((body as { error?: string })?.error || `HTTP ${res.status}`)
+      const item = (body as { item?: { message?: string; subject?: string | null } }).item
+      if (!item?.message) return
+      setData(prev => {
+        if (!prev) return prev
+        return {
+          ...prev,
+          rows: prev.rows.map(r => {
+            if (r.clusterKey !== row.clusterKey) return r
+            const patch = (t: NextTouch | null): NextTouch | null =>
+              t && t.queueId === queueId ? { ...t, message: item.message ?? t.message, subject: item.subject ?? t.subject ?? null, stale: false } : t
+            return { ...r, primary: patch(r.primary)!, secondary: patch(r.secondary) }
+          }),
+        }
+      })
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e))
+    } finally {
+      setActingOn(null)
+    }
+  }
+
   async function saveEdit(row: ContactRow, queueId: string) {
     const draft = editing.get(queueId)
     if (!draft) return
@@ -746,6 +779,7 @@ export function FollowUpsTab() {
     onOpenLead: (row: ContactRow) => { const k = leadOverlayKey(row); if (k) setLeadOverlay(k) },
     onSendDrip: sendDrip,
     onRegenerateDrip: regenerateDrip,
+    onRedraftDrip: redraftDrip,
     onQueueAction: queueAction,
     onStartEdit: (queueId: string, t: NextTouch) =>
       setEditing(prev => new Map(prev).set(queueId, { message: t.message ?? "", subject: t.subject ?? "" })),
@@ -959,6 +993,7 @@ interface CardHandlers {
   onOpenLead: (row: ContactRow) => void
   onSendDrip: (row: ContactRow, queueId: string, opts?: { force?: boolean }) => void
   onRegenerateDrip: (row: ContactRow, queueId: string) => void
+  onRedraftDrip: (row: ContactRow, queueId: string, why?: string) => void
   onQueueAction: (row: ContactRow, queueId: string, action: "skip" | "snooze", days?: 1 | 3 | 7) => void
   onStartEdit: (queueId: string, t: NextTouch) => void
   onChangeEdit: (queueId: string, field: "message" | "subject", value: string) => void
@@ -1243,6 +1278,7 @@ function ContactCard({ row, ...h }: { row: ContactRow } & CardHandlers) {
           onOpenLead={() => h.onOpenLead(row)}
           onSend={(opts) => dripTouch.queueId && h.onSendDrip(row, dripTouch.queueId, opts)}
           onRegenerate={() => dripTouch.queueId && h.onRegenerateDrip(row, dripTouch.queueId)}
+          onRedraft={(why) => dripTouch.queueId && h.onRedraftDrip(row, dripTouch.queueId, why)}
           onSkip={() => dripTouch.queueId && h.onQueueAction(row, dripTouch.queueId, "skip")}
           onSnooze={(d) => h.onSnoozeContact(row, d)}
           onStartEdit={() => dripTouch.queueId && h.onStartEdit(dripTouch.queueId, dripTouch)}
@@ -1382,7 +1418,7 @@ function CallBlock({
 
 function DripBlock({
   row, touch, acting, hasCallAbove, editDraft,
-  onOpenLead, onSend, onRegenerate, onSkip, onSnooze,
+  onOpenLead, onSend, onRegenerate, onRedraft, onSkip, onSnooze,
   onStartEdit, onChangeEdit, onCancelEdit, onSaveEdit,
   onPrepare, onSkipForecast,
 }: {
@@ -1394,6 +1430,7 @@ function DripBlock({
   onOpenLead: () => void
   onSend: (opts?: { force?: boolean }) => void
   onRegenerate: () => void
+  onRedraft: (why?: string) => void
   onSkip: () => void
   onSnooze: (days: 1 | 3 | 7) => void
   onStartEdit: () => void
@@ -1434,6 +1471,22 @@ function DripBlock({
       {stale && !isEditing && (
         <div className="mt-1 text-xs text-amber-400/80">
           Contact had activity since this draft was written.
+        </div>
+      )}
+
+      {/* queued drip — Not right / Redraft through the shared reply engine */}
+      {touch.isQueued && !isEditing && (
+        <div className="mt-1.5">
+          <ReplyPlanner
+            kind="lead"
+            hideChips
+            plan={{ moment: "silence_breaker", temperature: row.temperature, next_action: "drip", reason: "", source: "ai" }}
+            busy={acting}
+            error={null}
+            status={null}
+            onPlanChange={() => {}}
+            onRegenerate={(why) => onRedraft(why)}
+          />
         </div>
       )}
 

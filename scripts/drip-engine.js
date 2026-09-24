@@ -706,7 +706,7 @@ PHASE GUIDANCE: long-term nurture touch #${touchNumber}. ${touchNumber === 1
       : touchNumber === 5
       ? "Anniversary check-in (~1 year). 'It's been about a year since we talked' is fine. Still no ask."
       : "1.5+ year check-in. Light touch, possibly mention you're still around if the timing ever becomes right."}
-${responsivenessBlock}
+${responsivenessBlock}${momentBlock(lead)}
 LEAD CONTEXT:
 - Name: ${lead.name || "(unknown)"}
 - Property: ${lead.property_address || "(unknown)"}
@@ -730,7 +730,7 @@ RULES:
 
 PHASE GUIDANCE: ${phaseGuidance}
 ${clarifyClause}
-${responsivenessBlock}
+${responsivenessBlock}${momentBlock(lead)}
 LEAD CONTEXT:
 - Name: ${lead.name || "(unknown)"}
 - Property: ${lead.property_address || "(unknown)"}
@@ -756,7 +756,7 @@ RULES:
 
 PHASE GUIDANCE: ${phaseGuidance}
 ${clarifyClause}
-${responsivenessBlock}
+${responsivenessBlock}${momentBlock(lead)}
 LEAD CONTEXT:
 - Name: ${lead.name || "(unknown)"}
 - Property: ${lead.property_address || "(unknown — ask naturally if relevant)"}
@@ -768,6 +768,151 @@ PRIOR CONVERSATION (oldest → newest, may be empty):
 ${history || "(no prior conversation)"}
 
 Output ONLY the message body — no preamble, no quotes, no labels.`
+}
+
+// ─── Reply Planner hooks (2026-09-24) ────────────────────────────────────────
+// A drip touch inherits the moment of the lead's last inbound message
+// (leads.moment, stamped at intake / by the card). The playbook's principles
+// for that moment are appended to every touch prompt, a critic pass runs
+// before the touch is queued, and every generated touch lands in
+// reply_drafts (surface="drip") so edits and sends are recorded.
+const PLAYBOOK_PATH = path.join(REPO_ROOT, "briefs", "REPLY_PLAYBOOK.md")
+const DRIP_PROMPT_VERSION = "drip-engine-v1-2026-09-24"
+const SONNET_MODEL = "claude-sonnet-5"
+let playbookCache = null
+function loadPlaybook() {
+  try {
+    const st = fs.statSync(PLAYBOOK_PATH)
+    if (playbookCache && playbookCache.mtimeMs === st.mtimeMs) return playbookCache
+    const raw = fs.readFileSync(PLAYBOOK_PATH, "utf8")
+    const version = (raw.match(/^version:\s*(\S+)/m) || [])[1] || "unversioned"
+    const principles = {}
+    const re = /^###\s+([a-z_ /]+)\s*$/gm
+    const heads = []
+    let m
+    while ((m = re.exec(raw))) heads.push({ name: m[1].trim(), start: m.index, end: m.index + m[0].length })
+    heads.forEach((h, i) => {
+      const body = raw.slice(h.end, i + 1 < heads.length ? heads[i + 1].start : raw.length)
+      const pm = body.match(/Principles:\s*([\s\S]*?)(?:\n\s*\n(?:Observations|Pending whys)|\n##|$)/)
+      const text = ((pm && pm[1]) || "").trim()
+      for (const name of h.name.split("/").map((x) => x.trim()).filter(Boolean)) principles[name] = text
+    })
+    playbookCache = { mtimeMs: st.mtimeMs, version, principles }
+  } catch (e) {
+    playbookCache = playbookCache || { mtimeMs: 0, version: "missing", principles: {} }
+  }
+  return playbookCache
+}
+function momentPrinciples(moment) {
+  if (!moment) return null
+  const p = loadPlaybook().principles[moment]
+  if (!p || /^\(to be written/i.test(p)) return null
+  return p
+}
+function momentBlock(lead) {
+  const p = momentPrinciples(lead && lead.moment)
+  if (!p) return ""
+  return `
+THE LAST MESSAGE FROM THIS LEAD WAS A "${lead.moment}". Ryan's principles for anything sent after that moment (they override the phase guidance where they conflict):
+${p}
+`
+}
+
+// Critic — the same six questions the card's drafter uses (lib/reply/critic.ts).
+async function critiqueTouch({ lead, message, channel, touchNumber, history }) {
+  if (!process.env.ANTHROPIC_API_KEY) return { verdict: { ok: true, issues: ["critic skipped"], rewritten: false }, message }
+  const principles = momentPrinciples(lead.moment)
+  const prompt = `You are checking an automated follow-up (drip touch #${touchNumber}, ${channel}) from Ryan, a cash home buyer in the Bay Area, before it is queued. Most drafts should pass.
+
+${lead.moment ? `The lead's last message was a "${lead.moment}".` : "The lead has not replied recently."}
+PRINCIPLES for this moment:
+${principles || "(none written — judge on the questions only)"}
+
+CONVERSATION (oldest → newest)
+${history || "(none)"}
+
+THE DRAFT
+${message}
+
+QUESTIONS (fail only on a clear yes)
+1. If the lead declined or asked for space, does the draft re-pitch, ask whether they are ready to sell, or offer a valuation they did not ask for?
+2. Does it reference a message, call, or voicemail from the lead that is not actually theirs in the conversation?
+3. Does it contradict something already said, or re-ask a question they answered?
+4. Does it assert a figure, date, or personal fact that appears nowhere in the conversation? (A bracketed placeholder is fine.)
+5. Does it clearly break a principle above?
+
+Respond in JSON only: { "ok": true | false, "issues": ["short phrase per failed question"], "body": "<rewritten body if not ok, else the draft unchanged>" }
+Default to ok:true. Rewrite minimally, keep Ryan's register and length.`
+  try {
+    const res = await getAnthropic().messages.create({
+      model: SONNET_MODEL,
+      max_tokens: 2048,
+      thinking: { type: "disabled" },
+      messages: [{ role: "user", content: prompt }],
+    })
+    const text = res.content.filter((b) => b.type === "text").map((b) => b.text).join("").trim()
+    const cleaned = text.replace(/^```(?:json)?\s*/i, "").replace(/```\s*$/i, "")
+    const start = cleaned.indexOf("{"), end = cleaned.lastIndexOf("}")
+    const parsed = JSON.parse(cleaned.slice(start, end + 1))
+    const issues = Array.isArray(parsed.issues) ? parsed.issues.filter((x) => typeof x === "string") : []
+    if (parsed.ok === true || typeof parsed.body !== "string" || !parsed.body.trim()) {
+      return { verdict: { ok: true, issues, rewritten: false }, message }
+    }
+    return { verdict: { ok: false, issues, rewritten: true }, message: parsed.body.trim() }
+  } catch (e) {
+    console.warn("[drip] critic failed (draft passed through):", e.message)
+    return { verdict: { ok: true, issues: ["critic unavailable"], rewritten: false }, message }
+  }
+}
+
+// reply_drafts row for a generated / regenerated touch. parentId links an
+// edit or regeneration to the row it replaced. Never throws.
+async function recordDripDraft(sb, { lead, queueId, channel, message, subject, critic, parentId, model, whyText }) {
+  try {
+    const { data, error } = await sb.from("reply_drafts").insert({
+      surface: "drip",
+      lead_id: lead.id,
+      drip_queue_id: queueId || null,
+      channel: channel === "imessage" ? "sms" : channel,
+      moment: lead.moment || null,
+      temperature: lead.temperature || null,
+      next_action: "drip",
+      plan_json: { moment: lead.moment || null, campaign: lead.drip_campaign_type || null },
+      draft_subject: subject || null,
+      draft_body: message,
+      model: model || HAIKU_MODEL,
+      prompt_version: DRIP_PROMPT_VERSION,
+      playbook_version: loadPlaybook().version,
+      critic_json: critic || null,
+      parent_draft_id: parentId || null,
+      why_text: whyText || null,
+    }).select("id").single()
+    if (error) { console.warn("[drip] reply_drafts insert failed:", error.message); return null }
+    return data && data.id
+  } catch (e) {
+    console.warn("[drip] reply_drafts insert threw:", e.message)
+    return null
+  }
+}
+
+// After a real send: stamp the latest reply_drafts row for the queue row as
+// sent, was_edited = differs from the engine's original (root) draft.
+async function markDripDraftSent(sb, queueId, message, subject) {
+  if (!queueId) return
+  try {
+    const { data: rows } = await sb.from("reply_drafts").select("id, draft_body, parent_draft_id, created_at")
+      .eq("drip_queue_id", queueId).order("created_at", { ascending: true })
+    if (!rows || !rows.length) return
+    const root = rows.find((r) => !r.parent_draft_id) || rows[0]
+    const latest = rows[rows.length - 1]
+    const norm = (t) => (t || "").replace(/\s+/g, " ").trim()
+    await sb.from("reply_drafts").update({
+      sent_body: message, sent_subject: subject || null, sent_at: new Date().toISOString(),
+      was_edited: norm(root.draft_body) !== norm(message),
+    }).eq("id", latest.id)
+  } catch (e) {
+    console.warn("[drip] reply_drafts markSent failed:", e.message)
+  }
 }
 
 let anthropicClient = null
@@ -1054,6 +1199,7 @@ async function drainApprovedQueue(sb) {
       await sendDripTouch({ lead, channel: q.channel, message: q.message, subject: q.subject, sb, queueRow: q })
       const sentAt = new Date().toISOString()
       await sb.from("drip_queue").update({ status: "sent", sent_at: sentAt }).eq("id", q.id)
+      await markDripDraftSent(sb, q.id, q.message, q.subject)
       // Cadence clock: bump `last_drip_sent_at` to the ACTUAL send timestamp.
       // This is what guards the next-touch delay — without this update the
       // engine would still be using the stale queue-time stamp (or worse,
@@ -1450,6 +1596,15 @@ async function processLead(sb, lead) {
   }
   if (!messageBody) return { skipped: "generation_failed" }
 
+  // Critic pass before anything is queued (Reply Planner Phase 4).
+  let critic = null
+  if (!(isMissedCall && activeTouch.touchNumber === 0)) {
+    const checked = await critiqueTouch({ lead, message: messageBody, channel: activeChannel, touchNumber: activeTouch.touchNumber, history })
+    critic = checked.verdict
+    if (checked.verdict.rewritten) console.log(`[drip] critic rewrote touch for ${lead.id}: ${checked.verdict.issues.join("; ")}`)
+    messageBody = checked.message
+  }
+
   const channel = activeChannel
   // Channel guards — skip if we can't actually send. e.g. email-only campaign
   // but the lead has no email address (rare but possible if the address was
@@ -1513,6 +1668,7 @@ async function processLead(sb, lead) {
   }
 
   console.log(`[drip] QUEUED lead ${lead.id} touch #${activeTouch.touchNumber} (${channel}) queue=${queued.id}`)
+  await recordDripDraft(sb, { lead, queueId: queued.id, channel, message: messageBody, subject, critic })
   return { processed: true, queued: queued.id }
 }
 
@@ -1576,6 +1732,10 @@ async function main() {
 // that want to re-use the engine's prompt + signal helpers without running
 // the full hourly pass.
 module.exports = {
+  critiqueTouch,
+  recordDripDraft,
+  markDripDraftSent,
+  loadPlaybook,
   DRIP_CAMPAIGNS,
   buildConversationHistory,
   extractResponsivenessSignals,

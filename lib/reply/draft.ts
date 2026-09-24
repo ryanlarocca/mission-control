@@ -29,6 +29,8 @@ export interface DraftArgs {
   skipCritic?: boolean
   skipRecord?: boolean
   excludeExemplarReply?: string | null
+  // Drips: the drip_queue row this draft belongs to.
+  dripQueueId?: string | null
 }
 
 export interface DraftResult {
@@ -147,6 +149,7 @@ Write the reply the conversation is actually waiting for. Respond with the JSON 
       surface: args.surface,
       lead_id: ctx.kind === "lead" ? ctx.leadId : null,
       relationship_id: ctx.kind === "relationship" ? ctx.relationshipId : null,
+      drip_queue_id: args.dripQueueId || null,
       channel,
       moment: plan.moment,
       temperature: plan.temperature,

@@ -85,6 +85,9 @@ async function main() {
     if (!DRY_RUN) {
       const { error: upErr } = await sb.from("drip_queue").update({ message: newMessage }).eq("id", row.id).eq("status", "pending")
       if (upErr) { console.error(`    update failed: ${upErr.message}`); fail++; continue }
+      // Reply Planner: keep the old/new pair instead of only printing it.
+      const { data: prior } = await sb.from("reply_drafts").select("id").eq("drip_queue_id", row.id).order("created_at", { ascending: false }).limit(1).maybeSingle()
+      await engine.recordDripDraft(sb, { lead, queueId: row.id, channel: row.channel, message: newMessage, subject: row.subject, critic: null, parentId: prior && prior.id, whyText: "bulk regenerate (prompt change)" })
     }
     ok++
   }

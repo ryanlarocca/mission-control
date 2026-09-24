@@ -99,6 +99,21 @@ export async function PATCH(request: NextRequest) {
         return NextResponse.json({ error: error.message }, { status: 500 })
       }
       if (!data) return NextResponse.json({ error: "row not found or not pending" }, { status: 409 })
+      // Reply Planner: the edit is a child reply_drafts row; the engine's
+      // original stays on the root row so draft-vs-sent is never lost.
+      try {
+        const { data: prior } = await sb.from("reply_drafts").select("id, moment, temperature, playbook_version").eq("drip_queue_id", id).order("created_at", { ascending: false }).limit(1).maybeSingle()
+        await sb.from("reply_drafts").insert({
+          surface: "drip", lead_id: data.lead_id, drip_queue_id: id,
+          channel: data.channel === "imessage" ? "sms" : data.channel,
+          moment: prior?.moment ?? null, temperature: prior?.temperature ?? null, next_action: "drip",
+          draft_subject: update.subject ?? data.subject ?? null, draft_body: update.message as string,
+          model: "ryan-edit", prompt_version: "manual", playbook_version: prior?.playbook_version ?? null,
+          parent_draft_id: prior?.id ?? null,
+        })
+      } catch (e) {
+        console.warn("[drip-queue:PATCH edit] reply_drafts record failed:", e instanceof Error ? e.message : String(e))
+      }
       return NextResponse.json({ item: data })
     }
 
