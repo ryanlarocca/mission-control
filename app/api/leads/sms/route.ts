@@ -234,6 +234,21 @@ export async function POST(request: Request) {
           console.warn("[sms] campaign attribution failed:", e instanceof Error ? e.message : String(e))
         }
       }
+
+      // Reply Planner (2026-09-24): inbound texts had no AI at all, so the
+      // card had no moment to plan from. Propose the plan over the Supabase
+      // cluster (no sidecar hop — this is a Twilio webhook) and stamp
+      // leads.moment. Best-effort; the alert below goes out regardless.
+      if (insertedRow?.id) {
+        try {
+          const { buildLeadContext, proposePlan, stampLeadMoment } = await import("@/lib/reply")
+          const ctx = await buildLeadContext(insertedRow.id, { live: false })
+          const plan = ctx ? await proposePlan(ctx) : null
+          if (ctx && plan) await stampLeadMoment(ctx.clusterIds, plan.moment)
+        } catch (e) {
+          console.warn("[sms] reply plan failed:", e instanceof Error ? e.message : String(e))
+        }
+      }
     } catch (e) {
       console.error("[sms] Supabase threw:", e)
     }

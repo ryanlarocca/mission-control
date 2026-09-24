@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server"
 import { getLeadsClient } from "@/lib/leads"
+import { markDraftSent } from "@/lib/reply/record"
 
 // Logs an outreach touch. Inserts one row into `relationship_touches`
 // (replaces the BoB "Log" tab) and, on a "sent", advances the contact's
@@ -9,7 +10,7 @@ export const dynamic = "force-dynamic"
 export async function POST(request: Request) {
   try {
     const {
-      id, modality, message, action, tier, category, generatedMessage, wasEdited, note,
+      id, modality, message, action, tier, category, generatedMessage, wasEdited, note, draftId,
     } = await request.json()
 
     if (!id || typeof id !== "string") {
@@ -37,6 +38,11 @@ export async function POST(request: Request) {
     if (ins.error) {
       console.error("Failed to insert relationship_touch:", ins.error)
       logAppended = false
+    }
+
+    if (action === "sent" && typeof draftId === "string" && draftId.trim() && typeof message === "string") {
+      // Reply Planner: link the send to the reply_drafts row it came from.
+      await markDraftSent(draftId.trim(), { subject: null, body: message })
     }
 
     if (action === "sent") {

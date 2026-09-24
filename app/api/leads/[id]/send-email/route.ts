@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server"
+import { markDraftSent } from "@/lib/reply/record"
 import { getGmailClient, getLeadsClient, getMailboxForSource, encodeEmailHeader, detectOfferFromText, applyDetectedOfferToCluster, registerManualTouch } from "@/lib/leads"
 
 // Phase 7C — Part 6: send a manual email to a lead from the lead card.
@@ -39,7 +40,7 @@ export async function POST(
   const { id } = await ctx.params
   if (!id) return NextResponse.json({ error: "id required" }, { status: 400 })
 
-  let body: { subject?: unknown; body?: unknown; to?: unknown }
+  let body: { subject?: unknown; body?: unknown; to?: unknown; draftId?: unknown }
   try {
     body = await request.json()
   } catch {
@@ -57,6 +58,8 @@ export async function POST(
       : null
   if (!subject) return NextResponse.json({ error: "subject required" }, { status: 400 })
   if (!text) return NextResponse.json({ error: "body required" }, { status: 400 })
+  // Reply Planner: reply_drafts row this came from, if any.
+  const draftId = typeof body.draftId === "string" ? body.draftId.trim() : ""
 
   try {
     const sb = getLeadsClient()
@@ -113,6 +116,8 @@ export async function POST(
     const requestBody: { raw: string; threadId?: string } = { raw }
     if (lead.gmail_thread_id) requestBody.threadId = lead.gmail_thread_id
     const { data } = await gmail.users.messages.send({ userId: "me", requestBody })
+
+    if (draftId) await markDraftSent(draftId, { subject, body: text })
 
     // Record an outbound row so the timeline shows the send.
     const { data: outboundRow, error: insErr } = await sb.from("leads").insert({

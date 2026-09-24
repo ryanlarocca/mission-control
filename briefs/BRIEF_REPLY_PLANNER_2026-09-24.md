@@ -1,6 +1,6 @@
 # Reply Planner — plan first, draft second, learn from "why"
 
-**Status:** green-lit by Ryan 2026-09-24. Phase 0 in progress.
+**Status:** green-lit by Ryan 2026-09-24. Phase 0 built (awaiting Ryan's grades). **Phase 1 built 2026-09-24** — engine, table, routes, intake moments, send linkage, eval runner; first eval run: plan matched 17/22 of my provisional moment labels, soft-no drafts on principle with 0 critic rewrites after tuning. Phase 2 (Leads card UI) next.
 **Owning project memo:** `../lead-pipeline/` (Leads + Follow Ups + drips) with a
 cross-entry in `../comprehensive-relationship-management/` (Relationships).
 **Origin:** Virginia Slater's soft-no draft, 2026-09-24. The conversation
@@ -227,15 +227,16 @@ then principles), and by surface so nothing is left at one card.
 | Leads card — phone-only composer | ☐ | ☐ | ☐ | ☐ | ☐ | ☐ |
 | Leads card — email pop-out | ☐ | ☐ | ☐ | ☐ | ☐ | ☐ |
 | Follow Ups compose modal | ☐ | ☐ | ☐ | ☐ | ☐ | ☐ |
-| Intake `suggested_reply` (email) | ☐ | ☐ | n/a | ☐ | n/a | ☐ |
-| Intake — inbound SMS | ☐ | ☐ | n/a | ☐ | n/a | ☐ |
-| Intake — call transcript | ☐ | ☐ | n/a | ☐ | n/a | ☐ |
+| Intake `suggested_reply` (email) | ☑ moment stamped (P1) | ☐ (still triage's one-email draft until P2) | n/a | ☐ | n/a | ☐ |
+| Intake — inbound SMS | ☑ plan proposed + moment stamped (P1) | ☐ | n/a | ☐ | n/a | ☐ |
+| Intake — call transcript | ☑ moment from analyzer (P1) | ☐ | n/a | ☐ | n/a | ☐ |
 | Relationships card | ☐ | ☐ | ☐ | ☐ | ☐ | ☐ |
 | Relationships contact modal quick-send | ☐ | ☐ | ☐ | ☐ | ☐ | ☐ |
 | Drip touch generation | inherits | ☐ | ☐ (Regenerate) | ☐ | n/a | ☐ |
 | Drip edit in Follow Ups | n/a | n/a | ☐ | ☐ | n/a | n/a |
 | Telegram lead alert | ☐ | ☐ | ☐ | ☐ | ☐ | ☐ |
-| Eval set + scoreboard | — | — | — | ☐ | — | — |
+| Eval set + scoreboard | — | — | — | ☑ eval set + runner (P0/P1); scoreboard P6 | — | — |
+| Send routes link to draft (`draftId`) | — | — | — | ☑ email-reply, send-email, leads/send, crms/log (P1) | — | — |
 
 Out of scope: the bulk campaign engine (`campaign-compose.mjs`) keeps its
 own edits/rules machinery; unifying it onto `reply_drafts` is a later

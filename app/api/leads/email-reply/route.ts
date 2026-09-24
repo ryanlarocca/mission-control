@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server"
 import { getGmailClient, getLeadsClient, encodeEmailHeader, registerManualTouch } from "@/lib/leads"
+import { markDraftSent } from "@/lib/reply/record"
 
 // Send an email reply to an inbound lead from the mailbox that received it.
 //
@@ -25,6 +26,7 @@ import { getGmailClient, getLeadsClient, encodeEmailHeader, registerManualTouch 
 interface EmailReplyBody {
   leadId?: string
   message?: string
+  draftId?: string
 }
 
 export async function POST(request: NextRequest) {
@@ -36,6 +38,9 @@ export async function POST(request: NextRequest) {
   }
   const leadId = (body?.leadId || "").trim()
   const text = (body?.message || "").trim()
+  // Reply Planner: the reply_drafts row this text came from (null when Ryan
+  // typed from scratch). Stamped as sent below so draft-vs-sent is recorded.
+  const draftId = typeof body?.draftId === "string" ? body.draftId.trim() : ""
   if (!leadId) return NextResponse.json({ error: "leadId is required" }, { status: 400 })
   if (!text) return NextResponse.json({ error: "message is required" }, { status: 400 })
 
@@ -143,6 +148,8 @@ export async function POST(request: NextRequest) {
     console.error("[email-reply] Gmail send failed:", msg)
     return NextResponse.json({ error: "Email send failed", details: msg }, { status: 502 })
   }
+
+  if (draftId) await markDraftSent(draftId, { subject: null, body: text })
 
   // Log the outbound row. twilio_number=null is the outbound convention
   // (per lib/leads.ts isOutbound). We thread on the same gmail_thread_id so

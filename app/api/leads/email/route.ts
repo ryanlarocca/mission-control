@@ -376,6 +376,8 @@ async function ingestGoogleVoice(args: {
       message: messageText,
       ai_notes: triage?.summary ?? null,
       suggested_reply: triage?.suggestedReply ?? null,
+      moment: triage?.moment ?? null,
+      moment_at: triage?.moment ? new Date().toISOString() : null,
       status: triage?.is_dead ? "dead" : inheritedStatus,
       temperature: triage?.temperature ?? null,
       // /api/follow-ups keys off recommended_followup_date, so these are what
@@ -631,6 +633,8 @@ async function handleAppsScript(payload: AppsScriptPayload): Promise<NextRespons
       message: messageText,
       ai_notes: triage?.summary ?? null,
       suggested_reply: triage?.suggestedReply ?? null,
+      moment: triage?.moment ?? null,
+      moment_at: triage?.moment ? new Date().toISOString() : null,
       status: triage?.is_dead ? "dead" : inheritedStatus,
       temperature: triage?.temperature ?? null,
       // /api/follow-ups keys off recommended_followup_date, so these are what
@@ -871,6 +875,8 @@ async function processSingleMessage(args: {
       message: messageText,
       ai_notes: triage?.summary ?? null,
       suggested_reply: triage?.suggestedReply ?? null,
+      moment: triage?.moment ?? null,
+      moment_at: triage?.moment ? new Date().toISOString() : null,
       status: triage?.is_dead ? "dead" : inheritedStatus,
       temperature: triage?.temperature ?? null,
       // /api/follow-ups keys off recommended_followup_date, so these are what

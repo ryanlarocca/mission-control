@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server"
 import { sendLeadSms } from "@/lib/leads"
+import { markDraftSent } from "@/lib/reply/record"
 
 // Outbound message endpoint for the Leads + Follow Ups tabs. Thin wrapper over
 // lib/leads `sendLeadSms`, which owns the actual send + logging so the same
@@ -16,7 +17,7 @@ import { sendLeadSms } from "@/lib/leads"
 // so app-initiated SMS is compliant.
 
 export async function POST(request: NextRequest) {
-  let body: { phone?: string; message?: string; source?: string | null } = {}
+  let body: { phone?: string; message?: string; source?: string | null; draftId?: string } = {}
   try {
     body = await request.json()
   } catch {
@@ -31,6 +32,10 @@ export async function POST(request: NextRequest) {
 
   if (!result.success) {
     return NextResponse.json({ error: result.error }, { status: result.status })
+  }
+  // Reply Planner: link the send to the draft it came from.
+  if (typeof body.draftId === "string" && body.draftId.trim()) {
+    await markDraftSent(body.draftId.trim(), { subject: null, body: body.message ?? "" })
   }
 
   return NextResponse.json({

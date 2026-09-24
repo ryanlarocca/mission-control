@@ -12,7 +12,7 @@ Rules of this file:
   principles or drops them.
 - Change the `version` when a principle changes; it is stamped on every draft.
 
-version: 2026-09-24.1
+version: 2026-09-24.2
 
 ---
 
@@ -23,7 +23,9 @@ They declined, softly, without opting out. "Not at this time", "not interested
 right now", "we're holding onto it".
 
 Principles:
-1. Acknowledge cleanly. No "but", no re-pitch, no reframing their answer.
+1. Acknowledge cleanly. No "but", no re-pitch, no arguing with their answer.
+   Agreeing with the reasons they gave, in a line, is acknowledgment, not
+   reframing.
 2. Thank them for replying. They did not have to.
 3. One door, on their side. Reaching out later is their move to make.
 4. Honest notice that we'll stay in touch occasionally. This is the consent for

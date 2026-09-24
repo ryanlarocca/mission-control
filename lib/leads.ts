@@ -2,6 +2,7 @@ import { createClient, type SupabaseClient } from "@supabase/supabase-js"
 import { google, gmail_v1 } from "googleapis"
 import emailCampaigns from "@/config/email-campaigns.json"
 import { isAnonymousCaller } from "./anonymous"
+import { LEAD_MOMENT_RUBRIC, isLeadMoment } from "@/lib/reply/moments"
 import { completeText, extractJsonObject, hasLlmKey, HAIKU } from "./llm"
 
 export const CAMPAIGN_MAP: Record<string, string> = {
@@ -1991,6 +1992,8 @@ export function mergePropertyDetails(
 
 export interface AnalyzeCallResult {
   temperature: Temperature
+  // Reply Planner (2026-09-24): first plan chip, see EmailTriageResult.moment.
+  moment?: string | null
   summary: string
   name: string | null
   property_address: string | null
@@ -2095,6 +2098,11 @@ Produce a JSON object with these fields:
 
 - temperature: one of "hot" | "warm" | "cold".
 ${TEMPERATURE_RUBRIC}
+
+- ${LEAD_MOMENT_RUBRIC}
+  (For a call, judge the seller's side of the conversation. A voicemail
+  asking for a callback is invitation_to_talk; a missed call with no
+  message is silence_breaker.)
 
 - summary: a plain prose paragraph, 2 to 6 sentences. No headers, no bullets,
     no bold. Cover who the caller is, what their inquiry is about, any
@@ -2281,6 +2289,7 @@ Respond with ONLY the JSON object — no markdown fences, no explanation.
 
 {
   "temperature": "...",
+  "moment": "...",
   "summary": "...",
   "name": "..." | null,
   "property_address": "..." | null,
@@ -2333,6 +2342,7 @@ ${historyBlock}FRESH TRANSCRIPT (this is the current call):
     }
     return {
       temperature: parsed.temperature as Temperature,
+      moment: isLeadMoment(parsed.moment) ? parsed.moment : null,
       summary: parsed.summary.trim(),
       name:
         typeof parsed.name === "string" && parsed.name.trim()
@@ -2554,6 +2564,7 @@ export async function applyAnalyzeCallResult(
 
   const update: Record<string, unknown> = {
     temperature: result.temperature,
+    ...(result.moment ? { moment: result.moment, moment_at: new Date().toISOString() } : {}),
     ai_summary: result.summary,
     ai_summary_generated_at: new Date().toISOString(),
     recommended_followup_date: followupDate,
@@ -2772,6 +2783,10 @@ export interface EmailTriageResult {
   // words justify a date.
   recommended_followup_date: string | null
   followup_reason: string | null
+  // Reply Planner (2026-09-24): the first plan chip. Stamped on leads.moment
+  // so the card, worklists and the drip engine know what kind of moment the
+  // latest message created. Null when the model didn't return a valid one.
+  moment: string | null
 }
 
 export async function triageEmailLead(
@@ -2800,11 +2815,14 @@ Respond in JSON only:
   "offer_amount": number | null,
   "offer_verbalized": true | false,
   "recommended_followup_date": "YYYY-MM-DD" | null,
-  "followup_reason": "short phrase quoting the sender" | null
+  "followup_reason": "short phrase quoting the sender" | null,
+  "moment": "soft_no" | "hard_no_optout" | "question" | "invitation_to_talk" | "price_pushback" | "offer_requested" | "info_provided" | "junk_wrong_person"
 }
 
 temperature:
 ${TEMPERATURE_RUBRIC}
+
+${LEAD_MOMENT_RUBRIC}
 
 is_dead: true ONLY for spam / wrong number / explicit unsubscribe / hostile.
   Default false. Use this flag, not temperature, to mark a lead as dead.
@@ -2861,6 +2879,7 @@ FOLLOW-UP DATE
       offer_verbalized?: unknown
       recommended_followup_date?: unknown
       followup_reason?: unknown
+      moment?: unknown
     }
     if (
       !parsed.temperature ||
@@ -2900,6 +2919,7 @@ FOLLOW-UP DATE
       offer_verbalized: parsed.offer_verbalized === true,
       recommended_followup_date: followupDate,
       followup_reason: followupReason,
+      moment: isLeadMoment(parsed.moment) ? parsed.moment : null,
     }
   } catch (e) {
     console.error("[triage-email] Threw:", e)
