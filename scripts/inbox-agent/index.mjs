@@ -937,6 +937,7 @@ async function driveCheck(ctx) {
     console.log("Setup (Ryan):")
     console.log("  1. In the personal Drive, share “Business Operations” with ryan@lrghomes.com as Editor.")
     console.log("  2. admin.google.com → Security → API controls → Domain-wide delegation → client 118033894408819500850 → add https://www.googleapis.com/auth/drive")
+    console.log("  3. Enable the Drive API on the GCP project: https://console.developers.google.com/apis/api/drive.googleapis.com/overview?project=lrg-mission-control")
     return false
   }
   const tree = await loadTree(ctx)
@@ -957,9 +958,9 @@ async function alertDriveOnce(ctx) {
   if (!ctx.driveErr) return
   const s = await getSetting("drive")
   const { date } = ptParts()
-  if (s.alerted_date === date) return
-  await tgSend(`⚠️ Inbox agent can't reach your Drive yet (${esc(ctx.driveErr)}).\nTwo one-time steps:\n1. Share <b>Business Operations</b> (personal Drive) with ryan@lrghomes.com as Editor.\n2. Admin console → Security → API controls → Domain-wide delegation → client 118033894408819500850 → add scope https://www.googleapis.com/auth/drive\nI'll keep classifying and interviewing meanwhile; uploads wait.`, { dryRun: DRY })
-  if (!DRY) await setSetting("drive", { alerted_date: date })
+  if (s.alerted_date === date && s.alerted_error === ctx.driveErr) return
+  await tgSend(`⚠️ Inbox agent can't reach your Drive yet (${esc(ctx.driveErr)}).\nTwo one-time steps:\n1. Share <b>Business Operations</b> (personal Drive) with ryan@lrghomes.com as Editor.\n2. Admin console → Security → API controls → Domain-wide delegation → client 118033894408819500850 → add scope https://www.googleapis.com/auth/drive\n3. Enable the Drive API on the GCP project (one click, signed in as the Workspace admin): https://console.developers.google.com/apis/api/drive.googleapis.com/overview?project=lrg-mission-control\nI'll keep classifying and asking setup questions meanwhile; uploads wait.`, { dryRun: DRY })
+  if (!DRY) await setSetting("drive", { alerted_date: date, alerted_error: ctx.driveErr })
 }
 
 // ------------------------------------------------------------------ main
