@@ -330,7 +330,7 @@ const HELP = [
   "inbox — status line",
   "open — everything waiting on you",
   "file <address> — what's filed for a property",
-  "find <words> — search the inbox",
+  "find <words or a description> — search the inbox (“the net sheet Lisa sent last week”)",
   "rules — resend the filing convention",
   "screen <pasted listing text> — screen a deal",
   "inbox pause / inbox resume",
@@ -396,9 +396,24 @@ export async function handleInboxCommand(body: string): Promise<{ text: string; 
     return { text: lines.join("\n") }
   }
   if ((m = /^find\s+(.+)$/i.exec(t))) {
-    const rows = await searchInbox(m[1].trim(), 8)
-    if (!rows.length) return { text: `No emails match “${esc(m[1])}”.` }
-    const lines = [`🔎 <b>${esc(m[1])}</b>`]
+    // Plain-English descriptions ("the net sheet Lisa sent last week") are
+    // turned into a Gmail query by Haiku; anything that already looks like
+    // Gmail syntax (from:, has:, quotes, newer_than:) runs as-is.
+    const ask = m[1].trim()
+    const looksLikeSyntax = /\b(from|to|subject|has|filename|newer_than|older_than|after|before|label|in|is):/i.test(ask) || ask.split(/\s+/).length <= 2
+    let q = ask
+    if (!looksLikeSyntax) {
+      const today = new Date().toISOString().slice(0, 10)
+      const out = await completeText({
+        model: HAIKU, maxTokens: 200, tag: "[inbox-find]",
+        system: `Translate a plain-English description of an email into ONE Gmail search query. Today is ${today}. Use from:, to:, subject:, has:attachment, filename:, newer_than:Nd, after:YYYY/MM/DD and quoted phrases. Prefer few, distinctive terms over many. People: use a name fragment (from:lisa) not a guessed address. Escrow/title people are at ctt.com; lenders kiavi.com. Respond with the query only.`,
+        prompt: ask,
+      })
+      q = out.text.trim().replace(/^`+|`+$/g, "") || ask
+    }
+    const rows = await searchInbox(q, 8)
+    if (!rows.length) return { text: `No emails match “${esc(ask)}” (searched: <code>${esc(q)}</code>). Try different words or Gmail syntax like from:lisa newer_than:14d.` }
+    const lines = [`🔎 <b>${esc(ask)}</b>${q !== ask ? ` · <code>${esc(q)}</code>` : ""}`]
     for (const r of rows) lines.push(`• <a href="${r.link}">${esc(r.subject || "(no subject)")}</a> — ${esc(r.from.replace(/<.*>/, "").trim())} · ${ago(r.date)}${r.attachments.length ? ` · 📎 ${esc(r.attachments.slice(0, 3).join(", "))}` : ""}`)
     return { text: lines.join("\n") }
   }
