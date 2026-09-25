@@ -136,14 +136,16 @@ Five card types, each its own message so a tap or reply days later still resolve
 | **Filing** (per attachment; 3+ on one email → one **batch** card) | ✅ Approve · ✏️ Change · ⏭ Skip / ✅ Approve all · 🗂 Pick individually · ⏭ Skip all | a correction ("Halleck folder, keep the name") → filed + learned as a rule |
 | **Filed confirmation** | ↩️ Undo (24 h) | — (undo moves the file to `Properties/_Unsorted` and forgets the rule it taught) |
 | **Setup question** (formerly "interview") | ✅ Use my guess · ⏭ Skip | your own folder + name |
-| **Deal** (direct leads always; blasts only after the first cut) | 👀 Look further · 🚫 Pass | after 👀: a follow-up ("get me rents and the 5+ comps") → Sonnet re-reads the OM + thread and answers on the card; "questions for the agent" come back as a numbered list Ryan sends himself |
+| **Deal** (direct leads always; blasts only after the first cut) | 👀 Look further · 🚫 Pass · ✉️ Reply | after 👀: a follow-up ("get me rents and the 5+ comps") → Sonnet re-reads the OM + thread and answers on the card; "questions for the agent" come back as a numbered list Ryan sends himself |
 | **Loop** (someone needs something from Ryan) | ✓ Done · ⏰ Snooze 2d | "done", "snooze 3d", or a note |
+| **Draft** (after ✉️; drafted in Ryan's voice from thread + screen + verdict) | ✅ Send · ✏️ Edit · ❌ Dismiss | edit instructions or pasted wording → v2. **✅ is the only send path in the whole agent.** |
+| **❓ Ask** (filing proposal unsure) | ✅ Use the guess · ⏭ Skip | the answer; remembered in `inbox_settings.knowledge` and fed to every later prompt |
 
 Cross-cutting behaviour:
 - **Questions on any card** ("what did Lisa say about the per diem?") are answered from the underlying Gmail thread (Haiku) instead of being treated as a correction. Detection: ends in "?" or starts with a question word.
 - **Typed commands**, no reply-to: `inbox` (status + help), `open`, `file <address>`, `find <words>`, `rules`, `screen <pasted listing text>`, `inbox pause` / `inbox resume`.
-- **Blast first cut:** Santa Clara County + 2 or more units + per-door not clearly above the ladder (downtown ≈ $230k, Milpitas ≈ $340k, elsewhere ≈ $400k, 15 % tolerance). Held blasts appear as one count line in the brief. Ryan's 👀/🚫 verdicts on past screens are fed to the model as calibration.
-- **Pass** records the verdict and clears the buttons. Nothing is ever sent to the sender.
+- **Blast first cut (Ryan's words, 2026-09-24):** always show off-market + motivated seller, and anyone he's done business with (Relationships/Leads email, or a prior filed doc from that sender); SFR included; never retail listings or open-house invites; Bay Area only as a tie-breaker. Held blasts appear as one count line in the brief. Ryan's 👀/🚫 verdicts on past screens are fed to the model as calibration.
+- **Pass** records the verdict and clears the buttons. Nothing is sent unless Ryan taps ✉️ and then ✅ on the draft.
 - **Quiet hours** 9 pm–7 am PT (`inbox_settings.agent.quiet_hours`): filing cards and blast cards are held as `pending_post` and released after 7; high-priority loops and direct deals still post.
 - **Weekly teach-back** Sunday 6 pm PT: filed / auto-filed / corrections / undos this week, the rules touched, and ✋ Make manual buttons for any auto rule.
 - **Drive connected** notice posts once when the share + scope land.
