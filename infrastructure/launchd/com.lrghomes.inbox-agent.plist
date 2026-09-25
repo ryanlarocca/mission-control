@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Inbox Agent (briefs/BRIEF_INBOX_AGENT_2026-09-24.md). Every 5 minutes:
+  reads ryan@lrghomes.com, applies Ryan's Telegram decisions (file to Drive,
+  learn rules), classifies new mail, tracks open loops, screens deals, runs
+  the Drive interview, and posts the 7:30am PT brief. Read-only on Gmail
+  except an "MC/Filed" label; never sends email.
+
+  Install (Mac mini):
+    cp infrastructure/launchd/com.lrghomes.inbox-agent.plist ~/Library/LaunchAgents/
+    launchctl load ~/Library/LaunchAgents/com.lrghomes.inbox-agent.plist
+  Run once:  launchctl start com.lrghomes.inbox-agent
+  Pause:     node scripts/inbox-agent/index.mjs --pause   (--resume to continue)
+  Logs:      /tmp/lrg-inbox-agent.log, /tmp/lrg-inbox-agent-err.log
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.lrghomes.inbox-agent</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/opt/homebrew/bin/node</string>
+    <string>scripts/inbox-agent/index.mjs</string>
+  </array>
+  <key>WorkingDirectory</key>
+  <string>/Users/ryanlarocca/Projects/PROJECTS/mission-control</string>
+  <key>StartInterval</key>
+  <integer>300</integer>
+  <key>StandardOutPath</key>
+  <string>/tmp/lrg-inbox-agent.log</string>
+  <key>StandardErrorPath</key>
+  <string>/tmp/lrg-inbox-agent-err.log</string>
+  <key>RunAtLoad</key>
+  <false/>
+</dict>
+</plist>

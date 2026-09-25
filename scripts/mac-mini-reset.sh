@@ -186,6 +186,7 @@ health_launchctl_pid     "lead-webhook"       "com.lrghomes.lead-webhook"
 # Interval / cron-style jobs.
 health_launchctl_loaded  "drip-engine"        "com.lrghomes.drip-engine"
 health_launchctl_loaded  "gmail-watch-renewal" "com.lrghomes.gmail-watch-renewal"
+health_launchctl_loaded  "inbox-agent"        "com.lrghomes.inbox-agent"
 health_launchctl_loaded  "crms-merge"         "com.openclaw.crms.merge"
 health_launchctl_loaded  "lastcontacted-sync" "com.openclaw.crms.lastcontacted-sync"
 

@@ -35,6 +35,7 @@ import {
   type Tier,
 } from "@/lib/contactIntake"
 import { CALENDAR_INTENT_RE, createCalendarEvent, extractEvent } from "@/lib/calendarIntake"
+import { INBOX_CB_PREFIX, findInboxByTgMessage, handleInboxCallback, recordInboxReply } from "@/lib/inboxAgent"
 
 // Dedicated campaign-bot webhook — the ZERO-TOKEN action path (2026-07-23,
 // Ryan: "get the thinking time down... maybe even no tokens"). The campaign
@@ -359,6 +360,19 @@ export async function POST(request: Request) {
   if (cb?.data) {
     const chatId = cb.message?.chat?.id
     if (allowedChat && String(chatId) !== String(allowedChat)) return NextResponse.json({ ok: true })
+    // Inbox Agent (2026-09-24): filing approvals, interview answers, open
+    // loops, deal screens. Supabase-only here; the Mac mini worker executes.
+    if (cb.data.startsWith(INBOX_CB_PREFIX)) {
+      const out = await handleInboxCallback(cb.data)
+      await tg("answerCallbackQuery", { callback_query_id: cb.id, text: out.toast })
+      if (out.clearButtons) {
+        await tg("editMessageReplyMarkup", { chat_id: chatId, message_id: cb.message?.message_id, reply_markup: { inline_keyboard: [] } })
+      }
+      if (out.text) {
+        await tg("sendMessage", { chat_id: chatId, text: out.text, reply_to_message_id: cb.message?.message_id })
+      }
+      return NextResponse.json({ ok: true })
+    }
     const call = /^call:(\d{10})$/.exec(cb.data)
     // Phase B one-tap batch approval (2026-08-21): "bapprove:YYYY-MM-DD"
     const bapprove = /^bapprove:(\d{4}-\d{2}-\d{2})$/.exec(cb.data)
@@ -639,6 +653,15 @@ export async function POST(request: Request) {
     if (planner) {
       const out = await redraftFromTelegram(planner.id, body, msg.message_id)
       if (!out.ok) await tg("sendMessage", { chat_id: chatId, text: `⚠️ Couldn't redraft — ${out.error}`, reply_to_message_id: msg.message_id })
+      return NextResponse.json({ ok: true })
+    }
+    // Inbox Agent message (filing proposal / interview question / rules doc /
+    // open loop / deal screen): the reply is a correction or an answer, never
+    // something to send. Same "check before the phone branch" rule.
+    const inboxRef = await findInboxByTgMessage(repliedTgId)
+    if (inboxRef) {
+      const ack = await recordInboxReply(inboxRef, body)
+      await tg("sendMessage", { chat_id: chatId, text: ack, reply_to_message_id: msg.message_id })
       return NextResponse.json({ ok: true })
     }
     const known = await findDraftByTgMessage(repliedTgId)
