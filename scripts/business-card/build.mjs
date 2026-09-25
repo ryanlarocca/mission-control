@@ -14,7 +14,6 @@ const cfg = {
   phone: '(650) 670-3914',
   email: 'ryan@lrghomes.com',
   site: 'lrghomes.com',
-  addr: '4500 Great America Pkwy #92, Santa Clara, CA 95054',
   tagline: 'We buy Bay Area homes for cash.',
   sub: 'Any condition. No repairs, no commissions. Close on your timeline.',
   qrUrl: 'https://www.lrghomes.com/?utm_source=bizcard',
@@ -66,7 +65,6 @@ const back = (guides) => `<!doctype html><html><head><style>${css}
 .s { font-weight: 500; font-size: 8.5pt; color:#334155; margin-top:0.08in; line-height:1.45; max-width: 2.4in; }
 .proof { position:absolute; left:0; bottom:0; max-width:2.1in; white-space:nowrap; font-size:7.4pt; font-weight:600; color:${NAVY}; line-height:1.45; }
 .proof span { color:${GOLD}; letter-spacing:0.05em; }
-.addr { position:absolute; right:0; bottom:0; font-size:6.4pt; color:#64748b; text-align:right; line-height:1.4; max-width:1.5in; white-space:nowrap; }
 .mark { position:absolute; right:-0.04in; top:0.06in; height:0.36in; opacity:.9; }
 </style></head><body class="${guides?'guides':'noguides'}"><div class="card back">
 <div class="rule"></div>
@@ -75,7 +73,6 @@ const back = (guides) => `<!doctype html><html><head><style>${css}
   <div class="h">${cfg.tagline}</div>
   <div class="s">${cfg.sub}</div>
   <div class="proof"><span>★★★★★</span>&nbsp; 4.9 &nbsp;·&nbsp; 29 reviews<br>Google &amp; Yelp &nbsp;·&nbsp; South Bay since 2017</div>
-  <div class="addr">${cfg.addr.replace(', Santa Clara', '<br>Santa Clara')}</div>
 </div>
 <div class="trim"></div>
 </div></body></html>`;
