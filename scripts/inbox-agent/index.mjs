@@ -961,6 +961,27 @@ async function maybeDigest(ctx, force = false) {
     getSetting("rules"),
   ])
   const lines = [`☀️ <b>Inbox brief · ${date}</b>`]
+  // Ryan 2026-09-25: "check to see if I left any loose ends open." Beyond the
+  // flagged asks: any human email from the last 7 days with no reply from Ryan
+  // on the thread after it arrived, 2+ days old.
+  const weekAgo = new Date(Date.now() - 7 * 86_400_000).toISOString()
+  const { data: recentHuman } = await sb().from("inbox_messages").select("gmail_id, thread_id, sender, sender_name, subject, internal_date, classification").in("kind", ["human", "deal_lead", "zix", "esign_completed"]).gte("internal_date", weekAgo).order("internal_date", { ascending: false }).limit(300)
+  const sent = await sentThreadsSince(ctx.gmail, 8)
+  const openThreads = new Set((loops.data || []).map((l) => l.thread_id))
+  const seenThread = new Set()
+  const looseEnds = []
+  for (const m of recentHuman || []) {
+    if (!m.thread_id || seenThread.has(m.thread_id)) continue
+    seenThread.add(m.thread_id)
+    if (openThreads.has(m.thread_id)) continue
+    const c = m.classification || {}
+    if (c.is_human === false || /noreply|no-reply|notification|docusign|authentisign/i.test(m.sender || "")) continue
+    if (c.needs_reply === false) continue // FYI mail (a signed copy, a "thanks") is not a loose end
+    const replied = sent.get(m.thread_id)
+    if (replied && replied > m.internal_date) continue
+    if (daysAgo(m.internal_date) < 2) continue
+    looseEnds.push(m)
+  }
   const open = loops.data || []
   if (open.length) {
     lines.push(`\n<b>Waiting on you (${open.length})</b>`)
@@ -970,6 +991,10 @@ async function maybeDigest(ctx, force = false) {
     }
     if (open.length > 12) lines.push(`… +${open.length - 12} more`)
   } else lines.push("\n✅ Nothing waiting on you.")
+  if (looseEnds.length) {
+    lines.push(`\n<b>Unanswered ${looseEnds.length > 8 ? "(showing 8 of " + looseEnds.length + ")" : ""}</b> — human emails with no reply from you`)
+    for (const m of looseEnds.slice(0, 8)) lines.push(`• ${esc(m.sender_name || m.sender)} — “${esc(shortSubject(m.subject, 60))}” · ${daysAgo(m.internal_date)}d`)
+  }
   if (pending.data?.length) lines.push(`\n<b>Filing proposals waiting for a tap:</b> ${pending.data.length} (${pending.data.slice(0, 4).map((p) => esc(p.filename)).join(", ")}${pending.data.length > 4 ? "…" : ""})`)
   if (filed.data?.length) lines.push(`\n<b>Filed in the last day:</b> ${filed.data.length}\n` + filed.data.slice(0, 8).map((f) => `• ${esc(f.final_folder)}/${esc(f.final_name)}`).join("\n"))
   if (dups.data?.length) lines.push(`\nSkipped as duplicates: ${dups.data.map((d) => esc(d.filename)).join(", ")}`)
