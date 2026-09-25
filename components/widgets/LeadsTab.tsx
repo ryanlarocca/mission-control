@@ -2517,8 +2517,8 @@ function LeadCard(p: LeadCardProps) {
                         : "bg-zinc-900 border border-zinc-800 hover:border-sky-900/60 text-zinc-300 hover:text-sky-200"
                     }`}
                     title={group.usePersonalCell
-                      ? "Texting from your personal cell — click to switch back to the business line + drips"
-                      : "Text from your personal cell (iMessage) — pauses automated drips, handle manually"}
+                      ? "Texts go from your personal cell (iMessage) and Call shows your cell as caller ID — click to switch back to the business line + drips"
+                      : "Text from your personal cell (iMessage) + Call with your cell as caller ID — pauses automated drips, handle manually"}
                   >
                     <Smartphone className="w-3.5 h-3.5" />
                     {group.usePersonalCell ? "My Cell ✓" : "My Cell"}

@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server"
 import { FORWARD_TO, getLeadsClient, getTwilioNumber, isOwnedNumber, registerManualTouch, resolveReplyLine } from "@/lib/leads"
+import { relationshipCallerId } from "@/lib/relationship-calls"
 
 // Outbound call relay. Click "Call" on a lead card →
 //   1. Insert an outbound `lead_type=call` row (twilio_number=null per the
@@ -15,6 +16,14 @@ import { FORWARD_TO, getLeadsClient, getTwilioNumber, isOwnedNumber, registerMan
 //      not a stranger (Ryan, 2026-09-22 — same rule as texts). Recording is
 //      delivered back to /api/leads/call/recording?leadId=… which attaches
 //      it to the row inserted in step 1.
+//
+// "My Cell" leads (use_personal_cell on the phone cluster, 2026-09-25):
+//   the lead already knows Ryan personally, so the <Dial> leg presents
+//   Ryan's own Twilio-verified cell as caller ID — the same number the
+//   Relationships bridge uses — instead of a business line. Everything
+//   else (ring Ryan first, record, transcribe, summarise onto the card)
+//   is unchanged. Ryan: "apply the same plumbing to these leads when I
+//   move them over to my cell."
 //
 // Bridge URL has to be publicly reachable — it's hardcoded to the prod
 // alias same as the inbound voice routes do (RECORDING_CALLBACK_URL).
@@ -92,6 +101,23 @@ export async function POST(request: NextRequest) {
     console.error("[leads/call] reply-line lookup threw:", e)
   }
 
+  // "My Cell" lead → present Ryan's verified cell to the lead. Checked by
+  // phone cluster, same as sendLeadSms' transport pick. The first leg (ring
+  // Ryan) still comes From the business line — Twilio can't dial his cell
+  // From his own cell.
+  let callerId = fromNumber
+  try {
+    const { data: pcRows } = await getLeadsClient()
+      .from("leads")
+      .select("id")
+      .eq("caller_phone", leadPhone)
+      .eq("use_personal_cell", true)
+      .limit(1)
+    if (pcRows && pcRows.length > 0) callerId = relationshipCallerId()
+  } catch (e) {
+    console.error("[leads/call] personal-cell check threw:", e)
+  }
+
   // Insert the outbound call row first so we have a leadId to thread
   // through to the recording callback. twilio_number=null (outbound marker
   // per lib/leads.ts conventions); source is inherited from the group if
@@ -129,7 +155,7 @@ export async function POST(request: NextRequest) {
     `${PROD_BASE}/api/leads/call/bridge` +
     `?leadPhone=${encodeURIComponent(leadPhone)}` +
     `&leadId=${encodeURIComponent(leadId)}` +
-    `&callerId=${encodeURIComponent(fromNumber)}`
+    `&callerId=${encodeURIComponent(callerId)}`
 
   const auth = Buffer.from(`${sid}:${token}`).toString("base64")
   const form = new URLSearchParams({
@@ -219,5 +245,5 @@ export async function POST(request: NextRequest) {
     console.error("[leads/call] manual-touch cadence reset threw:", e)
   }
 
-  return NextResponse.json({ success: true, callSid, leadId, from: fromNumber })
+  return NextResponse.json({ success: true, callSid, leadId, from: fromNumber, callerId })
 }
