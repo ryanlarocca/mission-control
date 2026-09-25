@@ -153,8 +153,8 @@ export async function recordInboxReply(ref: InboxRef, text: string): Promise<str
       return "✏️ Applying that to every file in the batch on the next pass. Tap “Pick individually” first if they should go different places."
     }
     case "interview": {
-      await sb.from("inbox_interview").update({ answer_text: body, answer_kind: "custom", status: "answered", answered_at: now }).eq("id", ref.id)
-      return "📝 Noted. Next one coming up."
+      const { data: row } = await sb.from("inbox_interview").update({ answer_text: body, answer_kind: "custom", status: "answered", answered_at: now }).eq("id", ref.id).select("seq").maybeSingle()
+      return row?.seq == null ? "📝 Got it — I'll remember that and act on it in the next pass." : "📝 Noted. Next one coming up."
     }
     case "rules": {
       await setSetting("rules", { feedback: body, status: "revise", feedback_at: now })
@@ -438,7 +438,9 @@ function dateLabel(iso: string | null | undefined): string {
   return new Intl.DateTimeFormat("en-US", { timeZone: "America/Los_Angeles", month: "short", day: "numeric" }).format(new Date(iso))
 }
 
-const RULES_SYSTEM = `You write a short, precise filing convention document for a real-estate investor's Google Drive, learned from how he already organizes it and from his answers to a set of setup questions about specific documents. Write in his terms, not yours. Markdown, ≤ 900 words. Sections: Folder structure (with the tree), Naming convention (patterns with examples, one per document type he answered on), Special cases (DocuSign completions, Zix/escrow packets, leads/OMs, flyers, invoices/bids, tax/insurance), What NOT to file. Where his answers conflict with the existing tree, follow his answers and say so. Where a document type was never covered, write "ASK" so the agent re-opens the setup questions instead of guessing.`
+const RULES_SYSTEM = `You design and document the Google Drive filing convention for Ryan LaRocca, a real-estate investor (flips + small multifamily, Santa Clara County). Inputs: how his Drive is organized today, his answers to setup questions about real documents, and corrections he made while filing. Ryan has said the agent can probably organize this better than he does and that he is open to suggestions — so PROPOSE a clean structure, don't just transcribe his tree. Keep what he asked for explicitly (those answers are law); improve the rest and say what you changed and why in a short "Proposed changes" section at the top.
+Design rules: one folder per property under Properties/, named "<number> <street>" (e.g. "5764 Halleck Dr"); active deals sit directly under Properties/, closed deals move into Properties/<year closed>/; inside each property folder a fixed set of subfolders — "Purchase & Sale" (RPA, addenda, counters, disclosures, escrow, title/prelim, net sheets, closing statements), "Loan & Insurance" (lender docs, evidence of insurance, policies), "Contractor Bids & Invoices", "Photos", "Tenants" (when applicable); a top-level Properties/Pitched Listings/<address>/ for OMs, flyers and deal packages that are not yet Ryan's; tax forms (1099-S, 1098, returns) go to Taxes/<year>/ not the property folder. File names: "<number street> — <document type> — <YYYY-MM-DD>.pdf" unless Ryan said to keep an original name (DocuSign-bracketed forms keep their bracketed names).
+Output: Markdown, ≤ 1000 words. Sections in this order: Proposed changes (bullets), Folder structure (a tree), Naming convention (patterns + one example per document type from the setup questions), Special cases (DocuSign completions, Zix/escrow packets, pitched listings/OMs, flyers, bids/invoices, tax/insurance, contractor docs), What NOT to file, Migration notes (what existing folders to rename/move, e.g. "Halleck" → "5764 Halleck Dr", "93 Ridgeview" → "93 Ridgeview Ave"; the agent will do these only after Ryan approves). Where a document type was never covered, write "ASK" so the agent asks Ryan instead of guessing.`
 
 /** Post the next pending setup question, or (queue empty) write + post the convention. */
 export async function advanceSetup(): Promise<void> {
@@ -447,8 +449,8 @@ export async function advanceSetup(): Promise<void> {
   if (["approved", "draft", "revise", "generating"].includes(String(rules.status))) return
   const { data: asked } = await sb.from("inbox_interview").select("id").eq("status", "asked").limit(1)
   if (asked?.length) return
-  const { data: next } = await sb.from("inbox_interview").select("*, inbox_files(*)").eq("status", "pending").order("seq").limit(1)
-  const { count: total } = await sb.from("inbox_interview").select("id", { count: "exact", head: true })
+  const { data: next } = await sb.from("inbox_interview").select("*, inbox_files(*)").eq("status", "pending").not("seq", "is", null).order("seq").limit(1)
+  const { count: total } = await sb.from("inbox_interview").select("id", { count: "exact", head: true }).not("seq", "is", null)
   if (next?.length) {
     const iv = next[0] as { id: string; seq: number; question: string | null; guess_folder: string; guess_name: string; inbox_files: { filename: string; sender: string; subject: string; received_at: string | null; doc_type: string | null } }
     const f = iv.inbox_files
@@ -464,12 +466,12 @@ export async function advanceSetup(): Promise<void> {
     return
   }
   // Queue empty → convention.
-  const { count: answered } = await sb.from("inbox_interview").select("id", { count: "exact", head: true }).in("status", ["answered", "skipped"])
+  const { count: answered } = await sb.from("inbox_interview").select("id", { count: "exact", head: true }).in("status", ["answered", "skipped"]).not("seq", "is", null)
   if (!answered) return
   await setSetting("rules", { status: "generating" })
   await tgSendHtml(`📐 That's all ${total} — writing up your filing convention now (about a minute).`)
   try {
-    const { data: ivs } = await sb.from("inbox_interview").select("*, inbox_files(filename, sender, subject, doc_type, property_label)").in("status", ["answered", "skipped"]).order("seq")
+    const { data: ivs } = await sb.from("inbox_interview").select("*, inbox_files(filename, sender, subject, doc_type, property_label)").in("status", ["answered", "skipped"]).not("seq", "is", null).order("seq")
     const qa = (ivs || []).map((iv) => {
       const f = (iv as { inbox_files?: { filename: string; sender: string; doc_type: string | null; property_label: string | null } }).inbox_files
       return `${iv.seq}. DOC: ${f?.filename} (${iv.question || f?.doc_type}; from ${f?.sender}; property ${f?.property_label || "unknown"}) · GUESS: ${iv.guess_folder}/${iv.guess_name} · RYAN: ${iv.answer_kind === "accepted" ? "accepted my guess" : iv.answer_kind === "skipped" ? "skipped (don't file this kind)" : iv.answer_text}`
@@ -477,7 +479,7 @@ export async function advanceSetup(): Promise<void> {
     const { data: corr } = await sb.from("inbox_rules").select("*").eq("source", "correction")
     const drive = await getSetting("drive")
     const prompt = `EXISTING DRIVE TREE (relative to the shared "Business Operations" root):\n${String(drive.tree_cache || "(unknown)")}\n\nSETUP QUESTIONS (one document at a time; "accepted my guess" means the guess IS his answer):\n${qa.join("\n") || "(none)"}\n\nCORRECTIONS HE MADE WHILE FILING:\n${(corr || []).map((r) => `- ${r.sender_domain} ${r.doc_type} → ${r.folder_template}/${r.filename_template}${r.note ? ` (${r.note})` : ""}`).join("\n") || "(none)"}\n\nWrite the convention document now (markdown only, no preamble).`
-    const out = await completeText({ model: SONNET, system: RULES_SYSTEM, prompt, maxTokens: 3000, tag: "[inbox-rules]" })
+    const out = await completeText({ model: SONNET, system: RULES_SYSTEM, prompt, maxTokens: 3500, thinking: false, tag: "[inbox-rules]" })
     if (!out.text) throw new Error("empty convention")
     const mid = await tgSendMarkdownFile("INBOX_FILING_RULES.md", out.text, "📐 Here's the filing convention I learned from your answers. Tap 👍 if it's right, or reply to this message with changes.", [[{ text: "👍 That's right", data: "ix:ro" }, { text: "✏️ Needs changes", data: "ix:rn" }]])
     await setSetting("rules", { md: out.text, status: "draft", tg_message_id: mid, published_at: new Date().toISOString(), feedback: null, version: Number(rules.version || 0) + 1 })

@@ -93,6 +93,8 @@ ATTACHMENTS (non-inline):
 ${att}
 
 KNOWN CONTEXT (may be empty):
+- Is the sender someone Ryan has done business with (in his CRM or prior deals)? ${hints.knownSender ? "YES" : "no record"}
+- Things Ryan has told the agent (answers to earlier questions): ${hints.knowledge || "none"}
 - Sender's previous properties with Ryan: ${hints.senderProperties.join("; ") || "none"}
 - Ryan's active / recent properties: ${hints.activeProperties.join("; ") || "none"}
 - Drive property folders: ${hints.propertyFolders.join("; ") || "none"}
@@ -114,7 +116,7 @@ Return JSON only:
   "priority": "high"|"normal"|"low",           // high = money/closing/signature/deadline within ~3 days or a direct deal from a person
   "category": "escrow"|"lender"|"agent"|"contractor"|"tax"|"insurance"|"vendor"|"signature"|"personal"|"other",
   "counterparty": "Lisa Nunes (Chicago Title)",
-  "deal": null | {"tier": "direct"|"blast", "address": "...", "units": 6|null, "asking": 2150000|null, "notes": "..."},   // direct = a person emailing Ryan about a specific property they want him to buy; blast = mass marketing flyer/OM
+  "deal": null | {"tier": "direct"|"blast", "address": "...", "property_type": "sfr"|"multifamily"|"land"|"commercial"|"other", "units": 6|null, "asking": 2150000|null, "off_market": true|false, "seller_motivated": true|false, "is_open_house_invite": true|false, "is_retail_listing": true|false, "notes": "..."},   // direct = a person emailing Ryan about a specific property they want him to buy; blast = mass marketing flyer/OM. off_market = not on MLS / pocket / pre-market; seller_motivated = probate, divorce, deferred maintenance, price reduced, must sell, tenant trouble, out-of-state owner etc.; is_retail_listing = an ordinary MLS-style marketing email with no angle
   "summary": "one line, ≤ 20 words, plain"
 }`
 }
@@ -134,6 +136,9 @@ ${ruleLines}
 DRIVE TREE (paths are relative to the shared "Business Operations" root):
 ${tree}
 
+THINGS RYAN HAS TOLD THE AGENT:
+${file.knowledge || "(nothing yet)"}
+
 DOCUMENT:
 - original filename: ${file.filename}
 - doc_type: ${file.doc_type}
@@ -144,7 +149,8 @@ DOCUMENT:
 - signed: ${file.signed ?? "unknown"}
 
 Return JSON only:
-{"folder": "Properties/93 Ridgeview", "name": "Addendum A 93 Ridgeview.pdf", "rule_id": "<8-char id of the rule you applied, or null>", "confidence": 0.0-1.0, "reason": "≤ 15 words"}
+{"folder": "Properties/93 Ridgeview", "name": "Addendum A 93 Ridgeview.pdf", "rule_id": "<8-char id of the rule you applied, or null>", "confidence": 0.0-1.0, "reason": "≤ 15 words", "question": null | "ONE specific question for Ryan when the convention does not cover this (new property? which folder for this doc type? is X the same property as Y?)"}
+If you would be guessing, set confidence below 0.6 and ask the question instead of inventing a folder.
 Rules: keep the original extension; never put the root name in "folder"; when the property is unknown propose "Properties/_Unsorted"; when the convention says to reuse the original filename, keep it verbatim.`
 }
 
@@ -193,7 +199,9 @@ Return JSON only:
 }`
 }
 
-export const RULES_SYSTEM = `You write a short, precise filing convention document for a real-estate investor's Google Drive, learned from how he already organizes it and from his answers to an interview about specific documents. Write in his terms, not yours. Markdown, ≤ 900 words. Sections: Folder structure (with the tree), Naming convention (patterns with examples, one per document type he answered on), Special cases (DocuSign completions, Zix/escrow packets, leads/OMs, flyers, invoices/bids, tax/insurance), What NOT to file. Where his answers conflict with the existing tree, follow his answers and say so. Where a document type was never covered, write "ASK" so the agent re-opens the interview instead of guessing.`
+export const RULES_SYSTEM = `You design and document the Google Drive filing convention for Ryan LaRocca, a real-estate investor (flips + small multifamily, Santa Clara County). Inputs: how his Drive is organized today, his answers to setup questions about real documents, and corrections he made while filing. Ryan has said the agent can probably organize this better than he does and that he is open to suggestions — so PROPOSE a clean structure, don't just transcribe his tree. Keep what he asked for explicitly (those answers are law); improve the rest and say what you changed and why in a short "Proposed changes" section at the top.
+Design rules: one folder per property under Properties/, named "<number> <street>" (e.g. "5764 Halleck Dr"); active deals sit directly under Properties/, closed deals move into Properties/<year closed>/; inside each property folder a fixed set of subfolders — "Purchase & Sale" (RPA, addenda, counters, disclosures, escrow, title/prelim, net sheets, closing statements), "Loan & Insurance" (lender docs, evidence of insurance, policies), "Contractor Bids & Invoices", "Photos", "Tenants" (when applicable); a top-level Properties/Pitched Listings/<address>/ for OMs, flyers and deal packages that are not yet Ryan's; tax forms (1099-S, 1098, returns) go to Taxes/<year>/ not the property folder. File names: "<number street> — <document type> — <YYYY-MM-DD>.pdf" unless Ryan said to keep an original name (DocuSign-bracketed forms keep their bracketed names).
+Output: Markdown, ≤ 1000 words. Sections in this order: Proposed changes (bullets), Folder structure (a tree), Naming convention (patterns + one example per document type from the setup questions), Special cases (DocuSign completions, Zix/escrow packets, pitched listings/OMs, flyers, bids/invoices, tax/insurance, contractor docs), What NOT to file, Migration notes (what existing folders to rename/move, e.g. "Halleck" → "5764 Halleck Dr", "93 Ridgeview" → "93 Ridgeview Ave"; the agent will do these only after Ryan approves). Where a document type was never covered, write "ASK" so the agent asks Ryan instead of guessing.`
 
 export function rulesPrompt({ tree, qa, corrections, feedback, previous }) {
   const qaText = qa.map((x, i) => `${i + 1}. DOC: ${x.doc} · GUESS: ${x.guess} · RYAN: ${x.answer}`).join("\n") || "(none)"

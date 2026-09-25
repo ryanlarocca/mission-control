@@ -120,17 +120,20 @@ function isQuiet() {
 // above the ladder. Ryan's 👀/🚫 taps on past blasts calibrate the model.
 const SCC_CITIES = /san jose|sunnyvale|milpitas|campbell|santa clara|cupertino|mountain view|los gatos|saratoga|morgan hill|gilroy|palo alto|los altos|willow glen|alum rock/i
 const PER_DOOR_CEILING = { downtown: 230000, milpitas: 340000, sunnyvale: 400000, default: 400000 }
-function blastPassesCut(out, cls) {
-  const facts = out.facts || {}
-  const addr = `${out.address || ""} ${cls.deal?.address || ""}`
-  const units = Number(facts.units) || Number(cls.deal?.units) || 0
-  if (!SCC_CITIES.test(addr)) return { ok: false, why: "outside Santa Clara County" }
-  if (units && units < 2) return { ok: false, why: "single unit" }
-  const ppd = Number(String(facts.price_per_door || "").replace(/[$,]/g, ""))
-  const ceiling = /downtown|95112|95110|95113|95126|95116/i.test(addr) ? PER_DOOR_CEILING.downtown : /milpitas/i.test(addr) ? PER_DOOR_CEILING.milpitas : PER_DOOR_CEILING.default
-  if (ppd && ppd > ceiling * 1.15) return { ok: false, why: `$${Math.round(ppd).toLocaleString()}/door is above the ladder` }
-  if (out.verdict === "pass" && ppd && ppd > ceiling) return { ok: false, why: "model pass + above ladder" }
-  return { ok: true, why: out.verdict === "look_further" ? "worth a look" : "under the ladder" }
+// Ryan 2026-09-24: "we buy single family too. Always show anything off-market
+// with a motivated seller, anything from a person I've done business with.
+// Not retail listings or mass open houses."
+const BAY_AREA = /san jose|sunnyvale|milpitas|campbell|santa clara|cupertino|mountain view|los gatos|saratoga|morgan hill|gilroy|palo alto|los altos|willow glen|alum rock|fremont|hayward|oakland|san leandro|union city|newark|san mateo|redwood city|menlo park|burlingame|san bruno|south san francisco|daly city|pacifica|half moon bay|belmont|san carlos|foster city|santa cruz|hollister|tracy/i
+function blastPassesCut(out, cls, knownSender) {
+  const d = cls.deal || {}
+  const addr = `${out.address || ""} ${d.address || ""}`
+  if (knownSender) return { ok: true, why: "sender you've done business with" }
+  if (d.is_open_house_invite) return { ok: false, why: "open-house invite" }
+  if (d.off_market && d.seller_motivated) return { ok: true, why: "off-market + motivated seller" }
+  if (d.off_market || d.seller_motivated) return { ok: BAY_AREA.test(addr), why: d.off_market ? "off-market" : "motivated seller" }
+  if (d.is_retail_listing) return { ok: false, why: "retail listing, no angle" }
+  if (out.verdict === "look_further" && BAY_AREA.test(addr)) return { ok: true, why: "model says look further" }
+  return { ok: false, why: "no angle (not off-market, no motivation, not a known sender)" }
 }
 
 // ------------------------------------------------------------------ context
@@ -211,10 +214,78 @@ async function hintsFor(ctx, senderEmail) {
   const since = new Date(Date.now() - 60 * 86_400_000).toISOString()
   const { data: recent } = await sb().from("inbox_files").select("property_label").gte("created_at", since).not("property_label", "is", null).limit(200)
   await loadTree(ctx)
+  const knownSender = await isKnownSender(senderEmail)
+  const knowledge = await knowledgeText()
   return {
+    knownSender,
+    knowledge,
     senderProperties: [...new Set((mine || []).map((x) => x.property_label))],
     activeProperties: [...new Set((recent || []).map((x) => x.property_label))].slice(0, 12),
     propertyFolders: ctx.propFolders.map((f) => f.name),
+  }
+}
+
+// ------------------------------------------------------------------ knowledge + known senders
+// "Always be able to ask me questions when it doesn't know" (Ryan 2026-09-24):
+// ❓ cards are inbox_interview rows with seq = null. Answers land in
+// inbox_settings.knowledge and are fed into every prompt from then on.
+async function knowledgeText() {
+  const k = await getSetting("knowledge")
+  const items = Array.isArray(k.items) ? k.items.slice(-40) : []
+  return items.map((x) => `- Q: ${x.q} → Ryan: ${x.a}`).join("\n")
+}
+async function rememberAnswer(q, a) {
+  const k = await getSetting("knowledge")
+  const items = Array.isArray(k.items) ? k.items : []
+  items.push({ q, a, at: isoNow() })
+  if (!DRY) await setSetting("knowledge", { items: items.slice(-200) })
+}
+async function isKnownSender(email) {
+  if (!email) return false
+  const e = email.toLowerCase()
+  const [rel, lead, filed] = await Promise.all([
+    sb().from("relationships").select("id").ilike("email", e).limit(1),
+    sb().from("leads").select("id").ilike("email", e).limit(1),
+    sb().from("inbox_files").select("id").eq("sender", e).eq("status", "filed").limit(1),
+  ])
+  return !!(rel.data?.length || lead.data?.length || filed.data?.length)
+}
+async function postAskCard(ctx, row, question, guess) {
+  const text = [
+    `❓ <b>Not sure where this goes</b> — ${esc(row.filename)}`,
+    `From ${esc(row.sender)} · ${ptDateLabel(row.received_at)} · “${esc(shortSubject(row.subject))}”`,
+    esc(question),
+    guess ? `Best guess: <b>${esc(guess.folder)}/</b>${esc(guess.name)}` : "",
+    "Reply to this card with the answer (or tap ✅ to use the guess).",
+  ].filter(Boolean).join("\n")
+  const rows = guess ? [[{ text: "✅ Use the guess", data: "ix:io:PENDING" }, { text: "⏭ Skip this file", data: `ix:fs:${row.id}` }]] : [[{ text: "⏭ Skip this file", data: `ix:fs:${row.id}` }]]
+  if (DRY) {
+    await tgSend(text, { rows, dryRun: true })
+    return
+  }
+  const { data: iv } = await sb().from("inbox_interview").insert({ file_id: row.id, seq: null, question, guess_folder: guess?.folder || null, guess_name: guess?.name || null, status: "asked", asked_at: isoNow() }).select("id").single()
+  const fixed = rows.map((r) => r.map((b) => ({ ...b, data: b.data.replace("PENDING", iv.id) })))
+  const mid = await tgSend(text, { rows: fixed })
+  await sb().from("inbox_interview").update({ tg_message_id: mid }).eq("id", iv.id)
+  await sb().from("inbox_files").update({ status: "asked", proposed_folder: guess?.folder || null, proposed_name: guess?.name || null }).eq("id", row.id)
+}
+/** Answered ❓ cards → remember + file. */
+async function applyAskAnswers(ctx) {
+  const { data: rows } = await sb().from("inbox_interview").select("*, inbox_files(*)").is("seq", null).in("status", ["answered", "skipped"]).limit(20)
+  for (const iv of rows || []) {
+    const f = iv.inbox_files
+    if (iv.status === "skipped") {
+      if (!DRY) await sb().from("inbox_interview").update({ status: "applied" }).eq("id", iv.id)
+      continue
+    }
+    if (iv.answer_kind === "accepted" && iv.guess_folder) {
+      await rememberAnswer(iv.question, `use ${iv.guess_folder}/${iv.guess_name}`)
+      if (!DRY && f) await sb().from("inbox_files").update({ status: "approved", resolved_at: isoNow() }).eq("id", f.id).in("status", ["asked", "pending", "waiting"])
+    } else if (iv.answer_text) {
+      await rememberAnswer(iv.question, iv.answer_text)
+      if (!DRY && f) await sb().from("inbox_files").update({ status: "changed", change_text: iv.answer_text, resolved_at: isoNow() }).eq("id", f.id).in("status", ["asked", "pending", "waiting"])
+    }
+    if (!DRY) await sb().from("inbox_interview").update({ status: "applied" }).eq("id", iv.id)
   }
 }
 
@@ -296,13 +367,13 @@ async function proposeFor(ctx, row, bytes, cls) {
   const pf = propertyFolderFor(ctx, row.property_label)
   const docs = []
   if (!row.property_label && bytes && /^application\/pdf$/.test(row.mime || "")) docs.push({ kind: "pdf", data: bytes, mime: row.mime, name: row.filename })
-  const file = { ...row, description: cls?.attachments?.find((a) => a.filename === row.filename)?.description, property_address: cls?.property?.address }
-  const out = await completeJson({ model: HAIKU, system: FILING_SYSTEM, prompt: filingPrompt({ rulesMd: ctx.rulesMd, rules: ctx.rules, tree: ctx.tree, file, propertyFolder: pf }), docs, maxTokens: 500, tag: "[propose]" })
-  if (!out?.folder || !out?.name) return null
+  const file = { ...row, description: cls?.attachments?.find((a) => a.filename === row.filename)?.description, property_address: cls?.property?.address, knowledge: await knowledgeText() }
+  const out = await completeJson({ model: HAIKU, system: FILING_SYSTEM, prompt: filingPrompt({ rulesMd: ctx.rulesMd, rules: ctx.rules, tree: ctx.tree, file, propertyFolder: pf }), docs, maxTokens: 600, tag: "[propose]" })
+  if (!out?.folder || !out?.name) return out?.question ? { question: out.question, folder: null, name: null } : null
   const rule = out.rule_id ? ctx.rules.find((r) => r.id.startsWith(String(out.rule_id).slice(0, 8))) : null
   let name = sanitizeFilename(out.name)
   if (!extOf(name) && extOf(row.filename)) name += `.${extOf(row.filename)}`
-  return { folder: String(out.folder).replace(/^\/+|\/+$/g, ""), name, rule, confidence: Number(out.confidence) || null, reason: out.reason || "" }
+  return { folder: String(out.folder).replace(/^\/+|\/+$/g, ""), name, rule, confidence: Number(out.confidence) || null, reason: out.reason || "", question: out.question || null }
 }
 
 function proposalText(row, p, { auto = false } = {}) {
@@ -511,6 +582,10 @@ async function applyDecisions(ctx) {
 }
 
 async function routeProposal(ctx, row, p) {
+  if (p.question && (!p.folder || (p.confidence !== null && p.confidence < 0.6))) {
+    await postAskCard(ctx, row, p.question, p.folder ? { folder: p.folder, name: p.name } : null)
+    return
+  }
   const pf = propertyFolderFor(ctx, row.property_label)
   if (p.rule && p.rule.mode === "auto") {
     const dest = applyRule(p.rule, row, pf)
@@ -609,7 +684,7 @@ async function handleMessage(ctx, msg) {
       await tgSend(`⚠️ No filing proposal for <b>${esc(att.filename)}</b> (from ${esc(msg.from.email)}) — reply to this with folder + name if you want it filed.`, { dryRun: DRY })
       continue
     }
-    if (atts.length >= 3 && !(p.rule && p.rule.mode === "auto")) batch.push({ row: rec.row, p })
+    if (atts.length >= 3 && !(p.rule && p.rule.mode === "auto") && !p.question && p.folder) batch.push({ row: rec.row, p })
     else await routeProposal(ctx, rec.row, p)
   }
   if (batch.length >= 2) await postBatch(ctx, msg, batch)
@@ -717,7 +792,7 @@ async function screenDeal(ctx, msg, cls, pdfDocs) {
   let post = tier === "direct"
   let cut = null
   if (tier !== "direct") {
-    cut = blastPassesCut(out, cls)
+    cut = blastPassesCut(out, cls, await isKnownSender(msg.from.email))
     post = cut.ok
     log(`blast ${out.address || "?"}: ${cut.ok ? "SHOW" : "hold"} — ${cut.why}`)
   }
@@ -790,14 +865,22 @@ async function seedInterview(ctx) {
 
 async function interviewStep(ctx) {
   const rules = await getSetting("rules")
-  if (["approved", "draft", "revise", "generating"].includes(rules.status)) return
-  const { data: asked } = await sb().from("inbox_interview").select("id, asked_at").eq("status", "asked").limit(1)
+  if (rules.status === "generating") {
+    const { data: row } = await sb().from("inbox_settings").select("updated_at").eq("key", "rules").maybeSingle()
+    if (row && Date.now() - new Date(row.updated_at).getTime() > 5 * 60_000) {
+      warn("convention generation looks stuck on Vercel — regenerating here")
+      await publishRules(ctx, {})
+    }
+    return
+  }
+  if (["approved", "draft", "revise"].includes(rules.status)) return
+  const { data: asked } = await sb().from("inbox_interview").select("id, asked_at").eq("status", "asked").not("seq", "is", null).limit(1)
   if (asked?.length) {
     if (daysAgo(asked[0].asked_at) >= 3) log("interview: waiting on Ryan (3+ days)")
     return
   }
-  const { data: next } = await sb().from("inbox_interview").select("*, inbox_files(*)").eq("status", "pending").order("seq").limit(1)
-  const { count: total } = await sb().from("inbox_interview").select("id", { count: "exact", head: true })
+  const { data: next } = await sb().from("inbox_interview").select("*, inbox_files(*)").eq("status", "pending").not("seq", "is", null).order("seq").limit(1)
+  const { count: total } = await sb().from("inbox_interview").select("id", { count: "exact", head: true }).not("seq", "is", null)
   if (next?.length) {
     const iv = next[0]
     const f = iv.inbox_files
@@ -813,20 +896,21 @@ async function interviewStep(ctx) {
     if (!DRY) await sb().from("inbox_interview").update({ status: "asked", asked_at: isoNow(), tg_message_id: mid }).eq("id", iv.id)
     return
   }
-  const { count: answered } = await sb().from("inbox_interview").select("id", { count: "exact", head: true }).in("status", ["answered", "skipped"])
+  const { count: answered } = await sb().from("inbox_interview").select("id", { count: "exact", head: true }).in("status", ["answered", "skipped"]).not("seq", "is", null)
   if (rules.status === "interview" && answered > 0) await publishRules(ctx, {})
 }
 
 async function publishRules(ctx, { feedback, previous }) {
   await loadTree(ctx)
-  const { data: ivs } = await sb().from("inbox_interview").select("*, inbox_files(filename, sender, subject, doc_type, property_label)").in("status", ["answered", "skipped"]).order("seq")
+  const { data: ivs } = await sb().from("inbox_interview").select("*, inbox_files(filename, sender, subject, doc_type, property_label)").in("status", ["answered", "skipped", "applied"]).not("seq", "is", null).order("seq")
   const qa = (ivs || []).map((iv) => ({
     doc: `${iv.inbox_files?.filename} (${iv.question || iv.inbox_files?.doc_type}; from ${iv.inbox_files?.sender}; property ${iv.inbox_files?.property_label || "unknown"})`,
     guess: `${iv.guess_folder}/${iv.guess_name}`,
     answer: iv.answer_kind === "accepted" ? "accepted my guess" : iv.answer_kind === "skipped" ? "skipped (don't file this kind)" : iv.answer_text,
   }))
   const corrections = (await fetchAll("inbox_rules", "*")).filter((r) => r.source === "correction").map((r) => `${r.sender_domain} ${r.doc_type} → ${r.folder_template}/${r.filename_template}${r.note ? ` (${r.note})` : ""}`)
-  const md = await complete({ model: SONNET, system: RULES_SYSTEM, prompt: rulesPrompt({ tree: ctx.tree, qa, corrections, feedback, previous }), maxTokens: 3000, tag: "[rules]", thinking: true })
+  const knowledge = await knowledgeText()
+  const md = await complete({ model: SONNET, system: RULES_SYSTEM, prompt: rulesPrompt({ tree: ctx.tree, qa, corrections: [...corrections, ...(knowledge ? [`Things Ryan has told the agent:\n${knowledge}`] : [])], feedback, previous }), maxTokens: 3500, tag: "[rules]", thinking: true })
   if (!md) {
     warn("rules doc came back empty")
     return
@@ -982,6 +1066,7 @@ async function main() {
   QUIET = { ...QUIET, ...((agent.quiet_hours && typeof agent.quiet_hours === "object") ? agent.quiet_hours : {}) }
   await alertDriveOnce(ctx)
   await noteDriveConnected(ctx)
+  await applyAskAnswers(ctx)
   await applyDecisions(ctx)
   await postDeferred(ctx)
   if (flag("interview")) await seedInterview(ctx)
