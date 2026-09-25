@@ -334,6 +334,7 @@ const HELP = [
   "rules — resend the filing convention",
   "screen <pasted listing text> — screen a deal",
   "inbox pause / inbox resume",
+  "inbox alerts off|deadline|high — per-email pings for things people need from you (default off)",
   "Reply to any card with a question and I'll answer from the thread.",
 ].join("\n")
 
@@ -364,6 +365,11 @@ export async function handleInboxCommand(body: string): Promise<{ text: string; 
   if (/^inbox (pause|stop)$/i.test(t) || /^(pause|stop) inbox$/i.test(t)) {
     await setSetting("agent", { paused: true, paused_at: new Date().toISOString() })
     return { text: "⏸ Inbox agent paused. Cards already posted still work; nothing new until you say “inbox resume”." }
+  }
+  if ((m = /^inbox alerts\s+(off|deadline|high)$/i.exec(t))) {
+    await setSetting("agent", { loop_alerts: m[1].toLowerCase() })
+    const why = { off: "no per-email pings — open items show in the 7:30 brief and `open`", deadline: "ping only when something is due within 24 hours", high: "ping on every high-priority ask" }[m[1].toLowerCase() as "off" | "deadline" | "high"]
+    return { text: `🔔 Loop alerts: <b>${m[1].toLowerCase()}</b> — ${why}.` }
   }
   if (/^inbox (resume|start)$/i.test(t) || /^(resume|start) inbox$/i.test(t)) {
     await setSetting("agent", { paused: false })

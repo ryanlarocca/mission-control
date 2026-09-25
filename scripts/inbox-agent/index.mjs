@@ -736,7 +736,14 @@ async function upsertLoop(ctx, msg, cls, kind) {
     thread_id: msg.threadId, gmail_id: msg.id, subject: msg.subject, counterparty: cls.counterparty || msg.from.name || msg.from.email, counterparty_email: msg.from.email,
     category, ask, due_on: cls.due_on || null, priority, status: "open",
   }).select("*").single()
-  if (data && priority === "high") {
+  // Ryan 2026-09-25: "I don't need Telegram giving me a second alert on every
+  // single email." Loops are tracked silently and surface in the brief /
+  // `open`. inbox_settings.agent.loop_alerts: "off" (default) | "deadline"
+  // (due within 24h only) | "high" (old behaviour).
+  const mode = (await getSetting("agent")).loop_alerts || "off"
+  const dueSoon = cls.due_on && new Date(cls.due_on + "T23:59:59-07:00").getTime() - Date.now() < 24 * 3600_000
+  const alert = mode === "high" ? priority === "high" : mode === "deadline" ? !!dueSoon : false
+  if (data && alert) {
     const text = [
       `🔔 <b>${esc(data.counterparty)}</b> needs something${data.due_on ? ` by <b>${esc(data.due_on)}</b>` : ""}`,
       esc(ask),
