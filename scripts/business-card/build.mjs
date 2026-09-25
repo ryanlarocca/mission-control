@@ -11,7 +11,7 @@ const cfg = {
   name: 'Ryan LaRocca',
   title: 'Founder & CEO',
   company: 'LRG Homes',
-  phone: '(650) 670-3914',
+  phone: '(408) 458-5442',
   email: 'ryan@lrghomes.com',
   site: 'lrghomes.com',
   tagline: 'We buy Bay Area homes for cash.',
