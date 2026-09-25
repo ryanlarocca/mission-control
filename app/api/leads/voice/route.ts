@@ -13,6 +13,8 @@ import {
   sendTelegramAlert,
 } from "@/lib/leads"
 import { isAnonymousCaller } from "@/lib/anonymous"
+import { describeContact, isOfficeLine, openInboundCallTouch, resolveOfficeCaller } from "@/lib/office-inbound"
+import { PROD_BASE } from "@/lib/relationship-calls"
 import { scoreLeadSpam, spamAlertLines, spamReviewColumns, type SpamScore } from "@/lib/lead-spam"
 
 // TwiML voice webhook for LRG Homes Twilio numbers.
@@ -44,14 +46,29 @@ function buildTwiml(callerId: string): string {
 </Response>`
 }
 
+// Office-line call that resolved to a Relationships contact: same Dial, but
+// the outcome + recording thread to the Relationships pipeline via the
+// touch id (brief: BRIEF_OFFICE_LINE_INBOUND_2026-09-24).
+function buildRelationshipTwiml(callerId: string, touchId: string): string {
+  const q = `?touchId=${encodeURIComponent(touchId)}`
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+  <Dial timeout="10" action="${PROD_BASE}/api/crms/call/inbound${q}" method="POST" callerId="${callerId}" record="record-from-answer" recordingStatusCallback="${PROD_BASE}/api/crms/call/recording${q}" recordingStatusCallbackMethod="POST">
+    <Number>${FORWARD_TO}</Number>
+  </Dial>
+</Response>`
+}
+
 export async function POST(request: Request) {
   let twilioNumber = FORWARD_TO
   let callerPhone = ""
+  let callSid: string | null = null
   try {
     const body = await request.text()
     const params = parseTwilioBody(body)
     twilioNumber = params.get("To") || FORWARD_TO
     callerPhone = params.get("From") || ""
+    callSid = params.get("CallSid") || null
   } catch (e) {
     console.error("[voice] Failed to parse Twilio body:", e)
   }
@@ -68,8 +85,36 @@ export async function POST(request: Request) {
     })
   }
 
+  // Office lines (the business card): Relationships → Leads → new
+  // Relationships contact. A caller who resolves to a contact never gets a
+  // lead row; the call is recorded/transcribed onto their card instead.
+  // Anonymous caller ID can't key a contact, so it falls through to the
+  // Leads path below like before.
+  if (callerPhone && isOfficeLine(twilioNumber) && !isAnonymousCaller(callerPhone)) {
+    try {
+      const sb = getLeadsClient()
+      const who = await resolveOfficeCaller(sb, callerPhone)
+      if (who.kind === "relationship") {
+        const touchId = await openInboundCallTouch(sb, who, callSid)
+        await sendTelegramAlert(`📲 Office line call — ${describeContact(who)} — ${callerPhone}`)
+        if (touchId) {
+          return new NextResponse(buildRelationshipTwiml(twilioNumber, touchId), {
+            headers: { "Content-Type": "text/xml" },
+          })
+        }
+        // Touch insert failed: still connect the call on the plain Dial so
+        // Ryan's cell rings; the recording just won't have a home.
+        console.error(`[voice] office-line touch missing for ${callerPhone}; dialing without a touch`)
+        return new NextResponse(buildTwiml(twilioNumber), { headers: { "Content-Type": "text/xml" } })
+      }
+    } catch (e) {
+      console.error("[voice] office-line resolve threw; falling back to lead intake:", e)
+    }
+  }
+
   if (callerPhone) {
     const source = getCampaignSource(twilioNumber)
+    const isOffice = isOfficeLine(twilioNumber)
     // Landing-page Google Ads number gets its own source_type + drip path.
     // Everything else (MFM-A/B, outbound callback) stays on direct-mail.
     const isGoogleAds = twilioNumber === "+16506703914"
@@ -121,8 +166,11 @@ export async function POST(request: Request) {
 
       const insertRow: Record<string, unknown> = {
         source: existingRow?.source || source,
+        // Office lines are neither a mailer nor an ad — "office" keeps
+        // Campaign Performance from counting a business-card call as
+        // direct mail.
         source_type:
-          existingRow?.source_type || (isGoogleAds ? "google_ads" : "direct_mail"),
+          existingRow?.source_type || (isGoogleAds ? "google_ads" : isOffice ? "office" : "direct_mail"),
         twilio_number: twilioNumber,
         caller_phone: callerPhone,
         lead_type: "call",

@@ -15,6 +15,8 @@ import {
   sendTelegramAlert,
 } from "@/lib/leads"
 import { scoreLeadSpam, spamAlertLines, spamReviewColumns, type SpamScore } from "@/lib/lead-spam"
+import { isAnonymousCaller } from "@/lib/anonymous"
+import { describeContact, isOfficeLine, logInboundTextTouch, resolveOfficeCaller } from "@/lib/office-inbound"
 
 // Twilio fires this when a lead texts any of our lead-facing lines (the
 // campaign lines, the ported mailer lines, the Google Ads line, the office
@@ -60,7 +62,29 @@ export async function POST(request: Request) {
     return new NextResponse(EMPTY_TWIML, { status: 200, headers: { "Content-Type": "text/xml" } })
   }
 
+  // Office lines (the business card): Relationships → Leads → new
+  // Relationships contact (brief: BRIEF_OFFICE_LINE_INBOUND_2026-09-24). A
+  // text from a contact lands on their card as an inbound touch, never as a
+  // lead row. STOP keywords from a contact are just logged — they're not in
+  // any drip to begin with.
+  if (from && to && isOfficeLine(to) && !isAnonymousCaller(from)) {
+    try {
+      const sb = getLeadsClient()
+      const who = await resolveOfficeCaller(sb, from)
+      if (who.kind === "relationship") {
+        await logInboundTextTouch(sb, who, bodyText)
+        const preview = bodyText.length > 300 ? bodyText.slice(0, 300) + "…" : bodyText
+        const escaped = preview.replace(/[<>&]/g, c => c === "<" ? "&lt;" : c === ">" ? "&gt;" : "&amp;")
+        await sendTelegramAlert(`💬 Office line text — ${describeContact(who)} — ${from}\n"${escaped}"`)
+        return new NextResponse(EMPTY_TWIML, { headers: { "Content-Type": "text/xml" } })
+      }
+    } catch (e) {
+      console.error("[sms] office-line resolve threw; falling back to lead intake:", e)
+    }
+  }
+
   const source = getCampaignSource(to)
+  const isOffice = isOfficeLine(to)
   const isDnc = isDncMessage(bodyText)
   // Landing-page Google Ads number gets google_ads source_type + the
   // google_ads_form drip path; MFM-A/B + outbound callback stay on direct-mail.
@@ -165,7 +189,7 @@ export async function POST(request: Request) {
       const insertRow: Record<string, unknown> = {
         source: existingRow?.source || source,
         source_type:
-          existingRow?.source_type || (isGoogleAds ? "google_ads" : "direct_mail"),
+          existingRow?.source_type || (isGoogleAds ? "google_ads" : isOffice ? "office" : "direct_mail"),
         twilio_number: to || null,
         caller_phone: from,
         lead_type: "sms",

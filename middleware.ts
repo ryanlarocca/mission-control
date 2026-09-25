@@ -23,6 +23,9 @@ const PUBLIC_PATHS = [
   "/api/crms/call/bridge",
   "/api/crms/call/recording",
   "/api/crms/call/status",
+  // Office-line inbound calls that resolve to a Relationships contact: the
+  // <Dial action> (answered → stamp; else voicemail greeting + record).
+  "/api/crms/call/inbound",
   // Google Cloud Pub/Sub pushes Gmail-watch notifications here without
   // a session cookie. Auth on this path is enforced by Pub/Sub itself
   // (subscription origin) — see scripts/setup-gmail-watch.js.

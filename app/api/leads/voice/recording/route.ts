@@ -5,6 +5,7 @@ import {
   getLeadsClient,
   parseTwilioBody,
   processRecordingBackground,
+  isOwnedNumber,
 } from "@/lib/leads"
 
 // Recording handler — fires for both voicemails (<Record action="...">) and
@@ -72,6 +73,14 @@ export async function POST(request: Request) {
 
   if (!recordingUrl || !callerPhone) {
     console.warn(`[recording] Missing fields — url:${!!recordingUrl} from:${!!callerPhone}`)
+    return twimlResponse()
+  }
+  // Same guard as /voice: a recording whose caller is one of our own Twilio
+  // numbers is the system dialing itself (a test call, the outbound
+  // caller-ID leg). /voice never wrote a lead row for it, so the fallback
+  // insert below would file a phantom "voicemail" for our own number.
+  if (isOwnedNumber(callerPhone)) {
+    console.warn(`[recording] self-originated recording from our own number ${callerPhone} -> ${twilioNumber}; not filing a lead`)
     return twimlResponse()
   }
 
