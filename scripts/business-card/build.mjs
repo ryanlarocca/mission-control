@@ -15,7 +15,7 @@ const cfg = {
   email: 'ryan@lrghomes.com',
   site: 'lrghomes.com',
   tagline: 'We buy Bay Area homes for cash.',
-  sub: 'Any condition. No repairs, no commissions. Close on your timeline.',
+  sub: 'Any condition. No repairs. Close on your timeline.',
   qrUrl: 'https://www.lrghomes.com/?utm_source=bizcard',
 };
 const qr = await QRCode.toString(cfg.qrUrl, { type: 'svg', margin: 0, color: { dark: NAVY, light: '#0000' }, errorCorrectionLevel: 'M' });
@@ -72,7 +72,7 @@ const back = (guides) => `<!doctype html><html><head><style>${css}
   <img class="mark" src="${logoDark}">
   <div class="h">${cfg.tagline}</div>
   <div class="s">${cfg.sub}</div>
-  <div class="proof"><span>★★★★★</span>&nbsp; 4.9 &nbsp;·&nbsp; 29 reviews<br>Google &amp; Yelp &nbsp;·&nbsp; South Bay since 2017</div>
+  <div class="proof"><span>★★★★★</span>&nbsp; 4.9 &nbsp;·&nbsp; 29 reviews<br>Google &amp; Yelp &nbsp;·&nbsp; South Bay since 2012</div>
 </div>
 <div class="trim"></div>
 </div></body></html>`;
