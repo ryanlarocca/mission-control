@@ -398,3 +398,91 @@ export async function handleInboxCommand(body: string): Promise<{ text: string; 
   }
   return null
 }
+
+// ------------------------------------------------------------- setup questions, instantly
+// The worker asks one setup question per pass (5 min), which felt slow to
+// Ryan (2026-09-24). So the webhook advances the queue itself the moment he
+// answers: post the next question now; when the queue is empty, write the
+// convention (Sonnet, ~30-60 s, run inside waitUntil) and post it as a file.
+// The worker's interviewStep stays as the fallback and skips anything already
+// "asked" / "generating".
+
+function tgToken(): string | undefined {
+  return process.env.CAMPAIGN_BOT_TOKEN || process.env.TELEGRAM_BOT_TOKEN
+}
+async function tgSendHtml(text: string, buttons?: Array<Array<{ text: string; data: string }>>): Promise<number | null> {
+  const token = tgToken()
+  const chat = process.env.TELEGRAM_CHAT_ID
+  if (!token || !chat) return null
+  const body: Record<string, unknown> = { chat_id: chat, text: text.slice(0, 4000), parse_mode: "HTML", disable_web_page_preview: true }
+  if (buttons?.length) body.reply_markup = { inline_keyboard: buttons.map((r) => r.map((b) => ({ text: b.text, callback_data: b.data }))) }
+  const res = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) })
+  const json = (await res.json()) as { ok?: boolean; result?: { message_id?: number } }
+  return json.ok ? json.result?.message_id ?? null : null
+}
+async function tgSendMarkdownFile(filename: string, content: string, caption: string, buttons: Array<Array<{ text: string; data: string }>>): Promise<number | null> {
+  const token = tgToken()
+  const chat = process.env.TELEGRAM_CHAT_ID
+  if (!token || !chat) return null
+  const form = new FormData()
+  form.append("chat_id", chat)
+  form.append("document", new Blob([content], { type: "text/markdown" }), filename)
+  form.append("caption", caption.slice(0, 1000))
+  form.append("reply_markup", JSON.stringify({ inline_keyboard: buttons.map((r) => r.map((b) => ({ text: b.text, callback_data: b.data }))) }))
+  const res = await fetch(`https://api.telegram.org/bot${token}/sendDocument`, { method: "POST", body: form })
+  const json = (await res.json()) as { ok?: boolean; result?: { message_id?: number } }
+  return json.ok ? json.result?.message_id ?? null : null
+}
+function dateLabel(iso: string | null | undefined): string {
+  if (!iso) return "?"
+  return new Intl.DateTimeFormat("en-US", { timeZone: "America/Los_Angeles", month: "short", day: "numeric" }).format(new Date(iso))
+}
+
+const RULES_SYSTEM = `You write a short, precise filing convention document for a real-estate investor's Google Drive, learned from how he already organizes it and from his answers to a set of setup questions about specific documents. Write in his terms, not yours. Markdown, ≤ 900 words. Sections: Folder structure (with the tree), Naming convention (patterns with examples, one per document type he answered on), Special cases (DocuSign completions, Zix/escrow packets, leads/OMs, flyers, invoices/bids, tax/insurance), What NOT to file. Where his answers conflict with the existing tree, follow his answers and say so. Where a document type was never covered, write "ASK" so the agent re-opens the setup questions instead of guessing.`
+
+/** Post the next pending setup question, or (queue empty) write + post the convention. */
+export async function advanceSetup(): Promise<void> {
+  const sb = getLeadsClient()
+  const rules = await getSetting("rules")
+  if (["approved", "draft", "revise", "generating"].includes(String(rules.status))) return
+  const { data: asked } = await sb.from("inbox_interview").select("id").eq("status", "asked").limit(1)
+  if (asked?.length) return
+  const { data: next } = await sb.from("inbox_interview").select("*, inbox_files(*)").eq("status", "pending").order("seq").limit(1)
+  const { count: total } = await sb.from("inbox_interview").select("id", { count: "exact", head: true })
+  if (next?.length) {
+    const iv = next[0] as { id: string; seq: number; question: string | null; guess_folder: string; guess_name: string; inbox_files: { filename: string; sender: string; subject: string; received_at: string | null; doc_type: string | null } }
+    const f = iv.inbox_files
+    const text = [
+      `🗂 <b>Setup question ${iv.seq}/${total}</b> — teaching me your filing`,
+      `<b>${esc(f.filename)}</b> — ${esc(iv.question || f.doc_type)}`,
+      `From ${esc(f.sender)} · ${dateLabel(f.received_at)} · “${esc((f.subject || "").slice(0, 70))}”`,
+      `My guess: <b>${esc(iv.guess_folder)}/</b>${esc(iv.guess_name)}`,
+      `Where would you put it and what would you call it? Tap ✅ if my guess is right, or reply to this message with the folder + name.`,
+    ].join("\n")
+    const mid = await tgSendHtml(text, [[{ text: "✅ Use my guess", data: `ix:io:${iv.id}` }, { text: "⏭ Skip", data: `ix:is:${iv.id}` }]])
+    await sb.from("inbox_interview").update({ status: "asked", asked_at: new Date().toISOString(), tg_message_id: mid }).eq("id", iv.id)
+    return
+  }
+  // Queue empty → convention.
+  const { count: answered } = await sb.from("inbox_interview").select("id", { count: "exact", head: true }).in("status", ["answered", "skipped"])
+  if (!answered) return
+  await setSetting("rules", { status: "generating" })
+  await tgSendHtml(`📐 That's all ${total} — writing up your filing convention now (about a minute).`)
+  try {
+    const { data: ivs } = await sb.from("inbox_interview").select("*, inbox_files(filename, sender, subject, doc_type, property_label)").in("status", ["answered", "skipped"]).order("seq")
+    const qa = (ivs || []).map((iv) => {
+      const f = (iv as { inbox_files?: { filename: string; sender: string; doc_type: string | null; property_label: string | null } }).inbox_files
+      return `${iv.seq}. DOC: ${f?.filename} (${iv.question || f?.doc_type}; from ${f?.sender}; property ${f?.property_label || "unknown"}) · GUESS: ${iv.guess_folder}/${iv.guess_name} · RYAN: ${iv.answer_kind === "accepted" ? "accepted my guess" : iv.answer_kind === "skipped" ? "skipped (don't file this kind)" : iv.answer_text}`
+    })
+    const { data: corr } = await sb.from("inbox_rules").select("*").eq("source", "correction")
+    const drive = await getSetting("drive")
+    const prompt = `EXISTING DRIVE TREE (relative to the shared "Business Operations" root):\n${String(drive.tree_cache || "(unknown)")}\n\nSETUP QUESTIONS (one document at a time; "accepted my guess" means the guess IS his answer):\n${qa.join("\n") || "(none)"}\n\nCORRECTIONS HE MADE WHILE FILING:\n${(corr || []).map((r) => `- ${r.sender_domain} ${r.doc_type} → ${r.folder_template}/${r.filename_template}${r.note ? ` (${r.note})` : ""}`).join("\n") || "(none)"}\n\nWrite the convention document now (markdown only, no preamble).`
+    const out = await completeText({ model: SONNET, system: RULES_SYSTEM, prompt, maxTokens: 3000, tag: "[inbox-rules]" })
+    if (!out.text) throw new Error("empty convention")
+    const mid = await tgSendMarkdownFile("INBOX_FILING_RULES.md", out.text, "📐 Here's the filing convention I learned from your answers. Tap 👍 if it's right, or reply to this message with changes.", [[{ text: "👍 That's right", data: "ix:ro" }, { text: "✏️ Needs changes", data: "ix:rn" }]])
+    await setSetting("rules", { md: out.text, status: "draft", tg_message_id: mid, published_at: new Date().toISOString(), feedback: null, version: Number(rules.version || 0) + 1 })
+  } catch (e) {
+    await setSetting("rules", { status: "interview" })
+    await tgSendHtml(`⚠️ Couldn't write the convention — ${esc(e instanceof Error ? e.message : String(e))}. The worker will retry on its next pass.`)
+  }
+}

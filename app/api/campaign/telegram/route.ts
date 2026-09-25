@@ -35,7 +35,7 @@ import {
   type Tier,
 } from "@/lib/contactIntake"
 import { CALENDAR_INTENT_RE, createCalendarEvent, extractEvent } from "@/lib/calendarIntake"
-import { INBOX_CB_PREFIX, answerInboxQuestion, findInboxByTgMessage, handleInboxCallback, handleInboxCommand, looksLikeQuestion, recordInboxReply } from "@/lib/inboxAgent"
+import { INBOX_CB_PREFIX, advanceSetup, answerInboxQuestion, findInboxByTgMessage, handleInboxCallback, handleInboxCommand, looksLikeQuestion, recordInboxReply } from "@/lib/inboxAgent"
 
 // Dedicated campaign-bot webhook — the ZERO-TOKEN action path (2026-07-23,
 // Ryan: "get the thinking time down... maybe even no tokens"). The campaign
@@ -364,6 +364,10 @@ export async function POST(request: Request) {
     // loops, deal screens. Supabase-only here; the Mac mini worker executes.
     if (cb.data.startsWith(INBOX_CB_PREFIX)) {
       const out = await handleInboxCallback(cb.data)
+      // Setup answers advance the queue right away (next question, or the
+      // convention write-up in the background) instead of waiting for the
+      // worker's 5-minute pass.
+      if (/^ix:i[os]:/.test(cb.data)) waitUntil(advanceSetup().catch((e) => console.error("[inbox] advanceSetup:", e instanceof Error ? e.message : String(e))))
       await tg("answerCallbackQuery", { callback_query_id: cb.id, text: out.toast })
       if (out.clearButtons) {
         await tg("editMessageReplyMarkup", { chat_id: chatId, message_id: cb.message?.message_id, reply_markup: { inline_keyboard: [] } })
@@ -697,6 +701,7 @@ export async function POST(request: Request) {
       const job = (async () => {
         const answer = isQuestion ? await answerInboxQuestion(inboxRef, body) : await recordInboxReply(inboxRef, body)
         await tg("sendMessage", { chat_id: chatId, text: answer, reply_to_message_id: msg.message_id, disable_web_page_preview: true })
+        if (!isQuestion && inboxRef.kind === "interview") waitUntil(advanceSetup().catch((e) => console.error("[inbox] advanceSetup:", e instanceof Error ? e.message : String(e))))
       })()
       if (slow) {
         waitUntil(job.catch(async (e) => {

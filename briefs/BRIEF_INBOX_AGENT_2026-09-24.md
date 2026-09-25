@@ -36,9 +36,9 @@ sends email.
      classifier — it has to be Ryan.)
   2. admin.google.com → Security → API controls → Domain-wide delegation → client
      `118033894408819500850` → add `https://www.googleapis.com/auth/drive`.
-  Verify: `node scripts/inbox-agent/index.mjs --drive-check`.
-  Until then everything except the upload works (classification, interview, loops,
-  screens); attachments queue as `waiting`.
+  3. Enable the Drive API on GCP project `lrg-mission-control` (the service account can do
+     this itself via Service Usage; done 2026-09-24).
+  Verify: `node scripts/inbox-agent/index.mjs --drive-check`. **All three done 2026-09-24 ~9:50pm PT — Drive is connected.**
 
 ### Drive survey (2026-09-24) — how Ryan already organizes
 

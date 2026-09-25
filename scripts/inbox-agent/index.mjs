@@ -790,7 +790,7 @@ async function seedInterview(ctx) {
 
 async function interviewStep(ctx) {
   const rules = await getSetting("rules")
-  if (rules.status === "approved" || rules.status === "draft" || rules.status === "revise") return
+  if (["approved", "draft", "revise", "generating"].includes(rules.status)) return
   const { data: asked } = await sb().from("inbox_interview").select("id, asked_at").eq("status", "asked").limit(1)
   if (asked?.length) {
     if (daysAgo(asked[0].asked_at) >= 3) log("interview: waiting on Ryan (3+ days)")
