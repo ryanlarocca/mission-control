@@ -31,7 +31,7 @@ import {
   daysAgo, fetchAll, getSetting, keysMatch, log, propertyKey, ptDateLabel, ptParts, sanitizeFilename, sb, setSetting, warn,
 } from "./env.mjs"
 import { addLabel, getAttachmentBytes, getMessage, gmailClient, listMessageIds, sentThreadsSince } from "./gmail.mjs"
-import { driveClient, findFileByName, findRoot, folderTree, propertyFolders, resolvePath, uploadFile } from "./drive.mjs"
+import { driveClient, findFileByName, findRoot, folderTree, moveFile, propertyFolders, resolvePath, uploadFile } from "./drive.mjs"
 import { esc, tgClearButtons, tgSend, tgSendDocument } from "./telegram.mjs"
 import {
   CLASSIFY_SYSTEM, FILING_SYSTEM, HAIKU, RULES_SYSTEM, SCREEN_SYSTEM, SONNET,
@@ -108,6 +108,29 @@ function shortSubject(s, n = 70) {
 function extOf(name) {
   const m = /\.([a-z0-9]{1,6})$/i.exec(name || "")
   return m ? m[1].toLowerCase() : ""
+}
+// Quiet hours (default 9pm–7am PT): only high-priority loops and direct
+// deals post; everything else is held as pending_post and released after 7.
+let QUIET = { start: 21, end: 7 }
+function isQuiet() {
+  const { hour } = ptParts()
+  return QUIET.start > QUIET.end ? hour >= QUIET.start || hour < QUIET.end : hour >= QUIET.start && hour < QUIET.end
+}
+// Broker-blast first cut: Santa Clara County, 2+ units, per-door not clearly
+// above the ladder. Ryan's 👀/🚫 taps on past blasts calibrate the model.
+const SCC_CITIES = /san jose|sunnyvale|milpitas|campbell|santa clara|cupertino|mountain view|los gatos|saratoga|morgan hill|gilroy|palo alto|los altos|willow glen|alum rock/i
+const PER_DOOR_CEILING = { downtown: 230000, milpitas: 340000, sunnyvale: 400000, default: 400000 }
+function blastPassesCut(out, cls) {
+  const facts = out.facts || {}
+  const addr = `${out.address || ""} ${cls.deal?.address || ""}`
+  const units = Number(facts.units) || Number(cls.deal?.units) || 0
+  if (!SCC_CITIES.test(addr)) return { ok: false, why: "outside Santa Clara County" }
+  if (units && units < 2) return { ok: false, why: "single unit" }
+  const ppd = Number(String(facts.price_per_door || "").replace(/[$,]/g, ""))
+  const ceiling = /downtown|95112|95110|95113|95126|95116/i.test(addr) ? PER_DOOR_CEILING.downtown : /milpitas/i.test(addr) ? PER_DOOR_CEILING.milpitas : PER_DOOR_CEILING.default
+  if (ppd && ppd > ceiling * 1.15) return { ok: false, why: `$${Math.round(ppd).toLocaleString()}/door is above the ladder` }
+  if (out.verdict === "pass" && ppd && ppd > ceiling) return { ok: false, why: "model pass + above ladder" }
+  return { ok: true, why: out.verdict === "look_further" ? "worth a look" : "under the ladder" }
 }
 
 // ------------------------------------------------------------------ context
@@ -295,10 +318,53 @@ function proposalText(row, p, { auto = false } = {}) {
 }
 
 async function postProposal(ctx, row, p) {
+  if (isQuiet()) {
+    if (!DRY) await sb().from("inbox_files").update({ proposed_folder: p.folder, proposed_name: p.name, rule_id: p.rule?.id || null, confidence: p.confidence, status: "pending_post", mode: "training" }).eq("id", row.id)
+    return
+  }
   const rows = [[{ text: "✅ Approve", data: `ix:fa:${row.id}` }, { text: "✏️ Change", data: `ix:fc:${row.id}` }, { text: "⏭ Skip", data: `ix:fs:${row.id}` }]]
   const mid = await tgSend(proposalText(row, p), { rows, dryRun: DRY })
   if (!DRY) {
     await sb().from("inbox_files").update({ proposed_folder: p.folder, proposed_name: p.name, rule_id: p.rule?.id || null, confidence: p.confidence, status: "pending", tg_message_id: mid, mode: "training" }).eq("id", row.id)
+  }
+}
+
+/** Several attachments on one email → one card. Rows keep status "batch" and share the card's message id. */
+async function postBatch(ctx, msg, items) {
+  if (isQuiet()) {
+    if (!DRY) for (const it of items) await sb().from("inbox_files").update({ proposed_folder: it.p.folder, proposed_name: it.p.name, rule_id: it.p.rule?.id || null, confidence: it.p.confidence, status: "pending_post" }).eq("id", it.row.id)
+    return
+  }
+  const who = msg.from.name || msg.from.email
+  const lines = [`📎 <b>${items.length} attachments</b> from ${esc(who)} · ${ptDateLabel(msg.internalDate)} · “${esc(shortSubject(msg.subject))}”`]
+  for (const it of items) lines.push(`• ${esc(it.row.filename)} → <b>${esc(it.p.folder)}/</b>${esc(it.p.name)}`)
+  lines.push("Reply to this card with a correction to apply it to all of them.")
+  const rows = [[{ text: `✅ Approve all ${items.length}`, data: `ix:ba:${msg.id}` }], [{ text: "🗂 Pick individually", data: `ix:bp:${msg.id}` }, { text: "⏭ Skip all", data: `ix:bs:${msg.id}` }]]
+  const mid = await tgSend(lines.join("\n"), { rows, dryRun: DRY })
+  if (!DRY) for (const it of items) await sb().from("inbox_files").update({ proposed_folder: it.p.folder, proposed_name: it.p.name, rule_id: it.p.rule?.id || null, confidence: it.p.confidence, status: "batch", tg_message_id: mid, mode: "training" }).eq("id", it.row.id)
+}
+
+/** Release cards held by quiet hours or split out of a batch. */
+async function postDeferred(ctx) {
+  if (isQuiet()) return
+  const { data: files } = await sb().from("inbox_files").select("*").eq("status", "pending_post").order("received_at").limit(15)
+  for (const row of files || []) {
+    if (row.proposed_folder && row.proposed_name) {
+      const rows = [[{ text: "✅ Approve", data: `ix:fa:${row.id}` }, { text: "✏️ Change", data: `ix:fc:${row.id}` }, { text: "⏭ Skip", data: `ix:fs:${row.id}` }]]
+      const mid = await tgSend(proposalText(row, { folder: row.proposed_folder, name: row.proposed_name, rule: null, reason: "" }), { rows, dryRun: DRY })
+      if (!DRY) await sb().from("inbox_files").update({ status: "pending", tg_message_id: mid }).eq("id", row.id)
+    } else {
+      const { data: m } = await sb().from("inbox_messages").select("classification").eq("gmail_id", row.gmail_id).maybeSingle()
+      const p = await proposeFor(ctx, row, null, m?.classification)
+      if (p) await postProposal(ctx, row, p)
+    }
+  }
+  const { data: screens } = await sb().from("inbox_deal_screens").select("*").is("tg_message_id", null).filter("facts->>post_pending", "eq", "true").limit(10)
+  for (const scr of screens || []) {
+    const lines = scr.facts?.card_lines || []
+    if (!lines.length) continue
+    const mid = await tgSend(lines.join("\n"), { rows: [[{ text: "👀 Look further", data: `ix:sl:${scr.id}` }, { text: "🚫 Pass", data: `ix:sp:${scr.id}` }]], dryRun: DRY })
+    if (!DRY) await sb().from("inbox_deal_screens").update({ tg_message_id: mid, facts: { ...scr.facts, post_pending: false } }).eq("id", scr.id)
   }
 }
 
@@ -378,7 +444,7 @@ async function applyDecisions(ctx) {
     if (r.ok) {
       const learned = await learnRule(ctx, row, folder, name, { source: "approval" })
       const extra = learned.becameAuto ? `\n🤖 That pattern has ${AUTO_THRESHOLD} approvals in a row — I'll file it automatically from now on (tap ↩️ on any auto-filed one to go back to asking).` : ""
-      await tgSend(`✅ Filed → <b>${esc(folder)}/</b>${esc(name)}${r.created?.length ? ` (new folder: ${esc(r.created.join("/"))})` : ""}\n<a href="${r.url}">open in Drive</a>${extra}`, { replyTo: row.tg_message_id, dryRun: DRY })
+      await tgSend(`✅ Filed → <b>${esc(folder)}/</b>${esc(name)}${r.created?.length ? ` (new folder: ${esc(r.created.join("/"))})` : ""}\n<a href="${r.url}">open in Drive</a>${extra}`, { replyTo: row.tg_message_id, rows: [[{ text: "↩️ Undo", data: `ix:fu:${row.id}` }]], dryRun: DRY })
     } else {
       await tgSend(`⚠️ Couldn't file <b>${esc(name)}</b> — ${esc(r.error)}${r.duplicate ? ` · <a href="${r.url}">existing file</a>` : ""}`, { replyTo: row.tg_message_id, dryRun: DRY })
       if (!DRY && !r.duplicate) await sb().from("inbox_files").update({ status: ctx.drive ? "error" : "approved" }).eq("id", row.id)
@@ -400,10 +466,32 @@ async function applyDecisions(ctx) {
     const r = await fileToDrive(ctx, row, folder, name)
     if (r.ok) {
       await learnRule(ctx, row, folder, name, { source: "correction", note: out.generalize || row.change_text })
-      await tgSend(`✅ Filed → <b>${esc(folder)}/</b>${esc(name)}\n<a href="${r.url}">open in Drive</a>\n<i>Remembered: ${esc(out.generalize || "this destination for that sender + doc type")}</i>`, { replyTo: row.tg_message_id, dryRun: DRY })
+      await tgSend(`✅ Filed → <b>${esc(folder)}/</b>${esc(name)}\n<a href="${r.url}">open in Drive</a>\n<i>Remembered: ${esc(out.generalize || "this destination for that sender + doc type")}</i>`, { replyTo: row.tg_message_id, rows: [[{ text: "↩️ Undo", data: `ix:fu:${row.id}` }]], dryRun: DRY })
     } else {
       await tgSend(`⚠️ Couldn't file <b>${esc(name)}</b> — ${esc(r.error)}`, { replyTo: row.tg_message_id, dryRun: DRY })
       if (!DRY && !r.duplicate) await sb().from("inbox_files").update({ status: ctx.drive ? "error" : "changed" }).eq("id", row.id)
+    }
+  }
+
+  // Undo (24h window enforced on the Vercel side): move to _Unsorted, unlearn.
+  const { data: undos } = await sb().from("inbox_files").select("*").eq("status", "undo_requested").limit(10)
+  for (const row of undos || []) {
+    try {
+      if (!ctx.drive || !ctx.rootId) throw new Error("Drive not available")
+      const { id: unsorted } = await resolvePath(ctx.drive, ctx.rootId, "Properties/_Unsorted", { create: true })
+      if (row.drive_file_id) await moveFile(ctx.drive, row.drive_file_id, unsorted)
+      if (row.rule_id) {
+        const { data: rule } = await sb().from("inbox_rules").select("*").eq("id", row.rule_id).maybeSingle()
+        if (rule) {
+          if (rule.approvals_in_row <= 1) await sb().from("inbox_rules").delete().eq("id", rule.id)
+          else await sb().from("inbox_rules").update({ approvals_in_row: rule.approvals_in_row - 1, mode: "manual", updated_at: isoNow() }).eq("id", rule.id)
+        }
+      }
+      await sb().from("inbox_files").update({ status: "undone", final_folder: "Properties/_Unsorted", resolved_at: isoNow() }).eq("id", row.id)
+      await tgSend(`↩️ Moved <b>${esc(row.final_name)}</b> to Properties/_Unsorted and forgot the rule it taught. Reply to the original proposal with the right place if you want it filed.`, { replyTo: row.tg_message_id, dryRun: DRY })
+    } catch (e) {
+      await sb().from("inbox_files").update({ status: "filed", error: `undo failed: ${e.message}` }).eq("id", row.id)
+      await tgSend(`⚠️ Couldn't undo ${esc(row.final_name)} — ${esc(e.message)}`, { replyTo: row.tg_message_id, dryRun: DRY })
     }
   }
 
@@ -503,9 +591,10 @@ async function handleMessage(ctx, msg) {
   const rules = await getSetting("rules")
   const rulesApproved = rules.status === "approved"
 
-  // --- attachments
+  // --- attachments (3+ on one email → one batch card)
   const atts = relevantAttachments(msg, cls)
   const pdfDocs = []
+  const batch = []
   for (const att of atts) {
     const rec = await recordAttachment(ctx, msg, att, cls, rulesApproved ? "pending" : "waiting")
     if (!rec) continue
@@ -516,9 +605,15 @@ async function handleMessage(ctx, msg) {
     }
     if (!rulesApproved) continue
     const p = await proposeFor(ctx, rec.row, rec.bytes, cls)
-    if (p) await routeProposal(ctx, rec.row, p)
-    else await tgSend(`⚠️ No filing proposal for <b>${esc(att.filename)}</b> (from ${esc(msg.from.email)}) — reply to this with folder + name if you want it filed.`, { dryRun: DRY })
+    if (!p) {
+      await tgSend(`⚠️ No filing proposal for <b>${esc(att.filename)}</b> (from ${esc(msg.from.email)}) — reply to this with folder + name if you want it filed.`, { dryRun: DRY })
+      continue
+    }
+    if (atts.length >= 3 && !(p.rule && p.rule.mode === "auto")) batch.push({ row: rec.row, p })
+    else await routeProposal(ctx, rec.row, p)
   }
+  if (batch.length >= 2) await postBatch(ctx, msg, batch)
+  else for (const it of batch) await routeProposal(ctx, it.row, it.p)
 
   // --- secure-portal notices with nothing attached
   if (kind === "zix" && !atts.length && /portal|secure message center|view message|retrieve/i.test(msg.text)) {
@@ -609,15 +704,23 @@ async function resolveLoops(ctx) {
 async function screenDeal(ctx, msg, cls, pdfDocs) {
   const tier = cls.deal.tier || (cls.kind === "deal_lead" ? "direct" : "blast")
   const docs = tier === "direct" ? pdfDocs.slice(0, 2) : pdfDocs.slice(0, 1)
+  const { data: past } = await sb().from("inbox_deal_screens").select("address, verdict, ryan_verdict, summary").not("ryan_verdict", "is", null).order("created_at", { ascending: false }).limit(20)
+  const calibration = (past || []).map((p) => `- ${p.address || "?"}: model said ${p.verdict}, Ryan said ${p.ryan_verdict}${p.summary ? ` (${p.summary})` : ""}`).join("\n")
   const out = await completeJson({
-    model: tier === "direct" ? SONNET : HAIKU, system: SCREEN_SYSTEM,
+    model: tier === "direct" ? SONNET : HAIKU, system: SCREEN_SYSTEM + (calibration ? `\n\nCALIBRATION — Ryan's own verdicts on recent screens (match his taste, not the model's):\n${calibration}` : ""),
     prompt: screenPrompt({ tier, msg, deal: cls.deal, attachmentsText: (cls.attachments || []).map((a) => a.description).filter(Boolean).join("; ") }),
     docs, maxTokens: 2500, tag: "[screen]", thinking: true,
   })
   if (!out) return
   const facts = out.facts || {}
   const units = Number(facts.units) || Number(cls.deal.units) || null
-  const post = tier === "direct" || (out.verdict === "look_further" && units && units >= 2)
+  let post = tier === "direct"
+  let cut = null
+  if (tier !== "direct") {
+    cut = blastPassesCut(out, cls)
+    post = cut.ok
+    log(`blast ${out.address || "?"}: ${cut.ok ? "SHOW" : "hold"} — ${cut.why}`)
+  }
   const money = (n) => {
     if (n === null || n === undefined || n === "") return "not stated"
     const num = typeof n === "number" ? n : Number(String(n).replace(/[$,]/g, ""))
@@ -636,8 +739,9 @@ async function screenDeal(ctx, msg, cls, pdfDocs) {
     if (post) await tgSend(lines.join("\n"), { dryRun: true })
     return
   }
-  const { data } = await sb().from("inbox_deal_screens").insert({ gmail_id: msg.id, address: out.address || cls.deal.address || null, tier, facts: { ...facts, reasons: out.reasons, questions: out.questions_for_seller }, verdict: out.verdict || "unknown", summary: out.one_liner || null }).select("id").single()
-  if (post && data) {
+  const hold = post && tier !== "direct" && isQuiet()
+  const { data } = await sb().from("inbox_deal_screens").insert({ gmail_id: msg.id, address: out.address || cls.deal.address || null, tier, facts: { ...facts, reasons: out.reasons, questions: out.questions_for_seller, cut: cut?.why || null, shown: post, post_pending: hold, card_lines: hold ? lines : undefined }, verdict: out.verdict || "unknown", summary: out.one_liner || null }).select("id").single()
+  if (post && data && !hold) {
     const mid = await tgSend(lines.join("\n"), { rows: [[{ text: "👀 Look further", data: `ix:sl:${data.id}` }, { text: "🚫 Pass", data: `ix:sp:${data.id}` }]] })
     await sb().from("inbox_deal_screens").update({ tg_message_id: mid }).eq("id", data.id)
   }
@@ -699,7 +803,7 @@ async function interviewStep(ctx) {
     const f = iv.inbox_files
     const who = f.sender
     const text = [
-      `🗂 <b>Interview ${iv.seq}/${total}</b>`,
+      `🗂 <b>Setup question ${iv.seq}/${total}</b> — teaching me your filing`,
       `<b>${esc(f.filename)}</b> — ${esc(iv.question || f.doc_type)}`,
       `From ${esc(who)} · ${ptDateLabel(f.received_at)} · “${esc(shortSubject(f.subject))}”`,
       `My guess: <b>${esc(iv.guess_folder)}/</b>${esc(iv.guess_name)}`,
@@ -759,7 +863,7 @@ async function maybeDigest(ctx, force = false) {
     sb().from("inbox_files").select("filename, property_label").in("status", ["pending", "change_requested"]),
     sb().from("inbox_files").select("id", { count: "exact", head: true }).eq("status", "waiting"),
     sb().from("inbox_files").select("filename").eq("status", "duplicate").gte("created_at", dayAgo),
-    sb().from("inbox_deal_screens").select("address, verdict, summary, tier").gte("created_at", dayAgo),
+    sb().from("inbox_deal_screens").select("address, verdict, summary, tier, facts").gte("created_at", dayAgo),
     sb().from("inbox_interview").select("id", { count: "exact", head: true }).eq("status", "asked"),
     getSetting("rules"),
   ])
@@ -776,15 +880,54 @@ async function maybeDigest(ctx, force = false) {
   if (pending.data?.length) lines.push(`\n<b>Filing proposals waiting for a tap:</b> ${pending.data.length} (${pending.data.slice(0, 4).map((p) => esc(p.filename)).join(", ")}${pending.data.length > 4 ? "…" : ""})`)
   if (filed.data?.length) lines.push(`\n<b>Filed in the last day:</b> ${filed.data.length}\n` + filed.data.slice(0, 8).map((f) => `• ${esc(f.final_folder)}/${esc(f.final_name)}`).join("\n"))
   if (dups.data?.length) lines.push(`\nSkipped as duplicates: ${dups.data.map((d) => esc(d.filename)).join(", ")}`)
-  if (screens.data?.length) lines.push(`\n<b>Deals screened:</b>\n` + screens.data.map((s) => `• ${esc(s.address || "?")} — ${s.verdict === "pass" ? "pass" : s.verdict === "look_further" ? "look further" : "unclear"}${s.summary ? `: ${esc(s.summary)}` : ""}`).join("\n"))
+  if (screens.data?.length) {
+    const shown = screens.data.filter((s) => s.tier === "direct" || s.facts?.shown)
+    const held = screens.data.length - shown.length
+    if (shown.length) lines.push(`\n<b>Deals screened:</b>\n` + shown.map((s) => `• ${esc(s.address || "?")} — ${s.verdict === "pass" ? "pass" : s.verdict === "look_further" ? "look further" : "unclear"}${s.summary ? `: ${esc(s.summary)}` : ""}`).join("\n"))
+    if (held) lines.push(`${held} broker blast${held === 1 ? "" : "s"} screened and held (outside the box).`)
+  }
   if (rules.status !== "approved") {
-    if (interview.count) lines.push(`\n🗂 The Drive interview is waiting on your answer above.`)
+    if (interview.count) lines.push(`\n🗂 A filing setup question is waiting on your answer above.`)
     else if (rules.status === "draft") lines.push(`\n📐 The filing convention is waiting for your 👍 (or changes).`)
     if (waiting.count) lines.push(`${waiting.count} attachment${waiting.count === 1 ? "" : "s"} queued until the convention is approved.`)
   }
   if (ctx.driveErr) lines.push(`\n⚠️ Drive isn't reachable yet: ${esc(ctx.driveErr)}`)
   await tgSend(lines.join("\n"), { dryRun: DRY })
   if (!DRY) await setSetting("agent", { last_digest_date: date })
+}
+
+// ------------------------------------------------------------------ weekly teach-back (Sunday 6pm PT)
+async function maybeTeachback(ctx, force = false) {
+  const { date, hour, weekday } = ptParts()
+  const agent = await getSetting("agent")
+  if (!force && (weekday !== "Sun" || hour < 18 || agent.last_teachback_date === date)) return
+  const weekAgo = new Date(Date.now() - 7 * 86_400_000).toISOString()
+  const [rules, autoFiled, filed, corrected, undone] = await Promise.all([
+    sb().from("inbox_rules").select("*").gte("updated_at", weekAgo).order("updated_at", { ascending: false }),
+    sb().from("inbox_files").select("id", { count: "exact", head: true }).eq("status", "filed").eq("mode", "auto").gte("filed_at", weekAgo),
+    sb().from("inbox_files").select("id", { count: "exact", head: true }).eq("status", "filed").gte("filed_at", weekAgo),
+    sb().from("inbox_files").select("id", { count: "exact", head: true }).not("change_text", "is", null).gte("resolved_at", weekAgo),
+    sb().from("inbox_files").select("id", { count: "exact", head: true }).eq("status", "undone").gte("resolved_at", weekAgo),
+  ])
+  const rs = rules.data || []
+  if (!rs.length && !filed.count) {
+    if (!DRY) await setSetting("agent", { last_teachback_date: date })
+    return
+  }
+  const lines = [`🧠 <b>This week</b> — filed ${filed.count || 0} (${autoFiled.count || 0} automatically), ${corrected.count || 0} correction${corrected.count === 1 ? "" : "s"}, ${undone.count || 0} undo${undone.count === 1 ? "" : "s"}.`]
+  if (rs.length) lines.push(`Rules touched (${rs.length}):`)
+  for (const r of rs.slice(0, 8)) lines.push(`• ${r.mode === "auto" ? "🤖" : "✋"} ${esc(r.sender_domain || "any")} · ${esc(r.doc_type || "any")}${r.property_key ? ` · ${esc(r.property_key)}` : ""} → ${esc(r.folder_template)}/${esc(r.filename_template)} (${r.approvals_in_row}/${AUTO_THRESHOLD})`)
+  const buttons = rs.filter((r) => r.mode === "auto").slice(0, 6).map((r) => [{ text: `✋ Make manual: ${(r.sender_domain || "any").slice(0, 18)} · ${(r.doc_type || "any").replace(/_/g, " ").slice(0, 16)}`, data: `ix:rm:${r.id}` }])
+  const mid = await tgSend(lines.join("\n"), { rows: buttons, dryRun: DRY })
+  if (!DRY) await setSetting("agent", { last_teachback_date: date, teachback_tg_message_id: mid })
+}
+
+async function noteDriveConnected(ctx) {
+  if (!ctx.drive || !ctx.rootId) return
+  const s = await getSetting("drive")
+  if (s.connected_at) return
+  await tgSend(`✅ Drive connected — I can see <b>Business Operations</b> (${esc(s.root_owner || "shared folder")}). Filing starts once the convention is approved.`, { dryRun: DRY })
+  if (!DRY) await setSetting("drive", { connected_at: isoNow(), alerted_date: null })
 }
 
 // ------------------------------------------------------------------ misc commands
@@ -835,13 +978,17 @@ async function main() {
   const ctx = await buildContext()
   if (flag("drive-check")) return driveCheck(ctx)
   const t0 = Date.now()
+  QUIET = { ...QUIET, ...((agent.quiet_hours && typeof agent.quiet_hours === "object") ? agent.quiet_hours : {}) }
   await alertDriveOnce(ctx)
+  await noteDriveConnected(ctx)
   await applyDecisions(ctx)
+  await postDeferred(ctx)
   if (flag("interview")) await seedInterview(ctx)
   if (!flag("no-poll")) await pollInbox(ctx)
   await resolveLoops(ctx)
   await interviewStep(ctx)
   await maybeDigest(ctx, flag("digest-now"))
+  await maybeTeachback(ctx, flag("teachback-now"))
   log(`pass done in ${((Date.now() - t0) / 1000).toFixed(1)}s`)
 }
 

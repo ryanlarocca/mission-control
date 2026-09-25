@@ -1,6 +1,6 @@
 # Brief — LRG Homes Inbox Agent
 
-**Date:** 2026-09-24 · **Owner memo:** `../inbox-agent/PROJECT_MEMO.md` · **Status:** Phase 1 built, interview live
+**Date:** 2026-09-24 · **Owner memo:** `../inbox-agent/PROJECT_MEMO.md` · **Status:** Phase 1 + interactive layer built, setup questions live
 
 Ryan's ask (2026-09-24): a background agent that watches ryan@lrghomes.com, files deal
 documents into Google Drive the way he would, screens inbound deals against his buy box,
@@ -126,6 +126,27 @@ node scripts/inbox-agent/index.mjs --pause / --resume
 Env (all already in `.env.local`): `GOOGLE_SERVICE_ACCOUNT_KEY`, `LRG_SUPABASE_*`,
 `ANTHROPIC_API_KEY`, `CAMPAIGN_BOT_TOKEN`/`TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`.
 Optional: `INBOX_AGENT_MAILBOX`, `INBOX_DRIVE_ROOT_ID`, `INBOX_AUTO_THRESHOLD` (5).
+
+## Telegram interface (agreed with Ryan 2026-09-24, built the same night)
+
+Five card types, each its own message so a tap or reply days later still resolves:
+
+| Card | Buttons | Reply-text means |
+|---|---|---|
+| **Filing** (per attachment; 3+ on one email → one **batch** card) | ✅ Approve · ✏️ Change · ⏭ Skip / ✅ Approve all · 🗂 Pick individually · ⏭ Skip all | a correction ("Halleck folder, keep the name") → filed + learned as a rule |
+| **Filed confirmation** | ↩️ Undo (24 h) | — (undo moves the file to `Properties/_Unsorted` and forgets the rule it taught) |
+| **Setup question** (formerly "interview") | ✅ Use my guess · ⏭ Skip | your own folder + name |
+| **Deal** (direct leads always; blasts only after the first cut) | 👀 Look further · 🚫 Pass | after 👀: a follow-up ("get me rents and the 5+ comps") → Sonnet re-reads the OM + thread and answers on the card; "questions for the agent" come back as a numbered list Ryan sends himself |
+| **Loop** (someone needs something from Ryan) | ✓ Done · ⏰ Snooze 2d | "done", "snooze 3d", or a note |
+
+Cross-cutting behaviour:
+- **Questions on any card** ("what did Lisa say about the per diem?") are answered from the underlying Gmail thread (Haiku) instead of being treated as a correction. Detection: ends in "?" or starts with a question word.
+- **Typed commands**, no reply-to: `inbox` (status + help), `open`, `file <address>`, `find <words>`, `rules`, `screen <pasted listing text>`, `inbox pause` / `inbox resume`.
+- **Blast first cut:** Santa Clara County + 2 or more units + per-door not clearly above the ladder (downtown ≈ $230k, Milpitas ≈ $340k, elsewhere ≈ $400k, 15 % tolerance). Held blasts appear as one count line in the brief. Ryan's 👀/🚫 verdicts on past screens are fed to the model as calibration.
+- **Pass** records the verdict and clears the buttons. Nothing is ever sent to the sender.
+- **Quiet hours** 9 pm–7 am PT (`inbox_settings.agent.quiet_hours`): filing cards and blast cards are held as `pending_post` and released after 7; high-priority loops and direct deals still post.
+- **Weekly teach-back** Sunday 6 pm PT: filed / auto-filed / corrections / undos this week, the rules touched, and ✋ Make manual buttons for any auto rule.
+- **Drive connected** notice posts once when the share + scope land.
 
 ## Not in Phase 1 (decided, not forgotten)
 

@@ -156,3 +156,15 @@ export async function uploadFile(drive, folderId, name, mime, buffer) {
   })
   return data
 }
+
+/** Move a file between folders (undo → Properties/_Unsorted). */
+export async function moveFile(drive, fileId, toFolderId) {
+  const { data } = await drive.files.get({ fileId, fields: "parents", supportsAllDrives: true })
+  await drive.files.update({
+    fileId,
+    addParents: toFolderId,
+    removeParents: (data.parents || []).join(","),
+    fields: "id, webViewLink",
+    supportsAllDrives: true,
+  })
+}

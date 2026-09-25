@@ -35,7 +35,7 @@ import {
   type Tier,
 } from "@/lib/contactIntake"
 import { CALENDAR_INTENT_RE, createCalendarEvent, extractEvent } from "@/lib/calendarIntake"
-import { INBOX_CB_PREFIX, findInboxByTgMessage, handleInboxCallback, recordInboxReply } from "@/lib/inboxAgent"
+import { INBOX_CB_PREFIX, answerInboxQuestion, findInboxByTgMessage, handleInboxCallback, handleInboxCommand, looksLikeQuestion, recordInboxReply } from "@/lib/inboxAgent"
 
 // Dedicated campaign-bot webhook — the ZERO-TOKEN action path (2026-07-23,
 // Ryan: "get the thinking time down... maybe even no tokens"). The campaign
@@ -369,7 +369,12 @@ export async function POST(request: Request) {
         await tg("editMessageReplyMarkup", { chat_id: chatId, message_id: cb.message?.message_id, reply_markup: { inline_keyboard: [] } })
       }
       if (out.text) {
-        await tg("sendMessage", { chat_id: chatId, text: out.text, reply_to_message_id: cb.message?.message_id })
+        await tg("sendMessage", {
+          chat_id: chatId,
+          text: out.text,
+          reply_to_message_id: cb.message?.message_id,
+          ...(out.buttons ? { reply_markup: { inline_keyboard: out.buttons.map((r) => r.map((b) => ({ text: b.text, callback_data: b.data }))) } } : {}),
+        })
       }
       return NextResponse.json({ ok: true })
     }
@@ -620,6 +625,28 @@ export async function POST(request: Request) {
     return NextResponse.json({ ok: true })
   }
 
+  // Inbox Agent typed commands (2026-09-24): inbox / open / file <addr> /
+  // find <words> / rules / screen <text> / inbox pause|resume. Standalone,
+  // no reply-to. Anything unrecognised falls through untouched.
+  if (!msg.reply_to_message && /^(inbox\b|open$|file\s|find\s|rules$|screen\s|(pause|stop|resume|start) inbox$|what'?s (open|waiting))/i.test(body)) {
+    const job = (async () => {
+      const out = await handleInboxCommand(body)
+      if (!out) return
+      await tg("sendMessage", {
+        chat_id: chatId,
+        text: out.text,
+        parse_mode: "HTML",
+        disable_web_page_preview: true,
+        reply_to_message_id: msg.message_id,
+        ...(out.buttons ? { reply_markup: { inline_keyboard: out.buttons.map((r) => r.map((b) => ({ text: b.text, callback_data: b.data }))) } } : {}),
+      })
+    })()
+    waitUntil(job.catch(async (e) => {
+      await tg("sendMessage", { chat_id: chatId, text: `⚠️ Inbox command failed — ${e instanceof Error ? e.message : String(e)}`, reply_to_message_id: msg.message_id })
+    }))
+    return NextResponse.json({ ok: true })
+  }
+
   if (!msg.reply_to_message) {
     await tg("sendMessage", {
       chat_id: chatId,
@@ -660,8 +687,22 @@ export async function POST(request: Request) {
     // something to send. Same "check before the phone branch" rule.
     const inboxRef = await findInboxByTgMessage(repliedTgId)
     if (inboxRef) {
-      const ack = await recordInboxReply(inboxRef, body)
-      await tg("sendMessage", { chat_id: chatId, text: ack, reply_to_message_id: msg.message_id })
+      // A question ("what did Lisa say about the per diem?") is answered from
+      // the thread; a deal follow-up after 👀 gets Sonnet + the OM; anything
+      // else is a correction/answer. Slow paths ack first and finish in
+      // waitUntil so Telegram never re-delivers the update.
+      const isQuestion = looksLikeQuestion(body) && !/^(done|snooze)\b/i.test(body)
+      const slow = isQuestion || inboxRef.kind === "screen"
+      if (slow) await tg("sendMessage", { chat_id: chatId, text: inboxRef.kind === "screen" && !isQuestion ? "🔎 Digging in…" : "🔎 Checking the thread…", reply_to_message_id: msg.message_id })
+      const job = (async () => {
+        const answer = isQuestion ? await answerInboxQuestion(inboxRef, body) : await recordInboxReply(inboxRef, body)
+        await tg("sendMessage", { chat_id: chatId, text: answer, reply_to_message_id: msg.message_id, disable_web_page_preview: true })
+      })()
+      if (slow) {
+        waitUntil(job.catch(async (e) => {
+          await tg("sendMessage", { chat_id: chatId, text: `⚠️ Couldn't answer — ${e instanceof Error ? e.message : String(e)}`, reply_to_message_id: msg.message_id })
+        }))
+      } else await job
       return NextResponse.json({ ok: true })
     }
     const known = await findDraftByTgMessage(repliedTgId)
