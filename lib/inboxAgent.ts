@@ -1,7 +1,8 @@
 import Anthropic from "@anthropic-ai/sdk"
 import { getLeadsClient } from "@/lib/leads"
 import { HAIKU, SONNET, completeText, extractJsonObject } from "@/lib/llm"
-import { fetchAttachment, fetchInboxMessage, fetchInboxThread, renderThread, searchInbox } from "@/lib/inboxGmail"
+import { fetchAttachment, fetchInboxMessage, fetchInboxThread, renderThread, searchInbox, sendThreadedReply } from "@/lib/inboxGmail"
+import { VOICE_SYSTEM } from "@/lib/reply/draft"
 
 // Inbox Agent — the Vercel half (briefs/BRIEF_INBOX_AGENT_2026-09-24.md).
 //
@@ -26,6 +27,8 @@ import { fetchAttachment, fetchInboxMessage, fetchInboxThread, renderThread, sea
 //   ix:ld:<loop>  done            ix:lz:<loop>  snooze 2 days
 //   ix:sl:<scr>   look further    ix:sp:<scr>   pass
 //   ix:rm:<rule>  rule → manual (weekly teach-back)
+//   ix:sr:<scr>   draft a reply to the deal email (slow → route runs it in waitUntil)
+//   ix:ds:<draft> send   ix:de:<draft> edit (reply expected)   ix:dd:<draft> dismiss
 
 export const INBOX_CB_PREFIX = "ix:"
 const UUID = "[0-9a-f-]{36}"
@@ -46,6 +49,7 @@ export type InboxRef =
   | { kind: "rules" }
   | { kind: "loop"; id: string; gmail_id: string | null; thread_id: string | null }
   | { kind: "screen"; id: string; gmail_id: string | null; thread_id: string | null }
+  | { kind: "draft"; id: string; status: string; gmail_id: string | null; thread_id: string | null }
   | { kind: "teachback" }
 
 // ------------------------------------------------------------- settings
@@ -73,14 +77,16 @@ function esc(s: unknown): string {
  *  any branch that could text a lead, exactly like the Reply Planner lookup. */
 export async function findInboxByTgMessage(tgMessageId: number): Promise<InboxRef | null> {
   const sb = getLeadsClient()
-  const [file, iv, loop, screen, rules, agent] = await Promise.all([
+  const [file, iv, loop, screen, rules, agent, draft] = await Promise.all([
     sb.from("inbox_files").select("id, status, gmail_id, thread_id").eq("tg_message_id", tgMessageId).limit(5),
     sb.from("inbox_interview").select("id, status, inbox_files(gmail_id, thread_id)").eq("tg_message_id", tgMessageId).maybeSingle(),
     sb.from("inbox_loops").select("id, gmail_id, thread_id").eq("tg_message_id", tgMessageId).maybeSingle(),
     sb.from("inbox_deal_screens").select("id, gmail_id").eq("tg_message_id", tgMessageId).maybeSingle(),
     getSetting("rules"),
     getSetting("agent"),
+    sb.from("inbox_drafts").select("id, status, gmail_id, thread_id").eq("tg_message_id", tgMessageId).maybeSingle(),
   ])
+  if (draft.data) return { kind: "draft", id: draft.data.id, status: draft.data.status, gmail_id: draft.data.gmail_id, thread_id: draft.data.thread_id }
   if (file.data?.length) {
     const f = file.data[0]
     if (file.data.length > 1 || f.status === "batch") return { kind: "batch", gmail_id: f.gmail_id, thread_id: f.thread_id }
@@ -179,6 +185,11 @@ export async function recordInboxReply(ref: InboxRef, text: string): Promise<str
     }
     case "screen": {
       return followUpOnScreen(ref.id, body)
+    }
+    case "draft": {
+      if (ref.status === "sent") return "That one already went out."
+      if (ref.status !== "draft") return "That draft was replaced — reply to the newest version."
+      return redraftDealReply(ref.id, body)
     }
     case "teachback":
       return "Tap a “Make manual” button, or type `rules`."
@@ -294,6 +305,17 @@ export async function handleInboxCallback(data: string): Promise<InboxCallbackRe
   if ((m = new RegExp(`^ix:sp:(${UUID})$`).exec(data))) {
     await sb.from("inbox_deal_screens").update({ ryan_verdict: "pass" }).eq("id", m[1])
     return { toast: "Pass (nothing sent)", clearButtons: true }
+  }
+  if ((m = new RegExp(`^ix:ds:(${UUID})$`).exec(data))) {
+    const out = await sendInboxDraft(m[1])
+    return out.ok ? { toast: "Sent", clearButtons: true, text: `✅ Sent to ${out.to}. ${out.link}` } : { toast: "Not sent", text: `⚠️ Not sent — ${out.error}` }
+  }
+  if ((m = new RegExp(`^ix:de:(${UUID})$`).exec(data))) {
+    return { toast: "Reply with the changes", text: "✏️ Reply to the draft with what to change (\"shorter\", \"mention I can close in 14 days\", or paste your own wording) and I'll post v2." }
+  }
+  if ((m = new RegExp(`^ix:dd:(${UUID})$`).exec(data))) {
+    await sb.from("inbox_drafts").update({ status: "dismissed" }).eq("id", m[1]).eq("status", "draft")
+    return { toast: "Dismissed", clearButtons: true }
   }
   if ((m = new RegExp(`^ix:rm:(${UUID})$`).exec(data))) {
     await sb.from("inbox_rules").update({ mode: "manual", approvals_in_row: 0, updated_at: now }).eq("id", m[1])
@@ -486,5 +508,114 @@ export async function advanceSetup(): Promise<void> {
   } catch (e) {
     await setSetting("rules", { status: "interview" })
     await tgSendHtml(`⚠️ Couldn't write the convention — ${esc(e instanceof Error ? e.message : String(e))}. The worker will retry on its next pass.`)
+  }
+}
+
+// ------------------------------------------------------------- ✉️ replies to deal emails
+// Ryan 2026-09-24: "we need to be replying to these emails that are direct"
+// and to blasts the filter surfaced. Draft in his voice (Reply Planner's
+// VOICE_SYSTEM) from the thread + the screen + his verdict; post with
+// Send / Edit / Dismiss. Only a Send tap sends, from ryan@lrghomes.com,
+// threaded onto the original. No auto-send, ever.
+
+const DEAL_REPLY_RULES = `Context: an agent or owner emailed Ryan about a property they want him to buy. Ryan already screened it. Write the reply he would send.
+- If Ryan's verdict is PASS: a warm, honest decline that keeps the door open. Give the real reason in one plain sentence (price per door / rents vs price / not his area / asset type) without lecturing or negotiating, thank them for thinking of him, and say what he does buy so the next one fits. Never ask them to lower the price unless Ryan's instructions say so.
+- If Ryan's verdict is LOOK FURTHER (or no verdict yet): thank them, say he's interested enough to dig in, and ask the 2-4 specific questions the screen raised (rents, expenses, condition, seller timing, why selling). Ask for the rent roll / T12 if the OM lacks them. No offer, no number.
+- If the sender is someone Ryan has met or worked with (the thread shows it), match that familiarity.
+- Keep the thread's subject with "Re: ". Body ends with "Ryan" on its own line. Never mention a screen, a model, or an assistant.
+Return JSON { "subject": "...", "body": "..." } and nothing else.`
+
+async function composeDealReply(screenId: string, opts: { instructions?: string; previous?: { subject: string; body: string } }): Promise<{ subject: string; body: string; to: string; toName: string; msg: Awaited<ReturnType<typeof fetchInboxMessage>>; scr: Record<string, unknown> }> {
+  const sb = getLeadsClient()
+  const { data: scr } = await sb.from("inbox_deal_screens").select("*").eq("id", screenId).maybeSingle()
+  if (!scr?.gmail_id) throw new Error("no email behind that screen")
+  const msg = await fetchInboxMessage(scr.gmail_id)
+  const thread = msg.threadId ? await fetchInboxThread(msg.threadId) : [msg]
+  const fromMatch = /^(.*?)\s*<([^>]+)>\s*$/.exec(msg.from)
+  const to = (fromMatch ? fromMatch[2] : msg.from).trim()
+  const toName = (fromMatch ? fromMatch[1] : "").replace(/["']/g, "").trim()
+  const facts = (scr.facts as Record<string, unknown>) || {}
+  const verdict = scr.ryan_verdict === "pass" ? "PASS" : scr.ryan_verdict === "look" ? "LOOK FURTHER" : scr.verdict === "pass" ? "PASS (model; Ryan has not tapped yet)" : "LOOK FURTHER (model; Ryan has not tapped yet)"
+  const prompt = [
+    DEAL_REPLY_RULES,
+    `\nTHREAD (“${msg.subject}”):\n${renderThread(thread, 9000)}`,
+    `\nSCREEN: ${scr.address || "?"} · verdict ${verdict} · ${scr.summary || ""}\nFACTS: ${JSON.stringify({ ...facts, followups: undefined, card_lines: undefined })}`,
+    Array.isArray(facts.followups) && facts.followups.length ? `\nRYAN'S FOLLOW-UP NOTES: ${JSON.stringify(facts.followups)}` : "",
+    opts.previous ? `\nPREVIOUS DRAFT:\nSubject: ${opts.previous.subject}\n${opts.previous.body}\n\nRYAN'S EDIT INSTRUCTIONS: ${opts.instructions}\nRewrite applying the instructions. If he pasted his own wording, use it verbatim and only fix threading/sign-off.` : opts.instructions ? `\nRYAN'S INSTRUCTIONS: ${opts.instructions}` : "",
+  ].join("\n")
+  const out = await completeText({ model: SONNET, system: VOICE_SYSTEM, prompt, maxTokens: 2000, thinking: false, tag: "[inbox-reply]" })
+  const j = JSON.parse(extractJsonObject(out.text)) as { subject?: string; body?: string }
+  if (!j.body) throw new Error("empty draft")
+  const subject = j.subject || (/^re:/i.test(msg.subject) ? msg.subject : `Re: ${msg.subject}`)
+  return { subject, body: j.body.trim(), to, toName, msg, scr: scr as Record<string, unknown> }
+}
+
+async function postDraftCard(draft: { id: string; to_name: string | null; to_email: string; subject: string; body: string; version: number }): Promise<number | null> {
+  const text = [
+    `✉️ <b>Draft to ${esc(draft.to_name || draft.to_email)}</b>${draft.version > 1 ? ` (v${draft.version})` : ""}`,
+    `<i>${esc(draft.subject)}</i>`,
+    "",
+    esc(draft.body),
+    "",
+    "Nothing sends until you tap ✅. Reply to this card with changes for v2.",
+  ].join("\n")
+  return tgSendHtml(text, [[{ text: "✅ Send", data: `ix:ds:${draft.id}` }, { text: "✏️ Edit", data: `ix:de:${draft.id}` }, { text: "❌ Dismiss", data: `ix:dd:${draft.id}` }]])
+}
+
+/** ✉️ on a deal card → draft v1 and post it. Returns the posted draft id. */
+export async function draftDealReply(screenId: string, instructions?: string): Promise<{ ok: boolean; error?: string }> {
+  const sb = getLeadsClient()
+  try {
+    const c = await composeDealReply(screenId, { instructions })
+    const intent = c.scr.ryan_verdict === "pass" ? "pass" : c.scr.ryan_verdict === "look" ? "look" : "custom"
+    await sb.from("inbox_drafts").update({ status: "superseded" }).eq("screen_id", screenId).eq("status", "draft")
+    const { data } = await sb.from("inbox_drafts").insert({ screen_id: screenId, gmail_id: c.msg.id, thread_id: c.msg.threadId, to_email: c.to, to_name: c.toName || null, subject: c.subject, body: c.body, intent, instructions: instructions || null, version: 1 }).select("*").single()
+    if (!data) throw new Error("could not save draft")
+    const mid = await postDraftCard(data)
+    await sb.from("inbox_drafts").update({ tg_message_id: mid }).eq("id", data.id)
+    return { ok: true }
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : String(e) }
+  }
+}
+
+/** Reply-text on a draft card → v(n+1). */
+export async function redraftDealReply(draftId: string, instructions: string): Promise<string> {
+  const sb = getLeadsClient()
+  const { data: prev } = await sb.from("inbox_drafts").select("*").eq("id", draftId).maybeSingle()
+  if (!prev) return "Can't find that draft."
+  if (!prev.screen_id) return "That draft has no deal behind it."
+  try {
+    const c = await composeDealReply(prev.screen_id, { instructions, previous: { subject: prev.subject, body: prev.body } })
+    await sb.from("inbox_drafts").update({ status: "superseded" }).eq("id", draftId)
+    const { data } = await sb.from("inbox_drafts").insert({ screen_id: prev.screen_id, gmail_id: prev.gmail_id, thread_id: prev.thread_id, to_email: prev.to_email, to_name: prev.to_name, subject: c.subject, body: c.body, intent: prev.intent, instructions, version: (prev.version || 1) + 1, parent_id: draftId }).select("*").single()
+    if (!data) throw new Error("could not save v2")
+    const mid = await postDraftCard(data)
+    await sb.from("inbox_drafts").update({ tg_message_id: mid }).eq("id", data.id)
+    // clear the old card's buttons
+    const token = tgToken()
+    if (token && prev.tg_message_id) await fetch(`https://api.telegram.org/bot${token}/editMessageReplyMarkup`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ chat_id: process.env.TELEGRAM_CHAT_ID, message_id: prev.tg_message_id, reply_markup: { inline_keyboard: [] } }) }).catch(() => null)
+    return `✏️ v${data.version} posted above.`
+  } catch (e) {
+    return `⚠️ Couldn't redraft — ${e instanceof Error ? e.message : String(e)}`
+  }
+}
+
+/** ✅ on a draft card. The only path that sends email. */
+export async function sendInboxDraft(draftId: string): Promise<{ ok: boolean; to?: string; link?: string; error?: string }> {
+  const sb = getLeadsClient()
+  const { data: d } = await sb.from("inbox_drafts").select("*").eq("id", draftId).maybeSingle()
+  if (!d) return { ok: false, error: "draft not found" }
+  if (d.status === "sent") return { ok: false, error: "already sent" }
+  if (d.status !== "draft") return { ok: false, error: "that version was replaced — send the newest one" }
+  if (!d.gmail_id) return { ok: false, error: "no original email to reply to" }
+  try {
+    const original = await fetchInboxMessage(d.gmail_id)
+    const sent = await sendThreadedReply(original, { to: d.to_name ? `${d.to_name} <${d.to_email}>` : d.to_email, subject: d.subject, body: d.body })
+    await sb.from("inbox_drafts").update({ status: "sent", sent_at: new Date().toISOString(), sent_gmail_id: sent.id }).eq("id", draftId)
+    if (d.thread_id) await sb.from("inbox_loops").update({ status: "resolved_by_reply", resolved_at: new Date().toISOString() }).eq("thread_id", d.thread_id).in("status", ["open", "snoozed"])
+    return { ok: true, to: d.to_name || d.to_email, link: `https://mail.google.com/mail/u/0/#all/${sent.id}` }
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : String(e) }
   }
 }

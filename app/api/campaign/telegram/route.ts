@@ -35,7 +35,7 @@ import {
   type Tier,
 } from "@/lib/contactIntake"
 import { CALENDAR_INTENT_RE, createCalendarEvent, extractEvent } from "@/lib/calendarIntake"
-import { INBOX_CB_PREFIX, advanceSetup, answerInboxQuestion, findInboxByTgMessage, handleInboxCallback, handleInboxCommand, looksLikeQuestion, recordInboxReply } from "@/lib/inboxAgent"
+import { INBOX_CB_PREFIX, advanceSetup, answerInboxQuestion, draftDealReply, findInboxByTgMessage, handleInboxCallback, handleInboxCommand, looksLikeQuestion, recordInboxReply } from "@/lib/inboxAgent"
 
 // Dedicated campaign-bot webhook — the ZERO-TOKEN action path (2026-07-23,
 // Ryan: "get the thinking time down... maybe even no tokens"). The campaign
@@ -363,6 +363,17 @@ export async function POST(request: Request) {
     // Inbox Agent (2026-09-24): filing approvals, interview answers, open
     // loops, deal screens. Supabase-only here; the Mac mini worker executes.
     if (cb.data.startsWith(INBOX_CB_PREFIX)) {
+      // ✉️ Reply on a deal card: Sonnet + the thread takes 10-30 s — ack now,
+      // draft in the background, post the draft card with Send/Edit/Dismiss.
+      const sr = /^ix:sr:([0-9a-f-]{36})$/.exec(cb.data)
+      if (sr) {
+        await tg("answerCallbackQuery", { callback_query_id: cb.id, text: "Drafting…" })
+        await tg("sendMessage", { chat_id: chatId, text: "✍️ Drafting a reply in your voice…", reply_to_message_id: cb.message?.message_id })
+        waitUntil(draftDealReply(sr[1]).then(async (out) => {
+          if (!out.ok) await tg("sendMessage", { chat_id: chatId, text: `⚠️ Couldn't draft — ${out.error}`, reply_to_message_id: cb.message?.message_id })
+        }))
+        return NextResponse.json({ ok: true })
+      }
       const out = await handleInboxCallback(cb.data)
       // Setup answers advance the queue right away (next question, or the
       // convention write-up in the background) instead of waiting for the
@@ -696,8 +707,8 @@ export async function POST(request: Request) {
       // else is a correction/answer. Slow paths ack first and finish in
       // waitUntil so Telegram never re-delivers the update.
       const isQuestion = looksLikeQuestion(body) && !/^(done|snooze)\b/i.test(body)
-      const slow = isQuestion || inboxRef.kind === "screen"
-      if (slow) await tg("sendMessage", { chat_id: chatId, text: inboxRef.kind === "screen" && !isQuestion ? "🔎 Digging in…" : "🔎 Checking the thread…", reply_to_message_id: msg.message_id })
+      const slow = isQuestion || inboxRef.kind === "screen" || inboxRef.kind === "draft"
+      if (slow) await tg("sendMessage", { chat_id: chatId, text: inboxRef.kind === "draft" && !isQuestion ? "✍️ Redrafting…" : inboxRef.kind === "screen" && !isQuestion ? "🔎 Digging in…" : "🔎 Checking the thread…", reply_to_message_id: msg.message_id })
       const job = (async () => {
         const answer = isQuestion ? await answerInboxQuestion(inboxRef, body) : await recordInboxReply(inboxRef, body)
         await tg("sendMessage", { chat_id: chatId, text: answer, reply_to_message_id: msg.message_id, disable_web_page_preview: true })

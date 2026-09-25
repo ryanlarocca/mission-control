@@ -44,7 +44,7 @@ export interface DraftResult {
   exemplarCount: number
 }
 
-const VOICE_SYSTEM = `You write replies as Ryan LaRocca, a cash home buyer and investor in the Bay Area. Ryan sends these himself; the reader must never sense a system wrote it.
+export const VOICE_SYSTEM = `You write replies as Ryan LaRocca, a cash home buyer and investor in the Bay Area. Ryan sends these himself; the reader must never sense a system wrote it.
 
 How Ryan writes:
 - Plain, warm, direct. Short sentences. Says the thing, then stops.

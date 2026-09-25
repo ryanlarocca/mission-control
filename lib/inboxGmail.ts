@@ -15,6 +15,8 @@ export interface InboxMessage {
   to: string
   subject: string
   text: string
+  messageIdHeader: string
+  references: string
   attachments: Array<{ attachmentId: string; filename: string; mime: string; size: number }>
   link: string
 }
@@ -63,6 +65,8 @@ function toMessage(data: gmail_v1.Schema$Message): InboxMessage {
     from: header(headers, "From"),
     to: header(headers, "To"),
     subject: header(headers, "Subject"),
+    messageIdHeader: header(headers, "Message-ID"),
+    references: header(headers, "References"),
     text: (acc.plain || htmlToText(acc.html)).trim(),
     attachments: acc.attachments,
     link: `https://mail.google.com/mail/u/0/#all/${data.id}`,
@@ -115,4 +119,18 @@ export function renderThread(msgs: InboxMessage[], maxChars = 14000): string {
   let out = parts.join("\n\n")
   if (out.length > maxChars) out = "…" + out.slice(-maxChars)
   return out
+}
+
+/** Send a reply from the inbox mailbox, threaded onto `original`. Returns Gmail's id. */
+export async function sendThreadedReply(original: InboxMessage, args: { to: string; subject: string; body: string }): Promise<{ id: string; threadId: string }> {
+  const { buildEmailMime, toGmailRaw } = await import("@/lib/emailMime")
+  const gmail = getGmailClient(INBOX_MAILBOX)
+  const extraHeaders: string[] = []
+  if (original.messageIdHeader) {
+    extraHeaders.push(`In-Reply-To: ${original.messageIdHeader}`)
+    extraHeaders.push(`References: ${[original.references, original.messageIdHeader].filter(Boolean).join(" ")}`)
+  }
+  const raw = toGmailRaw(buildEmailMime({ from: `Ryan LaRocca <${INBOX_MAILBOX}>`, to: args.to, subject: args.subject, body: args.body, extraHeaders }))
+  const { data } = await gmail.users.messages.send({ userId: "me", requestBody: { raw, threadId: original.threadId || undefined } })
+  return { id: data.id || "", threadId: data.threadId || original.threadId }
 }

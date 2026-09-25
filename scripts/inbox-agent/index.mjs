@@ -434,7 +434,7 @@ async function postDeferred(ctx) {
   for (const scr of screens || []) {
     const lines = scr.facts?.card_lines || []
     if (!lines.length) continue
-    const mid = await tgSend(lines.join("\n"), { rows: [[{ text: "👀 Look further", data: `ix:sl:${scr.id}` }, { text: "🚫 Pass", data: `ix:sp:${scr.id}` }]], dryRun: DRY })
+    const mid = await tgSend(lines.join("\n"), { rows: [[{ text: "👀 Look further", data: `ix:sl:${scr.id}` }, { text: "🚫 Pass", data: `ix:sp:${scr.id}` }, { text: "✉️ Reply", data: `ix:sr:${scr.id}` }]], dryRun: DRY })
     if (!DRY) await sb().from("inbox_deal_screens").update({ tg_message_id: mid, facts: { ...scr.facts, post_pending: false } }).eq("id", scr.id)
   }
 }
@@ -656,7 +656,7 @@ function parseDays(s) {
 }
 
 async function handleMessage(ctx, msg) {
-  const cls = await classify(ctx, msg)
+  let cls = await classify(ctx, msg)
   const kind = cls?.kind || "human"
   await insertMessage(msg, kind, cls)
   if (!cls) return
@@ -700,6 +700,8 @@ async function handleMessage(ctx, msg) {
 
   // --- open loops (things Ryan owes someone)
   if (kind === "docusign_completed" || kind === "esign_completed") await resolveSignatureLoops(msg)
+  // A person who pitched Ryan a deal directly is owed an answer, whatever the screen says.
+  if (cls.deal?.tier === "direct" && !cls.needs_reply) cls = { ...cls, needs_reply: true, ask: cls.ask || `Reply to ${cls.counterparty || msg.from.name || msg.from.email} about ${cls.deal.address || "their deal"}`, category: cls.category || "agent" }
   if (cls.needs_reply || kind === "docusign_request") await upsertLoop(ctx, msg, cls, kind)
 
   // --- deals
@@ -817,7 +819,7 @@ async function screenDeal(ctx, msg, cls, pdfDocs) {
   const hold = post && tier !== "direct" && isQuiet()
   const { data } = await sb().from("inbox_deal_screens").insert({ gmail_id: msg.id, address: out.address || cls.deal.address || null, tier, facts: { ...facts, reasons: out.reasons, questions: out.questions_for_seller, cut: cut?.why || null, shown: post, post_pending: hold, card_lines: hold ? lines : undefined }, verdict: out.verdict || "unknown", summary: out.one_liner || null }).select("id").single()
   if (post && data && !hold) {
-    const mid = await tgSend(lines.join("\n"), { rows: [[{ text: "👀 Look further", data: `ix:sl:${data.id}` }, { text: "🚫 Pass", data: `ix:sp:${data.id}` }]] })
+    const mid = await tgSend(lines.join("\n"), { rows: [[{ text: "👀 Look further", data: `ix:sl:${data.id}` }, { text: "🚫 Pass", data: `ix:sp:${data.id}` }, { text: "✉️ Reply", data: `ix:sr:${data.id}` }]] })
     await sb().from("inbox_deal_screens").update({ tg_message_id: mid }).eq("id", data.id)
   }
 }
