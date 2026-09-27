@@ -765,12 +765,15 @@ async function resolveSignatureLoops(msg) {
   }
 }
 async function resolveLoops(ctx) {
-  const { data: open } = await sb().from("inbox_loops").select("id, thread_id, created_at, tg_message_id, status, snooze_until").in("status", ["open", "snoozed"]).limit(500)
+  const { data: open } = await sb().from("inbox_loops").select("id, thread_id, created_at, tg_message_id, status, snooze_until").in("status", ["open", "snoozed", "acknowledged"]).limit(500)
   if (!open?.length) return
   const sent = await sentThreadsSince(ctx.gmail, 4)
   const now = isoNow()
   for (const l of open) {
-    if (l.status === "snoozed" && l.snooze_until && l.snooze_until <= now) {
+    // Snoozed items and "Got it"-acknowledged items with a due date both carry a
+    // snooze_until; when it passes they reopen (acknowledged with no due date has
+    // snooze_until null, so it stays muted for good).
+    if ((l.status === "snoozed" || l.status === "acknowledged") && l.snooze_until && l.snooze_until <= now) {
       if (!DRY) await sb().from("inbox_loops").update({ status: "open", snooze_until: null }).eq("id", l.id)
     }
     const when = sent.get(l.thread_id)
@@ -1011,7 +1014,23 @@ async function maybeDigest(ctx, force = false) {
   }
   if (ctx.driveErr) lines.push(`\n⚠️ Drive isn't reachable yet: ${esc(ctx.driveErr)}`)
   await tgSend(lines.join("\n"), { dryRun: DRY })
-  if (!DRY) await setSetting("agent", { last_digest_date: date })
+  if (!DRY) {
+    await setSetting("agent", { last_digest_date: date })
+    // Ryan 2026-09-27: "the same thing over and over every day … a way to check
+    // I'm aware and don't need reminding." The brief was text-only, so open
+    // loops rode along every morning with no way to clear them. Post one
+    // actionable card per open loop: ✓ Done kills it, 👀 Got it mutes the daily
+    // nag (resurfacing once the day before its due date), ⏰ Snooze 2d defers.
+    for (const l of open.slice(0, 6)) {
+      const card = `${l.priority === "high" ? "🔴" : "•"} <b>${esc(l.counterparty)}</b> — ${esc(l.ask)}${l.due_on ? ` · due ${esc(l.due_on)}` : ""}`
+      const mid = await tgSend(card, { rows: [[
+        { text: "✓ Done", data: `ix:ld:${l.id}` },
+        { text: "👀 Got it", data: `ix:la:${l.id}` },
+        { text: "⏰ Snooze 2d", data: `ix:lz:${l.id}` },
+      ]] })
+      await sb().from("inbox_loops").update({ tg_message_id: mid, last_digest_at: isoNow() }).eq("id", l.id)
+    }
+  }
 }
 
 // ------------------------------------------------------------------ weekly teach-back (Sunday 6pm PT)

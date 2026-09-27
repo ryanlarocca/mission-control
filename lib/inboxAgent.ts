@@ -172,6 +172,10 @@ export async function recordInboxReply(ref: InboxRef, text: string): Promise<str
         await sb.from("inbox_loops").update({ status: "done", resolved_at: now }).eq("id", ref.id)
         return "✅ Marked done."
       }
+      if (/^(aware|got it|noted|i know|seen|stop reminding|no reminder)\b/.test(lower)) {
+        const how = await acknowledgeLoop(sb, ref.id)
+        return how === "muted" ? "👀 Got it — muted; it won't show in the daily brief." : "👀 Got it — muted; back the day before it's due."
+      }
       const snooze = /^snooze\s*(\d+)?\s*(d|day|days|w|week|weeks)?/.exec(lower)
       if (snooze) {
         const n = Number(snooze[1] || 2)
@@ -225,6 +229,21 @@ export async function followUpOnScreen(screenId: string, ask: string): Promise<s
   const answer = res.content.filter((b): b is Anthropic.TextBlock => b.type === "text").map((b) => b.text).join("").trim() || "No answer."
   await sb.from("inbox_deal_screens").update({ facts: { ...facts, followups: [...prior, { q: ask, a: answer, at: new Date().toISOString() }] } }).eq("id", screenId)
   return answer
+}
+
+// 👀 "Got it": mute a loop's daily nag without closing it. If it still has a due
+// date ahead, it resurfaces once the day before (resolveLoops reopens it when
+// snooze_until passes); with no due date it stays muted for good. Ryan
+// 2026-09-27: "a way to check I'm aware and I don't need reminding anymore."
+async function acknowledgeLoop(sb: ReturnType<typeof getLeadsClient>, id: string): Promise<"muted" | "until-due"> {
+  const { data: row } = await sb.from("inbox_loops").select("due_on").eq("id", id).maybeSingle()
+  let snoozeUntil: string | null = null
+  if (row?.due_on) {
+    const dayBefore = new Date(`${row.due_on}T00:00:00-07:00`).getTime() - 24 * 3600_000
+    if (dayBefore > Date.now()) snoozeUntil = new Date(dayBefore).toISOString()
+  }
+  await sb.from("inbox_loops").update({ status: "acknowledged", snooze_until: snoozeUntil }).eq("id", id)
+  return snoozeUntil ? "until-due" : "muted"
 }
 
 // ------------------------------------------------------------- button taps
@@ -297,6 +316,10 @@ export async function handleInboxCallback(data: string): Promise<InboxCallbackRe
     const until = new Date(Date.now() + 2 * 86_400_000).toISOString()
     await sb.from("inbox_loops").update({ status: "snoozed", snooze_until: until }).eq("id", m[1])
     return { toast: "Snoozed 2 days", clearButtons: true }
+  }
+  if ((m = new RegExp(`^ix:la:(${UUID})$`).exec(data))) {
+    const how = await acknowledgeLoop(sb, m[1])
+    return { toast: how === "muted" ? "Got it — muted" : "Got it — back before it's due", clearButtons: true }
   }
   if ((m = new RegExp(`^ix:sl:(${UUID})$`).exec(data))) {
     await sb.from("inbox_deal_screens").update({ ryan_verdict: "look" }).eq("id", m[1])
