@@ -9,9 +9,10 @@ import { EmailCampaignPerformance } from "@/components/widgets/EmailCampaignPerf
 // email, inline edit, batch approve) and Contacts (search + per-contact
 // timeline + pause/resume/DNC). Engagement tab lands with Phase 5.
 //
-// Approving IS the send authorization: the Mac-mini engine's next pass
-// sends approved rows inside the 9:00a–4:30p window with jitter. Nothing
-// sends from the browser.
+// Approving IS the send authorization: each approval is stamped with a
+// random slot on the NEXT weekday (7a–5p PT, the send-time experiment of
+// 2026-07-31) and the Mac-mini engine sends it once that slot passes.
+// Nothing sends from the browser.
 
 interface QueueSend {
   id: string
@@ -182,7 +183,7 @@ export function EmailCampaignTab() {
       ping(
         scheduleAt
           ? `✓ ${data.approved} scheduled for ${new Date(scheduleAt).toLocaleString([], { weekday: "short", hour: "numeric", minute: "2-digit" })}`
-          : `✓ ${data.approved} queued — engine sends 9:00a–4:30p with spacing`
+          : `✓ ${data.approved} queued — each goes out next weekday at a random time, 7a–5p PT`
       )
       setSelected(new Set())
       setScheduleAt("")
@@ -543,7 +544,7 @@ export function EmailCampaignTab() {
             <span className="text-xs text-zinc-500">
               {scheduleAt
                 ? "Held until your chosen time, then sent (still capped 200/day, Mon–Fri)."
-                : "Approved emails send automatically 9:00a–4:30p PT, spaced out — capped at 200/day."}
+                : "Approved emails go out the next weekday, each at a random time between 7a and 5p PT (Mon–Fri, capped per sender)."}
               {approved.length > 0 && ` ${approved.length} currently queued.`}
             </span>
           </div>

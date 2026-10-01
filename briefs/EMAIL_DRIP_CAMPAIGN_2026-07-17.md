@@ -22,8 +22,22 @@
   auto-suppression. Privacy: non-campaign mail skipped before content.
   info@ watch registered (label AGENT-DRIP, daily renewal covers it).
 - Agents line (650) 910-4007 webhooks live: call relay to cell (caller ID =
-  the line, Telegram ring alert, no whisper, no live-call recording),
-  voicemail record + Telegram link, SMS → event + Telegram + STOP handling.
+  the line, Telegram ring alert, no whisper), voicemail record + Telegram
+  link, SMS → event + Telegram + STOP handling.
+- **2026-10-01 — Relationships plumbing (Ryan: "an agent calling me with a
+  deal is someone I want to stay in touch with"):** every call / text on the
+  agents line and every human email reply resolves to a **Relationships
+  card** (campaign list → Relationships → Leads → new card, **Agent / tier
+  B**, source "Agents Line" or "Agent Email Campaign"), never a lead.
+  `campaign_contacts.relationship_id` links the two (backfilled by
+  `scripts/campaign-link-relationships.mjs`). Inbound events write to BOTH
+  the campaign timeline and `relationship_touches`. **Live calls are now
+  recorded from answer** (Ryan unlocked the 07-17 metadata-only decision —
+  he told the agents verbally) → Whisper + Haiku summary onto the card's
+  notes via the office-line pipeline (`/api/crms/call/recording?line=agents`).
+  Email replies get Haiku triage (deal / interested / question / not_now /
+  remove / retired_or_wrong_person); remove-style replies **auto-DNC with
+  no confirm step** (Ryan's call). The drip never pauses on a reply.
 
 **⏸ WEEKEND LOCKDOWN (2026-07-17, Ryan: start Monday):** the
 `com.lrghomes.campaign-engine` launchd job is **unloaded** — no drafting,
@@ -352,9 +366,12 @@ lead line: the call forwards to Ryan's cell **showing the agents-line
 Twilio number as caller ID** — Ryan saves that number as a phone contact
 ("Agents Line") so every relayed call self-identifies on screen. Context
 arrives via **Telegram alert on ring** (caller name when matched), same as
-the leads pipeline. Live calls are **metadata-only — no recording** (CA
-two-party consent; keep this line clean). After hangup the status webhook
-logs the event; Telegram follow-up:
+the leads pipeline. ~~Live calls are **metadata-only — no recording** (CA
+two-party consent; keep this line clean).~~ **Superseded 2026-10-01:** live
+calls record from answer and are transcribed + summarized onto the
+agent's Relationships card, same as the business-card office lines (Ryan
+notified the agents verbally and unlocked this). After hangup the status
+webhook logs the event; Telegram follow-up:
 "Talked to Maria Delgado (after T3, 6 min) — [🎙 dictate note] [➕
 Relationships] [nothing to do]". A dictated note lands on the contact
 timeline.
