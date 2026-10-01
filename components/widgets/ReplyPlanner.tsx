@@ -82,15 +82,15 @@ export function ReplyPlanner(p: {
 
   return (
     <div className="mb-2">
-      <div className="flex items-center justify-between gap-2 mb-1">
-        <div className="text-xs text-zinc-500">{p.hideChips ? "Draft" : "Plan"}</div>
-        <div className="flex items-center gap-3">
-          {busy && (
-            <span className="text-[11px] text-zinc-500 inline-flex items-center gap-1">
-              <Loader2 className="w-3 h-3 animate-spin" /> {plan ? "Drafting from plan…" : "Planning…"}
-            </span>
-          )}
-          {!busy && p.status && <span className="text-[11px] text-zinc-600 truncate max-w-[220px]">{p.status}</span>}
+      <div className="flex items-center gap-2 mb-1">
+        <div className="text-xs text-zinc-500 shrink-0">{p.hideChips ? "Draft" : "Plan"}</div>
+        {busy && (
+          <span className="text-[11px] text-zinc-500 inline-flex items-center gap-1 min-w-0 flex-1 truncate">
+            <Loader2 className="w-3 h-3 animate-spin shrink-0" /> {plan ? "Drafting from plan…" : "Planning…"}
+          </span>
+        )}
+        {!busy && p.status && <span className="text-[11px] text-zinc-600 truncate min-w-0 flex-1">{p.status}</span>}
+        <div className="flex items-center gap-3 shrink-0 ml-auto">
           <button
             onClick={() => setOpen(o => !o)}
             disabled={busy || !plan}
