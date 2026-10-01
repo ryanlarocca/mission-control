@@ -3,6 +3,14 @@ import type { SupabaseClient } from "@supabase/supabase-js"
 import { getGmailClient, getLeadsClient } from "@/lib/leads"
 import { sendCampaignAlert } from "@/lib/campaignAlerts"
 import { addSuppression } from "@/lib/suppression"
+import { completeText, extractJsonObject, hasLlmKey, HAIKU } from "@/lib/llm"
+import {
+  type AgentContact,
+  type CampaignContactLite,
+  logInboundEmailTouch,
+  markRelationshipDoNotContact,
+  resolveAgentContact,
+} from "@/lib/agentsLineInbound"
 
 // info@lrghomes.com inbox pipeline for the agent email-drip campaign
 // (Phases 4 + 5a of briefs/EMAIL_DRIP_CAMPAIGN_2026-07-17.md).
@@ -19,9 +27,13 @@ import { addSuppression } from "@/lib/suppression"
 //   unsubscribes → "remove"-style replies auto-add master suppression
 //                  (channel 'email'), mark 'unsubscribed', cancel queued
 //                  sends. Telegram FYI — nothing for Ryan to do.
-//   replies      → contact marked 'replied' (drip pauses), timeline event,
-//                  queued sends cancelled, immediate Telegram alert
-//                  (locked decision: every reply alerts, from day one).
+//   replies      → timeline event + inbound email touch on the agent's
+//                  Relationships card (created tier B if new — 2026-10-01),
+//                  AI triage (deal / interested / question / not_now /
+//                  remove / retired_or_wrong_person), immediate Telegram
+//                  alert. The drip NEVER pauses on a reply (Ryan 2026-07-20,
+//                  reaffirmed 2026-10-01); only remove-style replies stop it
+//                  — those auto-DNC (Ryan 2026-10-01: fully automatic).
 
 // Sender migration 2026-08-06 (info@ reputation burned — Ryan's call):
 // ryansvr@ is the campaign's outbound gun going forward; info@ stays
@@ -67,6 +79,8 @@ interface CampaignContact {
   name: string | null
   email: string | null
   alt_emails: string[]
+  phone: string | null
+  relationship_id: string | null
   status: string
   touch_number: number
   soft_bounces: number
@@ -178,7 +192,7 @@ async function alreadyProcessed(sb: SupabaseClient, gmailId: string): Promise<bo
 async function findContactByEmail(sb: SupabaseClient, email: string): Promise<CampaignContact | null> {
   const { data } = await sb
     .from("campaign_contacts")
-    .select("id, name, email, alt_emails, status, touch_number, soft_bounces, gmail_thread_id")
+    .select("id, name, email, alt_emails, phone, relationship_id, status, touch_number, soft_bounces, gmail_thread_id")
     .or(`email.eq.${email},alt_emails.cs.{${email}}`)
     .limit(1)
   return (data?.[0] as CampaignContact) ?? null
@@ -187,7 +201,7 @@ async function findContactByEmail(sb: SupabaseClient, email: string): Promise<Ca
 async function findContactByThread(sb: SupabaseClient, threadId: string): Promise<CampaignContact | null> {
   const { data } = await sb
     .from("campaign_contacts")
-    .select("id, name, email, alt_emails, status, touch_number, soft_bounces, gmail_thread_id")
+    .select("id, name, email, alt_emails, phone, relationship_id, status, touch_number, soft_bounces, gmail_thread_id")
     .eq("gmail_thread_id", threadId)
     .limit(1)
   if (data?.[0]) return data[0] as CampaignContact
@@ -199,7 +213,7 @@ async function findContactByThread(sb: SupabaseClient, threadId: string): Promis
   if (!send?.[0]) return null
   const { data: byId } = await sb
     .from("campaign_contacts")
-    .select("id, name, email, alt_emails, status, touch_number, soft_bounces, gmail_thread_id")
+    .select("id, name, email, alt_emails, phone, relationship_id, status, touch_number, soft_bounces, gmail_thread_id")
     .eq("id", send[0].contact_id)
     .limit(1)
   return (byId?.[0] as CampaignContact) ?? null
@@ -270,9 +284,9 @@ async function handleBounce(
 async function handleContactMessage(
   sb: SupabaseClient,
   contact: CampaignContact,
-  args: { gmailId: string; threadId: string | null; subject: string; body: string; mailbox: string }
+  args: { gmailId: string; threadId: string | null; subject: string; body: string; mailbox: string; sender: string }
 ): Promise<void> {
-  const { gmailId, threadId, subject, body, mailbox } = args
+  const { gmailId, threadId, subject, body, mailbox, sender } = args
   const fresh = stripQuoted(body)
   const nowIso = new Date().toISOString()
 
@@ -309,7 +323,9 @@ async function handleContactMessage(
       .update({ status: "unsubscribed", next_touch_at: null, updated_at: nowIso })
       .eq("id", contact.id)
     await cancelQueuedSends(sb, contact.id, "unsubscribed")
-    await sendCampaignAlert(sb, `🚫 Campaign unsubscribe — <b>${esc(contact.name ?? contact.email ?? "")}</b> ("${esc(fresh.slice(0, 60))}") — handled automatically, drip stopped`)
+    const card = await cardForReply(sb, contact, sender, fresh, subject, false)
+    if (card) await markRelationshipDoNotContact(sb, card.id, `replied "${fresh.slice(0, 80)}" to the agent email campaign`)
+    await sendCampaignAlert(sb, `🚫 Campaign unsubscribe — <b>${esc(contact.name ?? contact.email ?? "")}</b> ("${esc(fresh.slice(0, 60))}") — handled automatically, drip stopped${card ? ", card marked do-not-contact" : ""}`)
     return
   }
 
@@ -348,24 +364,156 @@ async function handleContactMessage(
   // Genuine reply: log + alert Ryan immediately. Ryan 2026-07-20: replies
   // do NOT pause the drip (next touch is ~2 weeks out; he curates manually
   // from the alerts). Only bounce/unsubscribe/removal stop the cadence.
-  const { error: evErr } = await sb.from("campaign_events").insert({
-    contact_id: contact.id,
-    kind: "email_reply",
-    body: fresh.slice(0, 2000) || subject,
-    raw: { gmail_id: gmailId, thread_id: threadId, subject, mailbox },
-  })
+  const { data: ev, error: evErr } = await sb
+    .from("campaign_events")
+    .insert({
+      contact_id: contact.id,
+      kind: "email_reply",
+      body: fresh.slice(0, 2000) || subject,
+      raw: { gmail_id: gmailId, thread_id: threadId, subject, mailbox },
+    })
+    .select("id")
+    .single()
   if (evErr) {
     if (/duplicate key/i.test(evErr.message)) return // concurrent notification already handled it
     throw new Error(`reply event insert: ${evErr.message}`)
   }
+
+  // The agent lands on a Relationships card (created tier B if nobody has
+  // them) and the reply becomes an inbound email touch there (2026-10-01).
+  const card = await cardForReply(sb, contact, sender, fresh, subject)
+
+  // AI triage. Remove-style replies the regex missed ("I'm retired", "not
+  // working with investors", "wrong Steve") auto-DNC — Ryan 2026-10-01:
+  // fully automatic, no confirm step. Everything else just tags the alert.
+  const triage = await triageAgentReply({ name: contact.name, subject, body: fresh })
+  if (triage && (triage.label === "remove" || triage.label === "retired_or_wrong_person")) {
+    const why = triage.label === "retired_or_wrong_person" ? "retired / wrong person" : "asked to be removed"
+    await addSuppression(sb, {
+      email: contact.email,
+      name: contact.name,
+      reason: `replied "${fresh.slice(0, 80)}" (AI: ${why})`,
+      source: "email_unsubscribe",
+      source_ref: `campaign_contact:${contact.id}:ai`,
+      channel: "email",
+      audience: "agent",
+    })
+    await sb
+      .from("campaign_contacts")
+      .update({ status: "unsubscribed", next_touch_at: null, updated_at: nowIso })
+      .eq("id", contact.id)
+    await cancelQueuedSends(sb, contact.id, `AI triage: ${why}`)
+    if (ev?.id) await sb.from("campaign_events").update({ triage: "unsubscribe", ai_summary: triage.summary }).eq("id", ev.id)
+    if (card) await markRelationshipDoNotContact(sb, card.id, `${why} — replied "${fresh.slice(0, 80)}"`)
+    await sendCampaignAlert(sb,
+      `🚫 Campaign auto-DNC — <b>${esc(contact.name ?? contact.email ?? "")}</b> (${why}) — "${esc(fresh.slice(0, 160))}"\n\nDrip stopped, suppression added${card ? ", card marked do-not-contact" : ""}. Reads as: ${esc(triage.summary)}`
+    )
+    return
+  }
+  if (ev?.id && triage) {
+    await sb.from("campaign_events").update({ triage: triage.label, ai_summary: triage.summary }).eq("id", ev.id)
+  }
+
   // Full message in the alert (Ryan 2026-07-29: Pamela's cut off at 220
   // chars). Cap only for Telegram's 4096-char message limit, and say so.
+  // The first line keeps the exact "AGENT REPLY — <name> (after T#)" shape
+  // the Telegram webhook parses for reply-to-send and draft:.
   let alertBody = (fresh || subject).trim()
   const truncated = alertBody.length > 3200
   if (truncated) alertBody = alertBody.slice(0, 3200)
+  const tag = triage ? TRIAGE_TAGS[triage.label] ?? "" : ""
+  const cardLine = card
+    ? card.isNew
+      ? `🆕 New contact — added to Relationships (Agent, tier B).`
+      : `📇 On their Relationships card${card.category ? ` (${esc(card.category)}${card.tier ? ` · ${esc(card.tier)}` : ""})` : ""}.`
+    : ""
+  const headline = [tag && `${tag}${triage?.address ? ` — ${esc(triage.address)}` : ""}`, cardLine].filter(Boolean).join("  ")
   await sendCampaignAlert(sb,
-    `✉️ <b>AGENT REPLY</b> — <b>${esc(contact.name ?? contact.email ?? "")}</b> (after T${contact.touch_number})\n"${esc(alertBody)}"${truncated ? "\n… [message truncated — full email in Gmail]" : ""}\n\nDrip continues as scheduled. Reply to this message to send it as a threaded email from ${esc(mailbox)}, or "draft: your guidance" for a Claude draft first.`
+    `✉️ <b>AGENT REPLY</b> — <b>${esc(contact.name ?? contact.email ?? "")}</b> (after T${contact.touch_number})${headline ? `\n${headline}` : ""}\n"${esc(alertBody)}"${truncated ? "\n… [message truncated — full email in Gmail]" : ""}\n\nDrip continues as scheduled. Reply to this message to send it as a threaded email from ${esc(mailbox)}, or "draft: your guidance" for a Claude draft first.`
   )
+}
+
+const TRIAGE_TAGS: Record<string, string> = {
+  deal: "🏠 <b>DEAL</b>",
+  interested: "🙋 <b>INTERESTED</b>",
+  question: "❓ <b>QUESTION</b>",
+  not_now: "⏳ <b>NOT NOW</b>",
+  other: "",
+}
+
+type ReplyTriage = {
+  label: "deal" | "interested" | "question" | "not_now" | "remove" | "retired_or_wrong_person" | "other"
+  address: string | null
+  summary: string
+}
+
+const TRIAGE_LABELS = new Set(["deal", "interested", "question", "not_now", "remove", "retired_or_wrong_person", "other"])
+
+/** One Haiku call per genuine reply. Null when the key is missing or the
+ * model fails — the alert then goes out untagged, never dropped. */
+async function triageAgentReply(args: { name: string | null; subject: string; body: string }): Promise<ReplyTriage | null> {
+  if (!hasLlmKey()) return null
+  const text = args.body.trim().slice(0, 4000)
+  if (!text) return null
+  const prompt = `Ryan LaRocca (real estate investor, LRG Homes) emails real estate agents he knows, asking for listings — single-family and 2-15 unit multifamily in the Bay Area under $4M, as-is, quick close. An agent${args.name ? ` (${args.name})` : ""} replied. Classify the reply.
+
+Labels:
+- deal: they offer, mention or tease a specific property, listing, pocket listing or seller they could bring Ryan.
+- interested: they want to talk, meet, keep in touch, or will keep him in mind — no specific property yet.
+- question: they ask something about Ryan's buy box, proof of funds, process, commission, or who he is.
+- not_now: friendly no for now ("nothing right now", "check back in spring", "all my listings are retail").
+- remove: they want no more emails — any phrasing ("not working with investors", "please don't send these", "no thanks, not interested", "take me off").
+- retired_or_wrong_person: they left real estate, retired, moved markets, or say Ryan has the wrong person.
+- other: anything else (thanks only, forwarding to a colleague, unclear).
+
+Be strict with remove and retired_or_wrong_person: only when the reply clearly means stop contacting me or I'm not the right person. A joke, a maybe, or "not right now" is not_now.
+
+Reply with ONLY a JSON object: {"label": "<one label>", "address": "<property address or short property description if a deal, else null>", "summary": "<one sentence, plain, what they said and want>"}
+
+SUBJECT: ${args.subject}
+REPLY:
+"${text}"`
+  try {
+    const out = await completeText({ model: HAIKU, prompt, maxTokens: 300, tag: "[campaign-inbox triage]" })
+    const j = JSON.parse(extractJsonObject(out.text)) as { label?: unknown; address?: unknown; summary?: unknown }
+    const label = typeof j.label === "string" && TRIAGE_LABELS.has(j.label) ? (j.label as ReplyTriage["label"]) : "other"
+    const address = typeof j.address === "string" && j.address.trim() && j.address.trim().toLowerCase() !== "null" ? j.address.trim().slice(0, 160) : null
+    const summary = typeof j.summary === "string" && j.summary.trim() ? j.summary.trim().slice(0, 300) : text.slice(0, 160)
+    return { label, address, summary }
+  } catch (e) {
+    console.warn("[campaign-inbox] triage failed:", e instanceof Error ? e.message : String(e))
+    return null
+  }
+}
+
+/** Resolve the replying agent to a Relationships card and log the reply as
+ * an inbound email touch. Never throws — the alert must go out regardless. */
+async function cardForReply(
+  sb: SupabaseClient,
+  contact: CampaignContact,
+  sender: string,
+  body: string,
+  subject: string,
+  reactivate = true
+): Promise<Extract<AgentContact, { kind: "relationship" }> | null> {
+  try {
+    const lite: CampaignContactLite = {
+      id: contact.id,
+      name: contact.name,
+      email: contact.email,
+      phone: contact.phone,
+      relationship_id: contact.relationship_id,
+      touch_number: contact.touch_number,
+      status: contact.status,
+    }
+    const who = await resolveAgentContact(sb, { email: sender || contact.email, campaign: lite, channel: "email", reactivate })
+    if (who.kind !== "relationship") return null
+    await logInboundEmailTouch(sb, who, body, subject)
+    return who
+  } catch (e) {
+    console.error("[campaign-inbox] card link failed:", e instanceof Error ? e.message : String(e))
+    return null
+  }
 }
 
 /**
@@ -428,7 +576,7 @@ async function processOneCampaignInbox(mailbox: string): Promise<void> {
         continue
       }
       const body = extractText(message.payload)
-      await handleContactMessage(sb, contact, { gmailId, threadId, subject, body, mailbox })
+      await handleContactMessage(sb, contact, { gmailId, threadId, subject, body, mailbox, sender })
     } catch (e) {
       console.error(`[campaign-inbox] failed on ${gmailId}:`, e)
       await sendCampaignAlert(sb, `⚠️ Campaign inbox processing failed on a message — check Vercel logs (${gmailId})`)
