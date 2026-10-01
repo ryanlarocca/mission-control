@@ -142,7 +142,8 @@ async function createRelationshipForCaller(sb: SupabaseClient, phone: string): P
 export async function openInboundCallTouch(
   sb: SupabaseClient,
   rel: Extract<OfficeCaller, { kind: "relationship" }>,
-  callSid: string | null
+  callSid: string | null,
+  line = "office line"
 ): Promise<string | null> {
   const { data, error } = await sb
     .from("relationship_touches")
@@ -152,7 +153,7 @@ export async function openInboundCallTouch(
       action: "inbound",
       call_status: "ringing",
       call_sid: callSid,
-      message: "📲 Inbound call to the office line — ringing",
+      message: `📲 Inbound call to the ${line} — ringing`,
       tier_at_touch: rel.tier,
       category_at_touch: rel.category,
     })

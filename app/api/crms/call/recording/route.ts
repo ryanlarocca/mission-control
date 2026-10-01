@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server"
 import { waitUntil } from "@vercel/functions"
 import { getLeadsClient, parseTwilioBody } from "@/lib/leads"
-import { processRelationshipRecording, type RelationshipCallKind } from "@/lib/relationship-calls"
+import { processRelationshipRecording, type CallLine, type RelationshipCallKind } from "@/lib/relationship-calls"
 
 // Recording callback for Relationships calls. Attaches the recording to the
 // touch, then transcribes + summarizes in the background (see
@@ -17,12 +17,19 @@ const ok = (voicemail = false) => new NextResponse(voicemail ? THANKS : HANGUP, 
 export async function POST(request: NextRequest) {
   const touchId = request.nextUrl.searchParams.get("touchId")
   const voicemail = request.nextUrl.searchParams.get("voicemail") === "1"
+  // Agents line (650) 910-4007 threads line=agents (+ the campaign contact)
+  // through so alerts go to the campaign bot and the summary mirrors onto
+  // the campaign timeline. Office lines send neither.
+  const line: CallLine = request.nextUrl.searchParams.get("line") === "agents" ? "agents" : "office"
+  const campaignContactId = request.nextUrl.searchParams.get("campaignContactId")
   if (!touchId) return ok(voicemail)
   let recordingUrl = ""
   let durationSec: number | null = null
+  let callSid: string | null = null
   try {
     const p = parseTwilioBody(await request.text())
     recordingUrl = p.get("RecordingUrl") || ""
+    callSid = p.get("CallSid") || null
     const d = Number(p.get("RecordingDuration") || "")
     durationSec = Number.isFinite(d) && d >= 0 ? d : null
   } catch (e) {
@@ -54,6 +61,8 @@ export async function POST(request: NextRequest) {
     fullUrl,
     recordingDurationSec: durationSec,
     kind,
+    line,
+    ...(line === "agents" ? { campaign: { contactId: campaignContactId, callSid } } : {}),
   }))
   return ok(voicemail)
 }
