@@ -4,7 +4,8 @@ import { senderStatusLines } from "@/lib/campaignSenders"
 
 // Phase B guardrails (2026-08-21, Ryan: "one tap a day, not twenty" +
 // "draft the night before, I might be asleep"):
-//   - the engine mints the next weekday's batch at ~6pm PT, posts ONE
+//   - the engine mints the next weekday's batch at ~11am PT (CAMPAIGN_MINT_HOUR,
+//     moved from 6pm on 2026-09-30), posts ONE
 //     Telegram message with [✅ Send all N] — tapping it approves every
 //     draft in that batch and scatters them over the next weekday's window.
 //   - nothing sends without the tap; un-tapped batches expire at the next mint.
