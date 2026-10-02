@@ -934,7 +934,15 @@ function CRMSTabInner() {
 
   // ── Derived ──
   const dueContacts     = contacts.filter(c => !sent.has(c.id) && !skipped.has(c.id) && !removed.has(c.id))
-  const selectedContact = dueContacts.find(c => c.id === selectedId) ?? null
+  // Selection is sticky: a contact that gets worked while selected (a
+  // click-to-call connecting marks them sent) stays on screen through the
+  // call, the transcription, and the saved summary — until Ryan hits Next.
+  // Send / Skip / Remove / Mark Done all advance explicitly, so this only
+  // ever shows an already-worked contact after a call.
+  const selectedContact = dueContacts.find(c => c.id === selectedId)
+    ?? contacts.find(c => c.id === selectedId)
+    ?? null
+  const selectedWorked  = !!selectedContact && !dueContacts.some(c => c.id === selectedContact.id)
 
   // Worked-through meter (2026-09-21): the queue is the whole due list, so
   // progress is how much of it has been handled (sent, skipped, or removed)
@@ -1161,7 +1169,7 @@ function CRMSTabInner() {
         )}
       </div>
 
-      {dueContacts.length === 0 ? (
+      {dueContacts.length === 0 && !selectedContact ? (
         <div className="text-center py-16">
           <p className="text-sm text-zinc-500">All caught up — no contacts due today</p>
         </div>
@@ -1170,6 +1178,9 @@ function CRMSTabInner() {
 
           {/* Left panel: contact list */}
           <div className={`sm:block sm:w-52 sm:shrink-0 sm:space-y-1 sm:max-h-[520px] sm:overflow-y-auto ${mobileView === "compose" ? "hidden" : "block space-y-1"}`}>
+            {dueContacts.length === 0 && (
+              <p className="text-xs text-zinc-600 px-3 py-2">All caught up — no contacts left today</p>
+            )}
             {dueContacts.map(contact => {
               const Icon     = categoryIcon[contact.type] ?? User
               const isActive = contact.id === selectedContact?.id
@@ -1279,11 +1290,13 @@ function CRMSTabInner() {
                     )}
                   </div>
                   <span className={`ml-auto text-xs px-1.5 py-0.5 rounded border leading-none ${
-                    selectedContact.status === "overdue"
-                      ? "bg-red-500/20 text-red-400 border-red-500/30"
-                      : "bg-amber-500/20 text-amber-400 border-amber-500/30"
+                    selectedWorked
+                      ? "bg-emerald-500/20 text-emerald-400 border-emerald-500/30"
+                      : selectedContact.status === "overdue"
+                        ? "bg-red-500/20 text-red-400 border-red-500/30"
+                        : "bg-amber-500/20 text-amber-400 border-amber-500/30"
                   }`}>
-                    {selectedContact.status === "overdue" ? `${selectedContact.daysOverdue}d overdue` : "due today"}
+                    {selectedWorked ? "worked today" : selectedContact.status === "overdue" ? `${selectedContact.daysOverdue}d overdue` : "due today"}
                   </span>
                 </div>
 
@@ -1567,14 +1580,26 @@ function CRMSTabInner() {
                 >
                   <RefreshCw className={`w-4 h-4 ${isGenerating ? "animate-spin" : ""}`} />
                 </button>
-                <button
-                  onClick={handleSend}
-                  disabled={isGenerating || !currentMessage}
-                  className="flex items-center gap-1.5 text-sm font-medium text-emerald-400 hover:text-emerald-300 bg-emerald-500/10 border border-emerald-500/30 hover:border-emerald-500/50 px-4 py-2 rounded transition-colors disabled:opacity-50 disabled:cursor-not-allowed min-h-[44px] ml-4"
-                >
-                  <Send className="w-4 h-4" />
-                  Send
-                </button>
+                {selectedWorked ? (
+                  <button
+                    onClick={() => { dismissCall(); advanceSelection(selectedContact.id) }}
+                    disabled={liveCall?.phase === "dialing" && liveCall.contactId === selectedContact.id}
+                    title="Done here — move to the next contact"
+                    className="flex items-center gap-1.5 text-sm font-medium text-emerald-400 hover:text-emerald-300 bg-emerald-500/10 border border-emerald-500/30 hover:border-emerald-500/50 px-4 py-2 rounded transition-colors disabled:opacity-50 disabled:cursor-not-allowed min-h-[44px] ml-4"
+                  >
+                    Next
+                    <SkipForward className="w-4 h-4" />
+                  </button>
+                ) : (
+                  <button
+                    onClick={handleSend}
+                    disabled={isGenerating || !currentMessage}
+                    className="flex items-center gap-1.5 text-sm font-medium text-emerald-400 hover:text-emerald-300 bg-emerald-500/10 border border-emerald-500/30 hover:border-emerald-500/50 px-4 py-2 rounded transition-colors disabled:opacity-50 disabled:cursor-not-allowed min-h-[44px] ml-4"
+                  >
+                    <Send className="w-4 h-4" />
+                    Send
+                  </button>
+                )}
               </div>
 
             </div>
