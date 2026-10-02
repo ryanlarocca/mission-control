@@ -79,8 +79,9 @@ const ownerOf = (email) => senderByEmail(email) ?? SENDER_CFG.workhorse
 // Phase B (2026-08-21): while CAMPAIGN_COHORT is set, the draft pass only
 // considers contacts tagged with that cohort (scripts/phaseB-cohort.mjs).
 const COHORT = process.env.CAMPAIGN_COHORT || null
-// Gated batches mint in the EVENING for the next weekday (Ryan: "I might be
-// asleep in the morning — I'd rather approve the day before").
+// Gated batches mint ONCE a day, Mon-Fri, for the NEXT weekday (Friday's
+// batch is Monday's). CAMPAIGN_MINT_HOUR=11 since 2026-09-30 (Ryan reviews
+// during work hours); the 18 default is the original evening mint.
 const MINT_HOUR = Number(process.env.CAMPAIGN_MINT_HOUR || 18)
 const BOUNCE_PAUSE_RATE = 0.02
 const REVIEW_URL = "https://mission-control-three-chi.vercel.app/email-campaign"
@@ -132,6 +133,18 @@ function randomSendSlot() {
     return ptSlotToUtcIso(Number(parts.year), Number(parts.month), Number(parts.day), Math.floor(minuteOfDay / 60), minuteOfDay % 60)
   }
   return null
+}
+
+/** "Mon Oct 5" — the weekday the next approved batch lands on (Fri → Mon). */
+function nextWeekdayLabel() {
+  const now = new Date()
+  for (let add = 1; add <= 4; add++) {
+    const d = new Date(now.getTime() + add * 86400_000)
+    const parts = ptDateParts(d)
+    if (parts.weekday === "Sat" || parts.weekday === "Sun") continue
+    return new Intl.DateTimeFormat("en-US", { timeZone: "America/Los_Angeles", weekday: "short", month: "short", day: "numeric" }).format(d)
+  }
+  return "the next weekday"
 }
 
 const sb = createClient(process.env.LRG_SUPABASE_URL, process.env.LRG_SUPABASE_SERVICE_KEY, {
@@ -237,8 +250,17 @@ async function countSendsTodayFor(sender, tsCol, statuses) {
   return count ?? 0
 }
 
+// Backlog = un-sent rows that are DUE: drafts awaiting review plus approved
+// rows whose slot has passed (or that have no slot). Rows already slotted
+// for later today / the next weekday are tomorrow's work, not a stall —
+// counting them zeroed the 11 AM mint and fired a false "starved" alert at
+// midnight every send day (2026-10-02).
 async function backlogFor(sender) {
-  const q = sb.from("campaign_sends").select("id", { count: "exact", head: true }).in("status", ["draft", "approved"])
+  const q = sb
+    .from("campaign_sends")
+    .select("id", { count: "exact", head: true })
+    .in("status", ["draft", "approved"])
+    .or(`scheduled_for.is.null,scheduled_for.lte.${new Date().toISOString()}`)
   const { count, error } = await senderFilter(q, sender)
   if (error) throw new Error(`backlog count for ${sender.email}: ${error.message}`)
   return count ?? 0
@@ -257,9 +279,9 @@ function ptToday() {
 
 function gatedMintAllowedToday() {
   if (args.includes("--mint-now")) return true // rehearsal flag (use with --dry-run)
-  if (laHourNow() < MINT_HOUR) return false // batch mints on the first pass after MINT_HOUR PT (evening, for the next weekday)
+  if (laHourNow() < MINT_HOUR) return false // batch mints on the first pass after MINT_HOUR PT, for the next weekday
   const wd = laWeekdayNow()
-  if (wd === "Fri" || wd === "Sat") return false // Fri/Sat evening batches would sit 2-3 days; Sunday evening mints Monday's
+  if (wd === "Sat" || wd === "Sun") return false // Mon-Fri only: Friday's 11 AM batch is Monday's (Ryan 2026-10-02); weekend mints would double it
   const p = ptDateParts(new Date())
   const today = `${p.year}-${p.month}-${p.day}`
   try {
@@ -312,7 +334,9 @@ async function draftPass() {
     // Starved-by-backlog with nothing drafted = the send side is stuck.
     // This exact state ran silently for 4 days after the Aug-28 token death
     // (8 unsendable approved rows filled the cap, so zero drafts minted).
-    // Alert once per day instead of quietly returning.
+    // Alert once per day instead of quietly returning. backlogFor() ignores
+    // rows slotted in the future, so a fully-approved batch waiting for its
+    // daytime slots is NOT a stall.
     const capTotal = SENDERS.reduce((a, s) => a + senderCap(s), 0)
     if (draftedTotal === 0 && backlogTotal >= capTotal && capTotal > 0) {
       const starveFile = "scripts/.campaign-draft-starved-state.json"
@@ -351,6 +375,17 @@ async function draftPass() {
   const lastSender = await fetchLastSenderByContact(sb, dueList.filter((c) => c.touch_number > 0).map((c) => c.id))
   dueList.sort((a, b) => priorityOf(a, { replierIds, relEmails }) - priorityOf(b, { replierIds, relEmails }) || (a.next_touch_at < b.next_touch_at ? -1 : a.next_touch_at > b.next_touch_at ? 1 : 0))
   const perSender = new Map(SENDERS.map((s) => [s.email, 0]))
+  // One open row per contact. A contact's touch clock only advances at send
+  // time, so at an 11 AM mint everyone slotted for this afternoon is still
+  // "due" — without this guard the mint re-drafted the same people for the
+  // next weekday (caught in the 2026-10-02 dry run).
+  const openContacts = new Set()
+  for (let from = 0; ; from += 1000) {
+    const { data, error } = await sb.from("campaign_sends").select("contact_id").in("status", ["draft", "approved"]).range(from, from + 999)
+    if (error) throw new Error(`open rows fetch: ${error.message}`)
+    for (const r of data ?? []) if (r.contact_id) openContacts.add(r.contact_id)
+    if (!data || data.length < 1000) break
+  }
   // Variant templates (A/B/C) for cohort T1 sends.
   const { data: variantRows } = await sb.from("campaign_variants").select("variant, touch_number, subject, body, personalize")
   const variants = new Map((variantRows ?? []).map((v) => [`${v.touch_number}:${v.variant}`, v]))
@@ -375,6 +410,7 @@ async function draftPass() {
   const variantCounts = {}
   for (const c of dueList) {
     if (drafted >= totalBudget) break
+    if (openContacts.has(c.id)) continue // already drafted/approved and waiting for its slot
     if (isSuppressed(c, sets)) {
       skippedSupp++
       if (!dryRun) {
@@ -483,7 +519,7 @@ async function draftPass() {
     const mix = Object.keys(variantCounts).length ? ` (${Object.entries(variantCounts).sort().map(([k, v]) => `${k}:${v}`).join(" ")})` : ""
     const today = ptToday()
     await telegram(
-      `📝 <b>${needReview}</b> ${touchList} emails drafted for the next weekday${mix}, from ${escHtml(fromList)}.${lintFailed ? ` ${lintFailed} rejected by lint (not queued).` : ""}\n\nTap ✅ to approve all of them — they go out at random minutes 7am-5pm PT. Untapped = nothing sends; this batch expires at the next evening mint.`,
+      `📝 <b>${needReview}</b> ${touchList} emails drafted for ${nextWeekdayLabel()}${mix}, from ${escHtml(fromList)}.${lintFailed ? ` ${lintFailed} rejected by lint (not queued).` : ""}\n\nTap ✅ to approve all of them — they go out at random minutes 7am-5pm PT. Untapped = nothing sends; this batch expires at the next weekday's 11am mint.`,
       [
         { text: `✅ Send all ${needReview}`, callback_data: `bapprove:${today}` },
         { text: "👀 Review first", url: REVIEW_URL },
