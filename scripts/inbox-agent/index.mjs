@@ -843,9 +843,18 @@ async function handleMessage(ctx, msg) {
 
   // --- open loops (things Ryan owes someone)
   if (kind === "docusign_completed" || kind === "esign_completed") await resolveSignatureLoops(msg)
-  // A person who pitched Ryan a deal directly is owed an answer, whatever the screen says.
-  if (cls.deal?.tier === "direct" && !cls.needs_reply) cls = { ...cls, needs_reply: true, ask: cls.ask || `Reply to ${cls.counterparty || msg.from.name || msg.from.email} about ${cls.deal.address || "their deal"}`, category: cls.category || "agent" }
-  if (cls.needs_reply || kind === "docusign_request") await upsertLoop(ctx, msg, cls, kind)
+  // Ryan 2026-10-03: flyers were reaching him as "Waiting on you" loops — the
+  // classifier read "attend the open house Thursday" as an ask. Marketing from
+  // someone he hasn't done business with never becomes a loop.
+  const isBlast = kind === "broker_blast" || cls.deal?.tier === "blast" || cls.solicitation === true
+  const knownSender = isBlast ? await isKnownSender(msg.from.email) : true
+  if (isBlast && !knownSender) {
+    log(`no loop: marketing from unknown sender (${msg.from.email})`)
+  } else {
+    // A person who pitched Ryan a deal directly is owed an answer, whatever the screen says.
+    if (cls.deal?.tier === "direct" && !cls.needs_reply) cls = { ...cls, needs_reply: true, ask: cls.ask || `Reply to ${cls.counterparty || msg.from.name || msg.from.email} about ${cls.deal.address || "their deal"}`, category: cls.category || "agent" }
+    if (cls.needs_reply || kind === "docusign_request") await upsertLoop(ctx, msg, cls, kind)
+  }
 
   // --- deals
   if (cls.deal && (kind === "deal_lead" || kind === "broker_blast" || cls.deal.tier)) await screenDeal(ctx, msg, cls, pdfDocs)
@@ -1127,6 +1136,7 @@ async function maybeDigest(ctx, force = false) {
     const c = m.classification || {}
     if (c.is_human === false || /noreply|no-reply|notification|docusign|authentisign/i.test(m.sender || "")) continue
     if (c.needs_reply === false) continue // FYI mail (a signed copy, a "thanks") is not a loose end
+    if (c.solicitation === true || c.deal?.tier === "blast") continue // marketing is never a loose end (Ryan 2026-10-03)
     const replied = sent.get(m.thread_id)
     if (replied && replied > m.internal_date) continue
     if (daysAgo(m.internal_date) < 2) continue
