@@ -35,7 +35,8 @@ import { downloadFile, driveClient, findExtraRoots, findFileByName, findRoot, fo
 import { esc, tgClearButtons, tgSend, tgSendDocument } from "./telegram.mjs"
 import {
   CLASSIFY_SYSTEM, FILING_SYSTEM, HAIKU, RULES_SYSTEM, SCREEN_SYSTEM, SONNET, VERIFY_SYSTEM,
-  changePrompt, classifyPrompt, complete, completeJson, filingPrompt, opportunitySignals, rulesPrompt, screenPrompt, verifyPrompt,
+  BAY_AREA_RE, CONDO_RE, blastSignalsPass,
+  changePrompt, classifyPrompt, complete, completeJson, filingPrompt, rulesPrompt, screenPrompt, verifyPrompt,
 } from "./llm.mjs"
 import { destinationFor, filingDecision, isPurchaseDoc, nextSequence, refineDocType, stageOf, withTimeSuffix } from "./filing.mjs"
 
@@ -120,12 +121,9 @@ function isQuiet() {
 }
 // Broker-blast first cut: Santa Clara County, 2+ units, per-door not clearly
 // above the ladder. Ryan's 👀/🚫 taps on past blasts calibrate the model.
-const SCC_CITIES = /san jose|sunnyvale|milpitas|campbell|santa clara|cupertino|mountain view|los gatos|saratoga|morgan hill|gilroy|palo alto|los altos|willow glen|alum rock/i
-const PER_DOOR_CEILING = { downtown: 230000, milpitas: 340000, sunnyvale: 400000, default: 400000 }
 // Ryan 2026-09-24: "we buy single family too. Always show anything off-market
 // with a motivated seller, anything from a person I've done business with.
 // Not retail listings or mass open houses."
-const BAY_AREA = /san jose|sunnyvale|milpitas|campbell|santa clara|cupertino|mountain view|los gatos|saratoga|morgan hill|gilroy|palo alto|los altos|willow glen|alum rock|fremont|hayward|oakland|san leandro|union city|newark|san mateo|redwood city|menlo park|burlingame|san bruno|south san francisco|daly city|pacifica|half moon bay|belmont|san carlos|foster city|santa cruz|hollister|tracy/i
 // Ryan 2026-10-02 superseded the angle-based cut: "if an agent sends me a deal
 // directly, that's different … if I'm getting some random market deal that's
 // getting blasted out, I don't want these. If it's someone I've done business
@@ -136,8 +134,13 @@ const BAY_AREA = /san jose|sunnyvale|milpitas|campbell|santa clara|cupertino|mou
 function blastPassesCut(out, cls, knownSender, signals = []) {
   if (knownSender) return { ok: true, why: "sender you've done business with" }
   const all = [...new Set([...signals, ...((out?.facts?.signals || []).map((s) => String(s).toLowerCase()))])]
-  if (all.length) return { ok: true, why: `signals: ${all.slice(0, 4).join(", ")}` }
-  return { ok: false, why: "mass blast from an unknown sender, no opportunity signals (hidden per 2026-10-02)" }
+  if (!all.length) return { ok: false, why: "mass blast from an unknown sender, no opportunity signals (hidden per 2026-10-02)" }
+  // Ryan 2026-10-03: out of area and condo/townhome are hard filters, keywords or not.
+  const addr = `${out?.address || ""} ${cls.deal?.address || ""}`
+  if (addr.trim() && !BAY_AREA_RE.test(addr)) return { ok: false, why: `signals but out of area (${addr.trim().slice(0, 40)})` }
+  const type = out?.property_type || cls.deal?.property_type || ""
+  if (type === "condo_townhome" || CONDO_RE.test(addr)) return { ok: false, why: "signals but condo/townhome" }
+  return { ok: true, why: `signals: ${all.slice(0, 4).join(", ")}` }
 }
 
 // ------------------------------------------------------------------ context
@@ -729,7 +732,7 @@ async function pollInbox(ctx) {
     // …unless it carries an opportunity keyword (Ryan 2026-10-03: TLC, contractor
     // special, motivated seller… "let me be the judge") — then it is classified
     // and screened like anything else.
-    if (msg.labelIds.includes("CATEGORY_PROMOTIONS") && !opportunitySignals(`${msg.subject}\n${msg.text}`).length && !(await isKnownSender(msg.from.email))) {
+    if (msg.labelIds.includes("CATEGORY_PROMOTIONS") && !blastSignalsPass(`${msg.subject}\n${msg.text}`).ok && !(await isKnownSender(msg.from.email))) {
       await insertMessage(msg, "promotions", { reason: "Gmail Promotions category, unknown sender, no opportunity signals" })
       continue
     }
@@ -949,10 +952,12 @@ async function resolveLoops(ctx) {
 // ------------------------------------------------------------------ deals
 async function screenDeal(ctx, msg, cls, pdfDocs) {
   const tier = cls.deal.tier || (cls.kind === "deal_lead" ? "direct" : "blast")
-  const signals = opportunitySignals(`${msg.subject}\n${msg.text}\n${cls.deal.notes || ""}\n${(cls.attachments || []).map((a) => a.description).join("\n")}`)
+  const blob = `${msg.subject}\n${msg.text}\n${cls.deal.address || ""}\n${cls.deal.notes || ""}\n${(cls.attachments || []).map((a) => a.description).join("\n")}`
+  const pre = blastSignalsPass(blob)
+  const signals = pre.signals
   const known = tier === "direct" ? true : await isKnownSender(msg.from.email)
-  if (tier !== "direct" && !known && !signals.length) {
-    log(`blast ${cls.deal.address || "?"}: hidden (unknown sender, no opportunity signals)`)
+  if (tier !== "direct" && !known && (!signals.length || (cls.deal.address && !pre.inArea) || pre.condo || cls.deal.property_type === "condo_townhome")) {
+    log(`blast ${cls.deal.address || "?"}: hidden (unknown sender; ${!signals.length ? "no signals" : !pre.inArea ? "out of area" : "condo/townhome"})`)
     return
   }
   const docs = tier === "direct" ? pdfDocs.slice(0, 2) : pdfDocs.slice(0, 1)

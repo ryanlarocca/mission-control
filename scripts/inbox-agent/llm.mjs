@@ -161,7 +161,7 @@ Return JSON only:
   "priority": "high"|"normal"|"low",           // high = money/closing/signature/deadline within ~3 days or a direct deal from a person
   "category": "escrow"|"lender"|"agent"|"contractor"|"tax"|"insurance"|"vendor"|"signature"|"personal"|"other",
   "counterparty": "Lisa Nunes (Chicago Title)",
-  "deal": null | {"tier": "direct"|"blast", "address": "...", "property_type": "sfr"|"multifamily"|"land"|"commercial"|"other", "units": 6|null, "asking": 2150000|null, "off_market": true|false, "seller_motivated": true|false, "is_open_house_invite": true|false, "is_retail_listing": true|false, "notes": "..."},   // direct = a person emailing Ryan about a specific property they want him to buy; blast = mass marketing flyer/OM. off_market = not on MLS / pocket / pre-market; seller_motivated = probate, divorce, deferred maintenance, price reduced, must sell, tenant trouble, out-of-state owner etc.; is_retail_listing = an ordinary MLS-style marketing email with no angle
+  "deal": null | {"tier": "direct"|"blast", "address": "...", "property_type": "sfr"|"multifamily"|"condo_townhome"|"land"|"commercial"|"other", "units": 6|null, "asking": 2150000|null, "off_market": true|false, "seller_motivated": true|false, "is_open_house_invite": true|false, "is_retail_listing": true|false, "notes": "..."},   // direct = a person emailing Ryan about a specific property they want him to buy; blast = mass marketing flyer/OM. off_market = not on MLS / pocket / pre-market; seller_motivated = probate, divorce, deferred maintenance, price reduced, must sell, tenant trouble, out-of-state owner etc.; is_retail_listing = an ordinary MLS-style marketing email with no angle
   "summary": "one line, ≤ 20 words, plain"
 }`
 }
@@ -223,6 +223,19 @@ export function opportunitySignals(text) {
   for (const m of String(text || "").matchAll(OPPORTUNITY_RE)) out.add(m[1].toLowerCase().replace(/\s+/g, " "))
   return [...out]
 }
+// Ryan 2026-10-03 (after the LA condo card): a keyword hit only counts for a
+// Bay Area house or building — "out of the area" and "condo/townhome, I don't
+// buy those" are both hard filters.
+export const BAY_AREA_RE = /\b(san jose|sunnyvale|milpitas|campbell|santa clara|cupertino|mountain view|los gatos|saratoga|morgan hill|gilroy|palo alto|los altos|willow glen|alum rock|fremont|hayward|oakland|san leandro|union city|newark|san mateo|redwood city|menlo park|burlingame|san bruno|south san francisco|daly city|pacifica|half moon bay|belmont|san carlos|foster city|santa cruz|hollister|san francisco|berkeley|alameda|emeryville|richmond|walnut creek|concord|pleasanton|livermore|dublin|san ramon|danville|castro valley|watsonville|scotts valley|capitola|aptos|east palo alto|millbrae|san francisco bay|bay area|silicon valley|santa clara county|san mateo county|alameda county|contra costa|santa cruz county)\b/i
+export const CONDO_RE = /\b(condo(?:minium)?s?|townho(?:me|use)s?|town ?homes?|co-?op|\bHOA dues\b|unit #?\d+|apt\.? ?#?\d+|#\d{2,4}\b)/i
+/** Should a mass blast from an unknown sender get a card? signals + Bay Area + not a condo/townhome. */
+export function blastSignalsPass(text) {
+  const t = String(text || "")
+  const signals = opportunitySignals(t)
+  const inArea = BAY_AREA_RE.test(t)
+  const condo = CONDO_RE.test(t)
+  return { signals, inArea, condo, ok: signals.length > 0 && inArea && !condo }
+}
 
 export const SCREEN_SYSTEM = `You are Ryan LaRocca's deal screener. Ryan (LRG Homes) buys TWO kinds of property in Santa Clara County and the near Bay Area, both with hard money (Kiavi / Conventus bridge loans): (A) single-family houses to fix and flip — his current deals 5764 Halleck Dr and 2116 Quito Rd in San Jose are both SFR flips — and (B) small multifamily at a discount to nearby per-door comps with two exits on day one (refi or sell). "Single-family" is NEVER a reason to pass. Property type decides which screen you run.
 
@@ -230,6 +243,7 @@ SFR SCREEN (Ryan 2026-10-03: "keep it simple … let me be the judge"):
 - No profit math. Look for opportunity signals in the listing, email and OM: TLC, contractor special, fixer, as-is, needs work, motivated seller, must sell, price reduced, probate / estate / trust sale, divorce, pre-foreclosure, bank-owned, cash only, deferred maintenance, original condition, teardown / lot value, vacant, off-market, pocket listing.
 - Any signal → verdict "look_further", and list the signals verbatim in "reasons". A plain, move-in-ready retail listing with no signal → "pass" in one line.
 - Still report asking, sqft, year built, condition and whatever the OM says about value or rents, so Ryan can judge quickly. Never invent an ARV.
+- Ryan does NOT buy condos or townhomes and does not buy outside the Bay Area — set property_type "condo_townhome" when it is one, and say so in one line.
 
 MULTIFAMILY SCREEN, in order:
 1. Unit count + mix (2BR rents materially more than 1BR). The 4→5 unit line is a lending cliff: 4-plex = Fannie buyers (premium per door); 5+ = commercial money (~10–12× GRM). Never compare per-door across that line.
@@ -257,7 +271,7 @@ The attached document(s), if any, are the OM / flyer — read them for the facts
 Return JSON only:
 {
   "address": "...",
-  "property_type": "sfr" | "multifamily" | "other",
+  "property_type": "sfr" | "multifamily" | "condo_townhome" | "other",
   "facts": {"units": 6, "unit_mix": "4×2/1, 2×1/1", "asking": 2150000, "price_per_door": 358333, "gross_rent_mo": 13959, "grm": 12.8, "rent_per_door_mo": 2326, "year_built": 1962, "sqft": null, "lot_sqft": null, "condition": "...", "seller_motivation": "...", "occupancy": "...", "rent_increase_room": "...", "signals": ["contractor special", "as-is"], "other": "..."},
   "verdict": "pass" | "look_further" | "unknown",
   "one_liner": "≤ 25 words — multifamily: the verdict with the per-door number; SFR: the signals found + asking + condition",
