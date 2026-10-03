@@ -31,12 +31,13 @@ import {
   daysAgo, fetchAll, getSetting, keysMatch, log, propertyKey, ptDateLabel, ptParts, sanitizeFilename, sb, setSetting, warn,
 } from "./env.mjs"
 import { addLabel, getAttachmentBytes, getMessage, gmailClient, listMessageIds, sentThreadsSince } from "./gmail.mjs"
-import { driveClient, findFileByName, findRoot, folderTree, moveFile, propertyFolders, resolvePath, uploadFile } from "./drive.mjs"
+import { downloadFile, driveClient, findExtraRoots, findFileByName, findRoot, folderTree, listChildren, moveFile, propertyFolders, resolvePath, uploadFile } from "./drive.mjs"
 import { esc, tgClearButtons, tgSend, tgSendDocument } from "./telegram.mjs"
 import {
-  CLASSIFY_SYSTEM, FILING_SYSTEM, HAIKU, RULES_SYSTEM, SCREEN_SYSTEM, SONNET,
-  changePrompt, classifyPrompt, complete, completeJson, filingPrompt, rulesPrompt, screenPrompt,
+  CLASSIFY_SYSTEM, FILING_SYSTEM, HAIKU, RULES_SYSTEM, SCREEN_SYSTEM, SONNET, VERIFY_SYSTEM,
+  changePrompt, classifyPrompt, complete, completeJson, filingPrompt, rulesPrompt, screenPrompt, verifyPrompt,
 } from "./llm.mjs"
+import { destinationFor, filingDecision, isPurchaseDoc, nextSequence, refineDocType, stageOf, withTimeSuffix } from "./filing.mjs"
 
 // ------------------------------------------------------------------ args
 const argv = process.argv.slice(2)
@@ -48,6 +49,7 @@ const opt = (n, d) => {
 const DRY = flag("dry-run")
 const LIMIT = Number(opt("limit", 25))
 const BACKFILL = opt("backfill", null) // e.g. "3d"
+const MESSAGE = opt("message", null) // one gmail id, for testing
 
 // The interview set — real emails from the 2026-09-24 survey of ryan@'s inbox,
 // one per document type Ryan sees every week. Re-seeding is idempotent.
@@ -124,16 +126,14 @@ const PER_DOOR_CEILING = { downtown: 230000, milpitas: 340000, sunnyvale: 400000
 // with a motivated seller, anything from a person I've done business with.
 // Not retail listings or mass open houses."
 const BAY_AREA = /san jose|sunnyvale|milpitas|campbell|santa clara|cupertino|mountain view|los gatos|saratoga|morgan hill|gilroy|palo alto|los altos|willow glen|alum rock|fremont|hayward|oakland|san leandro|union city|newark|san mateo|redwood city|menlo park|burlingame|san bruno|south san francisco|daly city|pacifica|half moon bay|belmont|san carlos|foster city|santa cruz|hollister|tracy/i
+// Ryan 2026-10-02 superseded the angle-based cut: "if an agent sends me a deal
+// directly, that's different … if I'm getting some random market deal that's
+// getting blasted out, I don't want these. If it's someone I've done business
+// with, sure, you can show it." Blasts from unknown senders are never screened
+// or shown; known senders still get the card.
 function blastPassesCut(out, cls, knownSender) {
-  const d = cls.deal || {}
-  const addr = `${out.address || ""} ${d.address || ""}`
   if (knownSender) return { ok: true, why: "sender you've done business with" }
-  if (d.is_open_house_invite) return { ok: false, why: "open-house invite" }
-  if (d.off_market && d.seller_motivated) return { ok: true, why: "off-market + motivated seller" }
-  if (d.off_market || d.seller_motivated) return { ok: BAY_AREA.test(addr), why: d.off_market ? "off-market" : "motivated seller" }
-  if (d.is_retail_listing) return { ok: false, why: "retail listing, no angle" }
-  if (out.verdict === "look_further" && BAY_AREA.test(addr)) return { ok: true, why: "model says look further" }
-  return { ok: false, why: "no angle (not off-market, no motivation, not a known sender)" }
+  return { ok: false, why: "mass blast from an unknown sender (hidden per 2026-10-02)" }
 }
 
 // ------------------------------------------------------------------ context
@@ -143,6 +143,7 @@ async function buildContext() {
   try {
     ctx.drive = await driveClient()
     ctx.rootId = await findRoot(ctx.drive)
+    ctx.extraRoots = await findExtraRoots(ctx.drive).catch((e) => (warn("extra roots:", e.message), {}))
   } catch (e) {
     ctx.driveErr = e?.response?.data?.error_description || e?.response?.data?.error?.message || e.message
     warn("drive unavailable:", ctx.driveErr)
@@ -256,9 +257,12 @@ async function postAskCard(ctx, row, question, guess) {
     `From ${esc(row.sender)} · ${ptDateLabel(row.received_at)} · “${esc(shortSubject(row.subject))}”`,
     esc(question),
     guess ? `Best guess: <b>${esc(guess.folder)}/</b>${esc(guess.name)}` : "",
-    "Reply to this card with the answer (or tap ✅ to use the guess).",
+    "✏️ Reply to this card with the folder (e.g. “Marketing/2026/NOO October2026”) and I'll file it there and remember the rule.",
   ].filter(Boolean).join("\n")
-  const rows = guess ? [[{ text: "✅ Use the guess", data: "ix:io:PENDING" }, { text: "⏭ Skip this file", data: `ix:fs:${row.id}` }]] : [[{ text: "⏭ Skip this file", data: `ix:fs:${row.id}` }]]
+  // Ryan 2026-10-02: "it only gives me the option to use the guess or skip —
+  // neither acceptable." Third button spells out the reply path.
+  const tell = { text: "✏️ Tell me where", data: "ix:qw:PENDING" }
+  const rows = guess ? [[{ text: "✅ Use the guess", data: "ix:io:PENDING" }, tell], [{ text: "⏭ Skip this file", data: `ix:fs:${row.id}` }]] : [[tell, { text: "⏭ Skip this file", data: `ix:fs:${row.id}` }]]
   if (DRY) {
     await tgSend(text, { rows, dryRun: true })
     return
@@ -326,9 +330,81 @@ function relevantAttachments(msg, cls) {
     const c = byName.get(a.filename)
     if (c && c.relevant === false) continue
     if (!c && !/\.(pdf|docx?|xlsx?|csv|zip|jpe?g|png)$/i.test(a.filename)) continue
-    out.push({ ...a, doc_type: c?.doc_type || (/\.pdf$/i.test(a.filename) ? "other" : "photos"), description: c?.description || "", signed: c?.signed ?? null, property_label: c?.property_label || cls?.property?.label || null })
+    const cleanName = a.filename.replace(/^\.+/, "")
+    const docType = refineDocType(cleanName, c?.doc_type || (/\.pdf$/i.test(a.filename) ? "other" : /\.(csv|xlsx?)$/i.test(a.filename) ? "marketing_list" : "photos"), msg.from.email, msg.subject)
+    out.push({ ...a, cleanName, doc_type: docType, stage: c?.stage || null, description: c?.description || "", signed: c?.signed ?? null, property_label: c?.property_label || cls?.property?.label || null })
   }
   return out
+}
+
+/** Not a transaction document → remembered (so `find` and the teach-back can see it) but never filed, never a card. */
+async function recordIgnored(msg, att, why) {
+  if (DRY) return log(`ignore ${att.filename}: ${why}`)
+  await sb().from("inbox_files").insert({
+    gmail_id: msg.id, thread_id: msg.threadId, attachment_id: att.attachmentId, part_id: att.partId, filename: att.filename, mime: att.mime, size_bytes: att.size || 0, sha256: null,
+    sender: msg.from.email, subject: msg.subject, received_at: msg.internalDate, property_key: propertyKey(att.property_label), property_label: att.property_label, doc_type: att.doc_type,
+    status: "ignored", error: why, resolved_at: isoNow(),
+  })
+}
+
+/** Ryan 2026-10-02: "read the top of the PDF to see what property that's for." */
+async function verifyProperty(ctx, bytes, filename) {
+  await loadTree(ctx)
+  const candidates = ctx.propFolders.filter((f) => !/^(19|20)\d{2}$|^old$|^_unsorted$|^pitched/i.test(f.name)).map((f) => f.name)
+  return completeJson({ model: HAIKU, system: VERIFY_SYSTEM, prompt: verifyPrompt({ filename, candidates }), docs: [{ kind: "pdf", data: bytes, mime: "application/pdf", name: filename }], maxTokens: 300, tag: "[verify]" })
+}
+function labelFromVerify(v) {
+  if (!v) return null
+  if (v.matches) return v.matches
+  if (v.address) return String(v.address).split(",")[0].trim()
+  return v.label || null
+}
+
+/** One line on what changed vs the previous settlement statement in the same folder (Ryan: "review these and update"). */
+async function statementDiff(ctx, folderId, newBytes, newName, property) {
+  try {
+    const kids = (await listChildren(ctx.drive, folderId)).filter((k) => k.mimeType !== "application/vnd.google-apps.folder" && /statement/i.test(k.name) && k.name !== newName)
+    if (!kids.length) return null
+    const prev = kids.sort((a, b) => a.name.localeCompare(b.name)).at(-1)
+    const prevBytes = await downloadFile(ctx.drive, prev.id)
+    const text = await complete({
+      model: SONNET, thinking: false, maxTokens: 300, tag: "[stmt-diff]",
+      system: "You compare two versions of an escrow settlement statement for the same real-estate transaction and report what changed. Plain text, one or two short lines, ≤ 40 words total, lead with the bottom line (cash to close / proceeds) then the line items that moved. If nothing material changed say 'No material change'.",
+      prompt: `Property: ${property}\nPREVIOUS version: "${prev.name}" (first document). NEW version: "${newName}" (second document). What changed?`,
+      docs: [{ kind: "pdf", data: prevBytes, mime: "application/pdf", name: prev.name }, { kind: "pdf", data: newBytes, mime: "application/pdf", name: newName }],
+    })
+    return text ? `vs ${prev.name}: ${text.trim()}` : null
+  } catch (e) {
+    warn("statement diff failed:", e.message)
+    return null
+  }
+}
+
+/** Deterministic filing for a whitelisted doc on a known property. Returns {folder, name, folderId, seq}. */
+async function deterministicDest(ctx, pf, att, msg, stage) {
+  const side = (await getSetting("agent")).sides?.[propertyKey(pf.name)] || "buyer"
+  let seq = 1
+  if (isPurchaseDoc(att.doc_type)) {
+    const { id } = await resolvePath(ctx.drive, ctx.rootId, `${pf.path}/Purchase & Sale`, { create: !DRY })
+    if (id) seq = nextSequence((await listChildren(ctx.drive, id)).map((k) => k.name))
+  }
+  const dest = destinationFor({ property: pf.name, docType: att.doc_type, filename: att.cleanName || att.filename, subject: msg.subject, receivedAt: msg.internalDate, stage, seq, side })
+  return dest ? { ...dest, folder: dest.folder.replace(/^Properties\/[^/]+/, pf.path) } : null
+}
+
+/** One confirmation per email for everything filed straight in (no approval card). */
+async function postFiledConfirmation(ctx, msg, filed) {
+  if (!filed.length) return
+  const who = msg.from.name || msg.from.email
+  const lines = [`🗂 <b>Filed ${filed.length === 1 ? "1 document" : `${filed.length} documents`}</b> from ${esc(who)} · ${ptDateLabel(msg.internalDate)} · “${esc(shortSubject(msg.subject))}”`]
+  for (const f of filed) {
+    lines.push(`• <a href="${f.url}">${esc(f.folder.replace(/^Properties\//, ""))}/${esc(f.name)}</a>`)
+    if (f.diff) lines.push(`  <i>${esc(f.diff)}</i>`)
+  }
+  lines.push(`Reply to this card to move or rename any of them.`)
+  const rows = filed.length <= 3 ? filed.map((f) => [{ text: `↩️ Undo ${f.name.slice(0, 28)}`, data: `ix:fu:${f.row.id}` }]) : []
+  const mid = await tgSend(lines.join("\n"), { rows, dryRun: DRY })
+  if (!DRY && mid) await sb().from("inbox_files").update({ tg_message_id: mid }).in("id", filed.map((f) => f.row.id))
 }
 
 /** Download, hash, dedupe, insert an inbox_files row. Returns {row, bytes} or null. */
@@ -440,7 +516,7 @@ async function postDeferred(ctx) {
 }
 
 /** Upload one file (bytes re-fetched from Gmail). Returns {ok, url, error}. */
-async function fileToDrive(ctx, row, folder, name) {
+async function fileToDrive(ctx, row, folder, name, { suffixOnExisting = false } = {}) {
   if (!ctx.drive || !ctx.rootId) return { ok: false, error: `Drive not available — ${ctx.driveErr || "setup incomplete"}` }
   try {
     const bytes = await getAttachmentBytes(ctx.gmail, row.gmail_id, row.attachment_id)
@@ -448,15 +524,16 @@ async function fileToDrive(ctx, row, folder, name) {
     const { id: folderId, created } = await resolvePath(ctx.drive, ctx.rootId, folder, { create: !DRY })
     if (!folderId) return { ok: false, error: `folder ${folder} missing (dry run)` }
     const existing = await findFileByName(ctx.drive, folderId, name)
-    if (existing) {
+    if (existing && suffixOnExisting) name = withTimeSuffix(name, row.received_at) // settlement statements: every version kept, never overwritten
+    else if (existing) {
       if (!DRY) await sb().from("inbox_files").update({ status: "duplicate", final_folder: folder, final_name: name, drive_file_id: existing.id, drive_url: existing.webViewLink, resolved_at: isoNow() }).eq("id", row.id)
       return { ok: false, duplicate: true, url: existing.webViewLink, error: `“${name}” already exists in ${folder}` }
     }
-    if (DRY) return { ok: true, url: "(dry run)", created }
+    if (DRY) return { ok: true, url: "(dry run)", created, name, folderId }
     const up = await uploadFile(ctx.drive, folderId, name, row.mime, bytes)
     await sb().from("inbox_files").update({ status: "filed", final_folder: folder, final_name: name, drive_file_id: up.id, drive_folder_id: folderId, drive_url: up.webViewLink, filed_at: isoNow(), resolved_at: isoNow(), error: null }).eq("id", row.id)
     await addLabel(ctx.gmail, row.gmail_id, "MC/Filed")
-    return { ok: true, url: up.webViewLink, created }
+    return { ok: true, url: up.webViewLink, created, name, folderId }
   } catch (e) {
     const error = e?.response?.data?.error?.message || e.message
     if (!DRY) await sb().from("inbox_files").update({ status: "error", error }).eq("id", row.id)
@@ -500,7 +577,9 @@ async function learnRule(ctx, row, folder, name, { source, note }) {
 function applyRule(rule, row, pf) {
   const prop = pf?.name || row.property_label || "_Unsorted"
   const date = (row.received_at || isoNow()).slice(0, 10)
-  const fill = (t) => String(t).replace(/\{property\}/g, prop).replace(/\{date\}/g, date).replace(/\{doc_type\}/g, String(row.doc_type || "").replace(/_/g, " ")).replace(/\{original\}/g, row.filename)
+  const when = new Date(row.received_at || isoNow())
+  const monthYear = `${when.toLocaleString("en-US", { month: "long", timeZone: "America/Los_Angeles" })}${when.getFullYear()}` // "October2026" — Ryan's own folder style
+  const fill = (t) => String(t).replace(/\{property\}/g, prop).replace(/\{date\}/g, date).replace(/\{year\}/g, date.slice(0, 4)).replace(/\{monthyear\}/g, monthYear).replace(/\{doc_type\}/g, String(row.doc_type || "").replace(/_/g, " ")).replace(/\{original\}/g, row.filename)
   let name = sanitizeFilename(fill(rule.filename_template))
   if (!extOf(name) && extOf(row.filename)) name += `.${extOf(row.filename)}`
   return { folder: fill(rule.folder_template), name }
@@ -613,9 +692,10 @@ async function pollInbox(ctx) {
     if (back < watermark) watermark = back
   }
   const windowDays = Math.max(2, BACKFILL ? parseDays(BACKFILL) : 2)
-  const ids = await listMessageIds(ctx.gmail, `in:inbox newer_than:${windowDays}d -from:${MAILBOX}`, 300)
+  // --message=<gmail id> re-runs one email through the pipeline (pair with --dry-run to test).
+  const ids = MESSAGE ? [MESSAGE] : await listMessageIds(ctx.gmail, `in:inbox newer_than:${windowDays}d -from:${MAILBOX}`, 300)
   const known = new Set()
-  for (let i = 0; i < ids.length; i += 200) {
+  for (let i = 0; i < ids.length && !MESSAGE; i += 200) {
     const { data } = await sb().from("inbox_messages").select("gmail_id").in("gmail_id", ids.slice(i, i + 200))
     for (const r of data || []) known.add(r.gmail_id)
   }
@@ -631,12 +711,19 @@ async function pollInbox(ctx) {
       warn(`get ${id} failed:`, e.message)
       continue
     }
-    if (msg.internalDate && msg.internalDate < watermark) {
+    if (msg.internalDate && msg.internalDate < watermark && !MESSAGE) {
       await insertMessage(msg, "skip", { reason: "before watermark" })
       continue
     }
     if (msg.from.email === MAILBOX || AUTOMATED_RE.test(msg.from.email) || AUTOMATED_RE.test(msg.subject)) {
       await insertMessage(msg, "automated", null)
+      continue
+    }
+    // Ryan 2026-10-02: "agent flyer trash … these go into promotions … I don't
+    // even want them to show up." Anything Gmail files under Promotions is
+    // dropped at the poll unless it comes from someone he's done business with.
+    if (msg.labelIds.includes("CATEGORY_PROMOTIONS") && !(await isKnownSender(msg.from.email))) {
+      await insertMessage(msg, "promotions", { reason: "Gmail Promotions category, unknown sender" })
       continue
     }
     handled++
@@ -666,11 +753,23 @@ async function handleMessage(ctx, msg) {
   const rules = await getSetting("rules")
   const rulesApproved = rules.status === "approved"
 
-  // --- attachments (3+ on one email → one batch card)
+  // --- attachments. Ryan 2026-10-02: only the transaction whitelist is filed;
+  // the property comes from the PDF, one email = one property; whitelisted docs
+  // on a known property file straight in with a confirmation (no approval
+  // card); questions only when the property is new or unclear.
   const atts = relevantAttachments(msg, cls)
   const pdfDocs = []
   const batch = []
+  const filed = []
+  let property = cls.property?.label || null // the email's property; refined by the first verified PDF
   for (const att of atts) {
+    const isDeal = cls.deal && (kind === "deal_lead" || kind === "broker_blast")
+    const stage0 = stageOf({ filename: att.cleanName, subject: msg.subject, modelStage: att.stage })
+    const pre = filingDecision(att.doc_type, stage0)
+    if (!pre.file && !/^(evidence_of_insurance|insurance_policy|loan_docs)$/.test(att.doc_type) && !(isDeal && /^application\/pdf$/.test(att.mime))) {
+      await recordIgnored(msg, att, pre.why)
+      continue
+    }
     const rec = await recordAttachment(ctx, msg, att, cls, rulesApproved ? "pending" : "waiting")
     if (!rec) continue
     if (/^application\/pdf$/.test(att.mime)) pdfDocs.push({ kind: "pdf", data: rec.bytes, mime: att.mime, name: att.filename })
@@ -678,17 +777,61 @@ async function handleMessage(ctx, msg) {
       log(`duplicate: ${att.filename} (matches ${rec.dup.id})`)
       continue
     }
-    if (!rulesApproved) continue
-    const p = await proposeFor(ctx, rec.row, rec.bytes, cls)
-    if (!p) {
-      await tgSend(`⚠️ No filing proposal for <b>${esc(att.filename)}</b> (from ${esc(msg.from.email)}) — reply to this with folder + name if you want it filed.`, { dryRun: DRY })
+    if (!pre.file && !/^(evidence_of_insurance|insurance_policy|loan_docs)$/.test(att.doc_type)) {
+      // OM / flyer on a deal email: kept for the screen, never filed.
+      if (!DRY) await sb().from("inbox_files").update({ status: "ignored", error: pre.why, resolved_at: isoNow() }).eq("id", rec.row.id)
       continue
     }
-    if (atts.length >= 3 && !(p.rule && p.rule.mode === "auto") && !p.question && p.folder) batch.push({ row: rec.row, p })
-    else await routeProposal(ctx, rec.row, p)
+    if (!rulesApproved) continue
+
+    // Property from the document itself.
+    let verify = null
+    if (/^application\/pdf$/.test(att.mime) && att.doc_type !== "marketing_list") verify = await verifyProperty(ctx, rec.bytes, att.cleanName)
+    const vLabel = labelFromVerify(verify)
+    const stage = stageOf({ filename: att.cleanName, subject: msg.subject, modelStage: att.stage, verifyStage: verify?.stage })
+    const decision = filingDecision(att.doc_type, stage)
+    if (!decision.file) {
+      if (!DRY) await sb().from("inbox_files").update({ status: "ignored", error: decision.why, resolved_at: isoNow() }).eq("id", rec.row.id)
+      log(`ignore ${att.filename}: ${decision.why}`)
+      continue
+    }
+    if (vLabel && property && !keysMatch(propertyKey(vLabel), propertyKey(property)) && (verify?.confidence ?? 1) >= 0.6) {
+      await postAskCard(ctx, rec.row, `The PDF says ${vLabel} but the email looks like ${property}. Which property does “${att.cleanName}” belong to?`, null)
+      continue
+    }
+    if (!property && vLabel) property = vLabel
+    if (property && !DRY) await sb().from("inbox_files").update({ property_label: property, property_key: propertyKey(property), doc_type: att.doc_type }).eq("id", rec.row.id)
+    const rowNow = { ...rec.row, property_label: property, property_key: propertyKey(property), doc_type: att.doc_type }
+
+    if (att.doc_type === "marketing_list" || !property) {
+      // Not a property document, or no property anywhere → the learned-rules path (card or question).
+      const p = await proposeFor(ctx, rowNow, rec.bytes, cls)
+      if (!p) await postAskCard(ctx, rowNow, `Which property (or folder) is “${att.cleanName}” for?`, null)
+      else if (!property && att.doc_type !== "marketing_list" && !p.question) await postAskCard(ctx, rowNow, `Which property is “${att.cleanName}” for?`, { folder: p.folder, name: p.name })
+      else if (atts.length >= 3 && !(p.rule && p.rule.mode === "auto") && !p.question && p.folder) batch.push({ row: rowNow, p })
+      else await routeProposal(ctx, rowNow, p)
+      continue
+    }
+    const pf = propertyFolderFor(ctx, property)
+    if (!pf) {
+      const guessFolder = `Properties/${property}`
+      await postAskCard(ctx, rowNow, `New property? I don't have a folder for ${property}. Create Properties/${property}/ with the standard subfolders?`, { folder: `${guessFolder}/${decision.sub}`, name: att.cleanName })
+      continue
+    }
+    const dest = await deterministicDest(ctx, pf, att, msg, stage)
+    if (!dest) continue
+    const r = await fileToDrive(ctx, rowNow, dest.folder, dest.name, { suffixOnExisting: true })
+    if (!r.ok) {
+      await tgSend(`⚠️ Couldn't file <b>${esc(dest.name)}</b> → ${esc(dest.folder)} — ${esc(r.error)}`, { dryRun: DRY })
+      continue
+    }
+    let diff = null
+    if (/^(closing_statement|net_sheet)$/.test(att.doc_type) && r.folderId && !DRY) diff = await statementDiff(ctx, r.folderId, rec.bytes, r.name || dest.name, pf.name)
+    filed.push({ row: rowNow, folder: dest.folder, name: r.name || dest.name, url: r.url, diff })
   }
   if (batch.length >= 2) await postBatch(ctx, msg, batch)
   else for (const it of batch) await routeProposal(ctx, it.row, it.p)
+  await postFiledConfirmation(ctx, msg, filed)
 
   // --- secure-portal notices with nothing attached
   if (kind === "zix" && !atts.length && /portal|secure message center|view message|retrieve/i.test(msg.text)) {
@@ -790,6 +933,10 @@ async function resolveLoops(ctx) {
 // ------------------------------------------------------------------ deals
 async function screenDeal(ctx, msg, cls, pdfDocs) {
   const tier = cls.deal.tier || (cls.kind === "deal_lead" ? "direct" : "blast")
+  if (tier !== "direct" && !(await isKnownSender(msg.from.email))) {
+    log(`blast ${cls.deal.address || "?"}: hidden (unknown sender)`)
+    return
+  }
   const docs = tier === "direct" ? pdfDocs.slice(0, 2) : pdfDocs.slice(0, 1)
   const { data: past } = await sb().from("inbox_deal_screens").select("address, verdict, ryan_verdict, summary").not("ryan_verdict", "is", null).order("created_at", { ascending: false }).limit(20)
   const calibration = (past || []).map((p) => `- ${p.address || "?"}: model said ${p.verdict}, Ryan said ${p.ryan_verdict}${p.summary ? ` (${p.summary})` : ""}`).join("\n")
@@ -1005,7 +1152,7 @@ async function maybeDigest(ctx, force = false) {
     const shown = screens.data.filter((s) => s.tier === "direct" || s.facts?.shown)
     const held = screens.data.length - shown.length
     if (shown.length) lines.push(`\n<b>Deals screened:</b>\n` + shown.map((s) => `• ${esc(s.address || "?")} — ${s.verdict === "pass" ? "pass" : s.verdict === "look_further" ? "look further" : "unclear"}${s.summary ? `: ${esc(s.summary)}` : ""}`).join("\n"))
-    if (held) lines.push(`${held} broker blast${held === 1 ? "" : "s"} screened and held (outside the box).`)
+    if (held) log(`digest: ${held} hidden blasts not mentioned (Ryan 2026-10-02: no tally)`)
   }
   if (rules.status !== "approved") {
     if (interview.count) lines.push(`\n🗂 A filing setup question is waiting on your answer above.`)

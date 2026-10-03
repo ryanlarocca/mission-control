@@ -265,8 +265,14 @@ export async function handleInboxCallback(data: string): Promise<InboxCallbackRe
     return { toast: "Reply with the folder + name", text: "✏️ Reply to the proposal with where it goes and what to call it — e.g. “Properties/93 Ridgeview/Addendum A.pdf”, or just “Halleck folder, keep the name”." }
   }
   if ((m = new RegExp(`^ix:fs:(${UUID})$`).exec(data))) {
-    await sb.from("inbox_files").update({ status: "skipped", resolved_at: now }).eq("id", m[1]).in("status", ["pending", "waiting", "change_requested", "batch"])
+    await sb.from("inbox_files").update({ status: "skipped", resolved_at: now }).eq("id", m[1]).in("status", ["pending", "waiting", "change_requested", "batch", "asked"])
+    await sb.from("inbox_interview").update({ status: "skipped", answer_kind: "skipped", answered_at: now }).eq("file_id", m[1]).eq("status", "asked")
     return { toast: "Skipped", clearButtons: true, text: "⏭ Skipped — not filed." }
+  }
+  // ❓ card → "Tell me where": the reply to the card is already matched by
+  // tg_message_id (findInboxByTgMessage → interview), so this just explains.
+  if ((m = new RegExp(`^ix:qw:(${UUID})$`).exec(data))) {
+    return { toast: "Reply with the folder", text: "✏️ Reply to the question card with the folder (and a name if you want one) — e.g. “Marketing/2026/NOO October2026” or “Quito, Disclosures”. I'll file it there and remember the rule for that sender + document type." }
   }
   if ((m = new RegExp(`^ix:fm:(${UUID})$`).exec(data))) {
     const { data: row } = await sb.from("inbox_files").select("rule_id").eq("id", m[1]).maybeSingle()

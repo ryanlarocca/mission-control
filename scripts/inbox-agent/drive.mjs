@@ -78,12 +78,53 @@ export async function findRoot(drive) {
   return pick.id
 }
 
-/** "Properties/93 Ridgeview" → folder id under root, creating as needed. */
+// Ryan 2026-10-02: marketing lists (Chicago Title farm lists etc.) live in the
+// sibling top-level folder "Marketing", which he shared with ryan@lrghomes.com
+// the same night. Paths starting with "Marketing/" resolve against that root.
+const EXTRA_ROOTS = {} // lower-case first segment → folder id
+export async function findExtraRoots(drive) {
+  const s = await getSetting("drive")
+  const wanted = ["Marketing"]
+  for (const name of wanted) {
+    const key = name.toLowerCase()
+    const cached = s.extra_roots?.[key]
+    if (cached) {
+      try {
+        await drive.files.get({ fileId: cached, fields: "id", supportsAllDrives: true })
+        EXTRA_ROOTS[key] = cached
+        continue
+      } catch {
+        /* re-search */
+      }
+    }
+    const { data } = await drive.files.list({
+      q: `name = '${q(name)}' and mimeType = '${FOLDER}' and trashed = false and sharedWithMe = true`,
+      fields: "files(id, name, owners(emailAddress), sharedWithMeTime)",
+      supportsAllDrives: true,
+      includeItemsFromAllDrives: true,
+      pageSize: 10,
+    })
+    const pick = (data.files || [])[0]
+    if (pick) EXTRA_ROOTS[key] = pick.id
+  }
+  await setSetting("drive", { extra_roots: { ...EXTRA_ROOTS } })
+  return { ...EXTRA_ROOTS }
+}
+export function extraRoots() {
+  return { ...EXTRA_ROOTS }
+}
+
+/** "Properties/93 Ridgeview" → folder id under root, creating as needed.
+ *  "Marketing/2026/…" resolves against the shared Marketing root when known. */
 export async function resolvePath(drive, rootId, relPath, { create = false } = {}) {
   const segs = String(relPath || "").split("/").map((s) => s.trim()).filter(Boolean)
   // Tolerate the root name being included in the path.
   if (segs[0] && segs[0].toLowerCase() === DRIVE_ROOT_NAME.toLowerCase()) segs.shift()
   let parent = rootId
+  if (segs[0] && EXTRA_ROOTS[segs[0].toLowerCase()]) {
+    parent = EXTRA_ROOTS[segs[0].toLowerCase()]
+    segs.shift()
+  }
   const created = []
   for (const name of segs) {
     const kids = await listChildren(drive, parent)
@@ -121,7 +162,17 @@ export async function folderTree(drive, rootId, { maxDepth = 3 } = {}) {
   }
   lines.push(`${DRIVE_ROOT_NAME}/`)
   await rec(rootId, "  ", 1)
+  for (const [key, id] of Object.entries(EXTRA_ROOTS)) {
+    lines.push(`${key[0].toUpperCase()}${key.slice(1)}/  (separate shared folder — paths start with "${key[0].toUpperCase()}${key.slice(1)}/")`)
+    await rec(id, "  ", 2)
+  }
   return lines.join("\n")
+}
+
+/** Download a Drive file's bytes (for settlement-statement diffs). */
+export async function downloadFile(drive, fileId) {
+  const res = await drive.files.get({ fileId, alt: "media", supportsAllDrives: true }, { responseType: "arraybuffer" })
+  return Buffer.from(res.data)
 }
 
 /** Property folders directly under Properties/ and one level down (year buckets). */

@@ -71,10 +71,53 @@ export async function completeJson(args) {
 // ---------------------------------------------------------------- prompts
 
 export const DOC_TYPES = [
-  "purchase_agreement", "addendum", "counter", "disclosure", "inspection", "title_report", "escrow_instructions",
-  "net_sheet", "closing_statement", "evidence_of_insurance", "appraisal", "invoice", "bid", "offering_memorandum",
-  "flyer", "loan_docs", "tax_doc", "lease", "photos", "other",
+  "purchase_agreement", "counter", "addendum", "contingency_removal", "disclosure", "nhd", "inspection", "appraisal",
+  "title_report", "escrow_instructions", "emd_receipt", "net_sheet", "closing_statement", "deed",
+  "evidence_of_insurance", "insurance_policy", "insurance_quote", "loan_docs", "loan_application",
+  "invoice", "bid", "offering_memorandum", "flyer", "marketing_list", "tax_doc", "lease", "photos", "other",
 ]
+
+// Ryan 2026-10-02 — the transaction whitelist. Only these document types are
+// ever filed; everything else on a transaction thread is logged and ignored
+// (no card). Insurance files only when bound; loan docs only when final;
+// settlement statements are kept in every version (dated, never overwritten).
+export const WHITELIST = new Set([
+  "purchase_agreement", "counter", "addendum", "contingency_removal", "disclosure", "nhd", "inspection", "appraisal",
+  "title_report", "emd_receipt", "net_sheet", "closing_statement", "deed", "evidence_of_insurance", "insurance_policy",
+  "loan_docs", "marketing_list",
+])
+
+/** Which property subfolder a whitelisted doc type lives in (null = not filed). */
+export function subfolderFor(docType, stage) {
+  switch (docType) {
+    case "purchase_agreement": case "counter": case "addendum": case "contingency_removal":
+      return "Purchase & Sale"
+    case "disclosure": case "nhd":
+      return "Disclosures"
+    case "inspection": case "appraisal":
+      return "Inspections"
+    case "title_report": case "emd_receipt": case "net_sheet": case "closing_statement": case "deed":
+      return "Title & Escrow"
+    case "evidence_of_insurance": case "insurance_policy":
+      return stage === "bound" || stage === "final" ? "Loan & Insurance" : null
+    case "loan_docs":
+      return stage === "final" || stage === "bound" ? "Loan & Insurance" : null
+    default:
+      return null
+  }
+}
+/** Human label used in Purchase & Sale file names. */
+export const PS_LABEL = { purchase_agreement: "Offer RPA", counter: "Counter Offer", addendum: "Addendum", contingency_removal: "Contingency Removal" }
+
+export const VERIFY_SYSTEM = `You read the first pages of a real-estate document and report which property it is about. Be literal: copy the street address exactly as printed; if there is an Assessor's Parcel Number, copy it. If no property is named, say null. Output strict JSON.`
+export function verifyPrompt({ filename, candidates }) {
+  return `DOCUMENT: ${filename}
+Ryan's active properties: ${candidates.join("; ") || "(none listed)"}
+
+Which property is this document about? Look at the first page(s): the "Property" line of a purchase agreement, the property address on a settlement statement, prelim, disclosure, insurance binder, loan document, or report.
+Return JSON only: {"address": "2116 Quito Rd, San Jose, CA 95130" | null, "label": "2116 Quito Rd" | null, "apn": "403-29-017" | null, "matches": "<one of Ryan's active properties above, exactly as listed, or null>", "stage": "quote"|"application"|"estimated"|"final"|"bound"|"signed"|null, "confidence": 0.0-1.0}
+"label" = number + street name only. "stage": final/FINAL in a title → final; "estimated"/"preliminary" → estimated; an insurance binder, declarations page or evidence of insurance naming a lender → bound; an insurance quote or proposal → quote; a loan application → application; a fully executed contract → signed.`
+}
 
 export const CLASSIFY_SYSTEM = `You are the inbox triage layer for Ryan LaRocca, a real-estate investor (LRG Homes, San Jose CA). He flips houses and buys small multifamily, sells his own flips through listing agents, and works with escrow officers (Chicago Title), lenders (Kiavi, Conventus), insurance (Obie), contractors, and agents who send him deals.
 You read ONE inbound email and return strict JSON. Be literal and conservative: never invent an address; if a property cannot be identified say null. Ignore email signatures, disclaimers and marketing footers when judging what the sender wants.`
@@ -109,7 +152,8 @@ Return JSON only:
   "is_human": true|false,                      // a person writing to Ryan (or a service acting for one: DocuSign, Zix, Authentisign count as true), vs newsletters/receipts/notifications/DMARC
   "kind": "human"|"automated"|"newsletter"|"docusign_request"|"docusign_completed"|"esign_completed"|"zix"|"deal_lead"|"broker_blast"|"skip",
   "property": {"label": "93 Ridgeview", "address": "93 Ridgeview Ave, San Jose, CA 95127"} | null,   // label = number + street name only
-  "attachments": [ {"filename": "...", "relevant": true|false, "doc_type": "<one of: ${DOC_TYPES.join(", ")}>", "property_label": "..."|null, "signed": true|false|null, "description": "6-12 words"} ],
+  "attachments": [ {"filename": "...", "relevant": true|false, "doc_type": "<one of: ${DOC_TYPES.join(", ")}>", "property_label": "..."|null, "signed": true|false|null, "stage": "quote"|"application"|"estimated"|"final"|"bound"|null, "description": "6-12 words"} ],
+  // doc_type notes: counter = counter offer (SCO/BCO); contingency_removal = CR form; nhd = natural hazard disclosure report; emd_receipt = earnest-money wire/deposit receipt from escrow; closing_statement = buyer/seller settlement statement (any version); deed = grant deed / recorded docs; evidence_of_insurance = EOI/binder; insurance_policy = declarations page / policy; insurance_quote = quotes, proposals, RCE, applications not yet bound; loan_application = applications, affidavits, disclosures, guides from a lender; loan_docs = final executed loan documents (note, deed of trust, closing disclosure); marketing_list = CSV/XLSX owner or farm lists from a title rep. stage: "final" when the sender calls it final; "estimated" for estimated/preliminary statements; "bound" for an insurance binder/EOI/dec page; "quote"/"application" otherwise for insurance and loan paperwork.
   "needs_reply": true|false,                   // does the sender need something from Ryan (an answer, a signature, a document, a decision, a signing time)?
   "ask": "one sentence: what they need from Ryan" | null,
   "due_on": "YYYY-MM-DD" | null,               // only if a date/deadline is stated or clearly implied (e.g. 'tomorrow', 'by Friday')
