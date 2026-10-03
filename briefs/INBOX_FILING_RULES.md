@@ -41,6 +41,9 @@ Properties/<number street>/          e.g. 5764 Halleck Dr, 2116 Quito Rd
 ```
 Closed deals stay where they are until Ryan says otherwise (`Properties/Old/`, `Properties/2025/` untouched). `93 Ridgeview` keeps its current name and layout — do not rename or restructure it.
 
+## Money that crosses deals
+When proceeds from one property fund another (e.g. the 93 Ridgeview disbursement wired into the 5764 Halleck Dr escrow), the disbursement / wire document is filed with the **receiving** property too, under Title & Escrow, so that file balances on its own later. A document naming two properties is not a misfile — check which escrow the money landed in.
+
 ## Settlement statements
 - File every version. Name = `<property> <Buyer|Seller> Statement <YYYY-MM-DD>` + ` FINAL` when the sender calls it final, otherwise ` estimated`. Two on the same day → the second gets the time appended.
 - On each new one, read it against the previous version in the same folder and put a one-line "what changed" on the confirmation.
