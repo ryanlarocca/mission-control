@@ -63,6 +63,7 @@ export async function sendAgentsLineText(args: {
 }): Promise<{ success: boolean; error?: string; contactName?: string | null }> {
   const { to10, body } = args
   if (!/^\d{10}$/.test(to10)) return { success: false, error: `bad number: ${to10}` }
+  if (`+1${to10}` === AGENTS_LINE) return { success: false, error: "that is the agents line itself — reply to the agent's alert, not a message that quotes our own email" }
   if (!body.trim()) return { success: false, error: "empty message" }
 
   const sb = getLeadsClient()

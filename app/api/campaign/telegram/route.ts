@@ -799,6 +799,44 @@ export async function POST(request: Request) {
     return NextResponse.json({ ok: true })
   }
 
+  // Email AGENT REPLY alerts decide FIRST (2026-10-02): typed replies SEND
+  // as a threaded email from the mailbox that received the reply; "call
+  // her" relays by the contact's phone on file. This used to sit behind
+  // extractPhone(), which grabbed the first "(xxx) xxx-xxxx" in the alert —
+  // Grail's alert quoted our own email ("text me at (650) 910-4007"), so
+  // Ryan's reply went to Twilio as a text from the agents line to itself
+  // (error 21266) instead of to her. An agent who writes their cell in a
+  // reply would have hit the same thing.
+  const emailAlert = /AGENT REPLY[^—]*—\s*(.+?)\s*\(after T/i.exec(repliedText)
+  if (emailAlert) {
+    const contactName = emailAlert[1].trim()
+    if (CALL_INTENT_RE.test(body)) {
+      const phone = await contactPhoneByName(contactName)
+      if (phone) {
+        const out = await startAgentsLineRelayCall(phone)
+        await tg("sendMessage", {
+          chat_id: chatId,
+          text: out.success
+            ? `📞 Calling your cell now — answer and you'll be connected to ${out.label}.`
+            : `⚠️ Couldn't start the call — ${out.error}`,
+          reply_to_message_id: msg.message_id,
+        })
+      } else {
+        await tg("sendMessage", { chat_id: chatId, text: `⚠️ No phone on file for ${contactName}.`, reply_to_message_id: msg.message_id })
+      }
+      return NextResponse.json({ ok: true })
+    }
+    const out = await sendCampaignEmailReply({ contactName, body })
+    await tg("sendMessage", {
+      chat_id: chatId,
+      text: out.success
+        ? `✅ Emailed ${out.label} — same thread, from ${out.mailbox ?? "info@"}.`
+        : `⚠️ Not sent — ${out.error}`,
+      reply_to_message_id: msg.message_id,
+    })
+    return NextResponse.json({ ok: true })
+  }
+
   // Lead-line alerts (Leads tab — /api/leads/sms, /voice, /email, recordings,
   // DNC) post from this bot since 2026-08-27 (Ryan retired Thadius). They
   // embed the lead phone in E.164 ("+1408…") or, for email/DM leads, as
@@ -835,40 +873,6 @@ export async function POST(request: Request) {
 
   const to10 = extractPhone(repliedText)
   if (!to10) {
-    // Email AGENT REPLY alerts: typed replies SEND as a threaded email from
-    // the mailbox that received the reply — info@ for legacy threads, the
-    // sending domain's mailbox for the two-domain stack (2026-07-27 — "Thank
-    // you Mary!" should just go). Call intents
-    // look up the contact's phone and relay instead.
-    const nameMatch = /AGENT REPLY[^—]*—\s*(.+?)\s*\(after T/i.exec(repliedText)
-    if (nameMatch) {
-      const contactName = nameMatch[1].trim()
-      if (CALL_INTENT_RE.test(body)) {
-        const phone = await contactPhoneByName(contactName)
-        if (phone) {
-          const out = await startAgentsLineRelayCall(phone)
-          await tg("sendMessage", {
-            chat_id: chatId,
-            text: out.success
-              ? `📞 Calling your cell now — answer and you'll be connected to ${out.label}.`
-              : `⚠️ Couldn't start the call — ${out.error}`,
-            reply_to_message_id: msg.message_id,
-          })
-        } else {
-          await tg("sendMessage", { chat_id: chatId, text: `⚠️ No phone on file for ${contactName}.`, reply_to_message_id: msg.message_id })
-        }
-        return NextResponse.json({ ok: true })
-      }
-      const out = await sendCampaignEmailReply({ contactName, body })
-      await tg("sendMessage", {
-        chat_id: chatId,
-        text: out.success
-          ? `✅ Emailed ${out.label} — same thread, from ${out.mailbox ?? "info@"}.`
-          : `⚠️ Not sent — ${out.error}`,
-        reply_to_message_id: msg.message_id,
-      })
-      return NextResponse.json({ ok: true })
-    }
     await tg("sendMessage", {
       chat_id: chatId,
       text: "⚠️ No phone number in that alert — reply to a call/text/voicemail/email alert.",
