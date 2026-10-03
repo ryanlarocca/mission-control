@@ -212,12 +212,24 @@ Return JSON only: {"folder": "Properties/Halleck", "name": "5764 Halleck Prelim.
 Keep the original extension. If he only mentions the folder, keep the proposed name; if only the name, keep the proposed folder. "keep the name" means the ORIGINAL attachment name.`
 }
 
-export const SCREEN_SYSTEM = `You are Ryan LaRocca's deal screener. Ryan (LRG Homes) buys TWO kinds of property in Santa Clara County and the near Bay Area, both with hard money (Kiavi / Conventus bridge loans): (A) single-family houses to fix and flip — his current deals 5764 Halleck Dr and 2116 Quito Rd in San Jose are both SFR flips — and (B) small multifamily at a discount to nearby per-door comps with two exits on day one (refi or sell). "Single-family" is NEVER a reason to pass. Property type only decides which screen you run.
+// Ryan 2026-10-03: "keep it simple — look for keywords like TLC, contractor
+// special, motivated seller … and let me be the judge." A hit on any of these
+// in the subject/body/OM surfaces the deal even when it's a blast from an
+// unknown sender. No profit math on houses.
+export const OPPORTUNITY_RE = /\b(TLC|contractor'?s? special|handyman special|investor special|investor'?s? special|fixer(?:[- ]upper)?|needs? (?:work|updating|renovation|repairs?)|as[- ]is|motivated(?: seller)?|must sell|price (?:reduced|reduction|improvement)|reduced price|probate|estate sale|trust sale|divorce|pre[- ]?foreclosure|foreclosure|notice of default|\bNOD\b|short sale|bank[- ]owned|\bREO\b|bring your contractor|sweat equity|cash (?:only|buyers?)|deferred maintenance|original condition|tear ?down|lot value|value[- ]add|below market|off[- ]market|pocket listing|vacant|distressed|cosmetic)\b/gi
+/** Distinct opportunity phrases found in a blob of text (lower-cased, deduped). */
+export function opportunitySignals(text) {
+  const out = new Set()
+  for (const m of String(text || "").matchAll(OPPORTUNITY_RE)) out.add(m[1].toLowerCase().replace(/\s+/g, " "))
+  return [...out]
+}
 
-SFR FLIP SCREEN (Ryan's agreed cost model, 2026-08):
-- Need: asking price, condition/scope, and an after-repair value (ARV) from nearby renovated comps. Tier by hold time: QUICK FLIP ≤6 mo (build ≈ 5% of ARV, sell costs 5%), DEEP REMODEL 6–13 mo (build ≈ 18% of ARV, sell 6%), NEW CONSTRUCTION >13 mo (build ≈ 35% of ARV, sell 6.5%). Scale build to the ARV, never a flat budget. Ryan's own anchors: ~$200k / 3 months for a permitted lower-mid remodel; ~$250k for a high-quality ~1,500 sf GC job.
-- carry = (buy + build/2) × 10% APR × months/12; basis = buy × 1.015 + build + carry; net = ARV − basis − ARV × sell%; annualized = (net/basis) × (12/months).
-- Gates (BOTH): net ≥ $200k AND annualized ≥ 10%. Marginal = pass. Retail-priced, move-in-ready listings are a straight pass. A real fixer at a visible discount to renovated comps → "look further" with the ARV assumption stated.
+export const SCREEN_SYSTEM = `You are Ryan LaRocca's deal screener. Ryan (LRG Homes) buys TWO kinds of property in Santa Clara County and the near Bay Area, both with hard money (Kiavi / Conventus bridge loans): (A) single-family houses to fix and flip — his current deals 5764 Halleck Dr and 2116 Quito Rd in San Jose are both SFR flips — and (B) small multifamily at a discount to nearby per-door comps with two exits on day one (refi or sell). "Single-family" is NEVER a reason to pass. Property type decides which screen you run.
+
+SFR SCREEN (Ryan 2026-10-03: "keep it simple … let me be the judge"):
+- No profit math. Look for opportunity signals in the listing, email and OM: TLC, contractor special, fixer, as-is, needs work, motivated seller, must sell, price reduced, probate / estate / trust sale, divorce, pre-foreclosure, bank-owned, cash only, deferred maintenance, original condition, teardown / lot value, vacant, off-market, pocket listing.
+- Any signal → verdict "look_further", and list the signals verbatim in "reasons". A plain, move-in-ready retail listing with no signal → "pass" in one line.
+- Still report asking, sqft, year built, condition and whatever the OM says about value or rents, so Ryan can judge quickly. Never invent an ARV.
 
 MULTIFAMILY SCREEN, in order:
 1. Unit count + mix (2BR rents materially more than 1BR). The 4→5 unit line is a lending cliff: 4-plex = Fannie buyers (premium per door); 5+ = commercial money (~10–12× GRM). Never compare per-door across that line.
@@ -227,10 +239,11 @@ MULTIFAMILY SCREEN, in order:
 5. Rent-increase eligibility (AB 1482 cap 5%+CPI ≈ 8.8%): units not raised in 12 months are value.
 6. Cushion to comp: breakeven after ~12 months carry + points + 6% sell costs vs strongest nearby comp. ≥10% = deal, ~5% = thin, ≤0 = never.
 
-Most emailed deals are passes; say so in one line with the key number (per-door for multifamily, discount-to-ARV for SFR). Never present model estimates as facts Ryan verified; label every ARV or rehab figure as an assumption. If the OM lacks a number, say "not stated". Output strict JSON.`
+Most emailed multifamily deals are passes; say so in one line with the per-door number. Never present model estimates as facts Ryan verified. If the OM lacks a number, say "not stated". Output strict JSON.`
 
-export function screenPrompt({ tier, msg, deal, attachmentsText }) {
+export function screenPrompt({ tier, msg, deal, attachmentsText, signals = [] }) {
   return `TIER: ${tier === "direct" ? "DIRECT LEAD — a person emailed Ryan personally about this property" : "BROKER BLAST — mass marketing"}
+OPPORTUNITY SIGNALS FOUND IN THE EMAIL: ${signals.length ? signals.join(", ") : "none in the email text — check the OM"}
 FROM: ${msg.from.name || ""} <${msg.from.email}>
 SUBJECT: ${msg.subject}
 EMAIL BODY:
@@ -245,9 +258,9 @@ Return JSON only:
 {
   "address": "...",
   "property_type": "sfr" | "multifamily" | "other",
-  "facts": {"units": 6, "unit_mix": "4×2/1, 2×1/1", "asking": 2150000, "price_per_door": 358333, "gross_rent_mo": 13959, "grm": 12.8, "rent_per_door_mo": 2326, "year_built": 1962, "sqft": null, "lot_sqft": null, "condition": "...", "seller_motivation": "...", "occupancy": "...", "rent_increase_room": "...", "arv_assumed": 1850000, "rehab_assumed": 330000, "hold_months_assumed": 9, "est_net": null, "est_annualized": null, "other": "..."},
+  "facts": {"units": 6, "unit_mix": "4×2/1, 2×1/1", "asking": 2150000, "price_per_door": 358333, "gross_rent_mo": 13959, "grm": 12.8, "rent_per_door_mo": 2326, "year_built": 1962, "sqft": null, "lot_sqft": null, "condition": "...", "seller_motivation": "...", "occupancy": "...", "rent_increase_room": "...", "signals": ["contractor special", "as-is"], "other": "..."},
   "verdict": "pass" | "look_further" | "unknown",
-  "one_liner": "≤ 25 words, the verdict with the key number (per-door for multifamily; asking vs assumed ARV and est. net for SFR)",
+  "one_liner": "≤ 25 words — multifamily: the verdict with the per-door number; SFR: the signals found + asking + condition",
   "reasons": ["≤ 4 short bullets"],
   "questions_for_seller": ["≤ 3, only if look_further"]
 }`

@@ -35,7 +35,7 @@ import { downloadFile, driveClient, findExtraRoots, findFileByName, findRoot, fo
 import { esc, tgClearButtons, tgSend, tgSendDocument } from "./telegram.mjs"
 import {
   CLASSIFY_SYSTEM, FILING_SYSTEM, HAIKU, RULES_SYSTEM, SCREEN_SYSTEM, SONNET, VERIFY_SYSTEM,
-  changePrompt, classifyPrompt, complete, completeJson, filingPrompt, rulesPrompt, screenPrompt, verifyPrompt,
+  changePrompt, classifyPrompt, complete, completeJson, filingPrompt, opportunitySignals, rulesPrompt, screenPrompt, verifyPrompt,
 } from "./llm.mjs"
 import { destinationFor, filingDecision, isPurchaseDoc, nextSequence, refineDocType, stageOf, withTimeSuffix } from "./filing.mjs"
 
@@ -131,9 +131,13 @@ const BAY_AREA = /san jose|sunnyvale|milpitas|campbell|santa clara|cupertino|mou
 // getting blasted out, I don't want these. If it's someone I've done business
 // with, sure, you can show it." Blasts from unknown senders are never screened
 // or shown; known senders still get the card.
-function blastPassesCut(out, cls, knownSender) {
+// …and 2026-10-03: "look for keywords like TLC, contractor special, motivated
+// seller … let me be the judge." A keyword hit pierces the unknown-sender filter.
+function blastPassesCut(out, cls, knownSender, signals = []) {
   if (knownSender) return { ok: true, why: "sender you've done business with" }
-  return { ok: false, why: "mass blast from an unknown sender (hidden per 2026-10-02)" }
+  const all = [...new Set([...signals, ...((out?.facts?.signals || []).map((s) => String(s).toLowerCase()))])]
+  if (all.length) return { ok: true, why: `signals: ${all.slice(0, 4).join(", ")}` }
+  return { ok: false, why: "mass blast from an unknown sender, no opportunity signals (hidden per 2026-10-02)" }
 }
 
 // ------------------------------------------------------------------ context
@@ -722,8 +726,11 @@ async function pollInbox(ctx) {
     // Ryan 2026-10-02: "agent flyer trash … these go into promotions … I don't
     // even want them to show up." Anything Gmail files under Promotions is
     // dropped at the poll unless it comes from someone he's done business with.
-    if (msg.labelIds.includes("CATEGORY_PROMOTIONS") && !(await isKnownSender(msg.from.email))) {
-      await insertMessage(msg, "promotions", { reason: "Gmail Promotions category, unknown sender" })
+    // …unless it carries an opportunity keyword (Ryan 2026-10-03: TLC, contractor
+    // special, motivated seller… "let me be the judge") — then it is classified
+    // and screened like anything else.
+    if (msg.labelIds.includes("CATEGORY_PROMOTIONS") && !opportunitySignals(`${msg.subject}\n${msg.text}`).length && !(await isKnownSender(msg.from.email))) {
+      await insertMessage(msg, "promotions", { reason: "Gmail Promotions category, unknown sender, no opportunity signals" })
       continue
     }
     handled++
@@ -942,8 +949,10 @@ async function resolveLoops(ctx) {
 // ------------------------------------------------------------------ deals
 async function screenDeal(ctx, msg, cls, pdfDocs) {
   const tier = cls.deal.tier || (cls.kind === "deal_lead" ? "direct" : "blast")
-  if (tier !== "direct" && !(await isKnownSender(msg.from.email))) {
-    log(`blast ${cls.deal.address || "?"}: hidden (unknown sender)`)
+  const signals = opportunitySignals(`${msg.subject}\n${msg.text}\n${cls.deal.notes || ""}\n${(cls.attachments || []).map((a) => a.description).join("\n")}`)
+  const known = tier === "direct" ? true : await isKnownSender(msg.from.email)
+  if (tier !== "direct" && !known && !signals.length) {
+    log(`blast ${cls.deal.address || "?"}: hidden (unknown sender, no opportunity signals)`)
     return
   }
   const docs = tier === "direct" ? pdfDocs.slice(0, 2) : pdfDocs.slice(0, 1)
@@ -951,7 +960,7 @@ async function screenDeal(ctx, msg, cls, pdfDocs) {
   const calibration = (past || []).map((p) => `- ${p.address || "?"}: model said ${p.verdict}, Ryan said ${p.ryan_verdict}${p.summary ? ` (${p.summary})` : ""}`).join("\n")
   const out = await completeJson({
     model: tier === "direct" ? SONNET : HAIKU, system: SCREEN_SYSTEM + (calibration ? `\n\nCALIBRATION — Ryan's own verdicts on recent screens (match his taste, not the model's):\n${calibration}` : ""),
-    prompt: screenPrompt({ tier, msg, deal: cls.deal, attachmentsText: (cls.attachments || []).map((a) => a.description).filter(Boolean).join("; ") }),
+    prompt: screenPrompt({ tier, msg, deal: cls.deal, attachmentsText: (cls.attachments || []).map((a) => a.description).filter(Boolean).join("; "), signals }),
     docs, maxTokens: 2500, tag: "[screen]", thinking: true,
   })
   if (!out) return
@@ -960,10 +969,11 @@ async function screenDeal(ctx, msg, cls, pdfDocs) {
   let post = tier === "direct"
   let cut = null
   if (tier !== "direct") {
-    cut = blastPassesCut(out, cls, await isKnownSender(msg.from.email))
+    cut = blastPassesCut(out, cls, known, signals)
     post = cut.ok
     log(`blast ${out.address || "?"}: ${cut.ok ? "SHOW" : "hold"} — ${cut.why}`)
   }
+  const allSignals = [...new Set([...signals, ...((facts.signals || []).map((s) => String(s).toLowerCase()))])]
   const money = (n) => {
     if (n === null || n === undefined || n === "") return "not stated"
     const num = typeof n === "number" ? n : Number(String(n).replace(/[$,]/g, ""))
@@ -973,7 +983,10 @@ async function screenDeal(ctx, msg, cls, pdfDocs) {
   const lines = [
     `${tier === "direct" ? "🏢 <b>Direct lead</b>" : "📣 <b>Broker blast</b>"} — <b>${esc(out.address || cls.deal.address || "address?")}</b>`,
     `From ${esc(msg.from.name || msg.from.email)}`,
-    `Units ${unitsLabel}${facts.unit_mix ? ` (${esc(facts.unit_mix)})` : ""} · Asking ${money(facts.asking)} · ${facts.price_per_door ? `${money(facts.price_per_door)}/door` : "per-door n/a"}${facts.grm ? ` · GRM ${facts.grm}` : ""}${facts.gross_rent_mo ? ` · gross ${money(facts.gross_rent_mo)}/mo` : ""}`,
+    out.property_type === "sfr" || (!units && (cls.deal.property_type === "sfr"))
+      ? `🏠 House · Asking ${money(facts.asking)}${facts.sqft ? ` · ${esc(String(facts.sqft))} sf` : ""}${facts.year_built ? ` · built ${esc(String(facts.year_built))}` : ""}${facts.condition ? ` · ${esc(facts.condition)}` : ""}`
+      : `Units ${unitsLabel}${facts.unit_mix ? ` (${esc(facts.unit_mix)})` : ""} · Asking ${money(facts.asking)} · ${facts.price_per_door ? `${money(facts.price_per_door)}/door` : "per-door n/a"}${facts.grm ? ` · GRM ${facts.grm}` : ""}${facts.gross_rent_mo ? ` · gross ${money(facts.gross_rent_mo)}/mo` : ""}`,
+    ...(allSignals.length ? [`🔑 ${allSignals.slice(0, 6).map(esc).join(" · ")}`] : []),
     `<b>${out.verdict === "pass" ? "PASS" : out.verdict === "look_further" ? "LOOK FURTHER" : "UNCLEAR"}</b> — ${esc(out.one_liner || "")}`,
     ...(out.reasons || []).slice(0, 4).map((r) => `• ${esc(r)}`),
     ...(out.questions_for_seller?.length ? ["Ask: " + out.questions_for_seller.slice(0, 3).map(esc).join(" / ")] : []),
