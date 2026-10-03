@@ -131,7 +131,7 @@ function isQuiet() {
 // or shown; known senders still get the card.
 // …and 2026-10-03: "look for keywords like TLC, contractor special, motivated
 // seller … let me be the judge." A keyword hit pierces the unknown-sender filter.
-function blastPassesCut(out, cls, knownSender, signals = []) {
+function blastPassesCut(out, cls, knownSender, signals = [], pre = null) {
   if (knownSender) return { ok: true, why: "sender you've done business with" }
   const all = [...new Set([...signals, ...((out?.facts?.signals || []).map((s) => String(s).toLowerCase()))])]
   if (!all.length) return { ok: false, why: "mass blast from an unknown sender, no opportunity signals (hidden per 2026-10-02)" }
@@ -140,7 +140,15 @@ function blastPassesCut(out, cls, knownSender, signals = []) {
   if (addr.trim() && !BAY_AREA_RE.test(addr)) return { ok: false, why: `signals but out of area (${addr.trim().slice(0, 40)})` }
   const type = out?.property_type || cls.deal?.property_type || ""
   if (type === "condo_townhome" || CONDO_RE.test(addr)) return { ok: false, why: "signals but condo/townhome" }
+  if (pre?.onMarket || (cls.deal?.is_retail_listing === true && !cls.deal?.off_market && !pre?.offMarket)) return { ok: false, why: "signals but an on-market retail listing" }
   return { ok: true, why: `signals: ${all.slice(0, 4).join(", ")}` }
+}
+/** inbox_settings.agent.muted_senders: emails or domains Ryan muted from a blast card (🔇). */
+async function isMutedSender(email) {
+  const list = (await getSetting("agent")).muted_senders || []
+  const e = String(email || "").toLowerCase()
+  const d = e.split("@")[1] || ""
+  return list.some((m) => m === e || m === d || e.endsWith(`@${m}`) || d.endsWith(`.${m}`))
 }
 
 // ------------------------------------------------------------------ context
@@ -858,6 +866,11 @@ async function handleMessage(ctx, msg) {
   // someone he hasn't done business with never becomes a loop.
   const isBlast = kind === "broker_blast" || cls.deal?.tier === "blast" || cls.solicitation === true
   const knownSender = isBlast ? await isKnownSender(msg.from.email) : true
+  const muted = await isMutedSender(msg.from.email)
+  if (muted) {
+    log(`muted sender ${msg.from.email}: no loop, no screen`)
+    return
+  }
   if (isBlast && !knownSender) {
     log(`no loop: marketing from unknown sender (${msg.from.email})`)
   } else {
@@ -956,8 +969,10 @@ async function screenDeal(ctx, msg, cls, pdfDocs) {
   const pre = blastSignalsPass(blob)
   const signals = pre.signals
   const known = tier === "direct" ? true : await isKnownSender(msg.from.email)
-  if (tier !== "direct" && !known && (!signals.length || (cls.deal.address && !pre.inArea) || pre.condo || cls.deal.property_type === "condo_townhome")) {
-    log(`blast ${cls.deal.address || "?"}: hidden (unknown sender; ${!signals.length ? "no signals" : !pre.inArea ? "out of area" : "condo/townhome"})`)
+  // On-market retail dressed up with "fixer" is still retail (Ryan 2026-10-03, Lindy Ngo).
+  const retail = pre.onMarket || (cls.deal.is_retail_listing === true && !cls.deal.off_market && !pre.offMarket)
+  if (tier !== "direct" && !known && (!signals.length || (cls.deal.address && !pre.inArea) || pre.condo || cls.deal.property_type === "condo_townhome" || retail)) {
+    log(`blast ${cls.deal.address || "?"}: hidden (unknown sender; ${!signals.length ? "no signals" : !pre.inArea && cls.deal.address ? "out of area" : pre.condo || cls.deal.property_type === "condo_townhome" ? "condo/townhome" : "on-market retail listing"})`)
     return
   }
   const docs = tier === "direct" ? pdfDocs.slice(0, 2) : pdfDocs.slice(0, 1)
@@ -974,7 +989,7 @@ async function screenDeal(ctx, msg, cls, pdfDocs) {
   let post = tier === "direct"
   let cut = null
   if (tier !== "direct") {
-    cut = blastPassesCut(out, cls, known, signals)
+    cut = blastPassesCut(out, cls, known, signals, pre)
     post = cut.ok
     log(`blast ${out.address || "?"}: ${cut.ok ? "SHOW" : "hold"} — ${cut.why}`)
   }
@@ -1003,7 +1018,9 @@ async function screenDeal(ctx, msg, cls, pdfDocs) {
   const hold = post && tier !== "direct" && isQuiet()
   const { data } = await sb().from("inbox_deal_screens").insert({ gmail_id: msg.id, address: out.address || cls.deal.address || null, tier, facts: { ...facts, reasons: out.reasons, questions: out.questions_for_seller, cut: cut?.why || null, shown: post, post_pending: hold, card_lines: hold ? lines : undefined }, verdict: out.verdict || "unknown", summary: out.one_liner || null }).select("id").single()
   if (post && data && !hold) {
-    const mid = await tgSend(lines.join("\n"), { rows: [[{ text: "👀 Look further", data: `ix:sl:${data.id}` }, { text: "🚫 Pass", data: `ix:sp:${data.id}` }, { text: "✉️ Reply", data: `ix:sr:${data.id}` }]] })
+    const rows = [[{ text: "👀 Look further", data: `ix:sl:${data.id}` }, { text: "🚫 Pass", data: `ix:sp:${data.id}` }, { text: "✉️ Reply", data: `ix:sr:${data.id}` }]]
+    if (tier !== "direct") rows.push([{ text: "🔇 Mute sender", data: `ix:ms:${data.id}` }]) // Ryan 2026-10-03: one tap ends a garbage sender for good
+    const mid = await tgSend(lines.join("\n"), { rows })
     await sb().from("inbox_deal_screens").update({ tg_message_id: mid }).eq("id", data.id)
   }
 }

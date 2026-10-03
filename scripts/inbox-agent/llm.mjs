@@ -228,13 +228,20 @@ export function opportunitySignals(text) {
 // buy those" are both hard filters.
 export const BAY_AREA_RE = /\b(san jose|sunnyvale|milpitas|campbell|santa clara|cupertino|mountain view|los gatos|saratoga|morgan hill|gilroy|palo alto|los altos|willow glen|alum rock|fremont|hayward|oakland|san leandro|union city|newark|san mateo|redwood city|menlo park|burlingame|san bruno|south san francisco|daly city|pacifica|half moon bay|belmont|san carlos|foster city|santa cruz|hollister|san francisco|berkeley|alameda|emeryville|richmond|walnut creek|concord|pleasanton|livermore|dublin|san ramon|danville|castro valley|watsonville|scotts valley|capitola|aptos|east palo alto|millbrae|san francisco bay|bay area|silicon valley|santa clara county|san mateo county|alameda county|contra costa|santa cruz county)\b/i
 export const CONDO_RE = /\b(condo(?:minium)?s?|townho(?:me|use)s?|town ?homes?|co-?op|\bHOA dues\b|unit #?\d+|apt\.? ?#?\d+|#\d{2,4}\b)/i
-/** Should a mass blast from an unknown sender get a card? signals + Bay Area + not a condo/townhome. */
+// Ryan 2026-10-03 (Lindy Ngo): "they are all on the market — she sends a lot
+// of garbage." Keyword dressing on an MLS listing doesn't count; only genuinely
+// off-market / distressed inventory pierces the filter.
+export const ON_MARKET_RE = /\b(MLS ?#?\s*\d*|just listed|new listing|now listed|newly listed|listed at|list(?:ing)? price|open house|offers? due|offer deadline|coming soon|broker'?s? tour|tour (?:this )?(?:fri|sat|sun)[a-z]*|active listing|back on (?:the )?market|price (?:reduced|reduction|improvement)|reduced price|showings? (?:start|begin)|see it (?:this )?weekend)\b/i
+export const OFF_MARKET_RE = /\b(off[- ]market|pocket listing|pre[- ]?market|not (?:yet )?(?:on|listed on) (?:the )?mls|unlisted|direct from (?:the )?(?:seller|owner)|exclusive(?:ly)? (?:to|for) (?:my )?investors?)\b/i
+/** Should a mass blast from an unknown sender get a card? signals + Bay Area + not a condo/townhome + not an on-market retail listing. */
 export function blastSignalsPass(text) {
   const t = String(text || "")
   const signals = opportunitySignals(t)
   const inArea = BAY_AREA_RE.test(t)
   const condo = CONDO_RE.test(t)
-  return { signals, inArea, condo, ok: signals.length > 0 && inArea && !condo }
+  const offMarket = OFF_MARKET_RE.test(t)
+  const onMarket = ON_MARKET_RE.test(t) && !offMarket
+  return { signals, inArea, condo, offMarket, onMarket, ok: signals.length > 0 && inArea && !condo && !onMarket }
 }
 
 export const SCREEN_SYSTEM = `You are Ryan LaRocca's deal screener. Ryan (LRG Homes) buys TWO kinds of property in Santa Clara County and the near Bay Area, both with hard money (Kiavi / Conventus bridge loans): (A) single-family houses to fix and flip — his current deals 5764 Halleck Dr and 2116 Quito Rd in San Jose are both SFR flips — and (B) small multifamily at a discount to nearby per-door comps with two exits on day one (refi or sell). "Single-family" is NEVER a reason to pass. Property type decides which screen you run.

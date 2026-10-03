@@ -335,6 +335,18 @@ export async function handleInboxCallback(data: string): Promise<InboxCallbackRe
     await sb.from("inbox_deal_screens").update({ ryan_verdict: "pass" }).eq("id", m[1])
     return { toast: "Pass (nothing sent)", clearButtons: true }
   }
+  // 🔇 Mute sender (Ryan 2026-10-03): the blast's sender never gets a card or a loop again.
+  if ((m = new RegExp(`^ix:ms:(${UUID})$`).exec(data))) {
+    const { data: scr } = await sb.from("inbox_deal_screens").select("gmail_id").eq("id", m[1]).maybeSingle()
+    const { data: msg } = scr?.gmail_id ? await sb.from("inbox_messages").select("sender, sender_name").eq("gmail_id", scr.gmail_id).maybeSingle() : { data: null }
+    if (!msg?.sender) return { toast: "Couldn't find the sender", clearButtons: false }
+    const agent = await getSetting("agent")
+    const muted = new Set(((agent.muted_senders as string[] | undefined) || []).map((s) => s.toLowerCase()))
+    muted.add(String(msg.sender).toLowerCase())
+    await setSetting("agent", { muted_senders: Array.from(muted) })
+    await sb.from("inbox_deal_screens").update({ ryan_verdict: "pass" }).eq("id", m[1])
+    return { toast: "Muted", clearButtons: true, text: `🔇 Muted ${msg.sender_name || msg.sender} — no more cards or reminders from that address. Type “inbox unmute ${msg.sender}” to undo.` }
+  }
   if ((m = new RegExp(`^ix:ds:(${UUID})$`).exec(data))) {
     const out = await sendInboxDraft(m[1])
     return out.ok ? { toast: "Sent", clearButtons: true, text: `✅ Sent to ${out.to}. ${out.link}` } : { toast: "Not sent", text: `⚠️ Not sent — ${out.error}` }
@@ -364,6 +376,7 @@ const HELP = [
   "screen <pasted listing text> — screen a deal",
   "inbox pause / inbox resume",
   "inbox alerts off|deadline|high — per-email pings for things people need from you (default off)",
+  "inbox mute <email or domain> / inbox unmute … — silence a blast sender for good (or tap 🔇 on their card)",
   "Reply to any card with a question and I'll answer from the thread.",
 ].join("\n")
 
@@ -394,6 +407,16 @@ export async function handleInboxCommand(body: string): Promise<{ text: string; 
   if (/^inbox (pause|stop)$/i.test(t) || /^(pause|stop) inbox$/i.test(t)) {
     await setSetting("agent", { paused: true, paused_at: new Date().toISOString() })
     return { text: "⏸ Inbox agent paused. Cards already posted still work; nothing new until you say “inbox resume”." }
+  }
+  // inbox mute <email|domain> / inbox unmute <email|domain> (Ryan 2026-10-03 — garbage senders)
+  if ((m = /^inbox (mute|unmute)\s+(\S+)$/i.exec(t))) {
+    const agent = await getSetting("agent")
+    const target = m[2].toLowerCase().replace(/^<|>$/g, "")
+    const muted = new Set(((agent.muted_senders as string[] | undefined) || []).map((s) => s.toLowerCase()))
+    if (m[1].toLowerCase() === "mute") muted.add(target)
+    else muted.delete(target)
+    await setSetting("agent", { muted_senders: Array.from(muted) })
+    return { text: `🔇 ${m[1].toLowerCase() === "mute" ? "Muted" : "Unmuted"} <b>${target}</b>. Muted now: ${Array.from(muted).join(", ") || "nobody"}.` }
   }
   if ((m = /^inbox alerts\s+(off|deadline|high)$/i.exec(t))) {
     await setSetting("agent", { loop_alerts: m[1].toLowerCase() })
