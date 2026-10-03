@@ -1,7 +1,8 @@
 import type { gmail_v1 } from "googleapis"
 import type { SupabaseClient } from "@supabase/supabase-js"
 import { getGmailClient, getLeadsClient } from "@/lib/leads"
-import { sendCampaignAlert } from "@/lib/campaignAlerts"
+import { sendCampaignAlert, sendCampaignDocument } from "@/lib/campaignAlerts"
+import { buildEmailMime, toGmailRaw } from "@/lib/emailMime"
 import { addSuppression } from "@/lib/suppression"
 import { completeText, extractJsonObject, hasLlmKey, HAIKU } from "@/lib/llm"
 import {
@@ -33,7 +34,12 @@ import {
 //                  remove / retired_or_wrong_person), immediate Telegram
 //                  alert. The drip NEVER pauses on a reply (Ryan 2026-07-20,
 //                  reaffirmed 2026-10-01); only remove-style replies stop it
-//                  — those auto-DNC (Ryan 2026-10-01: fully automatic).
+//                  — those auto-DNC (Ryan 2026-10-01: fully automatic) and
+//                  get ONE bare in-thread confirmation from the same mailbox
+//                  (2026-10-02: a "remove" reply is a positive engagement
+//                  signal vs the spam button; answering it closes the loop).
+//   attachments  → every file on a genuine reply is posted to Telegram under
+//                  the reply alert (2026-10-02: Grail's 707 Hyde flyer).
 
 // Sender migration 2026-08-06 (info@ reputation burned — Ryan's call):
 // ryansvr@ is the campaign's outbound gun going forward; info@ stays
@@ -160,24 +166,121 @@ function parseSenderEmail(fromHeader: string): string {
   return raw.includes("@") ? raw : ""
 }
 
-/** Strip quoted-reply tails so the unsubscribe check sees only new text.
- * Handles Gmail ("On ... wrote:"), ">"-prefixed, and Outlook styles
- * ("________...", "-----Original Message-----", a bare "From: ..." header). */
+/** Strip quoted-reply tails so the unsubscribe check (and the alert) sees
+ * only new text. Handles Gmail ("On ... wrote:", "---------- Forwarded
+ * message ----------"), ">"-prefixed, Outlook ("________", "-----Original
+ * Message-----"), and bare header blocks ("From:", "Date:", "Sent:",
+ * "Subject:", "To:"). Gmail mobile's forward of our own email (Grail,
+ * 2026-10-02) arrived with the From: line mangled to a bare "<addr>" tail,
+ * so the Date:/Subject: lines are cut points too, and a dangling address
+ * fragment just above the cut is dropped. */
 function stripQuoted(body: string): string {
   const lines = body.split(/\r?\n/)
   const out: string[] = []
   for (const line of lines) {
     const t = line.trim()
     if (
-      /^On .{5,120} wrote:$/.test(t) ||
+      /^On .{5,160} wrote:$/.test(t) ||
+      /wrote:$/.test(t) && /^On\b|\d{4}/.test(t) ||
       line.startsWith(">") ||
       /^_{8,}$/.test(t) ||
-      /^-{3,}\s*Original Message\s*-{3,}$/i.test(t) ||
-      /^From:\s.+@.+/i.test(t)
+      /^-{3,}\s*(Original Message|Forwarded message)\s*-{3,}$/i.test(t) ||
+      /^(From|Sent|Date|Subject|To|Cc):\s.+/i.test(t) && (/^(From|Sent|Date):/i.test(t) ? true : /^Subject:/i.test(t) || /^(To|Cc):\s*<?[^\s]+@/i.test(t))
     ) break
     out.push(line)
   }
+  while (out.length && (/^[^\s<>]*@[^\s<>]+>?$/.test(out[out.length - 1].trim()) || out[out.length - 1].trim() === "")) out.pop()
   return out.join("\n").trim()
+}
+
+/** Files on an agent's reply (anything with a filename + attachment id). */
+function listAttachments(payload: gmail_v1.Schema$MessagePart | undefined): Array<{ filename: string; mime: string; attachmentId: string; size: number }> {
+  const out: Array<{ filename: string; mime: string; attachmentId: string; size: number }> = []
+  const walk = (part: gmail_v1.Schema$MessagePart | undefined) => {
+    if (!part) return
+    if (part.filename && part.body?.attachmentId) {
+      out.push({ filename: part.filename, mime: part.mimeType || "application/octet-stream", attachmentId: part.body.attachmentId, size: part.body.size ?? 0 })
+    }
+    for (const p of part.parts ?? []) walk(p)
+  }
+  walk(payload)
+  return out
+}
+
+/** Post every attachment on a reply to Telegram under its alert. Never
+ * throws — a bad file must not lose the reply. Inline signature images
+ * (tiny) are skipped. */
+async function forwardAttachments(
+  sb: SupabaseClient,
+  gmail: gmail_v1.Gmail,
+  args: { gmailId: string; payload: gmail_v1.Schema$MessagePart | undefined; who: string; replyTo: number | null }
+): Promise<number> {
+  let posted = 0
+  for (const a of listAttachments(args.payload)) {
+    if (a.size > 0 && a.size < 4096 && /^image\//i.test(a.mime)) continue // signature logos
+    try {
+      const { data } = await gmail.users.messages.attachments.get({ userId: "me", messageId: args.gmailId, id: a.attachmentId })
+      if (!data.data) continue
+      const bytes = Buffer.from(data.data.replace(/-/g, "+").replace(/_/g, "/"), "base64")
+      const ok = await sendCampaignDocument(sb, { filename: a.filename, mime: a.mime, bytes }, `📎 ${a.filename} — from ${args.who}`, { replyTo: args.replyTo })
+      if (ok) posted++
+    } catch (e) {
+      console.error(`[campaign-inbox] attachment ${a.filename} on ${args.gmailId} failed:`, e instanceof Error ? e.message : String(e))
+    }
+  }
+  return posted
+}
+
+/**
+ * One bare in-thread "you're removed" reply from the mailbox the agent wrote
+ * to (Ryan 2026-10-02). No signature block, no phone, no links, no opt-out
+ * line — a confirmation, not another marketing email. Once per contact.
+ * Returns true when sent. Never throws.
+ */
+async function sendRemoveConfirmation(
+  sb: SupabaseClient,
+  gmail: gmail_v1.Gmail,
+  contact: CampaignContact,
+  args: { gmailId: string; threadId: string | null; mailbox: string; sender: string }
+): Promise<boolean> {
+  try {
+    if (!isOwnAddress(args.mailbox)) return false
+    const { data: prior } = await sb
+      .from("campaign_events")
+      .select("id")
+      .eq("contact_id", contact.id)
+      .eq("kind", "email_out")
+      .filter("raw->>via", "eq", "remove_confirmation")
+      .limit(1)
+    if (prior?.length) return false
+    const { data: orig } = await gmail.users.messages.get({ userId: "me", id: args.gmailId, format: "metadata", metadataHeaders: ["Message-ID", "References", "From", "Subject"] })
+    const h = Object.fromEntries((orig.payload?.headers ?? []).map((x) => [String(x.name).toLowerCase(), x.value ?? ""]))
+    const to = args.sender || contact.email || ""
+    if (!to) return false
+    let subject = h["subject"] || "your reply"
+    if (!/^re:/i.test(subject)) subject = `Re: ${subject}`
+    const first = (contact.name ?? "").trim().split(/\s+/)[0] || ""
+    const body = `${first ? `Hi ${first},\n\n` : ""}Done, you're removed from my list and won't hear from me again. Sorry for the noise.\n\nRyan LaRocca`
+    const mime = buildEmailMime({
+      from: `Ryan LaRocca <${args.mailbox}>`,
+      to,
+      subject,
+      body,
+      extraHeaders: [...(h["message-id"] ? [`In-Reply-To: ${h["message-id"]}`] : []), ...(h["message-id"] || h["references"] ? [`References: ${[h["references"], h["message-id"]].filter(Boolean).join(" ")}`] : [])],
+    })
+    await gmail.users.messages.send({ userId: "me", requestBody: { raw: toGmailRaw(mime), threadId: args.threadId ?? undefined } })
+    await sb.from("campaign_events").insert({
+      contact_id: contact.id,
+      kind: "email_out",
+      body: body.slice(0, 500),
+      raw: { via: "remove_confirmation", thread_id: args.threadId, mailbox: args.mailbox, in_reply_to: args.gmailId },
+    })
+    return true
+  } catch (e) {
+    console.error(`[campaign-inbox] remove confirmation to ${contact.email} failed:`, e instanceof Error ? e.message : String(e))
+    await sendCampaignAlert(sb, `⚠️ Remove confirmation to ${esc(contact.name ?? contact.email ?? "")} did not send (${esc(e instanceof Error ? e.message : String(e)).slice(0, 120)}) — they are still suppressed.`)
+    return false
+  }
 }
 
 async function alreadyProcessed(sb: SupabaseClient, gmailId: string): Promise<boolean> {
@@ -283,10 +386,11 @@ async function handleBounce(
 
 async function handleContactMessage(
   sb: SupabaseClient,
+  gmail: gmail_v1.Gmail,
   contact: CampaignContact,
-  args: { gmailId: string; threadId: string | null; subject: string; body: string; mailbox: string; sender: string }
+  args: { gmailId: string; threadId: string | null; subject: string; body: string; mailbox: string; sender: string; payload: gmail_v1.Schema$MessagePart | undefined }
 ): Promise<void> {
-  const { gmailId, threadId, subject, body, mailbox, sender } = args
+  const { gmailId, threadId, subject, body, mailbox, sender, payload } = args
   const fresh = stripQuoted(body)
   const nowIso = new Date().toISOString()
 
@@ -325,7 +429,8 @@ async function handleContactMessage(
     await cancelQueuedSends(sb, contact.id, "unsubscribed")
     const card = await cardForReply(sb, contact, sender, fresh, subject, false)
     if (card) await markRelationshipDoNotContact(sb, card.id, `replied "${fresh.slice(0, 80)}" to the agent email campaign`)
-    await sendCampaignAlert(sb, `🚫 Campaign unsubscribe — <b>${esc(contact.name ?? contact.email ?? "")}</b> ("${esc(fresh.slice(0, 60))}") — handled automatically, drip stopped${card ? ", card marked do-not-contact" : ""}`)
+    const confirmed = await sendRemoveConfirmation(sb, gmail, contact, { gmailId, threadId, mailbox, sender })
+    await sendCampaignAlert(sb, `🚫 Campaign unsubscribe — <b>${esc(contact.name ?? contact.email ?? "")}</b> ("${esc(fresh.slice(0, 60))}") — handled automatically, drip stopped${card ? ", card marked do-not-contact" : ""}${confirmed ? `, confirmation sent from ${esc(mailbox)}` : ""}`)
     return
   }
 
@@ -405,8 +510,9 @@ async function handleContactMessage(
     await cancelQueuedSends(sb, contact.id, `AI triage: ${why}`)
     if (ev?.id) await sb.from("campaign_events").update({ triage: "unsubscribe", ai_summary: triage.summary }).eq("id", ev.id)
     if (card) await markRelationshipDoNotContact(sb, card.id, `${why} — replied "${fresh.slice(0, 80)}"`)
+    const confirmed = await sendRemoveConfirmation(sb, gmail, contact, { gmailId, threadId, mailbox, sender })
     await sendCampaignAlert(sb,
-      `🚫 Campaign auto-DNC — <b>${esc(contact.name ?? contact.email ?? "")}</b> (${why}) — "${esc(fresh.slice(0, 160))}"\n\nDrip stopped, suppression added${card ? ", card marked do-not-contact" : ""}. Reads as: ${esc(triage.summary)}`
+      `🚫 Campaign auto-DNC — <b>${esc(contact.name ?? contact.email ?? "")}</b> (${why}) — "${esc(fresh.slice(0, 160))}"\n\nDrip stopped, suppression added${card ? ", card marked do-not-contact" : ""}${confirmed ? `, confirmation sent from ${esc(mailbox)}` : ""}. Reads as: ${esc(triage.summary)}`
     )
     return
   }
@@ -428,9 +534,11 @@ async function handleContactMessage(
       : `📇 On their Relationships card${card.category ? ` (${esc(card.category)}${card.tier ? ` · ${esc(card.tier)}` : ""})` : ""}.`
     : ""
   const headline = [tag && `${tag}${triage?.address ? ` — ${esc(triage.address)}` : ""}`, cardLine].filter(Boolean).join("  ")
-  await sendCampaignAlert(sb,
-    `✉️ <b>AGENT REPLY</b> — <b>${esc(contact.name ?? contact.email ?? "")}</b> (after T${contact.touch_number})${headline ? `\n${headline}` : ""}\n"${esc(alertBody)}"${truncated ? "\n… [message truncated — full email in Gmail]" : ""}\n\nDrip continues as scheduled. Reply to this message to send it as a threaded email from ${esc(mailbox)}, or "draft: your guidance" for a Claude draft first.`
+  const files = listAttachments(payload)
+  const alertId = await sendCampaignAlert(sb,
+    `✉️ <b>AGENT REPLY</b> — <b>${esc(contact.name ?? contact.email ?? "")}</b> (after T${contact.touch_number})${headline ? `\n${headline}` : ""}\n"${esc(alertBody)}"${truncated ? "\n… [message truncated — full email in Gmail]" : ""}${files.length ? `\n📎 ${files.length} attachment${files.length === 1 ? "" : "s"} below` : ""}\n\nDrip continues as scheduled. Reply to this message to send it as a threaded email from ${esc(mailbox)}, or "draft: your guidance" for a Claude draft first.`
   )
+  if (files.length) await forwardAttachments(sb, gmail, { gmailId, payload, who: contact.name ?? contact.email ?? "agent", replyTo: alertId })
 }
 
 const TRIAGE_TAGS: Record<string, string> = {
@@ -576,7 +684,7 @@ async function processOneCampaignInbox(mailbox: string): Promise<void> {
         continue
       }
       const body = extractText(message.payload)
-      await handleContactMessage(sb, contact, { gmailId, threadId, subject, body, mailbox, sender })
+      await handleContactMessage(sb, gmail, contact, { gmailId, threadId, subject, body, mailbox, sender, payload: message.payload })
     } catch (e) {
       console.error(`[campaign-inbox] failed on ${gmailId}:`, e)
       await sendCampaignAlert(sb, `⚠️ Campaign inbox processing failed on a message — check Vercel logs (${gmailId})`)

@@ -5,6 +5,8 @@ import {
   bodyHash,
   loadEditExamples,
   loadCopyRules,
+  livePitchVariant,
+  LIVE_PITCH_VARIANT,
   PROMPT_VERSION,
 } from "../scripts/campaign-compose.mjs"
 
@@ -31,19 +33,23 @@ type SendRow = {
   contact: Record<string, unknown> | Record<string, unknown>[] | null
 }
 
+type VariantTemplate = { variant: string; touch_number: number; subject: string; body: string; personalize: boolean }
 export type RegenContext = {
   rules: string[]
-  variants: Map<string, { variant: string; touch_number: number; subject: string; body: string; personalize: boolean }>
+  variants: Map<string, VariantTemplate>
+  /** Live campaign_templates T1 row — the brief for every T1 (variant "D", 2026-10-02). */
+  t1Template: { subject: string; body: string } | null
   examples: Map<number, Array<{ body_before: string; body_after: string }>>
 }
 
 export async function loadRegenContext(sb: SupabaseClient): Promise<RegenContext> {
-  const [rules, { data: variantRows }] = await Promise.all([
+  const [rules, { data: variantRows }, { data: t1 }] = await Promise.all([
     loadCopyRules(sb) as Promise<string[]>,
     sb.from("campaign_variants").select("variant, touch_number, subject, body, personalize"),
+    sb.from("campaign_templates").select("subject, body").eq("touch_number", 1).maybeSingle(),
   ])
   const variants = new Map((variantRows ?? []).map((v) => [`${v.touch_number}:${v.variant}`, v]))
-  return { rules, variants, examples: new Map() }
+  return { rules, variants, t1Template: (t1 as { subject: string; body: string } | null) ?? null, examples: new Map() }
 }
 
 export async function regenerateSend(sb: SupabaseClient, id: string, note: string, ctx: RegenContext, seedSalt = ""): Promise<RegenOutcome> {
@@ -52,11 +58,15 @@ export async function regenerateSend(sb: SupabaseClient, id: string, note: strin
   if (error) return fail(500, error.message)
   if (!row) return fail(404, "send not found")
   if (row.status !== "draft") return fail(409, `only drafts can be regenerated (this one is ${row.status})`) // never overwrite an approved, possibly hand-edited body
-  if (!row.variant) return fail(409, "only Phase B variant drafts (A/B/C) can be regenerated")
   const contact = Array.isArray(row.contact) ? row.contact[0] : row.contact
   if (!contact) return fail(409, "contact missing")
-  const vt = ctx.variants.get(`${row.touch_number}:${row.variant}`)
-  if (!vt) return fail(409, `variant ${row.variant} template not found`)
+  // Every T1 regenerates from the live pitch (variant "D"); later touches
+  // still need a Phase-B variant template.
+  const vt: VariantTemplate | null | undefined =
+    row.touch_number === 1
+      ? (livePitchVariant(ctx.t1Template, String(contact.id)) as VariantTemplate | null)
+      : row.variant ? ctx.variants.get(`${row.touch_number}:${row.variant}`) : null
+  if (!vt) return fail(409, row.touch_number === 1 ? "live T1 template missing" : row.variant ? `variant ${row.variant} template not found` : "only composed drafts can be regenerated")
 
   if (!ctx.examples.has(row.touch_number)) ctx.examples.set(row.touch_number, await loadEditExamples(sb, row.touch_number))
   const examples = ctx.examples.get(row.touch_number) ?? []
@@ -96,7 +106,7 @@ export async function regenerateSend(sb: SupabaseClient, id: string, note: strin
 
   const { error: updErr } = await sb
     .from("campaign_sends")
-    .update({ subject: composed.subject, body: composed.body, body_hash: bodyHash(composed.body), prompt_version: PROMPT_VERSION, edited: false })
+    .update({ subject: composed.subject, body: composed.body, body_hash: bodyHash(composed.body), prompt_version: PROMPT_VERSION, edited: false, ...(row.touch_number === 1 ? { variant: LIVE_PITCH_VARIANT } : {}) })
     .eq("id", id)
   if (updErr) return fail(500, updErr.message)
   return { ok: true, id, subject: composed.subject, body: composed.body }

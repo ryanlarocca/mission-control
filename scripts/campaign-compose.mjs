@@ -11,7 +11,7 @@ import Anthropic from "@anthropic-ai/sdk"
 const MODEL = "claude-sonnet-5"
 // Bump when COMPOSE_RULES / temperature / example policy changes so reply
 // rate can be attributed per prompt (stamped on campaign_sends.prompt_version).
-export const PROMPT_VERSION = "v4-2026-08-27"
+export const PROMPT_VERSION = "v5-2026-10-02"
 // Sonnet 5 rejects sampling params (temperature/top_p); variation is
 // constrained by the prompt rules + seed instead.
 const MIN_EXAMPLES = 3 // one outlier edit must not steer the model
@@ -93,6 +93,42 @@ export function relationshipClaim(text, contact) {
   return null
 }
 const AGENTS_LINE_DISPLAY = "(650) 910-4007"
+
+/**
+ * Live-pitch compose brief (Ryan 2026-10-02). Day one sent 8 word-for-word
+ * identical T1s (only the first name differed); Gmail fingerprints repeated
+ * text as bulk, which compounds with the ramp. Every T1 now goes through the
+ * composer with personalization ON, using the LIVE campaign_templates T1 copy
+ * as the brief (Ryan's call: "live pitch", not the variant-B question), and a
+ * subject drawn from this pool per contact so the subject line is not its own
+ * fingerprint. Stamped on campaign_sends.variant as "D" (A/B/C were the
+ * August Phase-B experiment). Same code path serves the engine mint and the
+ * /email-campaign regenerate buttons (lib/campaignRegenerate.ts).
+ */
+export const LIVE_PITCH_VARIANT = "D"
+export const T1_SUBJECT_POOL = [
+  "Buying in the South Bay again",
+  "quick question",
+  "cash buyer for rough listings",
+  "anything stuck on your desk?",
+]
+/** Deterministic per contact so a regenerate keeps the same subject. */
+export function pickSubject(contactId, pool = T1_SUBJECT_POOL) {
+  const hex = String(contactId ?? "").replace(/-/g, "").slice(0, 8)
+  const n = parseInt(hex, 16)
+  return pool[Number.isFinite(n) ? n % pool.length : 0]
+}
+/**
+ * Turn the live T1 template (greeting inline: "Hi {{first_name}}, Ryan
+ * LaRocca with…") into the composer's brief shape (greeting on its own line).
+ * @param {{ subject: string, body: string } | null | undefined} template  campaign_templates row for touch 1
+ * @param {string} contactId
+ */
+export function livePitchVariant(template, contactId) {
+  if (!template?.body) return null
+  const body = template.body.replace(/^\s*(Hi|Hey|Hello)\s+\{\{first_name\}\},\s*/i, "Hi {{first_name}},\n\n")
+  return { variant: LIVE_PITCH_VARIANT, touch_number: 1, subject: pickSubject(contactId), body, personalize: true }
+}
 
 export function makeSignature() {
   return `Ryan LaRocca, LRG Homes\nCall or text: ${AGENTS_LINE_DISPLAY}\nReply "remove" anytime to opt out.`

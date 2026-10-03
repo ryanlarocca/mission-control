@@ -36,7 +36,7 @@
 
 import fs from "node:fs"
 import { gmailClientFor, sendCampaignMessage } from "./campaign-gmail.mjs"
-import { composeVariantBody, lintBody, bodyHash, loadEditExamples, loadCopyRules, PROMPT_VERSION } from "./campaign-compose.mjs"
+import { composeVariantBody, lintBody, bodyHash, loadEditExamples, loadCopyRules, livePitchVariant, PROMPT_VERSION } from "./campaign-compose.mjs"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
 import { createClient } from "@supabase/supabase-js"
@@ -320,7 +320,9 @@ async function draftPass() {
   for (const s of SENDERS) {
     if (isSenderPaused(SENDER_STATE.get(s.email))) { budgets.set(s.email, 0); budgetNotes.push(`${s.label} paused`); continue }
     const cap = senderCap(s)
-    const drafted = await countSendsTodayFor(s, "created_at")
+    // Expired/skipped rows never went anywhere — a replaced batch must not
+    // eat the day's mint budget (2026-10-02 re-mint onto the composed path).
+    const drafted = await countSendsTodayFor(s, "created_at", ["draft", "approved", "sent", "failed"])
     const backlog = await backlogFor(s)
     draftedTotal += drafted
     backlogTotal += backlog
@@ -439,22 +441,27 @@ async function draftPass() {
     const sender = assignSender({ contact: c, senders: SENDERS, relEmails, lastSender, budgets })
     if (!sender || (budgets.get(sender.email) ?? 0) <= 0) continue
     if (!auto) gatedTouches.add(touch)
-    // Phase B: cohort contacts with a variant get a UNIQUE Claude-composed
-    // body from the variant template, hard-linted before it can be queued.
+    // Every T1 is a UNIQUE Claude-composed body from the LIVE T1 template
+    // with personalization on and a pooled subject (variant "D", Ryan
+    // 2026-10-02 — day one sent 8 identical bodies). Later touches keep the
+    // Phase-B A/B/C lookup for contacts that carry a variant. Hard-linted
+    // before it can be queued; a lint failure skips the contact.
     let variant = null
     let composed = null
-    const vt = c.variant ? variants.get(`${touch}:${c.variant}`) : null
+    const vt = touch === 1
+      ? livePitchVariant(templates.get(1), c.id) ?? (c.variant ? variants.get(`${touch}:${c.variant}`) : null)
+      : c.variant ? variants.get(`${touch}:${c.variant}`) : null
     if (vt) {
       try {
         if (!editExamples.has(touch)) editExamples.set(touch, await loadEditExamples(sb, touch))
-        composed = await composeVariantBody({ variant: vt, contact: c, seed: `${c.id.slice(0, 8)}-${Date.now() % 100000}`, examples: editExamples.get(touch), avoid: composedThisPass.get(c.variant) ?? [], rules: copyRules })
-        composedThisPass.set(c.variant, [...(composedThisPass.get(c.variant) ?? []), composed.body])
+        composed = await composeVariantBody({ variant: vt, contact: c, seed: `${c.id.slice(0, 8)}-${Date.now() % 100000}`, examples: editExamples.get(touch), avoid: composedThisPass.get(vt.variant) ?? [], rules: copyRules })
+        composedThisPass.set(vt.variant, [...(composedThisPass.get(vt.variant) ?? []), composed.body])
         const errs = lintBody({ subject: composed.subject, body: composed.body, firstName: composed.firstName, contact: c })
         if (errs.length) throw new Error(`lint: ${errs.join("; ")}`)
-        variant = c.variant
+        variant = vt.variant
       } catch (e) {
         lintFailed++
-        log(`REJECTED draft for ${c.email} (variant ${c.variant}): ${e?.message ?? e}`)
+        log(`REJECTED draft for ${c.email} (variant ${vt.variant}): ${e?.message ?? e}`)
         continue
       }
     }
@@ -936,16 +943,29 @@ async function canaryPass() {
   // reputation. State: st[day].canary = { [sender]: "C<n>" } (legacy days
   // hold a bare string from the single-sender era).
   const doneToday = typeof st[day]?.canary === "object" && st[day].canary ? st[day].canary : {}
+  // The canary MIRRORS the batch (Ryan 2026-10-02): it re-sends one of the
+  // day's real sent bodies from this mailbox (greeting swapped to Ryan), so
+  // the Primary/Promotions/Spam verdict is about the copy agents actually
+  // got. Day one's canary was a separately composed variant-B email, so its
+  // Primary verdict proved the domain, not the template.
   const { data: vt } = await sb.from("campaign_variants").select("*").eq("variant", "B").single()
-  if (!vt) return
   for (const s of SENDERS) {
     if (doneToday[s.email]) continue
     const sentBy = await countSendsTodayFor(s, "sent_at", ["sent"])
     if (sentBy === 0) continue // canary only rides along with a real send day
     const n = Object.values(st).filter((d) => (typeof d?.canary === "object" ? d.canary?.[s.email] : d?.canary)).length + 1
-    const composed = await composeVariantBody({ variant: vt, contact: { id: `canary-${day}-${s.label}`, name: "Ryan", first_name: "Ryan", email: to }, seed: `canary-${day}-${s.label}` })
+    const { data: sample } = await sb.from("campaign_sends").select("subject, body").eq("status", "sent").eq("sender", s.email).gte("sent_at", new Date(new Date().setHours(0, 0, 0, 0)).toISOString()).order("sent_at", { ascending: false }).limit(1).maybeSingle()
+    let subject, body
+    if (sample?.body) {
+      subject = sample.subject
+      body = sample.body.replace(/^(Hi|Hey|Hello) [^\n,]*,/, "Hi Ryan,")
+    } else if (vt) {
+      const composed = await composeVariantBody({ variant: vt, contact: { id: `canary-${day}-${s.label}`, name: "Ryan", first_name: "Ryan", email: to }, seed: `canary-${day}-${s.label}` })
+      subject = composed.subject
+      body = composed.body
+    } else continue
     const gmail = await gmailClient(s)
-    await sendCampaignMessage(gmail, { from: s.email, to, subject: `[C${n} ${s.label}] ${composed.subject}`, body: composed.body, contactId: null, unsubHeaders: false, extraHeaders: s.replyTo ? [`Reply-To: ${s.replyTo}`] : [] })
+    await sendCampaignMessage(gmail, { from: s.email, to, subject: `[C${n} ${s.label}] ${subject}`, body, contactId: null, unsubHeaders: false, extraHeaders: s.replyTo ? [`Reply-To: ${s.replyTo}`] : [] })
     bumpHealthCounter("canary_sent", 1)
     const cur = readHealthState()
     cur[day] = { ...(cur[day] || {}), canary: { ...(typeof cur[day]?.canary === "object" ? cur[day].canary : {}), [s.email]: `C${n}` } }
