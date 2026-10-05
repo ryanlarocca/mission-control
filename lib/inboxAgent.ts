@@ -335,6 +335,15 @@ export async function handleInboxCallback(data: string): Promise<InboxCallbackRe
     await sb.from("inbox_deal_screens").update({ ryan_verdict: "pass" }).eq("id", m[1])
     return { toast: "Pass (nothing sent)", clearButtons: true }
   }
+  // 🧹 Clear unanswered (Ryan 2026-10-05): dismiss every thread the brief listed under "Unanswered" that day.
+  if ((m = /^ix:uc:(\d{4}-\d{2}-\d{2})$/.exec(data))) {
+    const agent = await getSetting("agent")
+    const threads = (agent.last_unanswered_threads as string[] | undefined) || []
+    const dismissed = { ...((agent.unanswered_dismissed as Record<string, string> | undefined) || {}) }
+    for (const t of threads) dismissed[t] = now
+    await setSetting("agent", { unanswered_dismissed: dismissed })
+    return { toast: `Cleared ${threads.length}`, clearButtons: true, text: `🧹 Cleared ${threads.length} unanswered thread${threads.length === 1 ? "" : "s"} from the brief. They come back only if the other side writes again.` }
+  }
   // 🔇 Mute sender (Ryan 2026-10-03): the blast's sender never gets a card or a loop again.
   if ((m = new RegExp(`^ix:ms:(${UUID})$`).exec(data))) {
     const { data: scr } = await sb.from("inbox_deal_screens").select("gmail_id").eq("id", m[1]).maybeSingle()

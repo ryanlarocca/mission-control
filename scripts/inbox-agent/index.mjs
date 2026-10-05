@@ -766,7 +766,11 @@ async function handleMessage(ctx, msg) {
   await insertMessage(msg, kind, cls)
   if (!cls) return
   log(`${msg.from.email} · ${shortSubject(msg.subject, 50)} → ${kind}${cls.property?.label ? ` · ${cls.property.label}` : ""}${cls.needs_reply ? " · needs reply" : ""}`)
-  if (kind === "automated" || kind === "newsletter" || kind === "skip") return
+  // Ryan 2026-10-05: Kiavi's servicing desk sent the ACH form for the Halleck
+  // draws from servicing@ — the classifier said "needs reply" but the kind was
+  // "automated" and this return threw the ask away. A system-looking sender that
+  // needs something from Ryan is still a loop.
+  if ((kind === "automated" || kind === "newsletter" || kind === "skip") && !(cls.needs_reply && !cls.solicitation)) return
 
   const rules = await getSetting("rules")
   const rulesApproved = rules.status === "approved"
@@ -1162,12 +1166,16 @@ async function maybeDigest(ctx, force = false) {
   const { data: recentHuman } = await sb().from("inbox_messages").select("gmail_id, thread_id, sender, sender_name, subject, internal_date, classification").in("kind", ["human", "deal_lead", "zix", "esign_completed"]).gte("internal_date", weekAgo).order("internal_date", { ascending: false }).limit(300)
   const sent = await sentThreadsSince(ctx.gmail, 8)
   const openThreads = new Set((loops.data || []).map((l) => l.thread_id))
+  // Ryan 2026-10-05: "nothing here relevant … a simple button to remove these
+  // from the daily brief." 🧹 on the brief dismisses every thread listed that day.
+  const dismissed = agent.unanswered_dismissed || {}
   const seenThread = new Set()
   const looseEnds = []
   for (const m of recentHuman || []) {
     if (!m.thread_id || seenThread.has(m.thread_id)) continue
     seenThread.add(m.thread_id)
     if (openThreads.has(m.thread_id)) continue
+    if (dismissed[m.thread_id]) continue
     const c = m.classification || {}
     if (c.is_human === false || /noreply|no-reply|notification|docusign|authentisign/i.test(m.sender || "")) continue
     if (c.needs_reply === false) continue // FYI mail (a signed copy, a "thanks") is not a loose end
@@ -1205,9 +1213,10 @@ async function maybeDigest(ctx, force = false) {
     if (waiting.count) lines.push(`${waiting.count} attachment${waiting.count === 1 ? "" : "s"} queued until the convention is approved.`)
   }
   if (ctx.driveErr) lines.push(`\n⚠️ Drive isn't reachable yet: ${esc(ctx.driveErr)}`)
-  await tgSend(lines.join("\n"), { dryRun: DRY })
+  const briefRows = looseEnds.length ? [[{ text: "🧹 Clear unanswered", data: `ix:uc:${date}` }]] : []
+  await tgSend(lines.join("\n"), { rows: briefRows, dryRun: DRY })
   if (!DRY) {
-    await setSetting("agent", { last_digest_date: date })
+    await setSetting("agent", { last_digest_date: date, last_unanswered_threads: looseEnds.slice(0, 8).map((m) => m.thread_id), last_unanswered_date: date })
     // Ryan 2026-09-27: "the same thing over and over every day … a way to check
     // I'm aware and don't need reminding." The brief was text-only, so open
     // loops rode along every morning with no way to clear them. Post one
