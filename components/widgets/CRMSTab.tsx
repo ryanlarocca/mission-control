@@ -15,6 +15,7 @@ import { useRelationshipCall, CallButton, CallStatusLine } from "./RelationshipC
 import { CleanupMode } from "./CleanupMode"
 import { ReplyPlanner } from "./ReplyPlanner"
 import { requestDraft } from "@/lib/reply-client"
+import { formatDate } from "@/lib/dates"
 
 // ══════════════════════════════════════════════════════════════════════════════
 // TYPES
@@ -285,7 +286,7 @@ function formatAbsoluteDate(iso: string | null): string {
   if (!iso) return "—"
   const d = new Date(iso)
   if (isNaN(d.getTime())) return "—"
-  return d.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })
+  return formatDate(d)
 }
 
 function daysAgoHint(iso: string | null): string {

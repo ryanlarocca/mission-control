@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react"
 import type { DealFlowData, DealFlowNote, DealFlowProperty, DealFlowScorecardRow } from "@/lib/dealFlow"
+import { formatDateTime } from "@/lib/dates"
 
 // Deal Flow — readable view over the deal-analysis snapshot + comments.
 // Four views: Overview (what the numbers say), Properties (every pitched
@@ -297,7 +298,7 @@ function PropertyDetail({ r, notes, addNote, removeNote }: {
             <div key={n.id} className="group rounded-md border border-zinc-800 bg-zinc-950 p-2 text-sm text-zinc-200">
               <div className="whitespace-pre-wrap">{n.body}</div>
               <div className="mt-1 flex items-center justify-between text-[11px] text-zinc-500">
-                <span>{new Date(n.created_at).toLocaleString()}</span>
+                <span>{formatDateTime(n.created_at)}</span>
                 <button onClick={() => removeNote(n.id)} className="opacity-0 hover:text-red-300 group-hover:opacity-100">delete</button>
               </div>
             </div>

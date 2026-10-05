@@ -3,6 +3,7 @@ import { getLeadsClient } from "@/lib/leads"
 import { HAIKU, SONNET, completeText, extractJsonObject } from "@/lib/llm"
 import { fetchAttachment, fetchInboxMessage, fetchInboxThread, renderThread, searchInbox, sendThreadedReply } from "@/lib/inboxGmail"
 import { VOICE_SYSTEM } from "@/lib/reply/draft"
+import { formatDate } from "@/lib/dates"
 
 // Inbox Agent — the Vercel half (briefs/BRIEF_INBOX_AGENT_2026-09-24.md).
 //
@@ -539,7 +540,7 @@ async function tgSendMarkdownFile(filename: string, content: string, caption: st
 }
 function dateLabel(iso: string | null | undefined): string {
   if (!iso) return "?"
-  return new Intl.DateTimeFormat("en-US", { timeZone: "America/Los_Angeles", month: "short", day: "numeric" }).format(new Date(iso))
+  return formatDate(iso, { timeZone: "America/Los_Angeles" })
 }
 
 const RULES_SYSTEM = `You design and document the Google Drive filing convention for Ryan LaRocca, a real-estate investor (flips + small multifamily, Santa Clara County). Inputs: how his Drive is organized today, his answers to setup questions about real documents, and corrections he made while filing. Ryan has said the agent can probably organize this better than he does and that he is open to suggestions — so PROPOSE a clean structure, don't just transcribe his tree. Keep what he asked for explicitly (those answers are law); improve the rest and say what you changed and why in a short "Proposed changes" section at the top.

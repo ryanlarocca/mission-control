@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from "react"
 import { Loader2 } from "lucide-react"
 import type { ThreadMessage } from "@/lib/relationship-messages"
+import { formatDate } from "@/lib/dates"
 
 // The contact's live text thread (chat.db + historic corpus via the sidecar),
 // shared by the Relationships queue card and the contact detail modal.
@@ -20,7 +21,7 @@ function daysAgo(iso: string): string {
 }
 
 function dayLabel(iso: string): string {
-  return new Date(iso).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })
+  return formatDate(iso)
 }
 
 export function RelationshipThread({ phone }: { phone: string }) {

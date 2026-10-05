@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react"
 import { EmailCampaignPerformance } from "@/components/widgets/EmailCampaignPerformance"
+import { formatDate, formatDateTime } from "@/lib/dates"
 
 // Agent email-drip campaign workspace (Phase 3 of
 // briefs/EMAIL_DRIP_CAMPAIGN_2026-07-17.md). Mirrors the mockup Ryan
@@ -182,7 +183,7 @@ export function EmailCampaignTab() {
       if (!res.ok) throw new Error(data.error ?? `${res.status}`)
       ping(
         scheduleAt
-          ? `✓ ${data.approved} scheduled for ${new Date(scheduleAt).toLocaleString([], { weekday: "short", hour: "numeric", minute: "2-digit" })}`
+          ? `✓ ${data.approved} scheduled for ${formatDateTime(scheduleAt, { weekday: "short" })}`
           : `✓ ${data.approved} queued — each goes out next weekday at a random time, 7a–5p PT`
       )
       setSelected(new Set())
@@ -614,7 +615,7 @@ export function EmailCampaignTab() {
                   {s.edited && <Badge tone="sent">edited</Badge>}
                   {s.scheduled_for && (
                     <Badge tone="approved">
-                      ⏰ {new Date(s.scheduled_for).toLocaleString([], { weekday: "short", hour: "numeric", minute: "2-digit" })}
+                      ⏰ {formatDateTime(s.scheduled_for, { weekday: "short" })}
                     </Badge>
                   )}
                   <Badge tone={s.status}>{s.status}</Badge>
@@ -771,7 +772,7 @@ export function EmailCampaignTab() {
                         .map((row) => (
                           <li key={row.key} className="flex gap-2 border-b border-dashed border-zinc-800/70 pb-1">
                             <span className="w-20 shrink-0 font-mono text-[11px] text-zinc-600">
-                              {new Date(row.at).toLocaleDateString("en-US", { month: "short", day: "numeric" })}
+                              {formatDate(row.at)}
                             </span>
                             <span className="text-zinc-300">{row.text}</span>
                           </li>

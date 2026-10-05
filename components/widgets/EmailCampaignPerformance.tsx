@@ -1,6 +1,7 @@
 "use client"
 
 import { useEffect, useState } from "react"
+import { formatDate } from "@/lib/dates"
 
 // Performance tab for /email-campaign (Ryan 2026-07-31): campaign health,
 // the send-time experiment (reply rate by PT send hour), touch funnel, and
@@ -196,7 +197,7 @@ export function EmailCampaignPerformance() {
             {stats.recent_replies.map((r, i) => (
               <div key={i} className="text-[12px]">
                 <span className="font-semibold text-zinc-200">{r.name}</span>{" "}
-                <span className="text-zinc-600">{new Date(r.when).toLocaleDateString("en-US", { month: "short", day: "numeric" })}</span>{" "}
+                <span className="text-zinc-600">{formatDate(r.when)}</span>{" "}
                 <span className="text-zinc-400">“{r.snippet}”</span>
               </div>
             ))}

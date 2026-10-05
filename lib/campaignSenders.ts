@@ -1,5 +1,6 @@
 import { getLeadsClient } from "@/lib/leads"
 import sendersConfig from "@/config/campaign-senders.json"
+import { formatDateTime } from "@/lib/dates"
 
 // Per-sender controls for the Telegram route (September rebuild item 3,
 // 2026-09-05). The engine (scripts/campaign-senders.mjs) owns the ramp
@@ -154,7 +155,7 @@ export async function senderStatusLines(): Promise<string[]> {
     const st = await getSenderState(s.email)
     const cap = capFor(s, st)
     const paused = isSenderPaused(st)
-    const until = st.paused_until ? ` until ${new Date(st.paused_until).toLocaleString("en-US", { timeZone: PT, month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}` : ""
+    const until = st.paused_until ? ` until ${formatDateTime(st.paused_until, { timeZone: PT })}` : ""
     const verdicts = Object.keys(st.canary_verdicts ?? {}).sort().slice(-3).map((d) => st.canary_verdicts[d])
     out.push(
       `${paused ? "⏸" : "▶️"} ${s.label} (${s.email}): ${cap}/day, step ${st.step}, healthy ${st.healthy_days}/3` +

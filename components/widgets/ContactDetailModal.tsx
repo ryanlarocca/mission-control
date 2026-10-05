@@ -10,6 +10,7 @@ import { RelationshipThread } from "./RelationshipThread"
 import { useRelationshipCall, CallButton, CallStatusLine } from "./RelationshipCall"
 import { ReplyPlanner } from "./ReplyPlanner"
 import { type Plan, requestDraft } from "@/lib/reply-client"
+import { formatDateTime } from "@/lib/dates"
 
 export interface TouchesSummary {
   count: number
@@ -101,14 +102,6 @@ function coerceCategory(raw: string): CategoryOption {
   return "Agent"
 }
 
-function formatDateTime(iso: string): string {
-  const d = new Date(iso)
-  if (isNaN(d.getTime())) return iso
-  return d.toLocaleString("en-US", {
-    month: "short", day: "numeric", year: "numeric",
-    hour: "numeric", minute: "2-digit",
-  })
-}
 
 export function ContactDetailModal({ contact, onClose, onSendToast, onNotesSaved, onCategoryChanged, onTierChanged }: Props) {
   const [history, setHistory] = useState<InteractionEntry[]>([])

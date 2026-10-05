@@ -23,6 +23,7 @@ import {
   RELATIONSHIP_CATEGORY_LABELS,
   RELATIONSHIP_CATEGORY_PICKER_ORDER,
 } from "@/lib/crms"
+import { formatDate, formatDateTime } from "@/lib/dates"
 
 type LeadType =
   | "call" | "voicemail" | "sms" | "form" | "email"
@@ -265,7 +266,7 @@ function relativeTime(iso: string): string {
   if (sec < 3600)  return `${Math.floor(sec / 60)}m ago`
   if (sec < 86400) return `${Math.floor(sec / 3600)}h ago`
   if (sec < 86400 * 7) return `${Math.floor(sec / 86400)}d ago`
-  return new Date(iso).toLocaleDateString([], { month: "short", day: "numeric" })
+  return formatDate(iso)
 }
 
 function groupLeads(leads: Lead[]): LeadGroup[] {
@@ -2888,10 +2889,6 @@ function OfferRow(props: {
     return `$${Math.round(n / 1000)}K`
   }
 
-  function formatDate(iso: string): string {
-    return new Date(iso).toLocaleDateString([], { month: "short", day: "numeric" })
-  }
-
   // Empty state → render a low-contrast "+ Add offer" pill so Ryan has a
   // way to log an offer he made live (not picked up from a transcript).
   // PATCH /api/leads stamps offer_verbalized_at = now() server-side when
@@ -3298,9 +3295,7 @@ function CopyButton({ text, label = "Copy" }: { text: string; label?: string }) 
 function TimelineEvent({ ev }: { ev: Lead }) {
   const outbound = isOutbound(ev)
   const Icon = TYPE_ICON[ev.lead_type ?? "call"] || Phone
-  const fullTime = new Date(ev.created_at).toLocaleString([], {
-    month: "short", day: "numeric", hour: "numeric", minute: "2-digit",
-  })
+  const fullTime = formatDateTime(ev.created_at)
 
   // Skip rendering for content-less events that aren't a call (which has its
   // own "Inbound/Outbound call · awaiting recording" placeholder) and aren't

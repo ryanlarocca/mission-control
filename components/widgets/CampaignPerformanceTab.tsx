@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react"
 import { Loader2, RefreshCw, Plus, X } from "lucide-react"
 import { formatPhone } from "@/lib/utils"
+import { formatDate } from "@/lib/dates"
 
 // Campaign Performance tab — funnel + ROI for every marketing campaign.
 // Reads `/api/campaigns/performance` once on mount and on user refresh.
@@ -69,7 +70,7 @@ function fmtRoi(n: number | null): string {
 }
 function fmtDate(iso: string | null): string {
   if (!iso) return "—"
-  return new Date(iso + "T00:00:00").toLocaleDateString([], { month: "short", day: "numeric", year: "numeric" })
+  return formatDate(iso)
 }
 // formatPhone moved to lib/utils.ts.
 
@@ -270,7 +271,7 @@ export function CampaignPerformanceTab() {
                     {o.caller_phone ? formatPhone(o.caller_phone) : o.email || "—"}
                   </td>
                   <td className="px-3 py-1.5 text-right font-medium text-amber-200">{fmtMoney(o.offer_amount)}</td>
-                  <td className="px-3 py-1.5 text-zinc-500">{o.offer_verbalized_at ? new Date(o.offer_verbalized_at).toLocaleDateString([], { month: "short", day: "numeric", year: "numeric" }) : "—"}</td>
+                  <td className="px-3 py-1.5 text-zinc-500">{formatDate(o.offer_verbalized_at)}</td>
                   <td className="px-3 py-1.5 text-zinc-400">{o.campaign_name || <span className="text-zinc-600">unattributed</span>}</td>
                 </tr>
               ))}
