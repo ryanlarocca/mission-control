@@ -11,6 +11,14 @@ export const PROPERTY_SUBFOLDERS = ["Purchase & Sale", "Disclosures", "Inspectio
 export const INSURER_RE = /goosehead|obieinsurance|foremost|steadily|lemonade|statefarm|allstate|farmers|travelers|hippo/i
 export const LENDER_RE = /kiavi|conventus|lendinghome|cvlending|onyxcap|lima ?one|roc ?capital/i
 const PS_TYPES = new Set(["purchase_agreement", "counter", "addendum", "contingency_removal"])
+// Ryan 2026-10-06: "anything that's ever related to a draw request — each lender has
+// them — goes in the Construction folder." Kiavi's Draw 1 email carried the DRF
+// spreadsheet as "invoice" and the lien package as "loan_docs"; only the latter filed,
+// and to Loan & Insurance. A draw-shaped filename, or any document on a draw email,
+// is a draw_request.
+export const DRAW_FILE_RE = /\bDRF\b|draw[ _-]?(request|req|schedule|form|\d)|lien[ _-]?(package|waiver|release)|sworn statement|conditional waiver|unconditional waiver/i
+export const DRAW_SUBJECT_RE = /\bdraws?\b|\bDRF\b|lien (package|waiver)/i
+const NEVER_DRAW = new Set(["photos", "marketing_list", "flyer", "offering_memorandum"])
 
 /** Filename / sender heuristics on top of the classifier. Fixes the cases the model
  *  gets wrong on short attachment names ("Ryan Quito BPA.pdf" is not an RPA). */
@@ -18,6 +26,8 @@ export function refineDocType(filename, docType, senderEmail, subject = "") {
   const f = String(filename || "")
   const sender = String(senderEmail || "").toLowerCase()
   const insuranceContext = INSURER_RE.test(sender) || /\b(insurance|policy|dwelling|binder)\b/i.test(String(subject || ""))
+  if (DRAW_FILE_RE.test(f)) return "draw_request"
+  if (DRAW_SUBJECT_RE.test(String(subject || "")) && !NEVER_DRAW.has(docType) && !/\b(guide|quick start|faq|how to)\b/i.test(f)) return "draw_request"
   if (/\bBPA\b|business purpose/i.test(f)) return "loan_application"
   if (/\bEOI\b|evidence of insurance|binder/i.test(f)) return "evidence_of_insurance"
   if (/invoice/i.test(f)) return "invoice"

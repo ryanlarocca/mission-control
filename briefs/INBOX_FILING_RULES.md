@@ -15,9 +15,10 @@ Only transaction documents are filed. Everything else that arrives on a deal thr
 - **Final** loan documents only (signed note, deed of trust, closing disclosure)
 - **Bound** insurance only: the evidence of insurance / binder and the issued policy or declarations page
 - Marketing lists (CSV/XLSX owner or farm lists from a title rep) → `Marketing/`, never `Properties/`
+- **Construction-draw paperwork from any lender** (draw request form / DRF, lien package, lien waivers, draw schedule, draw approval) → `Construction/`, every stage (Ryan 2026-10-06; before this the DRF was dropped as an "invoice")
 
 ## What is never filed
-Insurance quotes, replacement-cost estimates, policy applications and the "disclosures" that ride along with them; loan applications, borrowing authorizations, affidavits (BPA), lender guides and rate sheets; invoices; offering memoranda and flyers from broker blasts; Zoom invites; lender or vendor marketing. These are logged (`inbox_files.status = ignored`) so `find` can still pull them from Gmail.
+Insurance quotes, replacement-cost estimates, policy applications and the "disclosures" that ride along with them; loan applications, borrowing authorizations, affidavits (BPA), lender guides and rate sheets; invoices (except draw paperwork, which is a draw request); offering memoranda and flyers from broker blasts; Zoom invites; lender or vendor marketing. These are logged (`inbox_files.status = ignored`) so `find` can still pull them from Gmail.
 
 ## Property folder structure (active deals, directly under Properties/)
 ```
@@ -36,7 +37,7 @@ Properties/<number street>/          e.g. 5764 Halleck Dr, 2116 Quito Rd
     <property> Buyer Statement <date> FINAL.pdf
     <property> Grant Deed <date>.pdf
   Loan & Insurance/                  final loan docs (sender's name), EOI (sender's name), <property> Insurance Policy <date>.pdf
-  Construction/                      bids, invoices, permits, draw requests (Ryan files these by hand)
+  Construction/                      draw paperwork from any lender (DRF / draw request form, lien package, lien waivers, draw schedule, draw approvals — sender's name, every stage; since 2026-10-06); bids, invoices, permits (Ryan files these by hand)
   Photos/
 ```
 Closed deals stay where they are until Ryan says otherwise (`Properties/Old/`, `Properties/2025/` untouched). `93 Ridgeview` keeps its current name and layout — do not rename or restructure it.

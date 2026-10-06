@@ -74,7 +74,7 @@ export const DOC_TYPES = [
   "purchase_agreement", "counter", "addendum", "contingency_removal", "disclosure", "nhd", "inspection", "appraisal",
   "title_report", "escrow_instructions", "emd_receipt", "net_sheet", "closing_statement", "deed",
   "evidence_of_insurance", "insurance_policy", "insurance_quote", "loan_docs", "loan_application",
-  "invoice", "bid", "offering_memorandum", "flyer", "marketing_list", "tax_doc", "lease", "photos", "other",
+  "invoice", "bid", "offering_memorandum", "flyer", "marketing_list", "tax_doc", "lease", "photos", "draw_request", "other",
 ]
 
 // Ryan 2026-10-02 — the transaction whitelist. Only these document types are
@@ -84,7 +84,7 @@ export const DOC_TYPES = [
 export const WHITELIST = new Set([
   "purchase_agreement", "counter", "addendum", "contingency_removal", "disclosure", "nhd", "inspection", "appraisal",
   "title_report", "emd_receipt", "net_sheet", "closing_statement", "deed", "evidence_of_insurance", "insurance_policy",
-  "loan_docs", "marketing_list",
+  "loan_docs", "marketing_list", "draw_request",
 ])
 
 /** Which property subfolder a whitelisted doc type lives in (null = not filed). */
@@ -102,6 +102,11 @@ export function subfolderFor(docType, stage) {
       return stage === "bound" || stage === "final" ? "Loan & Insurance" : null
     case "loan_docs":
       return stage === "final" || stage === "bound" ? "Loan & Insurance" : null
+    case "draw_request":
+      // Ryan 2026-10-06: anything to do with a construction draw, from any lender
+      // (DRF / draw request form, lien package or waiver, draw schedule, draw
+      // approval, draw inspection) lives in Construction at every stage.
+      return "Construction"
     default:
       return null
   }
@@ -153,7 +158,7 @@ Return JSON only:
   "kind": "human"|"automated"|"newsletter"|"docusign_request"|"docusign_completed"|"esign_completed"|"zix"|"deal_lead"|"broker_blast"|"skip",
   "property": {"label": "93 Ridgeview", "address": "93 Ridgeview Ave, San Jose, CA 95127"} | null,   // label = number + street name only
   "attachments": [ {"filename": "...", "relevant": true|false, "doc_type": "<one of: ${DOC_TYPES.join(", ")}>", "property_label": "..."|null, "signed": true|false|null, "stage": "quote"|"application"|"estimated"|"final"|"bound"|null, "description": "6-12 words"} ],
-  // doc_type notes: counter = counter offer (SCO/BCO); contingency_removal = CR form; nhd = natural hazard disclosure report; emd_receipt = earnest-money wire/deposit receipt from escrow; closing_statement = buyer/seller settlement statement (any version); deed = grant deed / recorded docs; evidence_of_insurance = EOI/binder; insurance_policy = declarations page / policy; insurance_quote = quotes, proposals, RCE, applications not yet bound; loan_application = applications, affidavits, disclosures, guides from a lender; loan_docs = final executed loan documents (note, deed of trust, closing disclosure); marketing_list = CSV/XLSX owner or farm lists from a title rep. stage: "final" when the sender calls it final; "estimated" for estimated/preliminary statements; "bound" for an insurance binder/EOI/dec page; "quote"/"application" otherwise for insurance and loan paperwork.
+  // doc_type notes: counter = counter offer (SCO/BCO); contingency_removal = CR form; nhd = natural hazard disclosure report; emd_receipt = earnest-money wire/deposit receipt from escrow; closing_statement = buyer/seller settlement statement (any version); deed = grant deed / recorded docs; evidence_of_insurance = EOI/binder; insurance_policy = declarations page / policy; insurance_quote = quotes, proposals, RCE, applications not yet bound; loan_application = applications, affidavits, disclosures, guides from a lender; loan_docs = final executed loan documents (note, deed of trust, closing disclosure); marketing_list = CSV/XLSX owner or farm lists from a title rep; draw_request = ANY construction-draw paperwork from a lender or its draws desk (draw request form / DRF spreadsheet, lien package, lien waiver/release, draw schedule or budget, draw inspection, draw approval or funding notice) — never "invoice" or "loan_docs" when the email is about a draw. stage: "final" when the sender calls it final; "estimated" for estimated/preliminary statements; "bound" for an insurance binder/EOI/dec page; "quote"/"application" otherwise for insurance and loan paperwork.
   // Lender servicing / processing desks (servicing@, loan.processing@, draws@), escrow officers, insurers and billing
   // systems acting for a vendor (FreshBooks, QuickBooks, Bill.com, Stripe, PayPal, Square invoices/proposals/estimates)
   // on one of Ryan's deals are REAL asks: an invoice or proposal to approve/pay, an ACH or wire form to return, a
