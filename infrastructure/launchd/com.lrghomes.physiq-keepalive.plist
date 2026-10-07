@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Physiq Supabase keep-alive — runs every 2 days. The Physiq project is on
+  Supabase's free tier, which pauses after ~7 idle days (happened 2026-10-07:
+  Ryan opened the PWA to stale cached data and no Gym tab). A single anon
+  PostgREST read counts as activity; if the project is already INACTIVE the
+  script restores it and alerts Telegram. See scripts/physiq-keepalive.mjs.
+
+  Install (Mac mini):
+    cp infrastructure/launchd/com.lrghomes.physiq-keepalive.plist ~/Library/LaunchAgents/
+    launchctl load ~/Library/LaunchAgents/com.lrghomes.physiq-keepalive.plist
+
+  Trigger once manually:
+    launchctl start com.lrghomes.physiq-keepalive
+
+  Tail logs:
+    tail -f /tmp/lrg-physiq-keepalive.log /tmp/lrg-physiq-keepalive-err.log
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.lrghomes.physiq-keepalive</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/opt/homebrew/bin/node</string>
+    <string>scripts/physiq-keepalive.mjs</string>
+  </array>
+  <key>WorkingDirectory</key>
+  <string>/Users/ryanlarocca/Projects/PROJECTS/mission-control</string>
+  <key>StartInterval</key>
+  <integer>172800</integer>
+  <key>StandardOutPath</key>
+  <string>/tmp/lrg-physiq-keepalive.log</string>
+  <key>StandardErrorPath</key>
+  <string>/tmp/lrg-physiq-keepalive-err.log</string>
+  <key>RunAtLoad</key>
+  <true/>
+</dict>
+</plist>
