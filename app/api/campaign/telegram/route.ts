@@ -29,6 +29,8 @@ import {
   insertRelationship,
   parseCaptionHints,
   parsePending,
+  parseRenameCommand,
+  renameRelationshipByPhone,
   retierRelationship,
   type ExtractedContact,
   type ImageMediaType,
@@ -616,6 +618,41 @@ export async function POST(request: Request) {
     return NextResponse.json({ ok: true })
   }
 
+  // "name: Dave Chen, agent, tier B" / "rename: …" / "this is: …" in reply
+  // to an alert that carries a phone → rename that Relationships card
+  // (2026-10-06, Ryan: business-card callers land as "(408) 513-4444" and
+  // he names them from his phone). Sits ABOVE every send path on purpose:
+  // the office-line alert embeds "+1408…", so without this branch the name
+  // would go out as an SMS to the caller from the lead line.
+  const rename = parseRenameCommand(body)
+  if (rename) {
+    const e164 = repliedText.match(/\+\d{10,15}/)?.[0]
+    const phone10 = e164 ? e164.replace(/\D/g, "").slice(-10) : extractPhone(repliedText)
+    if (!repliedText || !phone10) {
+      await tg("sendMessage", {
+        chat_id: chatId,
+        text: "⚠️ Reply to the call/text alert for that number with name: <Full Name>[, type, tier] — e.g. name: Dave Chen, agent, tier B.",
+        reply_to_message_id: msg.message_id,
+      })
+      return NextResponse.json({ ok: true })
+    }
+    const out = await renameRelationshipByPhone(phone10, rename, { force: rename.verb === "rename" })
+    const fmt = `(${phone10.slice(0, 3)}) ${phone10.slice(3, 6)}-${phone10.slice(6)}`
+    let text: string
+    if (out.success) {
+      const meta = [out.category, out.tier ? `tier ${out.tier}` : null].filter(Boolean).join(", ")
+      text = `✏️ ${out.previous && out.previous !== fmt ? out.previous : fmt} → <b>${out.name}</b>${meta ? ` (${meta})` : ""} — Relationships card updated.`
+    } else if (out.reason === "has_name") {
+      text = `⚠️ ${fmt} is already <b>${out.current}</b>. Reply "rename: ${rename.name}" to overwrite.`
+    } else if (out.reason === "not_found") {
+      text = `⚠️ No Relationships contact with ${fmt} — if that's a lead, rename it from the Leads tab.`
+    } else {
+      text = `⚠️ Rename failed — ${out.error}`
+    }
+    await tg("sendMessage", { chat_id: chatId, text, parse_mode: "HTML", reply_to_message_id: msg.message_id })
+    return NextResponse.json({ ok: true })
+  }
+
   // "copy: T2 <guidance>" — TEMPLATE-level edit (2026-08-06, Ryan: "handle
   // everything inside Telegram... change the copy... at the template
   // level"). Standalone command, no reply-to needed. Approval-gated: the
@@ -665,7 +702,7 @@ export async function POST(request: Request) {
   if (!msg.reply_to_message) {
     await tg("sendMessage", {
       chat_id: chatId,
-      text: "Reply to a specific alert to act on it (tap-and-reply). Buttons on alerts work too. Send a screenshot of a contact card with a caption (e.g. \"add as personal, tier A\") to add them to Relationships. Say \"cal: showing at 123 Main St tomorrow 2pm with Ana\" (or send an invite screenshot captioned \"add to calendar\") to create a calendar event.",
+      text: "Reply to a specific alert to act on it (tap-and-reply). Buttons on alerts work too. Send a screenshot of a contact card with a caption (e.g. \"add as personal, tier A\") to add them to Relationships. Say \"cal: showing at 123 Main St tomorrow 2pm with Ana\" (or send an invite screenshot captioned \"add to calendar\") to create a calendar event. Reply to a call alert with \"name: Dave Chen, agent, tier B\" to name a new contact.",
       reply_to_message_id: msg.message_id,
     })
     return NextResponse.json({ ok: true })

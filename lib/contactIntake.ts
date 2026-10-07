@@ -215,6 +215,103 @@ export async function retierRelationship(id: string, tier: Tier): Promise<{ succ
   return error ? { success: false, error: error.message } : { success: true }
 }
 
+// ---- Rename a contact from Telegram (2026-10-06) ----------------------
+// Ryan hands out the business card; the caller lands in Relationships as
+// "(408) 513-4444" (office-inbound placeholder). He names them by replying
+// to the alert: "name: Dave Chen, agent, tier B" / "rename: …" /
+// "this is: …". Category + tier are optional and ride the same vocabulary
+// as the screenshot captions. "name:" / "this is:" only fill a placeholder;
+// "rename:" is the explicit verb that overwrites a real name.
+
+const RENAME_CMD_RE = /^(?:name|rename|this is)\s*:\s*([\s\S]+)$/i
+const HINT_WORD =
+  "(?:tier|level)\\s*[-:]?\\s*[a-e]|[a-e]\\s*(?:tier|level)|[a-e]|personal|friend|family|private\\s*money|hard\\s*money|property\\s*manager|pm|investor|wholesaler|buyer|vendor|contractor|plumber|electrician|lender|inspector|agent|realtor|broker"
+const TRAILING_HINT_RE = new RegExp(`\\s+(?:${HINT_WORD})$`, "i")
+
+export interface RenameCommand {
+  verb: "name" | "rename" | "this is"
+  name: string
+  category: Category | null
+  tier: Tier | null
+}
+
+/** "name: Dave Chen, agent, B" → { name: "Dave Chen", category: "Agent", tier: "B" }.
+ * Separators (comma / dash / pipe) split name from hints; without one, hint
+ * words are peeled off the end of the name so "name: Dave Chen agent B" works. */
+export function parseRenameCommand(body: string): RenameCommand | null {
+  const m = RENAME_CMD_RE.exec(body.trim())
+  if (!m) return null
+  const verb = /^rename/i.test(body.trim()) ? "rename" : /^this/i.test(body.trim()) ? "this is" : "name"
+  const rest = m[1].replace(/[()]/g, " ").replace(/\s+/g, " ").trim()
+  const segs = rest
+    .split(/\s*(?:,|;|\||—|–|\s-\s)\s*/)
+    .map((x) => x.trim())
+    .filter(Boolean)
+  if (!segs.length) return null
+  let name = segs[0]
+  const hints = segs.slice(1)
+  for (;;) {
+    const t = TRAILING_HINT_RE.exec(name)
+    if (!t) break
+    hints.unshift(t[0].trim())
+    name = name.slice(0, t.index).trim()
+  }
+  if (!name || /^\+?[\d\s().-]+$/.test(name)) return null
+  const hintText = hints.join(" ")
+  const parsed = parseCaptionHints(hintText)
+  const bare = /(?:^|\s)([a-e])(?:\s|$)/i.exec(hintText)
+  const tier = parsed.tier ?? (bare ? (bare[1].toUpperCase() as Tier) : null)
+  return { verb, name, category: parsed.category, tier }
+}
+
+export type RenameOutcome =
+  | { success: true; id: string; previous: string; name: string; category: string | null; tier: string | null; phone: string }
+  | { success: false; reason: "not_found" | "has_name" | "error"; error?: string; current?: string; phone: string }
+
+/** Rename the Relationships contact whose phone ends in `phone10`. A real
+ * (non-placeholder) name is only overwritten when `force` is set. */
+export async function renameRelationshipByPhone(
+  phone10: string,
+  cmd: { name: string; category: Category | null; tier: Tier | null },
+  opts: { force: boolean }
+): Promise<RenameOutcome> {
+  const sb = getLeadsClient()
+  const { data: rows, error } = await sb
+    .from("relationships")
+    .select("id, name, phone, category, tier, notes, status")
+    .like("phone", `%${phone10}`)
+    .order("status", { ascending: true }) // "active" < "do_not_contact"
+    .limit(5)
+  if (error) return { success: false, reason: "error", error: error.message, phone: phone10 }
+  const row = rows?.[0]
+  if (!row?.id) return { success: false, reason: "not_found", phone: phone10 }
+  const previous = (row.name as string | null) ?? ""
+  const placeholder = !previous.trim() || to10Digit(previous) === phone10
+  if (!placeholder && !opts.force && previous.trim() !== cmd.name) {
+    return { success: false, reason: "has_name", current: previous, phone: phone10 }
+  }
+  const day = new Date().toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric", timeZone: "America/Los_Angeles" })
+  const bits = [`"${previous || "(blank)"}" → "${cmd.name}"`]
+  if (cmd.category && cmd.category !== row.category) bits.push(`category ${row.category ?? "—"} → ${cmd.category}`)
+  if (cmd.tier && cmd.tier !== row.tier) bits.push(`tier ${row.tier ?? "—"} → ${cmd.tier}`)
+  const line = `Renamed via Telegram ${day}: ${bits.join("; ")}.`
+  const prevNotes = (row.notes as string | null) ?? ""
+  const patch: Record<string, string> = { name: cmd.name, notes: prevNotes ? `${prevNotes}\n\n${line}` : line }
+  if (cmd.category) patch.category = cmd.category
+  if (cmd.tier) patch.tier = cmd.tier
+  const { error: upErr } = await sb.from("relationships").update(patch).eq("id", row.id)
+  if (upErr) return { success: false, reason: "error", error: upErr.message, phone: phone10 }
+  return {
+    success: true,
+    id: row.id as string,
+    previous,
+    name: cmd.name,
+    category: cmd.category ?? ((row.category as string | null) ?? null),
+    tier: cmd.tier ?? ((row.tier as string | null) ?? null),
+    phone: (row.phone as string | null) ?? phone10,
+  }
+}
+
 // ---- Stateless Telegram round-trip -----------------------------------
 // When dedup blocks the add, we post a summary and wait for Ryan to reply
 // to that message. Vercel functions hold no state, so the pending contact
