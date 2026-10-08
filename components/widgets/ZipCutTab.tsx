@@ -56,13 +56,13 @@ export function ZipCutTab() {
     async (z: CampaignZip) => {
       if (!campaign) return
       const next = !z.exclude
-      setZips(prev => prev.map(r => (r.zip === z.zip ? { ...r, exclude: next } : r)))
-      setSaving(prev => new Set(prev).add(z.zip))
+      setZips(prev => prev.map(r => (r.id === z.id ? { ...r, exclude: next } : r)))
+      setSaving(prev => new Set(prev).add(z.id))
       try {
         const res = await fetch(`/api/campaigns/${campaign.id}/zips`, {
           method: "PATCH",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ zip: z.zip, exclude: next }),
+          body: JSON.stringify({ id: z.id, exclude: next }),
         })
         if (!res.ok) {
           const j = await res.json().catch(() => ({}))
@@ -70,12 +70,12 @@ export function ZipCutTab() {
         }
       } catch (e) {
         // Roll back the optimistic flip so the screen never lies about what's saved.
-        setZips(prev => prev.map(r => (r.zip === z.zip ? { ...r, exclude: !next } : r)))
+        setZips(prev => prev.map(r => (r.id === z.id ? { ...r, exclude: !next } : r)))
         setError(`Save failed for ${z.zip}: ${e instanceof Error ? e.message : String(e)}`)
       } finally {
         setSaving(prev => {
           const s = new Set(prev)
-          s.delete(z.zip)
+          s.delete(z.id)
           return s
         })
       }
@@ -152,7 +152,7 @@ export function ZipCutTab() {
           const prevCounty = i > 0 ? visible[i - 1].county : null
           const showCounty = countyFilter === "all" && z.county !== prevCounty
           return (
-            <div key={z.zip}>
+            <div key={z.id}>
               {showCounty && (
                 <div className="px-3 py-1 text-[11px] font-semibold text-zinc-300 bg-zinc-900 border-y border-zinc-800">
                   {z.county}
@@ -160,7 +160,7 @@ export function ZipCutTab() {
               )}
               <button
                 onClick={() => toggle(z)}
-                disabled={saving.has(z.zip)}
+                disabled={saving.has(z.id)}
                 className={`w-full grid grid-cols-[28px_60px_1fr_56px_52px_52px] gap-2 items-center px-3 py-2.5 text-left text-sm border-b border-zinc-900 transition-colors ${
                   z.exclude ? "bg-red-950/40 text-zinc-500 line-through decoration-red-700" : "hover:bg-zinc-900/60 text-zinc-100"
                 }`}

@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server"
 import { getLeadsClient } from "@/lib/leads"
 
 // Zip-cut picker for a direct-mail list build (campaign_zips). GET lists the
-// campaign's site zips; PATCH flips `exclude` on one zip. The list-build
+// campaign's site zips; PATCH flips `exclude` on one row (by row id — a zip can sit in two counties). The list-build
 // script reads exclude = true back as the Step 6 zip cut.
 
 export const dynamic = "force-dynamic"
@@ -45,15 +45,15 @@ export async function GET(_req: NextRequest, { params }: Ctx) {
 }
 
 export async function PATCH(request: NextRequest, { params }: Ctx) {
-  let body: { zip?: unknown; exclude?: unknown } = {}
+  let body: { id?: unknown; exclude?: unknown } = {}
   try {
     body = await request.json()
   } catch {
     return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 })
   }
-  const zip = typeof body.zip === "string" ? body.zip.trim() : ""
-  if (!/^\d{5}$/.test(zip) || typeof body.exclude !== "boolean") {
-    return NextResponse.json({ error: "zip (5 digits) and exclude (boolean) required" }, { status: 400 })
+  const rowId = typeof body.id === "string" ? body.id.trim() : ""
+  if (!/^[0-9a-f-]{36}$/i.test(rowId) || typeof body.exclude !== "boolean") {
+    return NextResponse.json({ error: "id (uuid) and exclude (boolean) required" }, { status: 400 })
   }
   try {
     const sb = getLeadsClient()
@@ -61,11 +61,11 @@ export async function PATCH(request: NextRequest, { params }: Ctx) {
       .from("campaign_zips")
       .update({ exclude: body.exclude, updated_at: new Date().toISOString() })
       .eq("campaign_id", params.id)
-      .eq("zip", zip)
-      .select("zip, exclude")
+      .eq("id", rowId)
+      .select("id, zip, county, exclude")
       .maybeSingle()
     if (error) return NextResponse.json({ error: error.message }, { status: 500 })
-    if (!data) return NextResponse.json({ error: "zip not in this campaign" }, { status: 404 })
+    if (!data) return NextResponse.json({ error: "row not in this campaign" }, { status: 404 })
     return NextResponse.json({ ok: true, ...data })
   } catch (e) {
     return NextResponse.json({ error: e instanceof Error ? e.message : String(e) }, { status: 500 })

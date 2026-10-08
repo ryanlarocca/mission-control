@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Seed campaign_zips from a list-build zip_table.csv (Step 5 output).
 //   node --env-file=.env.local scripts/seed-campaign-zips.mjs --campaign <uuid> --file <zip_table.csv> [--commit]
-// Upserts on (campaign_id, zip); never touches `exclude` on rows that already exist.
+// Upserts on (campaign_id, zip, county); never touches `exclude` on rows that already exist.
 import fs from "node:fs"
 import { createClient } from "@supabase/supabase-js"
 const arg = (k) => { const i = process.argv.indexOf(k); return i > -1 ? process.argv[i + 1] : null }
@@ -19,9 +19,10 @@ const payload = rows.map((r) => ({
 console.log(`${payload.length} zips, ${payload.reduce((a, r) => a + r.rows, 0)} rows${commit ? "" : " (dry run — add --commit)"}`)
 if (!commit) process.exit(0)
 const sb = createClient(process.env.LRG_SUPABASE_URL, process.env.LRG_SUPABASE_SERVICE_KEY, { auth: { persistSession: false } })
-const { data: existing } = await sb.from("campaign_zips").select("zip").eq("campaign_id", campaign)
-const have = new Set((existing ?? []).map((r) => r.zip))
-const fresh = payload.filter((r) => !have.has(r.zip))
+const { data: existing, error: exErr } = await sb.from("campaign_zips").select("zip, county").eq("campaign_id", campaign)
+if (exErr) throw exErr
+const have = new Set((existing ?? []).map((r) => `${r.zip}|${r.county}`))
+const fresh = payload.filter((r) => !have.has(`${r.zip}|${r.county}`))
 if (fresh.length) { const { error } = await sb.from("campaign_zips").insert(fresh); if (error) throw error }
 const { count } = await sb.from("campaign_zips").select("id", { count: "exact", head: true }).eq("campaign_id", campaign)
 console.log(`inserted ${fresh.length}, skipped ${payload.length - fresh.length} existing, table now ${count} for this campaign`)
