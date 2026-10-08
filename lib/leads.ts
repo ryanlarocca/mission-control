@@ -38,8 +38,13 @@ export const CAMPAIGN_MAP: Record<string, string> = {
   "+14083573440": "Legacy DM",
   "+14083573835": "Legacy DM",
   "+14083654925": "Legacy DM",
-  "+14084186294": "Legacy DM",
   "+14084188450": "Legacy DM",
+  // NOO Q4 2026 — absentee-owner SFR mailer (Ryan 2026-10-08). Reuses the
+  // ported ryansvb@ line (418-6294): zero inbound in the 9 months before,
+  // caller-ID test to Ryan's cell showed no spam label. Resolves to the
+  // campaigns row whose source_label = "NOO-Q4-2026" (lib/campaigns.ts).
+  // Mailbox: ryansvx@lrghomes.com (config/email-campaigns.json).
+  "+14084186294": "NOO-Q4-2026",
   // Office/administrative lines (same port): ryan@'s Google Voice number and
   // info@'s. info@ had 408-337-6857 until Nov 2025 (released when the seat
   // was reassigned), then 408-493-0632 from Mar 2026 — that is the line that
@@ -54,6 +59,15 @@ export const CAMPAIGN_MAP: Record<string, string> = {
 // to email outreach or existing business, and auto-enrolling them in the
 // direct-mail drip would text mailer follow-ups at vendors/agents/clients.
 export const OFFICE_NUMBERS = new Set(["+14084585442", "+14084930632"])
+
+// Lines whose campaign label WINS over the cluster's inherited source. The
+// intake routes normally keep a returning caller in their original campaign
+// bucket (so Campaign Performance never flips a cluster). Ryan 2026-10-08:
+// a prior MFM / Legacy caller who dials the NOO Q4 2026 line is responding
+// to the NEW mailer — the new event row takes this line's label (earlier
+// rows keep theirs, so the card shows both campaigns), and the cluster
+// counts for both campaigns.
+export const SOURCE_OVERRIDE_NUMBERS = new Set(["+14084186294"])
 
 // Inbound calls/SMS to this number are almost always a lead returning Ryan's
 // outreach, not a fresh intake. The voice + sms webhooks dedup against the

@@ -119,6 +119,10 @@ interface LeadGroup {
   contactPhone: string | null       // actual phone (null for email-only leads)
   source: string | null
   sourceType: string | null
+  // Every distinct inbound source in the cluster, newest first. A returning
+  // caller who answers a NEW mailer (SOURCE_OVERRIDE_NUMBERS) carries two
+  // labels — the header shows them all so the history is visible.
+  sources: string[]
   status: LeadStatus
   notes: string | null
   aiNotes: string | null
@@ -204,6 +208,8 @@ const SOURCE_BADGE: Record<string, string> = {
   // Every line ported from Google Voice (old mailers + agent marketing) and
   // the pre-port Google Voice email forwards — one universal bucket.
   "Legacy DM":  "bg-orange-900/50 text-orange-200",
+  // NOO Q4 2026 absentee-owner mailer (line 408-418-6294 / ryansvx@).
+  "NOO-Q4-2026": "bg-rose-900/60 text-rose-200",
   "Website":    "bg-violet-900/60 text-violet-200",
   "Outbound":   "bg-teal-900/60 text-teal-200",
   "Office — Ryan": "bg-zinc-700 text-zinc-200",
@@ -379,6 +385,9 @@ function groupLeads(leads: Lead[]): LeadGroup[] {
       contactPhone,
       source: (mostRecentInbound?.source) || mostRecent.source,
       sourceType: (mostRecentInbound?.source_type) || mostRecent.source_type,
+      sources: Array.from(
+        new Set(newestFirst.filter(e => !isOutbound(e)).map(e => e.source).filter((v): v is string => !!v && v.trim() !== ""))
+      ),
       status: statusSource.status,
       notes: statusSource.notes,
       aiNotes,
@@ -1990,6 +1999,17 @@ function LeadCard(p: LeadCardProps) {
             <span className={`px-2 py-0.5 text-[10px] font-semibold rounded uppercase tracking-wider ${sourceClass}`}>
               {displayCampaign}
             </span>
+            {group.sources
+              .filter(src => src !== displayCampaign && src !== group.campaignLabel)
+              .map(src => (
+                <span
+                  key={src}
+                  title="Earlier campaign this caller responded to"
+                  className={`px-2 py-0.5 text-[9px] font-semibold rounded uppercase tracking-wider opacity-80 ${SOURCE_BADGE[src] || SOURCE_BADGE.Unknown}`}
+                >
+                  {src}
+                </span>
+              ))}
             {sourceTypeClass && (
               <span className={`px-2 py-0.5 text-[9px] font-semibold rounded uppercase tracking-wider ${sourceTypeClass}`}>
                 {SOURCE_TYPE_LABEL[group.sourceType!] || group.sourceType}

@@ -3,6 +3,7 @@ import { triggerTelegramDraft } from "@/lib/reply/telegram"
 import {
   OFFICE_NUMBERS,
   OUTBOUND_TWILIO_NUMBER,
+  SOURCE_OVERRIDE_NUMBERS,
   dedupeClusterStamps,
   getCampaignSource,
   getLeadsClient,
@@ -186,10 +187,15 @@ export async function POST(request: Request) {
 
       const isJunkAddr = isMobileHome(bodyText)
 
+      // A text to a SOURCE_OVERRIDE_NUMBERS line (NOO Q4 2026) is a response to
+      // that mailer even from a known caller — the new row takes the line's
+      // label; status / drip stamp still inherit from the cluster.
+      const overrideSource = SOURCE_OVERRIDE_NUMBERS.has(to)
       const insertRow: Record<string, unknown> = {
-        source: existingRow?.source || source,
-        source_type:
-          existingRow?.source_type || (isGoogleAds ? "google_ads" : isOffice ? "office" : "direct_mail"),
+        source: overrideSource ? source : existingRow?.source || source,
+        source_type: overrideSource
+          ? "direct_mail"
+          : existingRow?.source_type || (isGoogleAds ? "google_ads" : isOffice ? "office" : "direct_mail"),
         twilio_number: to || null,
         caller_phone: from,
         lead_type: "sms",

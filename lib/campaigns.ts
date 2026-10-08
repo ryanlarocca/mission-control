@@ -30,6 +30,21 @@ export async function resolveCampaignId(input: SourceInput): Promise<string | nu
   const { source, source_type } = input
   if (!source && !source_type) return null
 
+  // 0. Table-driven first (2026-10-08): a campaign that declares its lead
+  //    `source` label in campaigns.source_label wins outright — one label,
+  //    one campaign (unique index), no drop-date window. New campaigns are
+  //    rows, not branches below. NOO Q4 2026 (line 408-418-6294 + mailbox
+  //    ryansvx@) is the first.
+  if (source) {
+    const sb0 = getLeadsClient()
+    const { data: labelled } = await sb0
+      .from("campaigns")
+      .select("id")
+      .eq("source_label", source)
+      .limit(1)
+    if (labelled && labelled.length > 0) return (labelled[0] as { id: string }).id
+  }
+
   const createdAt = input.created_at
     ? new Date(input.created_at).toISOString()
     : new Date().toISOString()

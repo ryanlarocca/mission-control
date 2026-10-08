@@ -22,5 +22,9 @@
   "ryansvr@lrghomes.com": {
     "source": "AGENT-DRIP-2",
     "source_type": "direct_mail"
+  },
+  "ryansvx@lrghomes.com": {
+    "source": "NOO-Q4-2026",
+    "source_type": "direct_mail"
   }
 }
