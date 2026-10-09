@@ -95,13 +95,15 @@ const dupIds = records.map((r) => r.record_id).filter((v, i, a) => a.indexOf(v) 
 if (dupIds.length) { console.error("Duplicate record_id in file:", dupIds.slice(0, 5)); process.exit(1) }
 
 const tally = (rows) => { const t = {}; for (const r of rows) { (t[r.arm] ??= {})[r.batch ?? "null"] = ((t[r.arm] ??= {})[r.batch ?? "null"] ?? 0) + 1 } return t }
+// Key order is not part of the contract (pandas emits arms alphabetically, the tally in file order).
+const canon = (o) => (o && typeof o === "object" && !Array.isArray(o)) ? Object.fromEntries(Object.keys(o).sort().map((k) => [k, canon(o[k])])) : o
 const fileTally = tally(records)
 const mailed = records.filter((r) => !r.is_seed && ["A", "B", "C"].includes(r.arm)).length
 console.log(`file: ${records.length} rows · mailed non-seed ${mailed} · seeds ${records.filter((r) => r.is_seed).length}`)
 console.log("by arm × batch:", JSON.stringify(fileTally))
 if (expectPath) {
   const expect = JSON.parse(fs.readFileSync(expectPath, "utf8"))
-  if (JSON.stringify(expect) !== JSON.stringify(fileTally)) { console.error("RECONCILE FAIL: --expect does not match the file\nexpected", JSON.stringify(expect)); process.exit(2) }
+  if (JSON.stringify(canon(expect)) !== JSON.stringify(canon(fileTally))) { console.error("RECONCILE FAIL: --expect does not match the file\nexpected", JSON.stringify(expect)); process.exit(2) }
   console.log("✓ file matches --expect reconciliation table")
 }
 if (!commit) { console.log("dry run — add --commit to write"); process.exit(0) }
@@ -120,7 +122,7 @@ for (let from = 0; ; from += 1000) {
   dbRows.push(...data); if (data.length < 1000) break
 }
 const dbTally = tally(dbRows)
-const ok = dbRows.length === records.length && JSON.stringify(dbTally) === JSON.stringify(fileTally)
+const ok = dbRows.length === records.length && JSON.stringify(canon(dbTally)) === JSON.stringify(canon(fileTally))
 console.log(`table: ${dbRows.length} rows for this campaign · by arm × batch ${JSON.stringify(dbTally)}`)
 if (!ok) { console.error("RECONCILE FAIL: table does not equal file"); process.exit(2) }
 const { error: cErr } = await sb.from("campaigns").update({ pieces_sent: mailed }).eq("id", campaign)
