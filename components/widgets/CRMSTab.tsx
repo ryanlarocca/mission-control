@@ -5,12 +5,12 @@ import {
   Send, RefreshCw, SkipForward, Phone, Loader2,
   UserCheck, User, Wrench, TrendingUp, Home, Building2,
   MessageSquare, AlertTriangle, CheckCircle2, Check, Search, X, Banknote,
-  ListChecks, Undo2, PhoneCall,
+  ListChecks, Undo2, PhoneCall, Mail,
 } from "lucide-react"
 import type { LucideIcon } from "lucide-react"
 import { ContactDetailModal } from "./ContactDetailModal"
 import type { TouchesSummary } from "./ContactDetailModal"
-import { RelationshipThread } from "./RelationshipThread"
+import { RelationshipThread, invalidateRelationshipThread } from "./RelationshipThread"
 import { useRelationshipCall, CallButton, CallStatusLine } from "./RelationshipCall"
 import { CleanupMode } from "./CleanupMode"
 import { ReplyPlanner } from "./ReplyPlanner"
@@ -141,6 +141,12 @@ function coerceModality(m: unknown, type: ContactType): Modality {
   return DEFAULT_MODALITY[type]
 }
 
+// Which way the message goes out (2026-10-09). Text = iMessage/SMS via the
+// sidecar; Email = Gmail via /api/crms/email, threaded into the agent's
+// campaign reply when there is one. Defaults to Email when the contact has
+// an address and the last thing they did was email us.
+type Channel = "text" | "email"
+
 interface CRMSContact {
   id:            string
   name:          string
@@ -148,6 +154,7 @@ interface CRMSContact {
   type:          ContactType
   tier:          Tier
   phone:         string
+  email?:        string | null
   lastContact:   string
   lastContacted: string
   daysOverdue:   number
@@ -279,6 +286,7 @@ class CRMSErrorBoundary extends Component<{ children: ReactNode }, { hasError: b
 // ══════════════════════════════════════════════════════════════════════════════
 
 const SEND_TIMEOUT_MS = 30000
+const EMAIL_SEND_TIMEOUT_MS = 30000 // Gmail metadata fetch + send
 const GENERATE_DEBOUNCE_MS = 300
 
 function formatAbsoluteDate(iso: string | null): string {
@@ -350,6 +358,8 @@ function CRMSTabInner() {
   const [callNote, setCallNote]       = useState("")
 
   // ── Message state ──
+  const [channel, setChannel]                     = useState<Channel>("text")
+  const [subjects, setSubjects]                   = useState<Record<string, string>>({})
   const [generatedMessages, setGeneratedMessages] = useState<Record<string, string>>({})
   const [editedMessages, setEditedMessages]       = useState<Record<string, string>>({})
   // Reply Planner: reply_drafts id per message key + the last "why" status.
@@ -364,6 +374,9 @@ function CRMSTabInner() {
 
   // ── Refs for debounce + abort ──
   const generateAbortRef = useRef<AbortController | null>(null)
+  // Sync mirror of touchesByPhone so generate() can read a just-fetched
+  // summary before React has re-rendered with it.
+  const touchesRef = useRef<Record<string, TouchesSummary>>({})
   const selectDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const removeUndoTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -396,21 +409,46 @@ function CRMSTabInner() {
     toastTimerRef.current = setTimeout(() => setSendToast(null), 5000)
   }
 
-  async function fetchTouches(phone: string) {
-    if (!phone || touchesByPhone[phone]) return
+  async function fetchTouches(phone: string): Promise<TouchesSummary | null> {
+    if (!phone) return null
+    if (touchesRef.current[phone]) return touchesRef.current[phone]
+    if (touchesByPhone[phone]) return touchesByPhone[phone]
     try {
       const res = await fetch(`/api/crms/touches?phone=${encodeURIComponent(phone)}`, { cache: "no-store" })
       const data = await res.json()
-      setTouchesByPhone(prev => ({
-        ...prev,
-        [phone]: {
-          count: data.count ?? 0,
-          lastSentAt: data.lastSentAt ?? null,
-          lastMessagePreview: data.lastMessagePreview ?? null,
-          hasReply: data.hasReply ?? false,
-        },
-      }))
-    } catch {}
+      const summary: TouchesSummary = {
+        count: data.count ?? 0,
+        lastSentAt: data.lastSentAt ?? null,
+        lastMessagePreview: data.lastMessagePreview ?? null,
+        hasReply: data.hasReply ?? false,
+        lastInbound: data.lastInbound ?? null,
+      }
+      touchesRef.current[phone] = summary
+      setTouchesByPhone(prev => ({ ...prev, [phone]: summary }))
+      return summary
+    } catch {
+      return null
+    }
+  }
+
+  // Email back when they emailed last and we have an address; otherwise text.
+  function pickChannel(contact: CRMSContact, t: TouchesSummary | null): Channel {
+    return contact.email && t?.lastInbound?.modality === "email" ? "email" : "text"
+  }
+
+  function msgKeyFor(contact: CRMSContact, mod: Modality, ch: Channel): string {
+    return `${contact.id}::${mod}::${ch}`
+  }
+
+  // Planner moment for this card. The intent chips map to outbound moments,
+  // but when THEY wrote last (an agent's email reply nobody answered yet) the
+  // draft has to answer what they said — that's the playbook's reply_to_them
+  // moment, not a re-engagement opener (2026-10-09).
+  function momentFor(contact: CRMSContact, intent: Intent): string {
+    const t = touchesRef.current[contact.phone] ?? touchesByPhone[contact.phone]
+    const awaitingReply = !!t?.lastInbound && (!t.lastSentAt || t.lastInbound.at > t.lastSentAt)
+    if (awaitingReply) return "reply_to_them"
+    return intent === "CatchUp" ? "check_in" : intent === "Referral" ? "referral_ask" : "re_engagement"
   }
 
   // Persist session progress on change
@@ -448,8 +486,10 @@ function CRMSTabInner() {
         setSelectedId(firstDue.id)
         const initialMod = DEFAULT_MODALITY[firstDue.type]
         setModality(initialMod)
-        generate(firstDue, initialMod)
-        fetchTouches(firstDue.phone)
+        const t = await fetchTouches(firstDue.phone)
+        const ch = pickChannel(firstDue, t)
+        setChannel(ch)
+        generate(firstDue, initialMod, false, undefined, undefined, ch)
       }
     } catch {
       setContactsError("Could not load contacts — check the database connection.")
@@ -486,9 +526,10 @@ function CRMSTabInner() {
   // pickers ARE the plan; the draft comes from /api/reply/draft with the
   // full chat.db thread, the playbook, and Ryan's edited sends as register.
   // "Not right" passes his sentence as `why`, chained to the rejected draft.
-  async function generate(contact: CRMSContact, mod: Modality, force = false, famOverride?: Familiarity, why?: string) {
+  async function generate(contact: CRMSContact, mod: Modality, force = false, famOverride?: Familiarity, why?: string, chOverride?: Channel) {
     const fam = famOverride ?? familiarity
-    const msgKey = `${contact.id}::${mod}`
+    const ch = chOverride ?? channel
+    const msgKey = msgKeyFor(contact, mod, ch)
     if (!force && (editedMessages[msgKey] || generatedMessages[msgKey])) return
 
     generateAbortRef.current?.abort()
@@ -498,11 +539,11 @@ function CRMSTabInner() {
     setGeneratingFor(contact.id)
     try {
       const intent = modalityToIntent(mod)
-      const moment = intent === "CatchUp" ? "check_in" : intent === "Referral" ? "referral_ask" : "re_engagement"
+      const moment = momentFor(contact, intent)
       const previous = editedMessages[msgKey] ?? generatedMessages[msgKey] ?? ""
       const data = await requestDraft({
         relationshipId: contact.id,
-        channel: "imessage",
+        channel: ch === "email" ? "email" : "imessage",
         surface: "relationships",
         plan: { moment, temperature: null, next_action: "send", reason: "", source: "ryan", familiarity: fam, intent },
         why: why ?? null,
@@ -514,6 +555,7 @@ function CRMSTabInner() {
         setGeneratedMessages(prev => ({ ...prev, [msgKey]: data.body }))
         setEditedMessages(prev => { const n = { ...prev }; delete n[msgKey]; return n })
         setDraftIds(prev => ({ ...prev, [msgKey]: data.draftId }))
+        if (ch === "email" && data.subject) setSubjects(prev => ({ ...prev, [msgKey]: data.subject as string }))
         setDraftStatus(data.critic?.rewritten ? `checked: ${data.critic.issues.join("; ")}` : why ? "redrafted from your note" : null)
       }
     } catch (e) {
@@ -532,7 +574,6 @@ function CRMSTabInner() {
     setMobileView("compose")
     setSendError(null)
     setCategoryPickerOpen(false)
-    fetchTouches(contact.phone)
     setFamiliarity(deriveFamiliarity(contact))
 
     // If current modality isn't valid for this type, snap to type's default
@@ -543,15 +584,22 @@ function CRMSTabInner() {
 
     if (selectDebounceRef.current) clearTimeout(selectDebounceRef.current)
     selectDebounceRef.current = setTimeout(async () => {
-      try {
-        const res = await fetch(`/api/crms/generate?phone=${encodeURIComponent(contact.phone)}`)
-        const data = await res.json()
-        if (data.preferred_modality) {
-          initialMod = coerceModality(data.preferred_modality, contact.type)
-          setModality(initialMod)
-        }
-      } catch {}
-      generate(contact, initialMod)
+      const [t] = await Promise.all([
+        fetchTouches(contact.phone),
+        (async () => {
+          try {
+            const res = await fetch(`/api/crms/generate?phone=${encodeURIComponent(contact.phone)}`)
+            const data = await res.json()
+            if (data.preferred_modality) {
+              initialMod = coerceModality(data.preferred_modality, contact.type)
+              setModality(initialMod)
+            }
+          } catch {}
+        })(),
+      ])
+      const ch = pickChannel(contact, t)
+      setChannel(ch)
+      generate(contact, initialMod, false, undefined, undefined, ch)
     }, GENERATE_DEBOUNCE_MS)
   }
 
@@ -576,9 +624,18 @@ function CRMSTabInner() {
     generate(selectedContact, m, true, nextFam)
   }
 
+  // Via: Text ↔ Email. Drafts are cached per channel, so flipping back is instant.
+  function handleChannelChange(next: Channel) {
+    if (!selectedContact || next === channel) return
+    if (next === "email" && !selectedContact.email) return
+    setChannel(next)
+    setSendError(null)
+    generate(selectedContact, modality, false, undefined, undefined, next)
+  }
+
   async function regenerate(why?: string) {
     if (!selectedContact || generatingFor) return
-    const msgKey = `${selectedContact.id}::${modality}`
+    const msgKey = msgKeyFor(selectedContact, modality, channel)
     if (!why) {
       setEditedMessages(prev => { const n = { ...prev }; delete n[msgKey]; return n })
       setGeneratedMessages(prev => { const n = { ...prev }; delete n[msgKey]; return n })
@@ -655,15 +712,49 @@ function CRMSTabInner() {
 
     const contact = selectedContact
     const mod = modality
-    const msgKey = `${contact.id}::${mod}`
+    const ch = channel
+    const msgKey = msgKeyFor(contact, mod, ch)
     const generatedMessage = generatedMessages[msgKey] || ""
     const wasEdited = editedMessages[msgKey] !== undefined
     const draftId = draftIds[msgKey] ?? null
+    const subject = subjects[msgKey] ?? ""
     setSendError(null)
 
     // Optimistic: mark sent and advance immediately
     setSent(prev => new Set(prev).add(contact.id))
     advanceSelection(contact.id)
+
+    if (ch === "email") {
+      // One call: /api/crms/email sends via Gmail AND logs the touch +
+      // cadence clock server-side (threaded into their campaign reply when
+      // there is one). Failures toast like a failed text.
+      const emailController = new AbortController()
+      const emailTimeout = setTimeout(() => emailController.abort(), EMAIL_SEND_TIMEOUT_MS)
+      fetch("/api/crms/email", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: contact.id, message, subject, draftId, generatedMessage, wasEdited }),
+        signal: emailController.signal,
+      })
+        .then(async res => {
+          clearTimeout(emailTimeout)
+          const data = await res.json().catch(() => ({}))
+          if (!res.ok || data?.ok === false) throw new Error(data?.error || `email ${res.status}`)
+          if (data?.lastContactedWritten === false) {
+            showSendToast(`Emailed ${contact.name} but failed to record date — will re-appear`)
+          }
+          invalidateRelationshipThread(contact.phone)
+          setTouchesByPhone(prev => { const n = { ...prev }; delete n[contact.phone]; return n })
+        })
+        .catch(err => {
+          clearTimeout(emailTimeout)
+          const aborted = (err as Error)?.name === "AbortError"
+          const detail = aborted ? "timed out" : (err instanceof Error ? err.message : "failed")
+          console.error(`Email to ${contact.name} failed:`, err)
+          showSendToast(`Email to ${contact.name} ${detail}`)
+        })
+      return
+    }
 
     // Fire send in background
     const controller = new AbortController()
@@ -905,18 +996,26 @@ function CRMSTabInner() {
       ? modality
       : DEFAULT_MODALITY[next.type]
     if (nextMod !== modality) setModality(nextMod)
-    generate(next, nextMod)
-    fetchTouches(next.phone)
+    void fetchTouches(next.phone).then(t => {
+      const ch = pickChannel(next, t)
+      setChannel(ch)
+      generate(next, nextMod, false, undefined, undefined, ch)
+    })
   }
 
   function getMessage(contact: CRMSContact): string {
-    const msgKey = `${contact.id}::${modality}`
+    const msgKey = msgKeyFor(contact, modality, channel)
     return editedMessages[msgKey] ?? generatedMessages[msgKey] ?? ""
   }
 
   function handleEdit(value: string) {
     if (!selectedContact) return
-    setEditedMessages(prev => ({ ...prev, [`${selectedContact.id}::${modality}`]: value }))
+    setEditedMessages(prev => ({ ...prev, [msgKeyFor(selectedContact, modality, channel)]: value }))
+  }
+
+  function handleSubjectEdit(value: string) {
+    if (!selectedContact) return
+    setSubjects(prev => ({ ...prev, [msgKeyFor(selectedContact, modality, channel)]: value }))
   }
 
   function insertAtCursor(text: string) {
@@ -1418,6 +1517,29 @@ function CRMSTabInner() {
                     ))}
                   </div>
                 )}
+                {/* Via — text (iMessage/SMS) or email */}
+                <div className="flex gap-2 flex-wrap items-center">
+                  <span className="text-[10px] uppercase tracking-wide text-zinc-600 w-14 shrink-0">Via</span>
+                  {(["text", "email"] as Channel[]).map(ch => {
+                    const unavailable = ch === "email" && !selectedContact.email
+                    return (
+                      <button
+                        key={ch}
+                        onClick={() => handleChannelChange(ch)}
+                        disabled={unavailable}
+                        title={unavailable ? "No email on file" : ch === "email" ? `Email ${selectedContact.email}` : `Text ${selectedContact.phone}`}
+                        className={`flex items-center gap-1.5 text-xs px-3 py-1.5 rounded border transition-colors disabled:opacity-40 disabled:cursor-not-allowed ${
+                          channel === ch
+                            ? "bg-violet-500/10 text-violet-300 border-violet-500/40"
+                            : "border-zinc-700 text-zinc-500 hover:text-zinc-300 hover:border-zinc-600"
+                        }`}
+                      >
+                        {ch === "email" ? <Mail className="w-3 h-3" /> : <MessageSquare className="w-3 h-3" />}
+                        {ch === "email" ? "Email" : "Text"}
+                      </button>
+                    )
+                  })}
+                </div>
               </div>
 
               {/* Message */}
@@ -1425,7 +1547,7 @@ function CRMSTabInner() {
                 <ReplyPlanner
                   kind="relationship"
                   hideChips
-                  plan={{ moment: modalityToIntent(modality) === "CatchUp" ? "check_in" : modalityToIntent(modality) === "Referral" ? "referral_ask" : "re_engagement", temperature: null, next_action: "send", reason: "", source: "ryan", familiarity, intent: modalityToIntent(modality) }}
+                  plan={{ moment: momentFor(selectedContact, modalityToIntent(modality)), temperature: null, next_action: "send", reason: "", source: "ryan", familiarity, intent: modalityToIntent(modality) }}
                   busy={isGenerating}
                   error={null}
                   status={draftStatus}
@@ -1439,6 +1561,16 @@ function CRMSTabInner() {
                   </div>
                 ) : (
                   <>
+                    {channel === "email" && (
+                      <input
+                        type="text"
+                        value={subjects[msgKeyFor(selectedContact, modality, channel)] ?? ""}
+                        onChange={e => handleSubjectEdit(e.target.value)}
+                        placeholder="Subject (blank = Re: their last email)"
+                        className="w-full mb-1.5 bg-zinc-800 border border-zinc-700 rounded px-3 py-2 text-zinc-200 focus:outline-none focus:border-zinc-500 transition-colors"
+                        style={{ fontSize: "16px" }}
+                      />
+                    )}
                     <div className="flex gap-1 mb-1.5 flex-wrap">
                       {QUICK_EMOJIS.map(emoji => (
                         <button
@@ -1476,9 +1608,17 @@ function CRMSTabInner() {
                     />
                   </>
                 )}
-                <div className="flex items-center gap-1.5 mt-1.5">
-                  <Phone className="w-3 h-3 text-zinc-600" />
-                  <span className="text-xs text-zinc-600 font-mono">{selectedContact.phone}</span>
+                <div className="flex items-center gap-x-3 gap-y-1 mt-1.5 flex-wrap">
+                  <span className="flex items-center gap-1.5">
+                    <Phone className="w-3 h-3 text-zinc-600" />
+                    <span className="text-xs text-zinc-600 font-mono">{selectedContact.phone}</span>
+                  </span>
+                  {selectedContact.email && (
+                    <a href={`mailto:${selectedContact.email}`} className="flex items-center gap-1.5 text-xs text-zinc-600 hover:text-zinc-300 font-mono" title="Open in your mail app">
+                      <Mail className="w-3 h-3" />
+                      {selectedContact.email}
+                    </a>
+                  )}
                 </div>
                 {sendError && (
                   <p className="text-xs text-red-400 mt-1.5 flex items-center gap-1">
@@ -1596,8 +1736,8 @@ function CRMSTabInner() {
                     disabled={isGenerating || !currentMessage}
                     className="flex items-center gap-1.5 text-sm font-medium text-emerald-400 hover:text-emerald-300 bg-emerald-500/10 border border-emerald-500/30 hover:border-emerald-500/50 px-4 py-2 rounded transition-colors disabled:opacity-50 disabled:cursor-not-allowed min-h-[44px] ml-4"
                   >
-                    <Send className="w-4 h-4" />
-                    Send
+                    {channel === "email" ? <Mail className="w-4 h-4" /> : <Send className="w-4 h-4" />}
+                    {channel === "email" ? "Send email" : "Send"}
                   </button>
                 )}
               </div>

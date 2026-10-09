@@ -20,7 +20,7 @@ export async function GET(request: Request) {
   const full = url.searchParams.get("full") === "1"
   if (!phone) return NextResponse.json({ error: "phone required" }, { status: 400 })
   const norm = phone.replace(/\D/g, "").slice(-10)
-  const empty = { count: 0, lastSentAt: null, lastMessagePreview: null, hasReply: false, history: [] }
+  const empty = { count: 0, lastSentAt: null, lastMessagePreview: null, hasReply: false, lastInbound: null, history: [] }
   if (norm.length < 10) return NextResponse.json(empty)
 
   try {
@@ -42,11 +42,16 @@ export async function GET(request: Request) {
     const sent = touches.filter(t => t.action === "sent")
     const lastSent = sent[0] ?? null
     const preview = sent.find(t => t.message && t.message !== MANUAL_MARK)?.message ?? null
+    // Newest thing THEY did (an agent's email reply, an inbound call/text) —
+    // the card uses it to default the reply channel (email back when they
+    // emailed last, 2026-10-09).
+    const inbound = touches.find(t => t.action === "inbound") ?? null
     const out = {
       count: sent.length,
       lastSentAt: lastSent?.occurred_at ?? null,
       lastMessagePreview: preview ? String(preview).slice(0, 140) : null,
       hasReply: touches.some(t => !!t.replied_at),
+      lastInbound: inbound ? { modality: inbound.modality || "", at: inbound.occurred_at } : null,
       history: full
         ? touches.map(t => ({
             id: t.id,

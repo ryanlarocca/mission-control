@@ -44,6 +44,7 @@ export interface RelationshipContext {
   relationshipId: string
   name: string | null
   phone: string | null
+  email: string | null
   category: string | null
   tier: string | null
   notes: string | null
@@ -221,22 +222,46 @@ export async function buildLeadContext(leadId: string, opts: { live?: boolean } 
   }
 }
 
+// Emails with a relationship live in relationship_touches (modality "email":
+// "inbound" rows written by the agents-line/campaign reply path, "sent" rows
+// by the card's Email button). Without them the drafter only saw chat.db and
+// would answer an agent's listing email blind (2026-10-09).
+async function fetchRelationshipEmails(sb: ReturnType<typeof getLeadsClient>, relationshipId: string): Promise<ThreadItem[]> {
+  const { data } = await sb
+    .from("relationship_touches")
+    .select("occurred_at, action, message")
+    .eq("relationship_id", relationshipId)
+    .eq("modality", "email")
+    .order("occurred_at", { ascending: false })
+    .limit(12)
+  return (data ?? [])
+    .filter((t) => typeof t.message === "string" && t.message.trim())
+    .map((t) => ({ at: String(t.occurred_at), from: t.action === "inbound" ? "them" : "ryan", channel: "email", text: String(t.message).trim() }))
+}
+
 export async function buildRelationshipContext(relationshipId: string): Promise<RelationshipContext | null> {
   const sb = getLeadsClient()
   const { data: r, error } = await sb
     .from("relationships")
-    .select("id, name, phone, category, tier, notes, last_contacted_at")
+    .select("id, name, phone, email, category, tier, notes, last_contacted_at")
     .eq("id", relationshipId)
-    .maybeSingle<{ id: string; name: string | null; phone: string | null; category: string | null; tier: string | null; notes: string | null; last_contacted_at: string | null }>()
+    .maybeSingle<{ id: string; name: string | null; phone: string | null; email: string | null; category: string | null; tier: string | null; notes: string | null; last_contacted_at: string | null }>()
   if (error) throw new Error(error.message)
   if (!r) return null
-  const live = r.phone ? await fetchThread(r.phone) : []
-  const thread = mergeThread(live.map((m) => ({ at: m.at, from: m.fromMe ? "ryan" : "them", channel: "imessage", text: m.text })))
+  const [live, emails] = await Promise.all([
+    r.phone ? fetchThread(r.phone) : Promise.resolve([]),
+    fetchRelationshipEmails(sb, r.id),
+  ])
+  const thread = mergeThread([
+    ...live.map((m): ThreadItem => ({ at: m.at, from: m.fromMe ? "ryan" : "them", channel: "imessage", text: m.text })),
+    ...emails,
+  ])
   return {
     kind: "relationship",
     relationshipId: r.id,
     name: r.name,
     phone: r.phone,
+    email: r.email,
     category: r.category,
     tier: r.tier,
     notes: r.notes,
@@ -273,6 +298,7 @@ export function describeContact(ctx: ReplyContext): string {
   return [
     `Name: ${ctx.name || "(unknown)"}`,
     `Category: ${ctx.category || "(none)"} · tier: ${ctx.tier || "(none)"}`,
+    ctx.email ? `Email: ${ctx.email}` : null,
     ctx.last_contacted_at ? `Last contacted: ${ctx.last_contacted_at.slice(0, 10)}` : "Never contacted through the CRMS",
-  ].join("\n")
+  ].filter(Boolean).join("\n")
 }

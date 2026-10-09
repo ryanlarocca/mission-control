@@ -2,11 +2,11 @@
 
 import { useEffect, useRef, useState } from "react"
 import {
-  X, Loader2, Send, Save, Phone, PhoneCall,
+  X, Loader2, Send, Save, Phone, PhoneCall, Mail, MessageSquare,
   UserCheck, User, Wrench, TrendingUp, Home, Building2, Banknote,
 } from "lucide-react"
 import type { LucideIcon } from "lucide-react"
-import { RelationshipThread } from "./RelationshipThread"
+import { RelationshipThread, invalidateRelationshipThread } from "./RelationshipThread"
 import { useRelationshipCall, CallButton, CallStatusLine } from "./RelationshipCall"
 import { ReplyPlanner } from "./ReplyPlanner"
 import { type Plan, requestDraft } from "@/lib/reply-client"
@@ -16,6 +16,9 @@ export interface TouchesSummary {
   lastSentAt: string | null
   lastMessagePreview: string | null
   hasReply: boolean
+  // Newest inbound touch (an agent's email reply, a call) — drives the
+  // card's default reply channel (2026-10-09).
+  lastInbound?: { modality: string; at: string } | null
 }
 
 interface InteractionEntry {
@@ -35,6 +38,7 @@ export interface ContactDetailContact {
   category: string
   tier: string
   phone: string
+  email?: string | null
   lastContacted: string
   notes: string
   hasNotes: boolean
@@ -117,6 +121,10 @@ export function ContactDetailModal({ contact, onClose, onSendToast, onNotesSaved
   const [savingNotes, setSavingNotes] = useState(false)
   const [notesSaved, setNotesSaved] = useState(false)
   const [quickMessage, setQuickMessage] = useState("")
+  // Via (2026-10-09): text through the sidecar, or email through Gmail
+  // (/api/crms/email — threads into their campaign reply when there is one).
+  const [channel, setChannel] = useState<"text" | "email">("text")
+  const [quickSubject, setQuickSubject] = useState("")
   // Reply Planner: plan chips + the draft they produced (quick-send used to
   // be typed-only; now it can draft from the plan like every other composer).
   const [plan, setPlan] = useState<Plan | null>(null)
@@ -125,23 +133,25 @@ export function ContactDetailModal({ contact, onClose, onSendToast, onNotesSaved
   const [draftError, setDraftError] = useState<string | null>(null)
   const [draftStatus, setDraftStatus] = useState<string | null>(null)
 
-  async function aiDraft(opts?: { why?: string; plan?: Plan | null }) {
+  async function aiDraft(opts?: { why?: string; plan?: Plan | null; channel?: "text" | "email" }) {
+    const ch = opts?.channel ?? channel
     setDrafting(true)
     setDraftError(null)
     try {
       const data = await requestDraft({
         relationshipId: contact.id,
-        channel: "imessage",
+        channel: ch === "email" ? "email" : "imessage",
         surface: "relationships",
         plan: opts?.plan !== undefined ? opts.plan : plan,
         why: opts?.why ?? null,
         parentDraftId: opts?.why ? draftId : null,
-        previousDraft: opts?.why && quickMessage.trim() ? { body: quickMessage } : null,
+        previousDraft: opts?.why && quickMessage.trim() ? { subject: ch === "email" ? quickSubject : null, body: quickMessage } : null,
       })
       setPlan(data.plan)
       setDraftId(data.draftId)
       setDraftStatus(data.critic?.rewritten ? `checked: ${data.critic.issues.join("; ")}` : opts?.why ? "redrafted from your note" : null)
       setQuickMessage(data.body || "")
+      if (ch === "email" && data.subject) setQuickSubject(data.subject)
     } catch (e) {
       setDraftError(e instanceof Error ? e.message : String(e))
     } finally {
@@ -321,8 +331,31 @@ export function ContactDetailModal({ contact, onClose, onSendToast, onNotesSaved
     if (!msg) return
     const sentDraftId = draftId
     const sentGenerated = draftId ? msg : ""
+    const subject = quickSubject.trim()
     setQuickMessage("")
+    setQuickSubject("")
     setDraftId(null)
+
+    if (channel === "email") {
+      // Sends via Gmail and logs the touch server-side in one call.
+      fetch("/api/crms/email", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: contact.id, message: msg, subject, draftId: sentDraftId, generatedMessage: sentGenerated, wasEdited: !sentDraftId }),
+      })
+        .then(async res => {
+          const data = await res.json().catch(() => ({}))
+          if (!res.ok || data?.ok === false) throw new Error(data?.error || `email ${res.status}`)
+          if (data?.lastContactedWritten === false) onSendToast(`Emailed ${contact.name} but failed to record date`)
+          invalidateRelationshipThread(contact.phone)
+          reloadHistory()
+        })
+        .catch(err => {
+          console.error(`Email to ${contact.name} failed:`, err)
+          onSendToast(`Email to ${contact.name} failed${err instanceof Error && err.message ? `: ${err.message}` : ""}`)
+        })
+      return
+    }
 
     // Optimistic — fire send in background, toast on failure
     fetch("/api/crms/send", {
@@ -459,7 +492,14 @@ export function ContactDetailModal({ contact, onClose, onSendToast, onNotesSaved
               <span className="text-zinc-600">Phone</span>
               <span className="text-zinc-300 font-mono flex items-center gap-1.5">
                 <Phone className="w-3 h-3 text-zinc-600" />
-                {contact.phone}
+                {contact.phone || "—"}
+              </span>
+              <span className="text-zinc-600">Email</span>
+              <span className="text-zinc-300 font-mono flex items-center gap-1.5 min-w-0">
+                <Mail className="w-3 h-3 text-zinc-600 shrink-0" />
+                {contact.email
+                  ? <a href={`mailto:${contact.email}`} className="truncate hover:text-emerald-400 hover:underline underline-offset-2" title="Open in your mail app">{contact.email}</a>
+                  : <span className="text-zinc-600">—</span>}
               </span>
               <span className="text-zinc-600">Last contacted</span>
               <span className="text-zinc-300">{contact.lastContacted || "—"}</span>
@@ -535,6 +575,39 @@ export function ContactDetailModal({ contact, onClose, onSendToast, onNotesSaved
               onPlanChange={(next) => { setPlan(next); void aiDraft({ plan: next }) }}
               onRegenerate={(why) => void aiDraft(why ? { why } : undefined)}
             />
+            <div className="flex items-center gap-2 mb-1.5">
+              <span className="text-[10px] uppercase tracking-wide text-zinc-600">Via</span>
+              {(["text", "email"] as const).map(ch => {
+                const unavailable = ch === "email" ? !contact.email : !contact.phone
+                return (
+                  <button
+                    key={ch}
+                    type="button"
+                    onClick={() => { if (ch !== channel) { setChannel(ch); setDraftId(null) } }}
+                    disabled={unavailable}
+                    title={unavailable ? (ch === "email" ? "No email on file" : "No phone on file") : ch === "email" ? `Email ${contact.email}` : `Text ${contact.phone}`}
+                    className={`flex items-center gap-1.5 text-xs px-3 py-1.5 rounded border transition-colors disabled:opacity-40 disabled:cursor-not-allowed ${
+                      channel === ch
+                        ? "bg-violet-500/10 text-violet-300 border-violet-500/40"
+                        : "border-zinc-700 text-zinc-500 hover:text-zinc-300 hover:border-zinc-600"
+                    }`}
+                  >
+                    {ch === "email" ? <Mail className="w-3 h-3" /> : <MessageSquare className="w-3 h-3" />}
+                    {ch === "email" ? "Email" : "Text"}
+                  </button>
+                )
+              })}
+            </div>
+            {channel === "email" && (
+              <input
+                type="text"
+                value={quickSubject}
+                onChange={e => setQuickSubject(e.target.value)}
+                placeholder="Subject (blank = Re: their last email)"
+                className="w-full mb-1.5 bg-zinc-900 border border-zinc-800 rounded px-3 py-2 text-zinc-200 focus:outline-none focus:border-zinc-600"
+                style={{ fontSize: "16px" }}
+              />
+            )}
             <textarea
               value={quickMessage}
               onChange={e => setQuickMessage(e.target.value)}
@@ -546,11 +619,11 @@ export function ContactDetailModal({ contact, onClose, onSendToast, onNotesSaved
             <div className="flex justify-end mt-1.5">
               <button
                 onClick={handleQuickSend}
-                disabled={!quickMessage.trim()}
+                disabled={!quickMessage.trim() || (channel === "email" ? !contact.email : !contact.phone)}
                 className="flex items-center gap-1.5 text-xs text-emerald-400 hover:text-emerald-300 bg-emerald-500/10 border border-emerald-500/20 hover:border-emerald-500/40 px-3 py-1.5 rounded transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
               >
-                <Send className="w-3.5 h-3.5" />
-                Send
+                {channel === "email" ? <Mail className="w-3.5 h-3.5" /> : <Send className="w-3.5 h-3.5" />}
+                {channel === "email" ? "Send email" : "Send"}
               </button>
             </div>
           </div>

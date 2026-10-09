@@ -38,7 +38,7 @@ function ctxFromItem(it: EvalItem): ReplyContext {
   const c = it.contact as Record<string, string | null>
   if (it.surface === "relationships") {
     return {
-      kind: "relationship", relationshipId: `eval:${it.id}`, name: c.name ?? null, phone: null,
+      kind: "relationship", relationshipId: `eval:${it.id}`, name: c.name ?? null, phone: null, email: c.email ?? null,
       category: c.category ?? null, tier: c.tier ?? null, notes: c.notes ?? null, last_contacted_at: null, everContacted: true,
       thread, lastInbound: [...thread].reverse().find((t) => t.from === "them") ?? null,
     }
