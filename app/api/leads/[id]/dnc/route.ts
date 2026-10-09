@@ -35,7 +35,7 @@ export async function POST(
     const sb = getLeadsClient()
     const { data: lead, error: fetchErr } = await sb
       .from("leads")
-      .select("id, name, property_address, caller_phone, email")
+      .select("id, name, property_address, caller_phone, email, gmail_thread_id, mail_record_id")
       .eq("id", id)
       .maybeSingle()
     if (fetchErr) {
@@ -57,13 +57,52 @@ export async function POST(
     // (e.g. drip engine auto-flagged it earlier and Ryan re-clicks DNC), the
     // duplicate insert is harmless — there's no unique constraint and a
     // second row just records the manual confirmation timestamp.
-    const { error: dncErr } = await sb.from("dnc_list").insert({
+    // DNC enrichment (direct-mail tracking, 2026-10-08): when the lead — or any
+    // row in its cluster — is linked to a mailed record, the dnc_list row (and
+    // via trigger the suppression row) carries parcel + site + mailing address
+    // from the list, so the next list scrub matches on exact keys instead of
+    // free text.
+    let mailRecordId: string | null = lead.mail_record_id ?? null
+    if (!mailRecordId) {
+      const ors: string[] = []
+      if (lead.caller_phone) ors.push(`caller_phone.eq.${lead.caller_phone}`)
+      if (lead.gmail_thread_id) ors.push(`gmail_thread_id.eq.${lead.gmail_thread_id}`)
+      if (lead.email) ors.push(`email.eq.${String(lead.email).toLowerCase()}`)
+      if (ors.length) {
+        const { data: sib } = await sb.from("leads").select("mail_record_id").or(ors.join(",")).not("mail_record_id", "is", null).limit(1)
+        mailRecordId = sib?.[0]?.mail_record_id ?? null
+      }
+    }
+    const dncRow: Record<string, unknown> = {
       site_address: lead.property_address || null,
       owner_name: lead.name || null,
       source_lead_id: lead.id,
       reason,
       added_by: "ryan",
-    })
+    }
+    if (mailRecordId) {
+      const { data: mr } = await sb
+        .from("mail_records")
+        .select("parcel_number, owner_name, site_address, site_city, site_zip, mail_address, mail_city, mail_state, mail_zip, county")
+        .eq("id", mailRecordId)
+        .maybeSingle()
+      if (mr) {
+        Object.assign(dncRow, {
+          parcel_number: mr.parcel_number,
+          owner_name: lead.name || mr.owner_name || null,
+          site_address: mr.site_address || lead.property_address || null,
+          site_city: mr.site_city,
+          site_state: "CA",
+          site_zip: mr.site_zip,
+          mail_address: mr.mail_address,
+          mail_city: mr.mail_city,
+          mail_state: mr.mail_state,
+          mail_zip: mr.mail_zip,
+          county: mr.county,
+        })
+      }
+    }
+    const { error: dncErr } = await sb.from("dnc_list").insert(dncRow)
     if (dncErr) {
       // Don't fail the whole request — the lead is already flagged. Log only.
       console.warn(`[dnc] dnc_list insert failed for ${id}: ${dncErr.message}`)

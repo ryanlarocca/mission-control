@@ -23,6 +23,9 @@ import {
   RELATIONSHIP_CATEGORY_LABELS,
   RELATIONSHIP_CATEGORY_PICKER_ORDER,
 } from "@/lib/crms"
+import {
+  MailRecordPicker, fetchMailRecordsByIds, describeMailRecord, type MailRecordLite,
+} from "./MailRecordPicker"
 
 type LeadType =
   | "call" | "voicemail" | "sms" | "form" | "email"
@@ -87,6 +90,11 @@ interface Lead {
   offer_amount?: number | null
   offer_verbalized_at?: string | null
   campaign_id?: string | null
+  // Direct-mail tracking (2026-10-08): the mailed piece this responder
+  // answered. Auto-matched at intake; "manual" after Ryan picks one.
+  mail_record_id?: string | null
+  mail_match_method?: string | null   // "auto_address" | "auto_mail_address" | "auto_surname" | "manual" | null
+  mail_match_candidates?: string[] | null
 }
 
 // chat.db stores timestamps in Apple epoch (seconds since 2001-01-01); the
@@ -161,6 +169,13 @@ interface LeadGroup {
   // (hands-off — only writes when null). UI lets Ryan pencil-edit.
   offerAmount: number | null
   offerVerbalizedAt: string | null
+  // Direct-mail match — the mailed record this cluster responded to (newest
+  // row that has one), how it was matched, and the auto-matcher's unresolved
+  // near-misses when it found several and attached none.
+  mailRecordId: string | null
+  mailMatchMethod: string | null
+  mailMatchCandidates: string[]
+  campaignId: string | null
 }
 
 // Phase 7D: top-row lifecycle chips only. Source / temperature / flag-hides
@@ -380,6 +395,11 @@ function groupLeads(leads: Lead[]): LeadGroup[] {
       (Array.isArray(statusSource.property_details) && statusSource.property_details.length > 0
         ? statusSource.property_details
         : newestFirst.map(e => e.property_details).find(d => Array.isArray(d) && d.length > 0)) || []
+    // Direct-mail match: the PATCH writes every cluster row, so any row
+    // carrying mail_record_id is authoritative; take the newest. Candidates
+    // only matter when nothing is linked.
+    const mailRow = newestFirst.find(e => e.mail_record_id)
+    const candidateRow = newestFirst.find(e => Array.isArray(e.mail_match_candidates) && e.mail_match_candidates.length > 0)
     groups.push({
       phone: key,
       contactPhone,
@@ -419,6 +439,10 @@ function groupLeads(leads: Lead[]): LeadGroup[] {
       // any sibling, that wins via newest-first walk.
       offerAmount: newestFirst.find(r => typeof r.offer_amount === "number" && r.offer_amount > 0)?.offer_amount ?? null,
       offerVerbalizedAt: newestFirst.find(r => r.offer_verbalized_at)?.offer_verbalized_at ?? null,
+      mailRecordId: mailRow?.mail_record_id ?? null,
+      mailMatchMethod: mailRow?.mail_match_method ?? null,
+      mailMatchCandidates: mailRow ? [] : (candidateRow?.mail_match_candidates ?? []),
+      campaignId: newestFirst.map(e => e.campaign_id).find(v => !!v) ?? null,
     })
   }
   // Sort groups by newest event first
@@ -428,6 +452,25 @@ function groupLeads(leads: Lead[]): LeadGroup[] {
       new Date(a.mostRecentEvent.created_at).getTime()
   )
   return groups
+}
+
+// Direct-mail match state for the header chip + the "Unmatched DM" filter.
+// Only direct-mail campaign labels count as "unmatched" — legacy/outbound/
+// unknown sources and agent drips have no mailed record to link to.
+const NON_MAILER_SOURCES = new Set(["Legacy DM", "Outbound", "Unknown"])
+function isMailerSource(group: LeadGroup): boolean {
+  if (group.sourceType !== "direct_mail") return false
+  const src = group.campaignLabel || group.source
+  if (!src || NON_MAILER_SOURCES.has(src)) return false
+  if (src.startsWith("AGENT-DRIP")) return false
+  return true
+}
+type MailMatchState = "matched" | "candidates" | "unmatched" | null
+function mailMatchState(group: LeadGroup): MailMatchState {
+  if (group.mailRecordId) return "matched"
+  if (group.mailMatchCandidates.length > 0) return "candidates"
+  if (isMailerSource(group)) return "unmatched"
+  return null
 }
 
 export function LeadsTab() {
@@ -448,6 +491,9 @@ export function LeadsTab() {
   const [hideDnc, setHideDnc]           = useState(false)
   const [hideJunk, setHideJunk]         = useState(false)
   const [hideBadNumber, setHideBadNumber] = useState(false)
+  // Direct-mail match filter — "unmatched" = mailer-sourced lead with no
+  // linked record; "candidates" = auto-matcher found several, attached none.
+  const [dmFilter, setDmFilter]         = useState<"all" | "unmatched" | "candidates">("all")
   const [filterSheetOpen, setFilterSheetOpen] = useState(false)
   const [expandedPhone, setExpandedPhone] = useState<string | null>(null)
   const [pendingStatus, setPendingStatus] = useState<string | null>(null)
@@ -596,6 +642,7 @@ export function LeadsTab() {
     if (hideDnc) result = result.filter(g => !g.isDnc)
     if (hideJunk) result = result.filter(g => !g.isJunk)
     if (hideBadNumber) result = result.filter(g => !g.isBadNumber)
+    if (dmFilter !== "all") result = result.filter(g => mailMatchState(g) === dmFilter)
     // Free-text search across name / phone (raw + last-10 digits) / email /
     // property address / notes. Trimmed + lowercase compare; phone match
     // additionally strips non-digits so "(408) 781-3058" and "4087813058"
@@ -620,10 +667,10 @@ export function LeadsTab() {
       if (pinned) result = [pinned, ...result]
     }
     return result
-  }, [groups, filter, search, sourceFilter, tempFilter, hideDnc, hideJunk, hideBadNumber, expandedPhone])
+  }, [groups, filter, search, sourceFilter, tempFilter, hideDnc, hideJunk, hideBadNumber, dmFilter, expandedPhone])
 
   const hasActiveSecondary =
-    sourceFilter !== "all" || tempFilter !== "all" || hideDnc || hideJunk || hideBadNumber
+    sourceFilter !== "all" || tempFilter !== "all" || hideDnc || hideJunk || hideBadNumber || dmFilter !== "all"
 
   async function patchLead(id: string, update: { status?: LeadStatus; notes?: string }) {
     try {
@@ -1185,6 +1232,34 @@ export function LeadsTab() {
     }
   }
 
+  // Direct-mail tracking — link (or unlink, record=null) the mailed piece
+  // this cluster responded to. The route writes EVERY row in the cluster
+  // and stamps mail_match_method="manual", so mirror that locally across all
+  // events rather than just the status row. Returns the server's record.
+  async function setMailRecordOnGroup(group: LeadGroup, record: MailRecordLite | null): Promise<MailRecordLite | null> {
+    const ids = new Set(group.events.map(e => e.id))
+    const patch: Partial<Lead> = {
+      mail_record_id: record?.id ?? null,
+      mail_match_method: "manual",
+      mail_match_candidates: null,
+    }
+    applyLeadEdit(prev => prev.map(l => ids.has(l.id) ? { ...l, ...patch } : l))
+    const res = await fetch(`/api/leads/${group.mostRecentId}/mail-record`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ mail_record_id: record?.id ?? null }),
+    })
+    if (handleSessionExpired(res)) throw new Error("Session expired")
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}))
+      void fetchLeads(true)
+      throw new Error(err.error || `HTTP ${res.status}`)
+    }
+    const data = await res.json().catch(() => ({})) as { record?: MailRecordLite | null }
+    notifyLeadChangedToParent(group.mostRecentId, ["mail_record_id"])
+    return data.record ?? record
+  }
+
   async function applyDripToGroup(group: LeadGroup) {
     try {
       const res = await fetch(`/api/leads/${group.mostRecentId}/apply-drip`, {
@@ -1549,6 +1624,15 @@ export function LeadsTab() {
             Hide Bad # <X className="w-3 h-3" />
           </button>
         )}
+        {dmFilter !== "all" && (
+          <button
+            onClick={() => setDmFilter("all")}
+            className="inline-flex items-center gap-1 px-3 py-1.5 text-xs rounded-full bg-zinc-800 text-zinc-200 border border-zinc-700 hover:border-zinc-600"
+            title="Remove direct-mail match filter"
+          >
+            📬 {dmFilter === "unmatched" ? "Unmatched DM" : "Candidates"} <X className="w-3 h-3" />
+          </button>
+        )}
 
         <button
           onClick={() => setFilterSheetOpen(v => !v)}
@@ -1627,6 +1711,31 @@ export function LeadsTab() {
               </label>
             </div>
           </div>
+          <div className="space-y-1.5">
+            <div className="text-[10px] uppercase tracking-wider text-zinc-500">Direct mail</div>
+            <div className="flex flex-wrap gap-1.5">
+              {([
+                { key: "all",        label: "All" },
+                { key: "unmatched",  label: "📬 Unmatched DM" },
+                { key: "candidates", label: "📬 Candidates" },
+              ] as { key: "all" | "unmatched" | "candidates"; label: string }[]).map(({ key, label }) => {
+                const active = dmFilter === key
+                return (
+                  <button
+                    key={key}
+                    onClick={() => setDmFilter(key)}
+                    className={`px-3 py-1.5 text-xs rounded-full border transition-colors ${
+                      active
+                        ? "bg-zinc-100 text-zinc-900 border-zinc-100"
+                        : "bg-zinc-900 text-zinc-400 border-zinc-800 hover:text-zinc-100 hover:border-zinc-700"
+                    }`}
+                  >
+                    {label}
+                  </button>
+                )
+              })}
+            </div>
+          </div>
         </div>
       )}
 
@@ -1703,6 +1812,7 @@ export function LeadsTab() {
               onPatchField={(field, value) => patchFlagOnGroup(group, { [field]: value || null } as Partial<Lead>)}
               onSaveOffer={(amount) => patchFlagOnGroup(group, { offer_amount: amount } as Partial<Lead>)}
               onSaveProperties={(details) => patchFlagOnGroup(group, { property_details: details } as Partial<Lead>)}
+              onSetMailRecord={(record) => setMailRecordOnGroup(group, record)}
               onSetStatus={(s) => setGroupStatus(group, s)}
               pendingStatus={pendingStatus}
               draftNote={draftNotes[group.phone]}
@@ -1862,6 +1972,9 @@ interface LeadCardProps {
   onSaveOffer: (amount: number | null) => void
   // Persist the full property_details array after an add / edit / remove.
   onSaveProperties: (details: PropertyDetail[]) => void
+  // Direct-mail tracking: link (record) / unlink (null) the mailed piece.
+  // Resolves with the server's copy of the record so the card can cache it.
+  onSetMailRecord: (record: MailRecordLite | null) => Promise<MailRecordLite | null>
 }
 
 // Unified "next touch" indicator — the single line on a lead card that
@@ -1966,6 +2079,47 @@ function LeadCard(p: LeadCardProps) {
   // SAME draft state (lives in the parent), so opening/closing loses nothing.
   const [emailPopout, setEmailPopout] = useState(false)
 
+  // Direct-mail match. The linked record is fetched lazily on expand and
+  // cached here; a pick stores the picked record directly (no refetch).
+  const mailState = mailMatchState(group)
+  const [mailRecord, setMailRecord] = useState<MailRecordLite | null>(null)
+  const [mailRecordLoading, setMailRecordLoading] = useState(false)
+  const [mailPickerOpen, setMailPickerOpen] = useState(false)
+  const [mailSaving, setMailSaving] = useState(false)
+  const [mailError, setMailError] = useState<string | null>(null)
+  useEffect(() => {
+    if (!expanded || !group.mailRecordId) return
+    if (mailRecord?.id === group.mailRecordId) return
+    let cancelled = false
+    setMailRecordLoading(true)
+    fetchMailRecordsByIds([group.mailRecordId])
+      .then(recs => { if (!cancelled) setMailRecord(recs[0] ?? null) })
+      .catch(() => { if (!cancelled) setMailRecord(null) })
+      .finally(() => { if (!cancelled) setMailRecordLoading(false) })
+    return () => { cancelled = true }
+  }, [expanded, group.mailRecordId, mailRecord?.id])
+  async function commitMailRecord(record: MailRecordLite | null) {
+    setMailSaving(true)
+    setMailError(null)
+    try {
+      const saved = await p.onSetMailRecord(record)
+      setMailRecord(record ? (saved ?? record) : null)
+      setMailPickerOpen(false)
+    } catch (e) {
+      setMailError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setMailSaving(false)
+    }
+  }
+  // Picker prefill: street portion of the property address, else the
+  // lead's surname — both are what mail_records searches on.
+  const mailPickerQuery = (() => {
+    const street = group.propertyAddress?.split(",")[0]?.trim()
+    if (street) return street
+    const words = (group.name ?? "").trim().split(/\s+/).filter(Boolean)
+    return words.length ? words[words.length - 1] : ""
+  })()
+
   return (
     <div
       data-lead-phone={group.phone}
@@ -2050,6 +2204,30 @@ function LeadCard(p: LeadCardProps) {
                 >
                   <Smartphone className="w-2.5 h-2.5" />
                   My Cell
+                </span>
+              )}
+              {mailState === "matched" && (
+                <span
+                  className="px-1.5 py-0.5 text-[9px] font-semibold rounded uppercase tracking-wider bg-emerald-950 text-emerald-300 border border-emerald-900 shrink-0"
+                  title={`Linked to a mailed record${group.mailMatchMethod ? ` (${group.mailMatchMethod.replace(/_/g, " ")})` : ""}`}
+                >
+                  📬 Matched
+                </span>
+              )}
+              {mailState === "candidates" && (
+                <span
+                  className="px-1.5 py-0.5 text-[9px] font-semibold rounded uppercase tracking-wider bg-amber-950 text-amber-300 border border-amber-900 shrink-0"
+                  title="Auto-match found several mailed records — pick one on the card"
+                >
+                  📬 Candidates ({group.mailMatchCandidates.length})
+                </span>
+              )}
+              {mailState === "unmatched" && (
+                <span
+                  className="px-1.5 py-0.5 text-[9px] font-semibold rounded uppercase tracking-wider bg-zinc-800/70 text-zinc-500 shrink-0"
+                  title="Direct-mail lead with no mailed record linked yet"
+                >
+                  📬 Unmatched
                 </span>
               )}
             </div>
@@ -2201,6 +2379,64 @@ function LeadCard(p: LeadCardProps) {
               onSave={(v) => p.onPatchField("property_address", v)}
             />
           </div>
+
+          {/* Direct-mail tracking — which mailed piece this responder answered.
+              Shown for every card so a mis-sourced lead can still be linked;
+              the header chip only flags mailer-sourced leads. */}
+          <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-zinc-400">
+            <span className="text-zinc-500">📬 Mailed record:</span>
+            {group.mailRecordId ? (
+              <>
+                <span className="text-zinc-200 min-w-0 truncate max-w-full">
+                  {mailRecord && mailRecord.id === group.mailRecordId
+                    ? describeMailRecord(mailRecord)
+                    : mailRecordLoading
+                    ? "Loading…"
+                    : "Linked (record unavailable)"}
+                </span>
+                <button
+                  onClick={() => setMailPickerOpen(true)}
+                  disabled={mailSaving}
+                  className="text-[11px] text-zinc-400 hover:text-zinc-100 underline underline-offset-2 disabled:opacity-50"
+                >
+                  Change
+                </button>
+                <button
+                  onClick={() => void commitMailRecord(null)}
+                  disabled={mailSaving}
+                  className="text-[11px] text-zinc-500 hover:text-red-300 underline underline-offset-2 disabled:opacity-50"
+                >
+                  {mailSaving ? "Saving…" : "Unlink"}
+                </button>
+              </>
+            ) : (
+              <button
+                onClick={() => setMailPickerOpen(true)}
+                disabled={mailSaving}
+                className={`rounded border px-2 py-0.5 text-[11px] transition-colors disabled:opacity-50 ${
+                  group.mailMatchCandidates.length > 0
+                    ? "border-amber-900/60 bg-amber-950/20 text-amber-200 hover:bg-amber-950/40"
+                    : "border-zinc-800 bg-zinc-950 text-zinc-500 hover:border-zinc-700 hover:text-zinc-300"
+                }`}
+              >
+                {mailSaving
+                  ? "Saving…"
+                  : group.mailMatchCandidates.length > 0
+                  ? `Link mailed record · ${group.mailMatchCandidates.length} candidate${group.mailMatchCandidates.length === 1 ? "" : "s"}`
+                  : "Link mailed record"}
+              </button>
+            )}
+            {mailError && <span className="text-red-300 basis-full">{mailError}</span>}
+          </div>
+
+          <MailRecordPicker
+            open={mailPickerOpen}
+            onClose={() => setMailPickerOpen(false)}
+            campaignId={group.campaignId}
+            candidateIds={group.mailMatchCandidates}
+            initialQuery={mailPickerQuery}
+            onPick={(record) => void commitMailRecord(record)}
+          />
 
           <NextTouchPill summary={nextTouch} />
 

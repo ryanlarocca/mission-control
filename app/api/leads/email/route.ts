@@ -686,6 +686,16 @@ async function handleAppsScript(payload: AppsScriptPayload): Promise<NextRespons
       console.warn("[email] campaign attribution failed:", e instanceof Error ? e.message : String(e))
     }
   }
+  if (inserted?.id) {
+    // Mailed-record link (direct-mail tracking): a returning caller inherits
+    // the cluster's record; a fresh row waits for triage to fill name/address.
+    try {
+      const { autoLinkMailRecord } = await import("@/lib/mailMatch")
+      await autoLinkMailRecord(sb, inserted.id)
+    } catch (e) {
+      console.warn("[email] mail-record link failed:", e instanceof Error ? e.message : String(e))
+    }
+  }
 
   const lines = [
     "📧 New email lead",
@@ -932,6 +942,16 @@ async function processSingleMessage(args: {
       }
     } catch (e) {
       console.warn("[email] campaign attribution failed:", e instanceof Error ? e.message : String(e))
+    }
+  }
+  if (inserted?.id) {
+    // Mailed-record link (direct-mail tracking): a returning caller inherits
+    // the cluster's record; a fresh row waits for triage to fill name/address.
+    try {
+      const { autoLinkMailRecord } = await import("@/lib/mailMatch")
+      await autoLinkMailRecord(sb, inserted.id)
+    } catch (e) {
+      console.warn("[email] mail-record link failed:", e instanceof Error ? e.message : String(e))
     }
   }
 

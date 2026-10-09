@@ -240,6 +240,17 @@ export async function PATCH(request: NextRequest) {
     // card reads identity off the newest inbound row, the correction was
     // buried and the wrong address kept showing. A name / email / address
     // typed by Ryan is the truth for every row on that phone.
+    // Mailed-record auto-link when Ryan types a name / address on the card
+    // (direct-mail tracking). Best-effort; the card refetches to show it.
+    if ("name" in update || "property_address" in update) {
+      try {
+        const { autoLinkMailRecord } = await import("@/lib/mailMatch")
+        await autoLinkMailRecord(sb, id)
+      } catch (e) {
+        console.warn(`[leads:PATCH] mail-record auto-link failed for ${id}:`, e instanceof Error ? e.message : String(e))
+      }
+    }
+
     const identityUpdate: Record<string, unknown> = {}
     for (const f of ["name", "email", "property_address"] as const) {
       if (f in update) identityUpdate[f] = update[f]

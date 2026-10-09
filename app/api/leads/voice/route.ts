@@ -257,6 +257,16 @@ export async function POST(request: Request) {
           console.warn("[voice] campaign attribution failed:", e instanceof Error ? e.message : String(e))
         }
       }
+      if (insertedRow?.id) {
+        // Mailed-record link (direct-mail tracking): a returning caller inherits
+        // the cluster's record; a fresh row waits for triage to fill name/address.
+        try {
+          const { autoLinkMailRecord } = await import("@/lib/mailMatch")
+          await autoLinkMailRecord(sb, insertedRow.id)
+        } catch (e) {
+          console.warn("[voice] mail-record link failed:", e instanceof Error ? e.message : String(e))
+        }
+      }
     } catch (e) {
       console.error("[voice] Supabase insert threw:", e)
     }

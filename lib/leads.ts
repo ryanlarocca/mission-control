@@ -4,6 +4,7 @@ import emailCampaigns from "@/config/email-campaigns.json"
 import { isAnonymousCaller } from "./anonymous"
 import { LEAD_MOMENT_RUBRIC, isLeadMoment } from "@/lib/reply/moments"
 import { completeText, extractJsonObject, hasLlmKey, HAIKU } from "./llm"
+import { autoLinkMailRecord } from "./mailMatch"
 
 export const CAMPAIGN_MAP: Record<string, string> = {
   "+16504364279": "MFM-A",
@@ -531,6 +532,13 @@ export interface Lead {
   // sidecar (Ryan's personal cell) instead of Twilio, and the lead is
   // excluded from the automated drip engine (assisted-manual).
   use_personal_cell?: boolean | null
+  // Direct-mail tracking (2026-10-08): the mailed record this lead answered.
+  // Written cluster-wide (every row sharing the phone/email), like is_dnc.
+  // method: auto_address | auto_mail_address | auto_surname | manual.
+  // candidates: ids when auto-match found several records and attached none.
+  mail_record_id?: string | null
+  mail_match_method?: string | null
+  mail_match_candidates?: string[] | null
 }
 
 // Lifecycle statuses — must match the lib/leads.ts LeadStatus union.
@@ -2497,6 +2505,15 @@ export async function applyFollowupOnlyResult(
   }
 
   const { error } = await sb.from("leads").update(update).eq("id", leadId)
+  // Mailed-record auto-link once triage has a name / address to match on
+  // (direct-mail tracking, 2026-10-08). Best-effort, never fails the write.
+  if (!error && (update.name || update.property_address)) {
+    try {
+      await autoLinkMailRecord(sb, leadId)
+    } catch (e) {
+      console.warn("[mail-match] auto-link failed:", e instanceof Error ? e.message : String(e))
+    }
+  }
   if (error) console.error(`[followup-only] update failed for ${leadId}:`, error.message)
 
   if (result.is_dnc) {
@@ -2638,6 +2655,15 @@ export async function applyAnalyzeCallResult(
   }
 
   const { error } = await sb.from("leads").update(update).eq("id", leadId)
+  // Mailed-record auto-link once triage has a name / address to match on
+  // (direct-mail tracking, 2026-10-08). Best-effort, never fails the write.
+  if (!error && (update.name || update.property_address)) {
+    try {
+      await autoLinkMailRecord(sb, leadId)
+    } catch (e) {
+      console.warn("[mail-match] auto-link failed:", e instanceof Error ? e.message : String(e))
+    }
+  }
   if (error) console.error(`[analyze-call] update failed for ${leadId}:`, error.message)
 
   if (result.is_dnc) {
@@ -2770,6 +2796,15 @@ export async function applyColdNoSignalDefault(leadId: string): Promise<void> {
   if (Object.keys(update).length === 0) return
 
   const { error } = await sb.from("leads").update(update).eq("id", leadId)
+  // Mailed-record auto-link once triage has a name / address to match on
+  // (direct-mail tracking, 2026-10-08). Best-effort, never fails the write.
+  if (!error && (update.name || update.property_address)) {
+    try {
+      await autoLinkMailRecord(sb, leadId)
+    } catch (e) {
+      console.warn("[mail-match] auto-link failed:", e instanceof Error ? e.message : String(e))
+    }
+  }
   if (error) console.error(`[cold-default] update failed for ${leadId}:`, error.message)
 }
 

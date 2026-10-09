@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react"
 import { Loader2, RefreshCw, Plus, X } from "lucide-react"
 import { formatPhone } from "@/lib/utils"
+import { CampaignSegmentsPanel } from "./CampaignSegmentsPanel"
 
 // Campaign Performance tab — funnel + ROI for every marketing campaign.
 // Reads `/api/campaigns/performance` once on mount and on user refresh.
@@ -240,6 +241,9 @@ export function CampaignPerformanceTab() {
                 {group.children.length === 0 && (
                   <FunnelInline c={agg} />
                 )}
+                {group.parent.channel === "direct_mail" && (
+                  <CampaignSegmentsPanel campaignId={group.parent.id} />
+                )}
               </div>
             </div>
           )
@@ -345,6 +349,7 @@ function ChildCard({ c }: { c: CampaignPerf }) {
         {fmtInt(c.pieces_sent)} pieces · {fmtMoney(c.total_cost)}
       </div>
       <FunnelInline c={c} />
+      {c.channel === "direct_mail" && <CampaignSegmentsPanel campaignId={c.id} />}
     </div>
   )
 }

@@ -267,6 +267,16 @@ export async function POST(request: Request) {
           console.warn("[sms] campaign attribution failed:", e instanceof Error ? e.message : String(e))
         }
       }
+      if (insertedRow?.id) {
+        // Mailed-record link (direct-mail tracking): a returning caller inherits
+        // the cluster's record; a fresh row waits for triage to fill name/address.
+        try {
+          const { autoLinkMailRecord } = await import("@/lib/mailMatch")
+          await autoLinkMailRecord(sb, insertedRow.id)
+        } catch (e) {
+          console.warn("[sms] mail-record link failed:", e instanceof Error ? e.message : String(e))
+        }
+      }
 
       // Reply Planner (2026-09-24): inbound texts had no AI at all, so the
       // card had no moment to plan from. Propose the plan over the Supabase
