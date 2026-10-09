@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server"
 import { getLeadsClient } from "@/lib/leads"
+import { findLatestEmailThread } from "@/lib/relationshipEmail"
 
 export const dynamic = "force-dynamic"
 export const revalidate = 0
@@ -20,7 +21,7 @@ export async function GET(request: Request) {
   const full = url.searchParams.get("full") === "1"
   if (!phone) return NextResponse.json({ error: "phone required" }, { status: 400 })
   const norm = phone.replace(/\D/g, "").slice(-10)
-  const empty = { count: 0, lastSentAt: null, lastMessagePreview: null, hasReply: false, lastInbound: null, history: [] }
+  const empty = { count: 0, lastSentAt: null, lastMessagePreview: null, hasReply: false, lastInbound: null, emailThread: null, history: [] }
   if (norm.length < 10) return NextResponse.json(empty)
 
   try {
@@ -30,12 +31,18 @@ export async function GET(request: Request) {
     const ids = (rels ?? []).map(r => r.id)
     if (ids.length === 0) return NextResponse.json(empty)
 
-    const { data: rows, error } = await sb
+    // The campaign Gmail thread a "Reply in thread" email would land in
+    // (null when they've never emailed us) — the card shows it next to the
+    // New thread option (2026-10-09).
+    const [{ data: rows, error }, emailThread] = await Promise.all([
+      sb
       .from("relationship_touches")
       .select("id, occurred_at, modality, action, message, replied_at, call_status, call_duration_sec, recording_url")
       .in("relationship_id", ids)
       .order("occurred_at", { ascending: false })
-      .limit(500)
+      .limit(500),
+      findLatestEmailThread(sb, ids[0]).catch(() => null),
+    ])
     if (error) throw error
     const touches = rows ?? []
 
@@ -52,6 +59,7 @@ export async function GET(request: Request) {
       lastMessagePreview: preview ? String(preview).slice(0, 140) : null,
       hasReply: touches.some(t => !!t.replied_at),
       lastInbound: inbound ? { modality: inbound.modality || "", at: inbound.occurred_at } : null,
+      emailThread: emailThread ? { subject: emailThread.subject, mailbox: emailThread.mailbox } : null,
       history: full
         ? touches.map(t => ({
             id: t.id,

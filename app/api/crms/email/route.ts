@@ -8,7 +8,7 @@ import { sendRelationshipEmail } from "@/lib/relationshipEmail"
 export const dynamic = "force-dynamic"
 
 export async function POST(request: Request) {
-  let body: { id?: unknown; message?: unknown; subject?: unknown; draftId?: unknown; generatedMessage?: unknown; wasEdited?: unknown }
+  let body: { id?: unknown; message?: unknown; subject?: unknown; draftId?: unknown; generatedMessage?: unknown; wasEdited?: unknown; newThread?: unknown }
   try {
     body = await request.json()
   } catch {
@@ -25,6 +25,7 @@ export async function POST(request: Request) {
       draftId: typeof body.draftId === "string" ? body.draftId : null,
       generatedMessage: typeof body.generatedMessage === "string" ? body.generatedMessage : null,
       wasEdited: typeof body.wasEdited === "boolean" ? body.wasEdited : null,
+      newThread: body.newThread === true,
     })
     return NextResponse.json(result, { status: result.status })
   } catch (err) {

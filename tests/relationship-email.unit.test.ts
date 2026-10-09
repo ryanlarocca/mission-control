@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest"
 import {
   DEFAULT_FRESH_SUBJECT, DEFAULT_RELATIONSHIP_MAILBOX,
-  emailTouchMessage, freshMailbox, isOwnMailbox, replySubject, splitEmailTouch,
+  emailTouchMessage, freshMailbox, isOwnMailbox, newThreadSubject, replySubject, splitEmailTouch,
 } from "@/lib/relationshipEmail"
 
 describe("relationship email helpers", () => {
@@ -15,6 +15,13 @@ describe("relationship email helpers", () => {
     expect(replySubject(null)).toBe(DEFAULT_FRESH_SUBJECT)
     expect(replySubject("Re: ")).toBe(DEFAULT_FRESH_SUBJECT)
     expect(replySubject("", "Hi Kirsten")).toBe("Hi Kirsten")
+  })
+
+  it("a new thread drops the Re: chain and never falls back to a reply subject", () => {
+    expect(newThreadSubject("Re: Another great listing")).toBe("Another great listing")
+    expect(newThreadSubject("Willow St duplex")).toBe("Willow St duplex")
+    expect(newThreadSubject("")).toBe(DEFAULT_FRESH_SUBJECT)
+    expect(newThreadSubject("Re: ", "Hi")).toBe("Hi")
   })
 
   it("only treats LRG Workspace mailboxes as sendable", () => {

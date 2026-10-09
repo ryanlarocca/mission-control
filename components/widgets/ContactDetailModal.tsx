@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from "react"
 import {
   X, Loader2, Send, Save, Phone, PhoneCall, Mail, MessageSquare,
-  UserCheck, User, Wrench, TrendingUp, Home, Building2, Banknote,
+  UserCheck, User, Wrench, TrendingUp, Building2, Banknote,
 } from "lucide-react"
 import type { LucideIcon } from "lucide-react"
 import { RelationshipThread, invalidateRelationshipThread } from "./RelationshipThread"
@@ -19,6 +19,9 @@ export interface TouchesSummary {
   // Newest inbound touch (an agent's email reply, a call) — drives the
   // card's default reply channel (2026-10-09).
   lastInbound?: { modality: string; at: string } | null
+  // The campaign Gmail thread a "Reply in thread" email lands in; null when
+  // they've never emailed us.
+  emailThread?: { subject: string | null; mailbox: string } | null
 }
 
 interface InteractionEntry {
@@ -123,7 +126,10 @@ export function ContactDetailModal({ contact, onClose, onSendToast, onNotesSaved
   const [quickMessage, setQuickMessage] = useState("")
   // Via (2026-10-09): text through the sidecar, or email through Gmail
   // (/api/crms/email — threads into their campaign reply when there is one).
-  const [channel, setChannel] = useState<"text" | "email">("text")
+  // No phone (email-only contact from search) → email is the only channel.
+  const [channel, setChannel] = useState<"text" | "email">(contact.phone ? "text" : contact.email ? "email" : "text")
+  const [threadMode, setThreadMode] = useState<"reply" | "new">("reply")
+  const [emailThread, setEmailThread] = useState<{ subject: string | null; mailbox: string } | null>(null)
   const [quickSubject, setQuickSubject] = useState("")
   // Reply Planner: plan chips + the draft they produced (quick-send used to
   // be typed-only; now it can draft from the plan like every other composer).
@@ -170,7 +176,7 @@ export function ContactDetailModal({ contact, onClose, onSendToast, onNotesSaved
   function reloadHistory() {
     fetch(`/api/crms/touches?phone=${encodeURIComponent(contact.phone)}&full=1`, { cache: "no-store" })
       .then(r => r.json())
-      .then(d => setHistory(Array.isArray(d.history) ? d.history : []))
+      .then(d => { setHistory(Array.isArray(d.history) ? d.history : []); setEmailThread(d.emailThread ?? null) })
       .catch(() => {})
   }
 
@@ -246,7 +252,7 @@ export function ContactDetailModal({ contact, onClose, onSendToast, onNotesSaved
     setLoadingHistory(true)
     fetch(`/api/crms/touches?phone=${encodeURIComponent(contact.phone)}&full=1`, { cache: "no-store" })
       .then(r => r.json())
-      .then(d => setHistory(Array.isArray(d.history) ? d.history : []))
+      .then(d => { setHistory(Array.isArray(d.history) ? d.history : []); setEmailThread(d.emailThread ?? null) })
       .catch(() => setHistory([]))
       .finally(() => setLoadingHistory(false))
   }, [contact.phone])
@@ -316,7 +322,7 @@ export function ContactDetailModal({ contact, onClose, onSendToast, onNotesSaved
       onSendToast(`Call logged for ${contact.name}`)
       fetch(`/api/crms/touches?phone=${encodeURIComponent(contact.phone)}&full=1`, { cache: "no-store" })
         .then(r => r.json())
-        .then(d => setHistory(Array.isArray(d.history) ? d.history : []))
+        .then(d => { setHistory(Array.isArray(d.history) ? d.history : []); setEmailThread(d.emailThread ?? null) })
         .catch(() => {})
     } catch (e) {
       console.error("Log call failed:", e)
@@ -341,7 +347,7 @@ export function ContactDetailModal({ contact, onClose, onSendToast, onNotesSaved
       fetch("/api/crms/email", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ id: contact.id, message: msg, subject, draftId: sentDraftId, generatedMessage: sentGenerated, wasEdited: !sentDraftId }),
+        body: JSON.stringify({ id: contact.id, message: msg, subject, draftId: sentDraftId, generatedMessage: sentGenerated, wasEdited: !sentDraftId, newThread: threadMode === "new" }),
       })
         .then(async res => {
           const data = await res.json().catch(() => ({}))
@@ -396,7 +402,7 @@ export function ContactDetailModal({ contact, onClose, onSendToast, onNotesSaved
         // Refresh history so the new message shows
         fetch(`/api/crms/touches?phone=${encodeURIComponent(contact.phone)}&full=1`, { cache: "no-store" })
           .then(r => r.json())
-          .then(d => setHistory(Array.isArray(d.history) ? d.history : []))
+          .then(d => { setHistory(Array.isArray(d.history) ? d.history : []); setEmailThread(d.emailThread ?? null) })
           .catch(() => {})
       })
       .catch(err => {
@@ -575,18 +581,17 @@ export function ContactDetailModal({ contact, onClose, onSendToast, onNotesSaved
               onPlanChange={(next) => { setPlan(next); void aiDraft({ plan: next }) }}
               onRegenerate={(why) => void aiDraft(why ? { why } : undefined)}
             />
-            <div className="flex items-center gap-2 mb-1.5">
-              <span className="text-[10px] uppercase tracking-wide text-zinc-600">Via</span>
-              {(["text", "email"] as const).map(ch => {
-                const unavailable = ch === "email" ? !contact.email : !contact.phone
-                return (
+            {/* Via — only when both channels exist; a text-only or email-only contact gets no toggle */}
+            {contact.email && contact.phone && (
+              <div className="flex items-center gap-2 mb-1.5">
+                <span className="text-[10px] uppercase tracking-wide text-zinc-600">Via</span>
+                {(["text", "email"] as const).map(ch => (
                   <button
                     key={ch}
                     type="button"
                     onClick={() => { if (ch !== channel) { setChannel(ch); setDraftId(null) } }}
-                    disabled={unavailable}
-                    title={unavailable ? (ch === "email" ? "No email on file" : "No phone on file") : ch === "email" ? `Email ${contact.email}` : `Text ${contact.phone}`}
-                    className={`flex items-center gap-1.5 text-xs px-3 py-1.5 rounded border transition-colors disabled:opacity-40 disabled:cursor-not-allowed ${
+                    title={ch === "email" ? `Email ${contact.email}` : `Text ${contact.phone}`}
+                    className={`flex items-center gap-1.5 text-xs px-3 py-1.5 rounded border transition-colors ${
                       channel === ch
                         ? "bg-violet-500/10 text-violet-300 border-violet-500/40"
                         : "border-zinc-700 text-zinc-500 hover:text-zinc-300 hover:border-zinc-600"
@@ -595,15 +600,47 @@ export function ContactDetailModal({ contact, onClose, onSendToast, onNotesSaved
                     {ch === "email" ? <Mail className="w-3 h-3" /> : <MessageSquare className="w-3 h-3" />}
                     {ch === "email" ? "Email" : "Text"}
                   </button>
-                )
-              })}
-            </div>
+                ))}
+              </div>
+            )}
+            {channel === "email" && contact.email && (
+              <div className="flex items-center gap-2 mb-1.5 flex-wrap">
+                <span className="text-[10px] uppercase tracking-wide text-zinc-600">Thread</span>
+                {emailThread && (
+                  <button
+                    type="button"
+                    onClick={() => setThreadMode("reply")}
+                    title={`Replies inside "${emailThread.subject ?? "(no subject)"}" from ${emailThread.mailbox}`}
+                    className={`text-xs px-3 py-1.5 rounded border transition-colors max-w-[240px] truncate ${
+                      threadMode === "reply"
+                        ? "bg-violet-500/10 text-violet-300 border-violet-500/40"
+                        : "border-zinc-700 text-zinc-500 hover:text-zinc-300 hover:border-zinc-600"
+                    }`}
+                  >
+                    Reply · Re: {emailThread.subject ?? "(no subject)"}
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={() => { setThreadMode("new"); setQuickSubject(q => q.replace(/^\s*((re|fwd?|fw)\s*:\s*)+/i, "").trim()) }}
+                  title="Fresh email from ryan@ with your subject"
+                  className={`text-xs px-3 py-1.5 rounded border transition-colors ${
+                    threadMode === "new" || !emailThread
+                      ? "bg-violet-500/10 text-violet-300 border-violet-500/40"
+                      : "border-zinc-700 text-zinc-500 hover:text-zinc-300 hover:border-zinc-600"
+                  }`}
+                >
+                  New thread
+                </button>
+                {!emailThread && <span className="text-[10px] text-zinc-600">they haven&apos;t emailed us yet · from ryan@</span>}
+              </div>
+            )}
             {channel === "email" && (
               <input
                 type="text"
                 value={quickSubject}
                 onChange={e => setQuickSubject(e.target.value)}
-                placeholder="Subject (blank = Re: their last email)"
+                placeholder={threadMode === "new" || !emailThread ? "Subject (blank = Checking in)" : "Subject (blank = Re: their last email)"}
                 className="w-full mb-1.5 bg-zinc-900 border border-zinc-800 rounded px-3 py-2 text-zinc-200 focus:outline-none focus:border-zinc-600"
                 style={{ fontSize: "16px" }}
               />

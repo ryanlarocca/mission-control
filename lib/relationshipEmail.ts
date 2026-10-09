@@ -40,6 +40,12 @@ export function replySubject(original: string | null | undefined, fallback = DEF
   return `Re: ${base}`
 }
 
+/** Subject for a deliberate new thread: drop any Re:/Fwd: chain, empty → fallback. */
+export function newThreadSubject(typed: string | null | undefined, fallback = DEFAULT_FRESH_SUBJECT): string {
+  const base = (typed ?? "").replace(/^\s*((re|fwd?|fw)\s*:\s*)+/i, "").trim()
+  return base || fallback
+}
+
 /** Mailbox a fresh (non-threaded) relationship email goes out from. */
 export function freshMailbox(env: Record<string, string | undefined> = process.env): string {
   const m = (env.RELATIONSHIP_EMAIL_FROM ?? "").trim().toLowerCase()
@@ -95,6 +101,8 @@ export interface SendRelationshipEmailArgs {
   draftId?: string | null
   generatedMessage?: string | null
   wasEdited?: boolean | null
+  /** Ryan chose "New thread": ignore any prior campaign thread and send fresh from ryan@. */
+  newThread?: boolean | null
 }
 
 export interface SendRelationshipEmailResult {
@@ -127,7 +135,7 @@ export async function sendRelationshipEmail(args: SendRelationshipEmailArgs): Pr
   if (rel.status === "do_not_contact") return { ok: false, status: 409, error: "contact is marked do not contact" }
   if (!rel.email?.includes("@")) return { ok: false, status: 400, error: "no email address on file" }
 
-  const thread = await findLatestEmailThread(sb, rel.id)
+  const thread = args.newThread ? null : await findLatestEmailThread(sb, rel.id)
   const mailbox = thread?.mailbox ?? freshMailbox()
   const gmail = getGmailClient(mailbox)
 
@@ -155,7 +163,7 @@ export async function sendRelationshipEmail(args: SendRelationshipEmailArgs): Pr
   }
 
   const typed = (args.subject ?? "").trim()
-  const subject = typed || (thread ? replySubject(threadSubject) : DEFAULT_FRESH_SUBJECT)
+  const subject = thread ? (typed || replySubject(threadSubject)) : newThreadSubject(typed)
 
   const mime = buildEmailMime({
     from: `Ryan LaRocca <${mailbox}>`,

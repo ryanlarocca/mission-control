@@ -342,7 +342,9 @@ function CRMSTabInner() {
   const [sendError, setSendError]     = useState<string | null>(null)
   const [sendToast, setSendToast]     = useState<string | null>(null)
   const [touchesByPhone, setTouchesByPhone] = useState<Record<string, TouchesSummary>>({})
-  const [detailPhone, setDetailPhone] = useState<string | null>(null)
+  // Keyed by id, not phone (2026-10-09): email-only contacts have no phone
+  // and could never open the panel from search.
+  const [detailId, setDetailId] = useState<string | null>(null)
   const [callPanelOpen, setCallPanelOpen] = useState(false)
   // Click-to-call (shared with the detail modal): a connected call counts as
   // today's touch; the transcript summary patches notes in place when it lands.
@@ -359,6 +361,9 @@ function CRMSTabInner() {
 
   // ── Message state ──
   const [channel, setChannel]                     = useState<Channel>("text")
+  // Email only: reply inside their campaign Gmail thread (default when one
+  // exists) or start a fresh thread from ryan@. Resets per contact.
+  const [threadMode, setThreadMode]               = useState<"reply" | "new">("reply")
   const [subjects, setSubjects]                   = useState<Record<string, string>>({})
   const [generatedMessages, setGeneratedMessages] = useState<Record<string, string>>({})
   const [editedMessages, setEditedMessages]       = useState<Record<string, string>>({})
@@ -422,6 +427,7 @@ function CRMSTabInner() {
         lastMessagePreview: data.lastMessagePreview ?? null,
         hasReply: data.hasReply ?? false,
         lastInbound: data.lastInbound ?? null,
+        emailThread: data.emailThread ?? null,
       }
       touchesRef.current[phone] = summary
       setTouchesByPhone(prev => ({ ...prev, [phone]: summary }))
@@ -453,6 +459,9 @@ function CRMSTabInner() {
 
   // Persist session progress on change
   useEffect(() => { saveSession(sent, skipped) }, [sent, skipped])
+
+  // Thread choice is per contact — back to "reply" whenever the card changes.
+  useEffect(() => { setThreadMode("reply") }, [selectedId])
 
   // Fetch contacts on mount
   useEffect(() => {
@@ -624,6 +633,18 @@ function CRMSTabInner() {
     generate(selectedContact, m, true, nextFam)
   }
 
+  // Thread: Reply (inside their last campaign email) ↔ New (fresh, from ryan@).
+  // A new thread drops the "Re:" off whatever subject is in the box.
+  function handleThreadModeChange(next: "reply" | "new") {
+    if (!selectedContact || next === threadMode) return
+    setThreadMode(next)
+    if (next === "new") {
+      const cur = subjects[msgKeyFor(selectedContact, modality, channel)] ?? ""
+      const stripped = cur.replace(/^\s*((re|fwd?|fw)\s*:\s*)+/i, "").trim()
+      if (stripped !== cur) handleSubjectEdit(stripped)
+    }
+  }
+
   // Via: Text ↔ Email. Drafts are cached per channel, so flipping back is instant.
   function handleChannelChange(next: Channel) {
     if (!selectedContact || next === channel) return
@@ -733,7 +754,7 @@ function CRMSTabInner() {
       fetch("/api/crms/email", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ id: contact.id, message, subject, draftId, generatedMessage, wasEdited }),
+        body: JSON.stringify({ id: contact.id, message, subject, draftId, generatedMessage, wasEdited, newThread: threadMode === "new" }),
         signal: emailController.signal,
       })
         .then(async res => {
@@ -1062,9 +1083,9 @@ function CRMSTabInner() {
   const isChangingTier = tierChangingFor === selectedContact?.id
   const currentMessage = selectedContact ? getMessage(selectedContact) : ""
   const touches        = selectedContact ? touchesByPhone[selectedContact.phone] : undefined
-  const detailContact  = detailPhone
-    ? (contacts.find(c => c.phone === detailPhone)
-        ?? allContacts.find(c => c.phone === detailPhone)
+  const detailContact  = detailId
+    ? (contacts.find(c => c.id === detailId)
+        ?? allContacts.find(c => c.id === detailId)
         ?? null)
     : null
 
@@ -1245,7 +1266,7 @@ function CRMSTabInner() {
                 return (
                   <button
                     key={c.id}
-                    onClick={() => setDetailPhone(c.phone)}
+                    onClick={() => setDetailId(c.id)}
                     className={`w-full flex items-center gap-2 px-3 py-2.5 text-left hover:bg-zinc-800 transition-colors ${isRemoved ? "opacity-60" : ""}`}
                   >
                     <span className={`text-xs font-bold px-1 py-0.5 rounded border leading-none shrink-0 ${tierStyle[c.tier] ?? tierStyle.C}`}>
@@ -1344,7 +1365,7 @@ function CRMSTabInner() {
                 <div className="flex items-center gap-2 flex-wrap mb-2">
                   <button
                     type="button"
-                    onClick={() => setDetailPhone(selectedContact.phone)}
+                    onClick={() => setDetailId(selectedContact.id)}
                     className="text-sm font-semibold text-zinc-100 hover:text-emerald-400 hover:underline underline-offset-2"
                     title="Open full contact detail"
                   >
@@ -1517,18 +1538,16 @@ function CRMSTabInner() {
                     ))}
                   </div>
                 )}
-                {/* Via — text (iMessage/SMS) or email */}
-                <div className="flex gap-2 flex-wrap items-center">
-                  <span className="text-[10px] uppercase tracking-wide text-zinc-600 w-14 shrink-0">Via</span>
-                  {(["text", "email"] as Channel[]).map(ch => {
-                    const unavailable = ch === "email" && !selectedContact.email
-                    return (
+                {/* Via — text (iMessage/SMS) or email. No email on file → row hidden, card is text-only as before. */}
+                {selectedContact.email && (
+                  <div className="flex gap-2 flex-wrap items-center">
+                    <span className="text-[10px] uppercase tracking-wide text-zinc-600 w-14 shrink-0">Via</span>
+                    {(["text", "email"] as Channel[]).map(ch => (
                       <button
                         key={ch}
                         onClick={() => handleChannelChange(ch)}
-                        disabled={unavailable}
-                        title={unavailable ? "No email on file" : ch === "email" ? `Email ${selectedContact.email}` : `Text ${selectedContact.phone}`}
-                        className={`flex items-center gap-1.5 text-xs px-3 py-1.5 rounded border transition-colors disabled:opacity-40 disabled:cursor-not-allowed ${
+                        title={ch === "email" ? `Email ${selectedContact.email}` : `Text ${selectedContact.phone}`}
+                        className={`flex items-center gap-1.5 text-xs px-3 py-1.5 rounded border transition-colors ${
                           channel === ch
                             ? "bg-violet-500/10 text-violet-300 border-violet-500/40"
                             : "border-zinc-700 text-zinc-500 hover:text-zinc-300 hover:border-zinc-600"
@@ -1537,9 +1556,42 @@ function CRMSTabInner() {
                         {ch === "email" ? <Mail className="w-3 h-3" /> : <MessageSquare className="w-3 h-3" />}
                         {ch === "email" ? "Email" : "Text"}
                       </button>
-                    )
-                  })}
-                </div>
+                    ))}
+                  </div>
+                )}
+                {/* Thread — reply inside their last campaign email, or start fresh from ryan@ */}
+                {selectedContact.email && channel === "email" && (
+                  <div className="flex gap-2 flex-wrap items-center">
+                    <span className="text-[10px] uppercase tracking-wide text-zinc-600 w-14 shrink-0">Thread</span>
+                    {touches?.emailThread ? (
+                      <button
+                        onClick={() => handleThreadModeChange("reply")}
+                        title={`Replies inside "${touches.emailThread.subject ?? "(no subject)"}" from ${touches.emailThread.mailbox}`}
+                        className={`text-xs px-3 py-1.5 rounded border transition-colors max-w-[260px] truncate ${
+                          threadMode === "reply"
+                            ? "bg-violet-500/10 text-violet-300 border-violet-500/40"
+                            : "border-zinc-700 text-zinc-500 hover:text-zinc-300 hover:border-zinc-600"
+                        }`}
+                      >
+                        Reply · Re: {touches.emailThread.subject ?? "(no subject)"}
+                      </button>
+                    ) : null}
+                    <button
+                      onClick={() => handleThreadModeChange("new")}
+                      title="Fresh email from ryan@ with your subject"
+                      className={`text-xs px-3 py-1.5 rounded border transition-colors ${
+                        threadMode === "new" || !touches?.emailThread
+                          ? "bg-violet-500/10 text-violet-300 border-violet-500/40"
+                          : "border-zinc-700 text-zinc-500 hover:text-zinc-300 hover:border-zinc-600"
+                      }`}
+                    >
+                      New thread
+                    </button>
+                    {touches && !touches.emailThread && (
+                      <span className="text-[10px] text-zinc-600">they haven&apos;t emailed us yet · goes out from ryan@</span>
+                    )}
+                  </div>
+                )}
               </div>
 
               {/* Message */}
@@ -1566,7 +1618,7 @@ function CRMSTabInner() {
                         type="text"
                         value={subjects[msgKeyFor(selectedContact, modality, channel)] ?? ""}
                         onChange={e => handleSubjectEdit(e.target.value)}
-                        placeholder="Subject (blank = Re: their last email)"
+                        placeholder={threadMode === "new" || !touches?.emailThread ? "Subject (blank = Checking in)" : "Subject (blank = Re: their last email)"}
                         className="w-full mb-1.5 bg-zinc-800 border border-zinc-700 rounded px-3 py-2 text-zinc-200 focus:outline-none focus:border-zinc-500 transition-colors"
                         style={{ fontSize: "16px" }}
                       />
@@ -1782,7 +1834,7 @@ function CRMSTabInner() {
       {detailContact && (
         <ContactDetailModal
           contact={detailContact}
-          onClose={() => setDetailPhone(null)}
+          onClose={() => setDetailId(null)}
           onSendToast={showSendToast}
           onNotesSaved={(id, newNotes) => {
             const patch = (c: CRMSContact) =>
