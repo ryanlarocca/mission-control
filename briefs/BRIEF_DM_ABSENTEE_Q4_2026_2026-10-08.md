@@ -1,6 +1,6 @@
 # Q4 2026 absentee-owner direct mail — list build + tracking
 
-> **Status:** Phase 1 list build in progress (Step 1 done, Step 2 at the confirmation gate). Tracking build: PLAN ONLY — no code, no migrations until Ryan approves.
+> **Status:** List build through Phase 2 + unmailable removal (30,216 rows; Phase 3 dedupe next). Tracking build: BUILT 2026-10-08 (`9ffa544` plumbing, `fa35cfd` zip picker, `55eeba2` mail_records / link / segments / DNC) — Part 3 below is the approved plan as built; decisions: whole-list matching, mailing address as a key, no drop-date tracking, no lead_status_history.
 > **Written:** 2026-10-08 · **Owner memo:** `../lead-pipeline/PROJECT_MEMO.md` (Leads tab / Campaign Performance)
 > **Scope source:** Ryan's project prompt of 2026-10-08 (two tracks: list build, tracking in Mission Control).
 
