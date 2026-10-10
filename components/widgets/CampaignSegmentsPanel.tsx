@@ -44,6 +44,7 @@ const DIMENSIONS: { key: string; label: string }[] = [
   { key: "po_box",                label: "PO box" },
   { key: "managed",               label: "Managed" },
   { key: "out_of_county",         label: "Out of county" },
+  { key: "prior_mail",            label: "Prior letter" },
 ]
 
 // Dimensions whose segments have an inherent order — keep the API's order
