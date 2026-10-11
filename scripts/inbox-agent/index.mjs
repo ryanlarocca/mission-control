@@ -33,6 +33,7 @@ import {
 import { addLabel, getAttachmentBytes, getMessage, gmailClient, listMessageIds, sentThreadsSince } from "./gmail.mjs"
 import { downloadFile, driveClient, findExtraRoots, findFileByName, findRoot, folderTree, listChildren, moveFile, propertyFolders, resolvePath, uploadFile } from "./drive.mjs"
 import { esc, tgClearButtons, tgSend, tgSendDocument } from "./telegram.mjs"
+import { advisorSummary, fixRlsDisabled, isSupabaseSecurityAlert } from "./supabase-advisor.mjs"
 import {
   CLASSIFY_SYSTEM, FILING_SYSTEM, HAIKU, RULES_SYSTEM, SCREEN_SYSTEM, SONNET, VERIFY_SYSTEM,
   BAY_AREA_RE, CONDO_RE, blastSignalsPass,
@@ -734,6 +735,22 @@ async function pollInbox(ctx) {
       await insertMessage(msg, "automated", null)
       continue
     }
+    // Ryan 2026-10-11: Supabase's weekly "security vulnerabilities detected"
+    // email used to land as a "Waiting on you" loop. It is always the same
+    // thing — a new table with RLS off — so the agent fixes it itself and
+    // posts a confirmation card instead of asking. Deterministic match, no
+    // classifier call.
+    if (isSupabaseSecurityAlert(msg)) {
+      handled++
+      try {
+        await handleSupabaseAlert(ctx, msg)
+      } catch (e) {
+        warn(`supabase advisor ${id} failed:`, e.stack || e.message)
+        await insertMessage(msg, "error", { error: e.message })
+        await tgSend(`⚠️ Supabase security email arrived but the auto-fix failed: ${esc(e.message)}\nOpen the advisor: https://supabase.com/dashboard/project/${process.env.SUPABASE_PROJECT_REF || ""}/advisors/security`, { dryRun: DRY })
+      }
+      continue
+    }
     // Ryan 2026-10-02: "agent flyer trash … these go into promotions … I don't
     // even want them to show up." Anything Gmail files under Promotions is
     // dropped at the poll unless it comes from someone he's done business with.
@@ -758,6 +775,39 @@ function parseDays(s) {
   const m = /^(\d+)\s*(d|h)?$/i.exec(String(s))
   if (!m) return 2
   return m[2]?.toLowerCase() === "h" ? Number(m[1]) / 24 : Number(m[1])
+}
+
+// Supabase advisor email → enable RLS on every flagged table, close any open
+// loop this email (or an earlier copy of it) created, and post one card.
+async function handleSupabaseAlert(ctx, msg) {
+  const r = await fixRlsDisabled({ dryRun: DRY, log })
+  log(`supabase advisor: fixed ${r.fixed.length}, still flagged ${r.stillFlagged.length}, other errors ${r.remaining.length}, alter errors ${r.errors.length}`)
+  const needsRyan = r.stillFlagged.length > 0 || r.errors.length > 0 || r.remaining.length > 0
+  await insertMessage(msg, "automated", {
+    kind: "automated", is_human: false, counterparty: "Supabase", category: "other", needs_reply: needsRyan,
+    summary: `Supabase security advisor: RLS enabled on ${r.fixed.length} table(s)`,
+    ask: needsRyan ? "Supabase advisor still has errors the agent couldn't fix" : null,
+    advisor: r,
+  })
+  if (DRY) {
+    log(advisorSummary(r, esc))
+    return
+  }
+  // Earlier copies of this email became loops before the auto-fix existed;
+  // retire them all once the advisor is clean.
+  const { data: loops } = await sb().from("inbox_loops").select("id, tg_message_id").eq("counterparty_email", msg.from.email).in("status", ["open", "snoozed", "acknowledged"]).limit(20)
+  if (!needsRyan) {
+    for (const l of loops || []) {
+      await sb().from("inbox_loops").update({ status: "resolved_by_event", resolved_at: isoNow() }).eq("id", l.id)
+      if (l.tg_message_id) await tgClearButtons(l.tg_message_id)
+    }
+  } else if (!(loops || []).length) {
+    await sb().from("inbox_loops").insert({
+      thread_id: msg.threadId, gmail_id: msg.id, subject: msg.subject, counterparty: "Supabase", counterparty_email: msg.from.email,
+      category: "other", ask: `Supabase advisor: ${[...r.stillFlagged, ...r.errors, ...r.remaining].join("; ")}`.slice(0, 500), priority: "normal", status: "open",
+    })
+  }
+  await tgSend(advisorSummary(r, esc), { dryRun: DRY })
 }
 
 async function handleMessage(ctx, msg) {
