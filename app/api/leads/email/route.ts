@@ -315,6 +315,8 @@ async function ingestGoogleVoice(args: {
   const messageText = `${kindLabel} (Google Voice)\n\n${content}`.slice(0, 2000)
 
   // Dedup on the *caller* (not the shared voice-noreply@ address) + message.
+  // Same 50-row window as the per-sender email dedupe below (memo "Known
+  // limitations": a burst from one sender slipped past the old limit(5)).
   const oneHourAgo = new Date(Date.now() - 60 * 60 * 1000).toISOString()
   const { data: existing } = await sb
     .from("leads")
@@ -569,7 +571,11 @@ async function handleAppsScript(payload: AppsScriptPayload): Promise<NextRespons
     : null
   const messageText = `${subject}\n\n${bodyText}`.slice(0, 2000)
 
-  // Dedup: check for same sender + similar message in the last hour
+  // Dedup: check for same sender + similar message in the last hour.
+  // Window is the last 50 rows from this sender (memo "Known limitations":
+  // the earlier limit(5) let a burst of more than five emails from one
+  // sender in an hour slip past the check and insert duplicates). 50 is
+  // far above any real burst while keeping the read cheap.
   const sb = getLeadsClient()
   const oneHourAgo = new Date(Date.now() - 60 * 60 * 1000).toISOString()
   const { data: existing } = await sb
