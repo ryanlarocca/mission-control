@@ -223,8 +223,12 @@ const SOURCE_BADGE: Record<string, string> = {
   // Every line ported from Google Voice (old mailers + agent marketing) and
   // the pre-port Google Voice email forwards — one universal bucket.
   "Legacy DM":  "bg-orange-900/50 text-orange-200",
-  // NOO Q4 2026 absentee-owner mailer (line 408-418-6294 / ryansvx@).
-  "NOO-Q4-2026": "bg-rose-900/60 text-rose-200",
+  // NOO Q4 2026 absentee-owner mailer. Parent label (pre-A/B rows) and the
+  // two A/B piece children share the rose family: A = bullets (line
+  // 408-418-6294 / ryansvx@), B = prose (408-418-8450 / ryansvy@).
+  "NOO-Q4-2026":   "bg-rose-900/60 text-rose-200",
+  "NOO-Q4-2026-A": "bg-rose-900/60 text-rose-200",
+  "NOO-Q4-2026-B": "bg-pink-900/60 text-pink-200",
   "Website":    "bg-violet-900/60 text-violet-200",
   "Outbound":   "bg-teal-900/60 text-teal-200",
   "Office — Ryan": "bg-zinc-700 text-zinc-200",
@@ -456,7 +460,9 @@ function groupLeads(leads: Lead[]): LeadGroup[] {
 
 // Direct-mail match state for the header chip + the "Unmatched DM" filter.
 // Only direct-mail campaign labels count as "unmatched" — legacy/outbound/
-// unknown sources and agent drips have no mailed record to link to.
+// unknown sources and agent drips have no mailed record to link to. This is
+// an exclusion list, not an allow list: any other direct_mail label (MFM-A/B,
+// NOO-Q4-2026 and its A/B piece children NOO-Q4-2026-A / -B) is a mailer.
 const NON_MAILER_SOURCES = new Set(["Legacy DM", "Outbound", "Unknown"])
 function isMailerSource(group: LeadGroup): boolean {
   if (group.sourceType !== "direct_mail") return false

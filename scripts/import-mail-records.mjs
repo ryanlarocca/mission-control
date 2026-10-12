@@ -8,7 +8,10 @@
 //   rows in file == rows in table for the campaign after import
 //   per-arm and per-batch counts in file == counts in table
 //   optional --expect: the Step 12 reconciliation table {arm: {batch: n}} must equal the file
-// Side effect on --commit: campaigns.pieces_sent = mailed non-seed rows (arms A/B/C).
+// Side effect on --commit: campaigns.pieces_sent = mailed non-seed rows (arms A/B/C),
+// and for each A/B piece child of the campaign (campaigns.parent_campaign_id =
+// this campaign, campaigns.piece set) pieces_sent = mailed non-seed rows with
+// that `piece`. Reconciliation prints the per-piece counts.
 // Upsert key (campaign_id, record_id) — re-running is safe.
 import fs from "node:fs"
 import { createClient } from "@supabase/supabase-js"
@@ -97,10 +100,15 @@ if (dupIds.length) { console.error("Duplicate record_id in file:", dupIds.slice(
 const tally = (rows) => { const t = {}; for (const r of rows) { (t[r.arm] ??= {})[r.batch ?? "null"] = ((t[r.arm] ??= {})[r.batch ?? "null"] ?? 0) + 1 } return t }
 // Key order is not part of the contract (pandas emits arms alphabetically, the tally in file order).
 const canon = (o) => (o && typeof o === "object" && !Array.isArray(o)) ? Object.fromEntries(Object.keys(o).sort().map((k) => [k, canon(o[k])])) : o
+const isMailed = (r) => !r.is_seed && ["A", "B", "C"].includes(r.arm)
+// Mailed non-seed rows per creative; rows with no piece land under "null".
+const pieceTally = (rows) => { const t = {}; for (const r of rows) { if (!isMailed(r)) continue; const k = r.piece ?? "null"; t[k] = (t[k] ?? 0) + 1 } return t }
 const fileTally = tally(records)
-const mailed = records.filter((r) => !r.is_seed && ["A", "B", "C"].includes(r.arm)).length
+const filePieces = pieceTally(records)
+const mailed = records.filter(isMailed).length
 console.log(`file: ${records.length} rows · mailed non-seed ${mailed} · seeds ${records.filter((r) => r.is_seed).length}`)
 console.log("by arm × batch:", JSON.stringify(fileTally))
+console.log("mailed by piece:", JSON.stringify(filePieces))
 if (expectPath) {
   const expect = JSON.parse(fs.readFileSync(expectPath, "utf8"))
   if (JSON.stringify(canon(expect)) !== JSON.stringify(canon(fileTally))) { console.error("RECONCILE FAIL: --expect does not match the file\nexpected", JSON.stringify(expect)); process.exit(2) }
@@ -118,14 +126,29 @@ console.log()
 const dbRows = []
 for (let from = 0; ; from += 1000) {
   // ORDER BY is load-bearing: PostgREST range paging without it returns overlapping pages (bit 2026-10-12).
-  const { data, error } = await sb.from("mail_records").select("record_id, arm, batch, is_seed").eq("campaign_id", campaign).order("record_id").range(from, from + 999)
+  const { data, error } = await sb.from("mail_records").select("record_id, arm, batch, is_seed, piece").eq("campaign_id", campaign).order("record_id").range(from, from + 999)
   if (error) { console.error(error.message); process.exit(3) }
   dbRows.push(...data); if (data.length < 1000) break
 }
 const dbTally = tally(dbRows)
-const ok = dbRows.length === records.length && JSON.stringify(canon(dbTally)) === JSON.stringify(canon(fileTally))
-console.log(`table: ${dbRows.length} rows for this campaign · by arm × batch ${JSON.stringify(dbTally)}`)
+const dbPieces = pieceTally(dbRows)
+const ok = dbRows.length === records.length
+  && JSON.stringify(canon(dbTally)) === JSON.stringify(canon(fileTally))
+  && JSON.stringify(canon(dbPieces)) === JSON.stringify(canon(filePieces))
+console.log(`table: ${dbRows.length} rows for this campaign · by arm × batch ${JSON.stringify(dbTally)} · mailed by piece ${JSON.stringify(dbPieces)}`)
 if (!ok) { console.error("RECONCILE FAIL: table does not equal file"); process.exit(2) }
 const { error: cErr } = await sb.from("campaigns").update({ pieces_sent: mailed }).eq("id", campaign)
 if (cErr) { console.error("pieces_sent update failed:", cErr.message); process.exit(3) }
 console.log(`✓ reconciled · campaigns.pieces_sent = ${mailed}`)
+
+// A/B piece children: pieces_sent = mailed non-seed rows with that piece.
+const { data: children, error: chErr } = await sb.from("campaigns").select("id, name, piece").eq("parent_campaign_id", campaign).not("piece", "is", null)
+if (chErr) { console.error("child campaign lookup failed:", chErr.message); process.exit(3) }
+for (const child of children ?? []) {
+  const n = filePieces[child.piece] ?? 0
+  const { error } = await sb.from("campaigns").update({ pieces_sent: n }).eq("id", child.id)
+  if (error) { console.error(`pieces_sent update failed for ${child.name}:`, error.message); process.exit(3) }
+  console.log(`✓ child ${child.name} (piece ${child.piece}) · pieces_sent = ${n}`)
+}
+const orphanPieces = Object.keys(filePieces).filter((k) => k !== "null" && !(children ?? []).some((c) => c.piece === k))
+if (orphanPieces.length) console.warn(`⚠ mailed rows carry piece ${orphanPieces.join(", ")} but no child campaign has that piece — run the A/B children migration`)

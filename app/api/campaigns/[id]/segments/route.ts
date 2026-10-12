@@ -5,6 +5,14 @@ import { clusterKey, getLeadsClient } from "@/lib/leads"
 // responders per list segment (arm, county, batch, tags, signals), from the
 // mail_segment_stats() SQL function, plus the unmatched / in-list-not-mailed
 // responder counts so the denominator caveat is visible on the panel.
+//
+// A/B piece children (campaigns.parent_campaign_id + campaigns.piece, NOO Q4
+// 2026 — A / — B, 2026-10-12) own no mail_records: the one list is on the
+// parent. For a child we run mail_segment_stats_piece(parent, piece) — the
+// same report restricted to the rows mailed that creative — so every
+// dimension (and the `piece` dimension itself) is the child's slice. Leads
+// are still counted against the child (that's where attribution lands).
+// Parent behaviour is unchanged.
 export const dynamic = "force-dynamic"
 
 interface StatRow { dimension: string; segment: string; pieces: number; responders: number }
@@ -17,16 +25,22 @@ export async function GET(_req: NextRequest, { params }: { params: { id: string 
   try {
     const { data: campaign, error: cErr } = await sb
       .from("campaigns")
-      .select("id, pieces_sent, total_cost")
+      .select("id, pieces_sent, total_cost, parent_campaign_id, piece")
       .eq("id", params.id)
       .maybeSingle()
     if (cErr) return NextResponse.json({ error: cErr.message }, { status: 500 })
     if (!campaign) return NextResponse.json({ error: "campaign not found" }, { status: 404 })
 
-    const { count: recordCount } = await sb
+    // Records live on the parent for an A/B piece child.
+    const childPiece = campaign.parent_campaign_id && campaign.piece ? String(campaign.piece) : null
+    const recordsCampaignId = (campaign.parent_campaign_id as string | null) ?? params.id
+
+    let recordsQuery = sb
       .from("mail_records")
       .select("id", { count: "exact", head: true })
-      .eq("campaign_id", params.id)
+      .eq("campaign_id", recordsCampaignId)
+    if (childPiece) recordsQuery = recordsQuery.eq("piece", childPiece)
+    const { count: recordCount } = await recordsQuery
     if (!recordCount) {
       return NextResponse.json({
         has_mail_records: false, pieces: 0, responders_matched: 0, responders_unmatched: 0,
@@ -34,13 +48,25 @@ export async function GET(_req: NextRequest, { params }: { params: { id: string 
       })
     }
 
-    const { data: stats, error: sErr } = await sb.rpc("mail_segment_stats", { p_campaign: params.id })
+    const { data: stats, error: sErr } = childPiece
+      ? await sb.rpc("mail_segment_stats_piece", { p_campaign: recordsCampaignId, p_piece: childPiece })
+      : await sb.rpc("mail_segment_stats", { p_campaign: recordsCampaignId })
     if (sErr) return NextResponse.json({ error: sErr.message }, { status: 500 })
     const rows = (stats ?? []) as StatRow[]
     const pieces = rows.filter(r => r.dimension === "arm").reduce((a, r) => a + Number(r.pieces), 0)
     const respondersMatched = rows.filter(r => r.dimension === "arm").reduce((a, r) => a + Number(r.responders), 0)
-    const unitCost =
+    let unitCost =
       campaign.total_cost != null && campaign.pieces_sent ? Number(campaign.total_cost) / Number(campaign.pieces_sent) : null
+    if (unitCost == null && campaign.parent_campaign_id) {
+      // A child usually carries no cost of its own — one print run, one
+      // invoice on the parent. Same letter, same unit cost.
+      const { data: parent } = await sb
+        .from("campaigns")
+        .select("pieces_sent, total_cost")
+        .eq("id", campaign.parent_campaign_id)
+        .maybeSingle()
+      if (parent && parent.total_cost != null && parent.pieces_sent) unitCost = Number(parent.total_cost) / Number(parent.pieces_sent)
+    }
 
     const dimensions: Record<string, SegmentRow[]> = {}
     for (const r of rows) {
