@@ -1,8 +1,13 @@
 import Anthropic from "@anthropic-ai/sdk"
+import { createHash } from "node:crypto"
 import { getLeadsClient } from "@/lib/leads"
 import { HAIKU, SONNET, completeText, extractJsonObject } from "@/lib/llm"
-import { fetchAttachment, fetchInboxMessage, fetchInboxThread, renderThread, searchInbox, sendThreadedReply } from "@/lib/inboxGmail"
+import { INBOX_MAILBOX, fetchAttachment, fetchInboxMessage, fetchInboxThread, renderThread, searchInbox, sendThreadedReply } from "@/lib/inboxGmail"
 import { VOICE_SYSTEM } from "@/lib/reply/draft"
+// Shared with the Mac mini worker (plain ESM, no deps) so a link is judged the
+// same way here and there. Vercel only writes inbox_fetches rows — nothing in
+// lib/ ever launches a browser (briefs/BRIEF_INBOX_LINK_FETCH_2026-10-12.md §4).
+import { detectProvider, documentLinks, providerLabel } from "@/scripts/inbox-agent/fetch/providers.mjs"
 
 // Inbox Agent — the Vercel half (briefs/BRIEF_INBOX_AGENT_2026-09-24.md).
 //
@@ -29,6 +34,7 @@ import { VOICE_SYSTEM } from "@/lib/reply/draft"
 //   ix:rm:<rule>  rule → manual (weekly teach-back)
 //   ix:sr:<scr>   draft a reply to the deal email (slow → route runs it in waitUntil)
 //   ix:ds:<draft> send   ix:de:<draft> edit (reply expected)   ix:dd:<draft> dismiss
+//   ix:fr:<fetch> retry a link fetch (requeue; the worker opens the browser)
 
 export const INBOX_CB_PREFIX = "ix:"
 const UUID = "[0-9a-f-]{36}"
@@ -50,6 +56,7 @@ export type InboxRef =
   | { kind: "loop"; id: string; gmail_id: string | null; thread_id: string | null }
   | { kind: "screen"; id: string; gmail_id: string | null; thread_id: string | null }
   | { kind: "draft"; id: string; status: string; gmail_id: string | null; thread_id: string | null }
+  | { kind: "fetch"; id: string; status: string; gmail_id: string | null; thread_id: string | null }
   | { kind: "teachback" }
 
 // ------------------------------------------------------------- settings
@@ -77,7 +84,7 @@ function esc(s: unknown): string {
  *  any branch that could text a lead, exactly like the Reply Planner lookup. */
 export async function findInboxByTgMessage(tgMessageId: number): Promise<InboxRef | null> {
   const sb = getLeadsClient()
-  const [file, iv, loop, screen, rules, agent, draft] = await Promise.all([
+  const [file, iv, loop, screen, rules, agent, draft, fetchRow] = await Promise.all([
     sb.from("inbox_files").select("id, status, gmail_id, thread_id").eq("tg_message_id", tgMessageId).limit(5),
     sb.from("inbox_interview").select("id, status, inbox_files(gmail_id, thread_id)").eq("tg_message_id", tgMessageId).maybeSingle(),
     sb.from("inbox_loops").select("id, gmail_id, thread_id").eq("tg_message_id", tgMessageId).maybeSingle(),
@@ -85,8 +92,12 @@ export async function findInboxByTgMessage(tgMessageId: number): Promise<InboxRe
     getSetting("rules"),
     getSetting("agent"),
     sb.from("inbox_drafts").select("id, status, gmail_id, thread_id").eq("tg_message_id", tgMessageId).maybeSingle(),
+    sb.from("inbox_fetches").select("id, status, gmail_id, thread_id").eq("tg_message_id", tgMessageId).maybeSingle(),
   ])
   if (draft.data) return { kind: "draft", id: draft.data.id, status: draft.data.status, gmail_id: draft.data.gmail_id, thread_id: draft.data.thread_id }
+  // A "pulled N documents" card carries the fetch id AND the filed rows; the
+  // rows win so "move it to …" replies keep working. 🔐 / ⚠️ cards have no rows.
+  if (fetchRow.data && !file.data?.length) return { kind: "fetch", id: fetchRow.data.id, status: fetchRow.data.status, gmail_id: fetchRow.data.gmail_id, thread_id: fetchRow.data.thread_id }
   if (file.data?.length) {
     const f = file.data[0]
     if (file.data.length > 1 || f.status === "batch") return { kind: "batch", gmail_id: f.gmail_id, thread_id: f.thread_id }
@@ -148,7 +159,22 @@ export async function recordInboxReply(ref: InboxRef, text: string): Promise<str
   const now = new Date().toISOString()
   const body = text.trim()
   if (!body) return "⚠️ Empty reply — nothing recorded."
+  // Ryan 2026-10-12: `fetch` on ANY card with an email behind it → pull every
+  // document link in that email (DocuSign first).
+  if (/^fetch$/i.test(body) && "gmail_id" in ref && ref.gmail_id) return enqueueLinksForMessage(ref.gmail_id)
   switch (ref.kind) {
+    case "fetch": {
+      const code = /^(?:access\s*code|code)\s*[:=]?\s*([0-9]{4,10})$/i.exec(body) || /^([0-9]{4,10})$/.exec(body)
+      if (code) {
+        await sb.from("inbox_fetches").update({ access_code: code[1], status: "queued", attempts: 0, next_try_at: null, error: null }).eq("id", ref.id)
+        return "🔁 Got the code — pulling the documents on the next pass (≤5 min)."
+      }
+      if (/^(retry|again|try again)\b/i.test(body)) {
+        await requeueFetch(sb, ref.id)
+        return "🔁 Retrying on the next pass (≤5 min)."
+      }
+      return "Reply with the access code (e.g. “code: 1234”) or “retry”."
+    }
     case "file": {
       if (ref.status === "filed") return "That one's already filed — tap ↩️ Undo on the confirmation, or reply to a pending proposal to change it."
       await sb.from("inbox_files").update({ status: "changed", change_text: body, resolved_at: now }).eq("id", ref.id)
@@ -198,6 +224,85 @@ export async function recordInboxReply(ref: InboxRef, text: string): Promise<str
     case "teachback":
       return "Tap a “Make manual” button, or type `rules`."
   }
+}
+
+// ------------------------------------------------------------- documents behind links
+// The queue the Mac mini worker drains (scripts/inbox-agent/index.mjs
+// runFetches). One row per distinct URL — url_sha256 is unique, so a link
+// seen twice is reported as a duplicate instead of fetched again.
+function urlSha256(url: string): string {
+  return createHash("sha256").update(url).digest("hex")
+}
+type FetchSb = ReturnType<typeof getLeadsClient>
+async function enqueueFetch(sb: FetchSb, args: { gmail_id: string; thread_id: string | null; url: string; kind: string }): Promise<"queued" | "duplicate" | "unknown"> {
+  const provider = detectProvider(args.url)
+  if (!provider) return "unknown"
+  const url_sha256 = urlSha256(args.url)
+  const { data: existing } = await sb.from("inbox_fetches").select("id").eq("url_sha256", url_sha256).maybeSingle()
+  if (existing) return "duplicate"
+  const { error } = await sb.from("inbox_fetches").insert({ gmail_id: args.gmail_id, thread_id: args.thread_id, url: args.url, url_sha256, provider, kind: args.kind, status: "queued" })
+  if (error) throw new Error(`inbox_fetches insert: ${error.message}`)
+  return "queued"
+}
+async function requeueFetch(sb: FetchSb, id: string): Promise<void> {
+  await sb.from("inbox_fetches").update({ status: "queued", attempts: 0, next_try_at: null, error: null, resolved_at: null }).eq("id", id)
+}
+/** `fetch` replied on a card → every document link in that card's email goes on the queue. */
+async function enqueueLinksForMessage(gmailId: string): Promise<string> {
+  const sb = getLeadsClient()
+  const { data: row } = await sb.from("inbox_messages").select("kind, thread_id, classification").eq("gmail_id", gmailId).maybeSingle()
+  const reported = ((row?.classification as { document_links?: unknown } | null)?.document_links as string[] | undefined) || []
+  let text = ""
+  let threadId: string | null = row?.thread_id || null
+  if (!/^manual:/.test(gmailId)) {
+    const msg = await fetchInboxMessage(gmailId)
+    text = msg.text
+    threadId = threadId || msg.threadId || null
+  }
+  const links = documentLinks({ text }, reported)
+  if (!links.length) return "No document links (DocuSign) in that email — nothing to pull."
+  let queued = 0, dup = 0
+  for (const l of links) {
+    const r = await enqueueFetch(sb, { gmail_id: gmailId, thread_id: threadId, url: l.url, kind: row?.kind || "manual" })
+    if (r === "queued") queued++
+    else if (r === "duplicate") dup++
+  }
+  if (!queued) return `Already pulled (or pulling) ${dup === 1 ? "that link" : `those ${dup} links`} — type “fetch” to see the status.`
+  return `📥 Queued ${queued === 1 ? "" : `${queued} links — `}pulling the documents on the next pass (≤5 min).${dup ? ` ${dup} already on file.` : ""}`
+}
+/** `fetch <url>` typed with no email behind it → a synthetic inbox_messages row (inbox_files.gmail_id is NOT NULL) + the queue row. */
+async function enqueueManualUrl(url: string): Promise<string> {
+  const sb = getLeadsClient()
+  const provider = detectProvider(url)
+  if (!provider) return "I only know how to open DocuSign envelope links so far (…docusign.net/Signing/… or app.docusign.com/…)."
+  const now = new Date().toISOString()
+  const gmail_id = `manual:${Date.now()}`
+  let host = "link"
+  try {
+    host = new URL(url).hostname
+  } catch {}
+  const { error } = await sb.from("inbox_messages").insert({ gmail_id, thread_id: null, mailbox: INBOX_MAILBOX, internal_date: now, sender: INBOX_MAILBOX, sender_name: "Ryan", subject: `fetch ${host}`, kind: "manual", classification: { kind: "manual", is_human: true, needs_reply: false, document_links: [url], summary: `Ryan asked for the documents behind ${host}` }, attachment_count: 0 })
+  if (error) throw new Error(`inbox_messages insert: ${error.message}`)
+  const r = await enqueueFetch(sb, { gmail_id, thread_id: null, url, kind: "manual" })
+  if (r === "duplicate") {
+    await sb.from("inbox_messages").delete().eq("gmail_id", gmail_id)
+    return "That link is already on the queue (or already pulled) — type “fetch” to see its status."
+  }
+  return `📥 Queued — pulling the documents from ${providerLabel(provider)} on the next pass (≤5 min).`
+}
+const FETCH_STATUS_ICON: Record<string, string> = { queued: "⏳", running: "🏃", done: "✅", failed: "⚠️", needs_code: "🔐", needs_login: "🔑", expired: "⌛", duplicate: "♻️" }
+async function listFetches(): Promise<string> {
+  const sb = getLeadsClient()
+  const { data } = await sb.from("inbox_fetches").select("id, status, provider, kind, url, error, attempts, next_try_at, created_at, files, inbox_messages(subject)").order("created_at", { ascending: false }).limit(10)
+  if (!data?.length) return "No link pulls yet. Reply “fetch” on a card, or type “fetch <url>”."
+  const lines = ["📥 <b>Last link pulls</b>"]
+  for (const f of data as Array<{ id: string; status: string; provider: string; url: string; error: string | null; attempts: number; next_try_at: string | null; created_at: string; files: unknown; inbox_messages: { subject: string | null } | { subject: string | null }[] | null }>) {
+    const m = Array.isArray(f.inbox_messages) ? f.inbox_messages[0] : f.inbox_messages
+    const n = Array.isArray(f.files) ? f.files.length : 0
+    const what = f.status === "done" ? `${n} file${n === 1 ? "" : "s"}` : f.status === "queued" && f.next_try_at ? `retry ${ago(f.next_try_at) || "soon"}` : f.error ? esc(String(f.error).slice(0, 60)) : ""
+    lines.push(`${FETCH_STATUS_ICON[f.status] || "•"} ${esc(f.status)} · ${esc(providerLabel(f.provider))} · “${esc(String(m?.subject || f.url).slice(0, 50))}” · ${ago(f.created_at)}${what ? ` · ${what}` : ""}`)
+  }
+  return lines.join("\n")
 }
 
 // ------------------------------------------------------------- deal follow-ups (Sonnet + the OM)
@@ -371,6 +476,11 @@ export async function handleInboxCallback(data: string): Promise<InboxCallbackRe
     await sb.from("inbox_rules").update({ mode: "manual", approvals_in_row: 0, updated_at: now }).eq("id", m[1])
     return { toast: "Rule is manual again", text: "↩️ Back to asking for that pattern." }
   }
+  // 🔁 Retry a link fetch: back on the queue, attempts reset; the worker opens the browser.
+  if ((m = new RegExp(`^ix:fr:(${UUID})$`).exec(data))) {
+    await requeueFetch(sb, m[1])
+    return { toast: "Retrying", clearButtons: true, text: "🔁 Retrying on the next pass (≤5 min)." }
+  }
   return { toast: "Unknown inbox action" }
 }
 
@@ -386,6 +496,9 @@ const HELP = [
   "inbox pause / inbox resume",
   "inbox alerts off|deadline|high — per-email pings for things people need from you (default off)",
   "inbox mute <email or domain> / inbox unmute … — silence a blast sender for good (or tap 🔇 on their card)",
+  "fetch <url> — pull the documents behind a DocuSign link and file them",
+  "fetch — the last 10 link pulls and where they stand",
+  "Reply “fetch” on any card to pull the documents behind the links in that email.",
   "Reply to any card with a question and I'll answer from the thread.",
 ].join("\n")
 
@@ -451,6 +564,9 @@ export async function handleInboxCommand(body: string): Promise<{ text: string; 
     const md = String(r.md)
     return { text: `📐 <b>Filing convention</b> (${r.status})\n<pre>${esc(md.slice(0, 3500))}</pre>${md.length > 3500 ? "\n…(truncated — full copy in briefs/INBOX_FILING_RULES.md)" : ""}` }
   }
+  // fetch <url> / fetch (Ryan 2026-10-12 — documents behind DocuSign links)
+  if ((m = /^fetch\s+(https?:\/\/\S+)\s*$/i.exec(t))) return { text: await enqueueManualUrl(m[1].replace(/[.,;:!?'"»”’]+$/, "")) }
+  if (/^fetch$/i.test(t)) return { text: await listFetches() }
   if ((m = /^file\s+(.+)$/i.exec(t))) {
     const q = m[1].trim()
     const { data } = await sb.from("inbox_files").select("final_folder, final_name, drive_url, filed_at, property_label, doc_type, status, proposed_folder, proposed_name").or(`property_label.ilike.%${q}%,final_folder.ilike.%${q}%,filename.ilike.%${q}%`).order("received_at", { ascending: false }).limit(25)

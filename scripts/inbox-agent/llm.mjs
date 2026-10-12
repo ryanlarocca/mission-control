@@ -172,6 +172,7 @@ Return JSON only:
   "priority": "high"|"normal"|"low",           // high = money/closing/signature/deadline within ~3 days or a direct deal from a person
   "category": "escrow"|"lender"|"agent"|"contractor"|"tax"|"insurance"|"vendor"|"signature"|"personal"|"other",
   "counterparty": "Lisa Nunes (Chicago Title)",
+  "document_links": ["https://..."],            // links where the documents LIVE (not attached here): a DocuSign / Authentisign envelope, a Zix secure-message pickup, Disclosures.io, Glide, Dotloop, ShareFile, a Dropbox/Drive share of transaction documents. Copy the URL exactly as it appears in the body. [] when none. Never unsubscribe, support, marketing or tracking links.
   "deal": null | {"tier": "direct"|"blast", "address": "...", "property_type": "sfr"|"multifamily"|"condo_townhome"|"land"|"commercial"|"other", "units": 6|null, "asking": 2150000|null, "off_market": true|false, "seller_motivated": true|false, "is_open_house_invite": true|false, "is_retail_listing": true|false, "notes": "..."},   // direct = a person emailing Ryan about a specific property they want him to buy; blast = mass marketing flyer/OM. off_market = not on MLS / pocket / pre-market; seller_motivated = probate, divorce, deferred maintenance, price reduced, must sell, tenant trouble, out-of-state owner etc.; is_retail_listing = an ordinary MLS-style marketing email with no angle
   "summary": "one line, ≤ 20 words, plain"
 }`

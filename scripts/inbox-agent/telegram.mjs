@@ -35,13 +35,22 @@ async function call(method, body) {
   }
 }
 
-/** rows = [[{text,data}], ...]. Returns message_id or null. */
+/** One inline button: {text, data} → callback button, {text, url} → URL button
+ *  (link-fetch cards open the DocuSign envelope straight from Telegram). */
+export function tgButton(b) {
+  return b.url ? { text: b.text, url: b.url } : { text: b.text, callback_data: b.data }
+}
+export function tgKeyboard(rows) {
+  return { inline_keyboard: rows.map((r) => r.map(tgButton)) }
+}
+
+/** rows = [[{text,data} | {text,url}], ...]. Returns message_id or null. */
 export async function tgSend(text, { rows = [], replyTo = null, html = true, dryRun = false } = {}) {
   if (dryRun) {
     console.log("---- TELEGRAM (dry run) ----\n" + text + (rows.length ? "\nbuttons: " + JSON.stringify(rows) : ""))
     return null
   }
-  const reply_markup = rows.length ? { inline_keyboard: rows.map((r) => r.map((b) => ({ text: b.text, callback_data: b.data }))) } : undefined
+  const reply_markup = rows.length ? tgKeyboard(rows) : undefined
   const base = { text: text.slice(0, 4000), reply_markup, disable_web_page_preview: true }
   if (replyTo) Object.assign(base, { reply_to_message_id: replyTo, allow_sending_without_reply: true })
   let out = await call("sendMessage", html ? { ...base, parse_mode: "HTML" } : base)
@@ -69,7 +78,7 @@ export async function tgSendDocument(filename, content, caption, { rows = [], dr
   form.append("document", new Blob([content], { type: "text/markdown" }), filename)
   if (caption) form.append("caption", caption.slice(0, 1000))
   if (rows.length) {
-    form.append("reply_markup", JSON.stringify({ inline_keyboard: rows.map((r) => r.map((b) => ({ text: b.text, callback_data: b.data }))) }))
+    form.append("reply_markup", JSON.stringify(tgKeyboard(rows)))
   }
   try {
     const res = await fetch(`https://api.telegram.org/bot${t}/sendDocument`, { method: "POST", body: form })

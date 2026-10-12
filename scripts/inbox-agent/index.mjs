@@ -6,7 +6,11 @@
 //                        lib/inboxAgent.ts) → upload to Drive, learn rules,
 //                        regenerate the convention doc.
 //   2. pollInbox       — new mail on ryan@lrghomes.com → classify (Haiku) →
-//                        attachment proposals / open loops / deal screens.
+//                        attachment proposals / open loops / deal screens;
+//                        document links (DocuSign) are queued in inbox_fetches.
+//   2b. runFetches     — open queued links in headless Chrome, pull the PDFs
+//                        and run them through the same filing pipeline
+//                        (briefs/BRIEF_INBOX_LINK_FETCH_2026-10-12.md).
 //   3. resolveLoops    — close loops Ryan answered (sent mail) or that expired.
 //   4. interviewStep   — before any filing: ask Ryan one document at a time
 //                        where it goes, then write + approve the convention.
@@ -22,7 +26,8 @@
 //   node scripts/inbox-agent/index.mjs --drive-check  # prove the Drive share + DWD scope
 //   node scripts/inbox-agent/index.mjs --status       # counts
 //   node scripts/inbox-agent/index.mjs --pause | --resume
-//   flags: --dry-run (no Telegram, no Drive writes, no DB writes for new rows), --limit=N
+//   flags: --dry-run (no Telegram, no Drive writes, no DB writes for new rows; link fetches
+//          still run in the browser and land in /tmp/inbox-fetch), --limit=N, --message=<gmail id>
 import crypto from "node:crypto"
 import fs from "node:fs"
 import path from "node:path"
@@ -40,6 +45,8 @@ import {
   changePrompt, classifyPrompt, complete, completeJson, filingPrompt, rulesPrompt, screenPrompt, verifyPrompt,
 } from "./llm.mjs"
 import { destinationFor, filingDecision, isPurchaseDoc, nextSequence, refineDocType, stageOf, withTimeSuffix } from "./filing.mjs"
+import { MAX_FETCH_ATTEMPTS, documentLinks, fetchDocuments, nextTryAt, providerLabel, readFetchedBytes, saveFetchedBytes } from "./fetch/index.mjs"
+import { envelopeMatches, loopEligible, normalizeEnvelope } from "./loops.mjs"
 
 // ------------------------------------------------------------------ args
 const argv = process.argv.slice(2)
@@ -353,13 +360,33 @@ function relevantAttachments(msg, cls) {
   return out
 }
 
+/** Documents pulled from behind a link → the shape relevantAttachments produces.
+ *  Same logo/size filters; the "classifier said irrelevant" skip does not apply
+ *  (Ryan asked for these documents by following the link), but every file still
+ *  goes through refineDocType → filingDecision → verifyProperty like an attachment. */
+function fetchedDocs(files, msg, cls) {
+  const byName = new Map((cls?.attachments || []).map((a) => [a.filename, a]))
+  const out = []
+  for (const f of files) {
+    const size = f.bytes?.length || 0
+    if (!size || size > MAX_ATTACHMENT_BYTES) continue
+    if (f.mime === "application/zip") continue // unzip failed — nothing to file
+    if (/^image\//.test(f.mime) && size < 40 * 1024) continue
+    const c = byName.get(f.filename)
+    const cleanName = f.filename.replace(/^\.+/, "")
+    const docType = refineDocType(cleanName, c?.doc_type || (/\.pdf$/i.test(f.filename) ? "other" : /\.(csv|xlsx?)$/i.test(f.filename) ? "marketing_list" : "photos"), msg.from.email, msg.subject)
+    out.push({ filename: f.filename, mime: f.mime, size, bytes: f.bytes, attachmentId: null, partId: null, inline: false, cleanName, doc_type: docType, stage: c?.stage || null, description: c?.description || "", signed: c?.signed ?? null, property_label: c?.property_label || cls?.property?.label || null })
+  }
+  return out
+}
+
 /** Not a transaction document → remembered (so `find` and the teach-back can see it) but never filed, never a card. */
-async function recordIgnored(msg, att, why) {
+async function recordIgnored(msg, att, why, { source = "attachment", fetchId = null } = {}) {
   if (DRY) return log(`ignore ${att.filename}: ${why}`)
   await sb().from("inbox_files").insert({
-    gmail_id: msg.id, thread_id: msg.threadId, attachment_id: att.attachmentId, part_id: att.partId, filename: att.filename, mime: att.mime, size_bytes: att.size || 0, sha256: null,
+    gmail_id: msg.id, thread_id: msg.threadId, attachment_id: att.attachmentId || null, part_id: att.partId || null, filename: att.filename, mime: att.mime, size_bytes: att.size || 0, sha256: null,
     sender: msg.from.email, subject: msg.subject, received_at: msg.internalDate, property_key: propertyKey(att.property_label), property_label: att.property_label, doc_type: att.doc_type,
-    status: "ignored", error: why, resolved_at: isoNow(),
+    status: "ignored", error: why, resolved_at: isoNow(), source, fetch_id: fetchId,
   })
 }
 
@@ -408,36 +435,46 @@ async function deterministicDest(ctx, pf, att, msg, stage) {
   return dest ? { ...dest, folder: dest.folder.replace(/^Properties\/[^/]+/, pf.path) } : null
 }
 
-/** One confirmation per email for everything filed straight in (no approval card). */
-async function postFiledConfirmation(ctx, msg, filed) {
-  if (!filed.length) return
-  const who = msg.from.name || msg.from.email
-  const lines = [`🗂 <b>Filed ${filed.length === 1 ? "1 document" : `${filed.length} documents`}</b> from ${esc(who)} · ${ptDateLabel(msg.internalDate)} · “${esc(shortSubject(msg.subject))}”`]
+/** The per-document lines of a filed-confirmation card (shared with the link-fetch card). */
+function filedLines(filed) {
+  const lines = []
   for (const f of filed) {
     lines.push(`• <a href="${f.url}">${esc(f.folder.replace(/^Properties\//, ""))}/${esc(f.name)}</a>`)
     if (f.diff) lines.push(`  <i>${esc(f.diff)}</i>`)
   }
+  return lines
+}
+function undoRows(filed) {
+  return filed.length && filed.length <= 3 ? filed.map((f) => [{ text: `↩️ Undo ${f.name.slice(0, 28)}`, data: `ix:fu:${f.row.id}` }]) : []
+}
+
+/** One confirmation per email for everything filed straight in (no approval card). */
+async function postFiledConfirmation(ctx, msg, filed) {
+  if (!filed.length) return
+  const who = msg.from.name || msg.from.email
+  const lines = [`🗂 <b>Filed ${filed.length === 1 ? "1 document" : `${filed.length} documents`}</b> from ${esc(who)} · ${ptDateLabel(msg.internalDate)} · “${esc(shortSubject(msg.subject))}”`, ...filedLines(filed)]
   lines.push(`Reply to this card to move or rename any of them.`)
-  const rows = filed.length <= 3 ? filed.map((f) => [{ text: `↩️ Undo ${f.name.slice(0, 28)}`, data: `ix:fu:${f.row.id}` }]) : []
-  const mid = await tgSend(lines.join("\n"), { rows, dryRun: DRY })
+  const mid = await tgSend(lines.join("\n"), { rows: undoRows(filed), dryRun: DRY })
   if (!DRY && mid) await sb().from("inbox_files").update({ tg_message_id: mid }).in("id", filed.map((f) => f.row.id))
 }
 
-/** Download, hash, dedupe, insert an inbox_files row. Returns {row, bytes} or null. */
-async function recordAttachment(ctx, msg, att, cls, status) {
-  const bytes = await getAttachmentBytes(ctx.gmail, msg.id, att.attachmentId)
+/** Download (or take att.bytes for a fetched document), hash, dedupe, insert an inbox_files row. Returns {row, bytes} or null. */
+async function recordAttachment(ctx, msg, att, cls, status, { source = "attachment", fetchId = null } = {}) {
+  const bytes = att.bytes || (await getAttachmentBytes(ctx.gmail, msg.id, att.attachmentId))
   const hash = sha256(bytes)
   const { data: dup } = await sb().from("inbox_files").select("id, status, final_folder, final_name, proposed_folder, proposed_name").eq("sha256", hash).in("status", ["filed", "pending", "approved", "waiting", "interview", "changed", "change_requested"]).limit(1)
   const label = att.property_label || cls?.property?.label || null
   const row = {
     gmail_id: msg.id,
     thread_id: msg.threadId,
-    attachment_id: att.attachmentId,
-    part_id: att.partId,
+    attachment_id: att.attachmentId || null,
+    part_id: att.partId || null,
     filename: att.filename,
     mime: att.mime,
     size_bytes: bytes.length,
     sha256: hash,
+    source,
+    fetch_id: fetchId,
     sender: msg.from.email,
     subject: msg.subject,
     received_at: msg.internalDate,
@@ -531,11 +568,18 @@ async function postDeferred(ctx) {
   }
 }
 
-/** Upload one file (bytes re-fetched from Gmail). Returns {ok, url, error}. */
-async function fileToDrive(ctx, row, folder, name, { suffixOnExisting = false } = {}) {
+/** Bytes for an inbox_files row: Gmail for an attachment, the on-disk fetch store for a document pulled from a link. */
+async function bytesForRow(ctx, row) {
+  if (row.attachment_id) return getAttachmentBytes(ctx.gmail, row.gmail_id, row.attachment_id)
+  if (row.fetch_id && row.sha256) return readFetchedBytes(row.fetch_id, row.sha256)
+  throw new Error(`no bytes for ${row.filename}: no Gmail attachment and no fetch on file`)
+}
+
+/** Upload one file (bytes re-fetched from Gmail / the fetch store unless passed in). Returns {ok, url, error}. */
+async function fileToDrive(ctx, row, folder, name, { suffixOnExisting = false, bytes: given = null } = {}) {
   if (!ctx.drive || !ctx.rootId) return { ok: false, error: `Drive not available — ${ctx.driveErr || "setup incomplete"}` }
   try {
-    const bytes = await getAttachmentBytes(ctx.gmail, row.gmail_id, row.attachment_id)
+    const bytes = given || (await bytesForRow(ctx, row))
     if (sha256(bytes) !== row.sha256) warn(`hash changed for ${row.filename}`)
     const { id: folderId, created } = await resolvePath(ctx.drive, ctx.rootId, folder, { create: !DRY })
     if (!folderId) return { ok: false, error: `folder ${folder} missing (dry run)` }
@@ -810,6 +854,264 @@ async function handleSupabaseAlert(ctx, msg) {
   await tgSend(advisorSummary(r, esc), { dryRun: DRY })
 }
 
+/**
+ * The filing pipeline for one email's documents — attachments (`docs` from
+ * relevantAttachments) or documents pulled from behind a link (`docs` from
+ * fetchedDocs, each carrying `bytes`). Ryan 2026-10-02: only the transaction
+ * whitelist is filed; the property comes from the PDF, one email = one
+ * property; whitelisted docs on a known property file straight in with a
+ * confirmation (no approval card); questions only when the property is new or
+ * unclear. Both paths produce identical inbox_files rows apart from source.
+ * Returns { filed, pdfDocs, outcomes }.
+ */
+async function fileDocuments(ctx, msg, cls, docs, { source = "attachment", fetchId = null } = {}) {
+  const kind = cls?.kind || "human"
+  const rules = await getSetting("rules")
+  const rulesApproved = rules.status === "approved"
+  const recOpts = { source, fetchId }
+  const pdfDocs = []
+  const batch = []
+  const filed = []
+  const outcomes = [] // [{filename, outcome, why}] — the link-fetch card lists what happened to every file
+  const note = (att, outcome, why = "") => outcomes.push({ filename: att.cleanName || att.filename, outcome, why })
+  let property = cls?.property?.label || null // the email's property; refined by the first verified PDF
+  for (const att of docs) {
+    const isDeal = cls?.deal && (kind === "deal_lead" || kind === "broker_blast")
+    const stage0 = stageOf({ filename: att.cleanName, subject: msg.subject, modelStage: att.stage })
+    const pre = filingDecision(att.doc_type, stage0)
+    if (!pre.file && !/^(evidence_of_insurance|insurance_policy|loan_docs)$/.test(att.doc_type) && !(isDeal && /^application\/pdf$/.test(att.mime))) {
+      await recordIgnored(msg, att, pre.why, recOpts)
+      note(att, "ignored", pre.why)
+      continue
+    }
+    const rec = await recordAttachment(ctx, msg, att, cls, rulesApproved ? "pending" : "waiting", recOpts)
+    if (!rec) continue
+    if (/^application\/pdf$/.test(att.mime)) pdfDocs.push({ kind: "pdf", data: rec.bytes, mime: att.mime, name: att.filename })
+    if (rec.dup) {
+      log(`duplicate: ${att.filename} (matches ${rec.dup.id})`)
+      note(att, "duplicate", rec.dup.final_name ? `already filed as ${rec.dup.final_name}` : "already on file")
+      continue
+    }
+    if (!pre.file && !/^(evidence_of_insurance|insurance_policy|loan_docs)$/.test(att.doc_type)) {
+      // OM / flyer on a deal email: kept for the screen, never filed.
+      if (!DRY) await sb().from("inbox_files").update({ status: "ignored", error: pre.why, resolved_at: isoNow() }).eq("id", rec.row.id)
+      note(att, "ignored", pre.why)
+      continue
+    }
+    if (!rulesApproved) {
+      note(att, "waiting", "queued until the filing convention is approved")
+      continue
+    }
+
+    // Property from the document itself.
+    let verify = null
+    if (/^application\/pdf$/.test(att.mime) && att.doc_type !== "marketing_list") verify = await verifyProperty(ctx, rec.bytes, att.cleanName)
+    const vLabel = labelFromVerify(verify)
+    const stage = stageOf({ filename: att.cleanName, subject: msg.subject, modelStage: att.stage, verifyStage: verify?.stage })
+    const decision = filingDecision(att.doc_type, stage)
+    if (!decision.file) {
+      if (!DRY) await sb().from("inbox_files").update({ status: "ignored", error: decision.why, resolved_at: isoNow() }).eq("id", rec.row.id)
+      log(`ignore ${att.filename}: ${decision.why}`)
+      note(att, "ignored", decision.why)
+      continue
+    }
+    if (vLabel && property && !keysMatch(propertyKey(vLabel), propertyKey(property)) && (verify?.confidence ?? 1) >= 0.6) {
+      await postAskCard(ctx, rec.row, `The PDF says ${vLabel} but the email looks like ${property}. Which property does “${att.cleanName}” belong to?`, null)
+      note(att, "asked", `PDF says ${vLabel}, email says ${property}`)
+      continue
+    }
+    if (!property && vLabel) property = vLabel
+    if (property && !DRY) await sb().from("inbox_files").update({ property_label: property, property_key: propertyKey(property), doc_type: att.doc_type }).eq("id", rec.row.id)
+    const rowNow = { ...rec.row, property_label: property, property_key: propertyKey(property), doc_type: att.doc_type }
+
+    if (att.doc_type === "marketing_list" || !property) {
+      // Not a property document, or no property anywhere → the learned-rules path (card or question).
+      const p = await proposeFor(ctx, rowNow, rec.bytes, cls)
+      if (!p) await postAskCard(ctx, rowNow, `Which property (or folder) is “${att.cleanName}” for?`, null)
+      else if (!property && att.doc_type !== "marketing_list" && !p.question) await postAskCard(ctx, rowNow, `Which property is “${att.cleanName}” for?`, { folder: p.folder, name: p.name })
+      else if (docs.length >= 3 && !(p.rule && p.rule.mode === "auto") && !p.question && p.folder) batch.push({ row: rowNow, p })
+      else await routeProposal(ctx, rowNow, p)
+      note(att, "asked", property ? "proposal card" : "property unknown")
+      continue
+    }
+    const pf = propertyFolderFor(ctx, property)
+    if (!pf) {
+      const guessFolder = `Properties/${property}`
+      await postAskCard(ctx, rowNow, `New property? I don't have a folder for ${property}. Create Properties/${property}/ with the standard subfolders?`, { folder: `${guessFolder}/${decision.sub}`, name: att.cleanName })
+      note(att, "asked", `no folder for ${property}`)
+      continue
+    }
+    const dest = await deterministicDest(ctx, pf, att, msg, stage)
+    if (!dest) continue
+    const r = await fileToDrive(ctx, rowNow, dest.folder, dest.name, { suffixOnExisting: true, bytes: rec.bytes })
+    if (!r.ok) {
+      await tgSend(`⚠️ Couldn't file <b>${esc(dest.name)}</b> → ${esc(dest.folder)} — ${esc(r.error)}`, { dryRun: DRY })
+      note(att, "error", r.error)
+      continue
+    }
+    let diff = null
+    if (/^(closing_statement|net_sheet)$/.test(att.doc_type) && r.folderId && !DRY) diff = await statementDiff(ctx, r.folderId, rec.bytes, r.name || dest.name, pf.name)
+    filed.push({ row: rowNow, folder: dest.folder, name: r.name || dest.name, url: r.url, diff })
+    note(att, "filed", `${dest.folder}/${r.name || dest.name}`)
+  }
+  if (batch.length >= 2) await postBatch(ctx, msg, batch)
+  else for (const it of batch) await routeProposal(ctx, it.row, it.p)
+  return { filed, pdfDocs, outcomes }
+}
+
+// ------------------------------------------------------------------ 2b. documents behind links
+// Ryan 2026-10-12: the DocuSign link is "an ongoing friction point" — the
+// Completed email often arrives without the PDF, so the agent used to post
+// "grab it from the DocuSign link" and Ryan did it by hand. Now the link is
+// queued (inbox_fetches, one row per distinct URL) and runFetches opens it in
+// headless Chrome on the mini. The old notice is the failure card.
+const FETCH_KINDS = new Set(["docusign_request", "docusign_completed", "esign_completed"])
+
+async function enqueueFetches(ctx, msg, cls, kind, atts = []) {
+  const reported = Array.isArray(cls?.document_links) ? cls.document_links : []
+  if (!FETCH_KINDS.has(kind) && !reported.length) return
+  const links = documentLinks(msg, reported)
+  if (!links.length) {
+    if (kind === "docusign_completed" && !atts.length) await tgSend(`🖊 DocuSign completed — “${esc(shortSubject(msg.subject))}” — no signed PDF attached and no envelope link I can open; grab it from the email.`, { dryRun: DRY })
+    return
+  }
+  for (const link of links) {
+    if (DRY) {
+      // --dry-run: the fetch runs right here (browser and all) with no DB
+      // writes and no Drive upload; files land in /tmp/inbox-fetch/<job>/files.
+      await runFetchJob(ctx, { id: `dry-${msg.id}`, url: link.url, provider: link.provider, gmail_id: msg.id, thread_id: msg.threadId, kind, attempts: 0, access_code: null }, msg, cls)
+      continue
+    }
+    const url_sha256 = sha256(link.url)
+    const { data: existing } = await sb().from("inbox_fetches").select("id, status").eq("url_sha256", url_sha256).maybeSingle()
+    if (existing) {
+      log(`fetch: duplicate link (${existing.status} · ${existing.id}) ${link.url.slice(0, 70)}`)
+      continue
+    }
+    const { error } = await sb().from("inbox_fetches").insert({ gmail_id: msg.id, thread_id: msg.threadId, url: link.url, url_sha256, provider: link.provider, kind, status: "queued" })
+    if (error) throw new Error(`inbox_fetches insert: ${error.message}`)
+    log(`fetch queued: ${link.provider} · ${shortSubject(msg.subject, 50)} · ${link.url.slice(0, 70)}`)
+  }
+}
+
+/** The email behind a fetch row — or a synthetic one for `fetch <url>` typed in Telegram. */
+async function messageForFetch(ctx, job) {
+  if (/^manual:/.test(job.gmail_id || "")) {
+    const { data: m } = await sb().from("inbox_messages").select("subject, internal_date, classification").eq("gmail_id", job.gmail_id).maybeSingle()
+    let host = "link"
+    try {
+      host = new URL(job.url).hostname
+    } catch {}
+    const msg = { id: job.gmail_id, threadId: job.thread_id || null, labelIds: [], internalDate: m?.internal_date || job.created_at || isoNow(), from: { email: MAILBOX, name: "Ryan" }, to: MAILBOX, cc: "", subject: m?.subject || `fetch ${host}`, text: job.url, attachments: [] }
+    return { msg, cls: m?.classification || { kind: "manual", property: null } }
+  }
+  const msg = await getMessage(ctx.gmail, job.gmail_id)
+  const { data: m } = await sb().from("inbox_messages").select("classification").eq("gmail_id", job.gmail_id).maybeSingle()
+  return { msg, cls: m?.classification || null }
+}
+
+/** Up to 3 due jobs per pass; each one opens a browser, so this stays small. */
+async function runFetches(ctx) {
+  if (DRY) return // dry runs fetch inline from enqueueFetches (nothing is queued)
+  const { data: jobs, error } = await sb().from("inbox_fetches").select("*").eq("status", "queued").or(`next_try_at.is.null,next_try_at.lte.${isoNow()}`).order("created_at").limit(3)
+  if (error) {
+    warn("inbox_fetches read:", error.message)
+    return
+  }
+  for (const job of jobs || []) {
+    try {
+      const { msg, cls } = await messageForFetch(ctx, job)
+      await runFetchJob(ctx, job, msg, cls)
+    } catch (e) {
+      // Ryan's rule: no silent failures on things he initiated.
+      warn(`fetch ${job.id} crashed:`, e.stack || e.message)
+      await failAttempt(job, (job.attempts || 0) + 1, { error: e.message, screenshot: null }, `🧨 ${e.message}`)
+    }
+  }
+}
+
+/** Retry with backoff (5 min, 30 min), then give up with a card. */
+async function failAttempt(job, attempts, r, reason) {
+  const label = providerLabel(job.provider)
+  const shot = r.screenshots?.at(-1) || r.screenshot || null
+  const next = attempts < MAX_FETCH_ATTEMPTS ? nextTryAt(attempts) : null
+  if (next) {
+    log(`fetch ${job.id}: attempt ${attempts} failed (${r.error}) — retry at ${next}${shot ? ` · ${shot}` : ""}`)
+    if (!DRY) await sb().from("inbox_fetches").update({ status: "queued", attempts, error: r.error, screenshot: shot, next_try_at: next }).eq("id", job.id)
+    return
+  }
+  const mid = await tgSend(`⚠️ Couldn't pull the documents from ${label} (${esc(reason)}) — open the link.`, { rows: [[{ text: "Open", url: job.url }, { text: "🔁 Retry", data: `ix:fr:${job.id}` }]], dryRun: DRY })
+  if (!DRY) await sb().from("inbox_fetches").update({ status: "failed", attempts, error: r.error, screenshot: shot, tg_message_id: mid, resolved_at: isoNow() }).eq("id", job.id)
+  warn(`fetch ${job.id}: failed after ${attempts} attempts — ${r.error}${shot ? ` · screenshot ${shot}` : ""}`)
+}
+
+async function runFetchJob(ctx, job, msg, cls) {
+  const label = providerLabel(job.provider)
+  const subj = shortSubject(msg.subject)
+  const attempts = (job.attempts || 0) + 1
+  if (!DRY) await sb().from("inbox_fetches").update({ status: "running", started_at: isoNow(), attempts }).eq("id", job.id)
+  log(`fetch ${job.id}: ${label} attempt ${attempts} · “${subj}” · ${job.url.slice(0, 70)}`)
+  const r = await fetchDocuments({ url: job.url, provider: job.provider, accessCode: job.access_code || null, jobId: job.id, log })
+  const shot = r.screenshots?.at(-1) || null
+  const openBtn = { text: `${job.kind === "docusign_request" ? "🖊 " : ""}Open in ${label}`, url: job.url }
+  if (!r.ok) {
+    if (r.needs === "access_code") {
+      const text = `🔐 ${label} wants an access code for “${esc(subj)}”. Reply to this card with  code: 1234  and I'll pull the documents.`
+      const mid = await tgSend(text, { rows: [[openBtn]], dryRun: DRY })
+      if (!DRY) await sb().from("inbox_fetches").update({ status: "needs_code", error: r.error, screenshot: shot, tg_message_id: mid }).eq("id", job.id)
+      log(`fetch ${job.id}: needs access code${shot ? ` · ${shot}` : ""}`)
+      return
+    }
+    if (r.needs === "login" || r.needs === "expired") {
+      const status = r.needs === "login" ? "needs_login" : "expired"
+      const reason = r.needs === "login" ? "it wants a login or ID check" : "the envelope is expired, voided or no longer accessible"
+      const mid = await tgSend(`⚠️ Couldn't pull the documents from ${label} (${reason}) — open the link.`, { rows: [[{ text: "Open", url: job.url }, { text: "🔁 Retry", data: `ix:fr:${job.id}` }]], dryRun: DRY })
+      if (!DRY) await sb().from("inbox_fetches").update({ status, error: r.error, screenshot: shot, tg_message_id: mid, resolved_at: isoNow() }).eq("id", job.id)
+      warn(`fetch ${job.id}: ${status} — ${r.error}${shot ? ` · screenshot ${shot}` : ""}`)
+      return
+    }
+    await failAttempt(job, attempts, r, r.error)
+    return
+  }
+
+  // Keep the bytes (a later ✅/✏️/↩️ re-reads them like an attachment), then
+  // file through the same pipeline as attachments.
+  const files = r.files
+  if (DRY) {
+    const dir = path.join("/tmp/inbox-fetch", String(job.id), "files")
+    fs.mkdirSync(dir, { recursive: true })
+    for (const f of files) fs.writeFileSync(path.join(dir, sanitizeFilename(f.filename)), f.bytes)
+    log(`fetch ${job.id}: dry run — ${files.length} file(s) in ${dir}`)
+  } else {
+    for (const f of files) saveFetchedBytes(job.id, f.bytes)
+  }
+  // The classifier saw an email with no attachments; run it once more with the
+  // pulled documents listed so each one gets a doc_type / property like an attachment would.
+  const cls2 = files.length ? await classify(ctx, { ...msg, attachments: files.map((f) => ({ filename: f.filename, mime: f.mime, size: f.bytes.length, inline: false })) }) : null
+  const merged = { ...(cls || {}), attachments: cls2?.attachments || cls?.attachments || [], property: cls?.property || cls2?.property || null }
+  if (!DRY && cls2) await sb().from("inbox_messages").update({ classification: merged }).eq("gmail_id", msg.id)
+  const docs = fetchedDocs(files, msg, merged)
+  const { filed, outcomes } = await fileDocuments(ctx, msg, merged, docs, { source: job.kind === "manual" ? "manual" : job.provider, fetchId: DRY ? null : job.id })
+
+  const lines = [`📥 <b>Pulled ${files.length === 1 ? "1 document" : `${files.length} documents`} from ${label}</b> — “${esc(subj)}”`, ...filedLines(filed)]
+  for (const o of outcomes.filter((x) => x.outcome !== "filed")) lines.push(`• ${esc(o.filename)} — ${o.outcome}${o.why ? ` (${esc(shortSubject(o.why, 80))})` : ""}`)
+  if (!files.length) lines.push("The envelope opened but held no documents to download.")
+  if (filed.length) lines.push(`Reply to this card to move or rename any of them.`)
+  const rows = [...(job.kind === "docusign_request" ? [[openBtn]] : []), ...undoRows(filed)]
+  const mid = await tgSend(lines.join("\n"), { rows, dryRun: DRY })
+  if (!DRY) {
+    if (mid && filed.length) await sb().from("inbox_files").update({ tg_message_id: mid }).in("id", filed.map((f) => f.row.id))
+    const { data: rowsForJob } = await sb().from("inbox_files").select("id, filename, sha256").eq("fetch_id", job.id)
+    const byHash = new Map((rowsForJob || []).map((x) => [x.sha256, x.id]))
+    const summary = files.map((f) => {
+      const hash = sha256(f.bytes)
+      return { filename: f.filename, mime: f.mime, size: f.bytes.length, sha256: hash, inbox_file_id: byHash.get(hash) || null }
+    })
+    await sb().from("inbox_fetches").update({ status: "done", attempts, files: summary, screenshot: shot, tg_message_id: mid, resolved_at: isoNow(), error: null }).eq("id", job.id)
+  }
+  log(`fetch ${job.id}: done — ${files.length} file(s), ${filed.length} filed`)
+}
+
 async function handleMessage(ctx, msg) {
   let cls = await classify(ctx, msg)
   const kind = cls?.kind || "human"
@@ -822,95 +1124,17 @@ async function handleMessage(ctx, msg) {
   // needs something from Ryan is still a loop.
   if ((kind === "automated" || kind === "newsletter" || kind === "skip") && !(cls.needs_reply && !cls.solicitation)) return
 
-  const rules = await getSetting("rules")
-  const rulesApproved = rules.status === "approved"
-
-  // --- attachments. Ryan 2026-10-02: only the transaction whitelist is filed;
-  // the property comes from the PDF, one email = one property; whitelisted docs
-  // on a known property file straight in with a confirmation (no approval
-  // card); questions only when the property is new or unclear.
+  // --- attachments → the filing pipeline (shared with documents pulled from links).
   const atts = relevantAttachments(msg, cls)
-  const pdfDocs = []
-  const batch = []
-  const filed = []
-  let property = cls.property?.label || null // the email's property; refined by the first verified PDF
-  for (const att of atts) {
-    const isDeal = cls.deal && (kind === "deal_lead" || kind === "broker_blast")
-    const stage0 = stageOf({ filename: att.cleanName, subject: msg.subject, modelStage: att.stage })
-    const pre = filingDecision(att.doc_type, stage0)
-    if (!pre.file && !/^(evidence_of_insurance|insurance_policy|loan_docs)$/.test(att.doc_type) && !(isDeal && /^application\/pdf$/.test(att.mime))) {
-      await recordIgnored(msg, att, pre.why)
-      continue
-    }
-    const rec = await recordAttachment(ctx, msg, att, cls, rulesApproved ? "pending" : "waiting")
-    if (!rec) continue
-    if (/^application\/pdf$/.test(att.mime)) pdfDocs.push({ kind: "pdf", data: rec.bytes, mime: att.mime, name: att.filename })
-    if (rec.dup) {
-      log(`duplicate: ${att.filename} (matches ${rec.dup.id})`)
-      continue
-    }
-    if (!pre.file && !/^(evidence_of_insurance|insurance_policy|loan_docs)$/.test(att.doc_type)) {
-      // OM / flyer on a deal email: kept for the screen, never filed.
-      if (!DRY) await sb().from("inbox_files").update({ status: "ignored", error: pre.why, resolved_at: isoNow() }).eq("id", rec.row.id)
-      continue
-    }
-    if (!rulesApproved) continue
-
-    // Property from the document itself.
-    let verify = null
-    if (/^application\/pdf$/.test(att.mime) && att.doc_type !== "marketing_list") verify = await verifyProperty(ctx, rec.bytes, att.cleanName)
-    const vLabel = labelFromVerify(verify)
-    const stage = stageOf({ filename: att.cleanName, subject: msg.subject, modelStage: att.stage, verifyStage: verify?.stage })
-    const decision = filingDecision(att.doc_type, stage)
-    if (!decision.file) {
-      if (!DRY) await sb().from("inbox_files").update({ status: "ignored", error: decision.why, resolved_at: isoNow() }).eq("id", rec.row.id)
-      log(`ignore ${att.filename}: ${decision.why}`)
-      continue
-    }
-    if (vLabel && property && !keysMatch(propertyKey(vLabel), propertyKey(property)) && (verify?.confidence ?? 1) >= 0.6) {
-      await postAskCard(ctx, rec.row, `The PDF says ${vLabel} but the email looks like ${property}. Which property does “${att.cleanName}” belong to?`, null)
-      continue
-    }
-    if (!property && vLabel) property = vLabel
-    if (property && !DRY) await sb().from("inbox_files").update({ property_label: property, property_key: propertyKey(property), doc_type: att.doc_type }).eq("id", rec.row.id)
-    const rowNow = { ...rec.row, property_label: property, property_key: propertyKey(property), doc_type: att.doc_type }
-
-    if (att.doc_type === "marketing_list" || !property) {
-      // Not a property document, or no property anywhere → the learned-rules path (card or question).
-      const p = await proposeFor(ctx, rowNow, rec.bytes, cls)
-      if (!p) await postAskCard(ctx, rowNow, `Which property (or folder) is “${att.cleanName}” for?`, null)
-      else if (!property && att.doc_type !== "marketing_list" && !p.question) await postAskCard(ctx, rowNow, `Which property is “${att.cleanName}” for?`, { folder: p.folder, name: p.name })
-      else if (atts.length >= 3 && !(p.rule && p.rule.mode === "auto") && !p.question && p.folder) batch.push({ row: rowNow, p })
-      else await routeProposal(ctx, rowNow, p)
-      continue
-    }
-    const pf = propertyFolderFor(ctx, property)
-    if (!pf) {
-      const guessFolder = `Properties/${property}`
-      await postAskCard(ctx, rowNow, `New property? I don't have a folder for ${property}. Create Properties/${property}/ with the standard subfolders?`, { folder: `${guessFolder}/${decision.sub}`, name: att.cleanName })
-      continue
-    }
-    const dest = await deterministicDest(ctx, pf, att, msg, stage)
-    if (!dest) continue
-    const r = await fileToDrive(ctx, rowNow, dest.folder, dest.name, { suffixOnExisting: true })
-    if (!r.ok) {
-      await tgSend(`⚠️ Couldn't file <b>${esc(dest.name)}</b> → ${esc(dest.folder)} — ${esc(r.error)}`, { dryRun: DRY })
-      continue
-    }
-    let diff = null
-    if (/^(closing_statement|net_sheet)$/.test(att.doc_type) && r.folderId && !DRY) diff = await statementDiff(ctx, r.folderId, rec.bytes, r.name || dest.name, pf.name)
-    filed.push({ row: rowNow, folder: dest.folder, name: r.name || dest.name, url: r.url, diff })
-  }
-  if (batch.length >= 2) await postBatch(ctx, msg, batch)
-  else for (const it of batch) await routeProposal(ctx, it.row, it.p)
+  const { filed, pdfDocs } = await fileDocuments(ctx, msg, cls, atts, { source: "attachment" })
   await postFiledConfirmation(ctx, msg, filed)
+
+  // --- documents behind links (DocuSign first; briefs/BRIEF_INBOX_LINK_FETCH_2026-10-12.md)
+  await enqueueFetches(ctx, msg, cls, kind, atts)
 
   // --- secure-portal notices with nothing attached
   if (kind === "zix" && !atts.length && /portal|secure message center|view message|retrieve/i.test(msg.text)) {
     await tgSend(`🔐 Zix secure message from ${esc(msg.from.name || msg.from.email)} — “${esc(shortSubject(msg.subject))}” — no attachment came through; it's waiting in the Zix portal.`, { dryRun: DRY })
-  }
-  if (kind === "docusign_completed" && !atts.length) {
-    await tgSend(`🖊 DocuSign completed — “${esc(shortSubject(msg.subject))}” — but the signed PDF wasn't attached; grab it from the DocuSign link in the email.`, { dryRun: DRY })
   }
 
   // --- open loops (things Ryan owes someone)
@@ -930,7 +1154,9 @@ async function handleMessage(ctx, msg) {
   } else {
     // A person who pitched Ryan a deal directly is owed an answer, whatever the screen says.
     if (cls.deal?.tier === "direct" && !cls.needs_reply) cls = { ...cls, needs_reply: true, ask: cls.ask || `Reply to ${cls.counterparty || msg.from.name || msg.from.email} about ${cls.deal.address || "their deal"}`, category: cls.category || "agent" }
-    if (cls.needs_reply || kind === "docusign_request") await upsertLoop(ctx, msg, cls, kind)
+    // Ryan 2026-10-12: a "Completed:" envelope never opens a loop — it only closes one (loops.mjs).
+    if (loopEligible(kind) && (cls.needs_reply || kind === "docusign_request")) await upsertLoop(ctx, msg, cls, kind)
+    else if (!loopEligible(kind)) log(`no loop: ${kind} is a completion event`)
   }
 
   // --- deals
@@ -938,9 +1164,7 @@ async function handleMessage(ctx, msg) {
 }
 
 // ------------------------------------------------------------------ loops
-function normalizeEnvelope(subject) {
-  return String(subject || "").replace(/^(re|fw|fwd):\s*/gi, "").replace(/^(completed|declined|reminder|please sign|please docusign|signing complete):?\s*/gi, "").replace(/^please sign:?\s*/i, "").toLowerCase().replace(/[^a-z0-9]/g, "")
-}
+// normalizeEnvelope / envelopeMatches / loopEligible live in loops.mjs (unit-tested).
 async function upsertLoop(ctx, msg, cls, kind) {
   const isSig = kind === "docusign_request"
   const category = isSig ? "signature" : cls.category || "other"
@@ -984,10 +1208,12 @@ async function upsertLoop(ctx, msg, cls, kind) {
 }
 async function resolveSignatureLoops(msg) {
   if (DRY) return
-  const { data: sig } = await sb().from("inbox_loops").select("id, subject, tg_message_id").eq("category", "signature").in("status", ["open", "snoozed"]).limit(50)
-  const key = normalizeEnvelope(msg.subject)
+  // Ryan 2026-10-12: also closes loops whose subject still carries a leading
+  // "Completed:" (every stacked prefix is stripped before comparing).
+  const { data: sig } = await sb().from("inbox_loops").select("id, subject, tg_message_id").eq("category", "signature").in("status", ["open", "snoozed", "acknowledged"]).limit(50)
   for (const l of sig || []) {
-    if (normalizeEnvelope(l.subject) === key) {
+    if (envelopeMatches(l.subject, msg.subject)) {
+      log(`loop resolved by completion: ${l.id} (${shortSubject(l.subject, 50)})`)
       await sb().from("inbox_loops").update({ status: "resolved_by_event", resolved_at: isoNow() }).eq("id", l.id)
       await tgClearButtons(l.tg_message_id)
     }
@@ -1335,7 +1561,7 @@ async function driveCheck(ctx) {
 }
 async function status() {
   const counts = {}
-  for (const [t, col] of [["inbox_messages", "kind"], ["inbox_files", "status"], ["inbox_loops", "status"], ["inbox_interview", "status"], ["inbox_rules", "mode"], ["inbox_deal_screens", "verdict"]]) {
+  for (const [t, col] of [["inbox_messages", "kind"], ["inbox_files", "status"], ["inbox_fetches", "status"], ["inbox_loops", "status"], ["inbox_interview", "status"], ["inbox_rules", "mode"], ["inbox_deal_screens", "verdict"]]) {
     const rows = await fetchAll(t, col)
     counts[t] = rows.reduce((m, r) => ((m[r[col] || "null"] = (m[r[col] || "null"] || 0) + 1), m), {})
   }
@@ -1375,6 +1601,7 @@ async function main() {
   await postDeferred(ctx)
   if (flag("interview")) await seedInterview(ctx)
   if (!flag("no-poll")) await pollInbox(ctx)
+  await runFetches(ctx)
   await resolveLoops(ctx)
   await interviewStep(ctx)
   await maybeDigest(ctx, flag("digest-now"))

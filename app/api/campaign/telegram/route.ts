@@ -678,9 +678,9 @@ export async function POST(request: Request) {
   }
 
   // Inbox Agent typed commands (2026-09-24): inbox / open / file <addr> /
-  // find <words> / rules / screen <text> / inbox pause|resume. Standalone,
-  // no reply-to. Anything unrecognised falls through untouched.
-  if (!msg.reply_to_message && /^(inbox\b|open$|file\s|find\s|rules$|screen\s|(pause|stop|resume|start) inbox$|what'?s (open|waiting))/i.test(body)) {
+  // find <words> / rules / screen <text> / inbox pause|resume / fetch [url]
+  // (2026-10-12). Standalone, no reply-to. Anything unrecognised falls through untouched.
+  if (!msg.reply_to_message && /^(inbox\b|open$|file\s|find\s|rules$|screen\s|fetch(\s|$)|(pause|stop|resume|start) inbox$|what'?s (open|waiting))/i.test(body)) {
     const job = (async () => {
       const out = await handleInboxCommand(body)
       if (!out) return
