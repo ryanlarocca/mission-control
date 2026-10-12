@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react"
 import { ChevronDown, ChevronRight, Loader2 } from "lucide-react"
+import { fmtBatch, fmtDays, weeklySeries, weeklyText, type TimingBatch } from "@/lib/mailTiming"
 
 // Direct-mail segment report — which slices of a mailed list actually
 // produced responders. Reads GET /api/campaigns/[id]/segments lazily on
@@ -47,6 +48,11 @@ const DIMENSIONS: { key: string; label: string }[] = [
   { key: "out_of_county",         label: "Out of county" },
   { key: "prior_mail",            label: "Prior letter" },
 ]
+
+interface TimingPayload {
+  has_mail_records: boolean
+  batches: TimingBatch[]
+}
 
 // Dimensions whose segments have an inherent order — keep the API's order
 // (A, B, C / low, mid, high / year ranges) instead of sorting by rate.
@@ -186,10 +192,130 @@ export function CampaignSegmentsPanel({ campaignId }: { campaignId: string }) {
                 </table>
               </div>
               <div className="text-zinc-600">Segment rates count matched responders only.</div>
+              <TimingSection campaignId={campaignId} />
             </>
           )}
         </div>
       )}
     </div>
+  )
+}
+
+// Response timing by batch — days from arrival to the record's first
+// non-junk inbound (GET /api/campaigns/[id]/timing). Collapsed under the
+// Segments table; fetched once on first expand, same as the parent panel.
+// Until arrived_at / drop_date are stamped on the records every percentile
+// is "—" and the weekly bars are empty — pieces and responders still show.
+function TimingSection({ campaignId }: { campaignId: string }) {
+  const [open, setOpen] = useState(false)
+  const [data, setData] = useState<TimingPayload | null>(null)
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  const requestedRef = useRef(false)
+  useEffect(() => {
+    if (!open || requestedRef.current) return
+    requestedRef.current = true
+    let cancelled = false
+    setLoading(true)
+    fetch(`/api/campaigns/${campaignId}/timing`, { cache: "no-store" })
+      .then(async res => {
+        if (!res.ok) throw new Error(`HTTP ${res.status}`)
+        return await res.json() as TimingPayload
+      })
+      .then(payload => { if (!cancelled) { setData(payload); setError(null) } })
+      .catch(e => { if (!cancelled) setError(e instanceof Error ? e.message : String(e)) })
+      .finally(() => { if (!cancelled) setLoading(false) })
+    return () => { cancelled = true }
+  }, [open, campaignId])
+
+  const batches = data?.batches ?? []
+  const anyTimed = batches.some(b => b.median_days != null)
+
+  return (
+    <div className="pt-1">
+      <button
+        onClick={() => setOpen(v => !v)}
+        className="inline-flex items-center gap-1 text-zinc-400 hover:text-zinc-200 transition-colors"
+        title="Days from arrival to the first inbound, by batch"
+      >
+        {open ? <ChevronDown className="w-3 h-3" /> : <ChevronRight className="w-3 h-3" />}
+        Timing
+      </button>
+
+      {open && (
+        <div className="mt-2 space-y-2">
+          {loading && (
+            <div className="inline-flex items-center gap-1.5 text-zinc-500">
+              <Loader2 className="w-3 h-3 animate-spin" /> Loading timing…
+            </div>
+          )}
+          {error && (
+            <div className="rounded border border-red-900/50 bg-red-950/30 px-2 py-1.5 text-red-200">{error}</div>
+          )}
+          {data && !data.has_mail_records && (
+            <div className="text-zinc-500">No mailed records imported yet.</div>
+          )}
+          {data && data.has_mail_records && (
+            <>
+              <div className="rounded border border-zinc-800 overflow-x-auto">
+                <table className="w-full text-[11px]">
+                  <thead className="text-zinc-500 bg-zinc-900/50">
+                    <tr>
+                      <th className="text-left px-2 py-1 font-medium">Batch</th>
+                      <th className="text-right px-2 py-1 font-medium">Pieces</th>
+                      <th className="text-right px-2 py-1 font-medium">Responders</th>
+                      <th className="text-right px-2 py-1 font-medium">Median d</th>
+                      <th className="text-right px-2 py-1 font-medium">p25</th>
+                      <th className="text-right px-2 py-1 font-medium">p75</th>
+                      <th className="text-left px-2 py-1 font-medium">By week</th>
+                    </tr>
+                  </thead>
+                  <tbody className="text-zinc-300 tabular-nums">
+                    {batches.length === 0 && (
+                      <tr><td colSpan={7} className="px-2 py-1.5 text-zinc-600">No mailed batches.</td></tr>
+                    )}
+                    {batches.map(b => (
+                      <tr key={fmtBatch(b.batch)} className="border-t border-zinc-900 hover:bg-zinc-900/40">
+                        <td className="px-2 py-1 text-zinc-200">{fmtBatch(b.batch)}</td>
+                        <td className="px-2 py-1 text-right">{fmtInt(b.pieces)}</td>
+                        <td className="px-2 py-1 text-right">{fmtInt(b.responders)}</td>
+                        <td className="px-2 py-1 text-right text-emerald-300">{fmtDays(b.median_days)}</td>
+                        <td className="px-2 py-1 text-right text-zinc-400">{fmtDays(b.p25_days)}</td>
+                        <td className="px-2 py-1 text-right text-zinc-400">{fmtDays(b.p75_days)}</td>
+                        <td className="px-2 py-1"><WeeklyBars weekly={b.weekly} /></td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              <div className="text-zinc-600">
+                arrival = seed arrival stamp, else drop date
+                {batches.length > 0 && !anyTimed && " · no arrival dates stamped yet — days show once arrived_at or drop_date is set"}
+              </div>
+            </>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
+// Tiny inline histogram: one bar per whole week since arrival, scaled to
+// the batch's busiest week. "—" when nothing has an arrival date yet.
+function WeeklyBars({ weekly }: { weekly: Record<string, number> }) {
+  const series = weeklySeries(weekly)
+  if (series.length === 0) return <span className="text-zinc-600">—</span>
+  const max = Math.max(1, ...series.map(b => b.n))
+  return (
+    <span className="inline-flex items-end gap-px h-3 align-middle" title={weeklyText(weekly)}>
+      {series.map(b => (
+        <span
+          key={b.week}
+          className={`w-1 rounded-sm ${b.week < 0 ? "bg-amber-500/70" : "bg-emerald-400/70"}`}
+          style={{ height: `${Math.max(b.n > 0 ? 2 : 1, Math.round((b.n / max) * 12))}px` }}
+        />
+      ))}
+    </span>
   )
 }
