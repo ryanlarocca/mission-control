@@ -15,7 +15,7 @@ const sb = createClient(process.env.LRG_SUPABASE_URL, process.env.LRG_SUPABASE_S
 let q = sb.from("mail_records").select("id, record_id, arm, is_seed, arrived_at, drop_date").eq("campaign_id", campaign).eq("batch", batch)
 if (seedOnly) q = q.eq("is_seed", true)
 const rows = []
-for (let from = 0; ; from += 1000) { const { data, error } = await q.range(from, from + 999); if (error) throw error; rows.push(...data); if (data.length < 1000) break }
+for (let from = 0; ; from += 1000) { const { data, error } = await q.order("record_id").range(from, from + 999); if (error) throw error; rows.push(...data); if (data.length < 1000) break }
 const already = rows.filter((r) => r.arrived_at).length
 console.log(`batch ${batch}: ${rows.length} rows${seedOnly ? " (seeds only)" : ""} · ${already} already stamped · arms ${JSON.stringify(rows.reduce((a, r) => ((a[r.arm] = (a[r.arm] ?? 0) + 1), a), {}))}`)
 if (!rows.length) process.exit(2)

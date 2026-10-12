@@ -117,7 +117,8 @@ for (let i = 0; i < records.length; i += 500) {
 console.log()
 const dbRows = []
 for (let from = 0; ; from += 1000) {
-  const { data, error } = await sb.from("mail_records").select("record_id, arm, batch, is_seed").eq("campaign_id", campaign).range(from, from + 999)
+  // ORDER BY is load-bearing: PostgREST range paging without it returns overlapping pages (bit 2026-10-12).
+  const { data, error } = await sb.from("mail_records").select("record_id, arm, batch, is_seed").eq("campaign_id", campaign).order("record_id").range(from, from + 999)
   if (error) { console.error(error.message); process.exit(3) }
   dbRows.push(...data); if (data.length < 1000) break
 }
