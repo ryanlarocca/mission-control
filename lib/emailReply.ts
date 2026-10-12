@@ -8,7 +8,7 @@
 // Threading: threadId on the Gmail send + real RFC 2822 In-Reply-To /
 // References headers pulled from the existing thread (metadata-only call).
 
-import { getGmailClient, getLeadsClient, encodeEmailHeader, registerManualTouch } from "@/lib/leads"
+import { getGmailClient, getLeadsClient, encodeEmailHeader, registerManualTouch, resolveMailbox } from "@/lib/leads"
 import { markDraftSent } from "@/lib/reply/record"
 
 export interface EmailReplyResult {
@@ -43,8 +43,10 @@ export async function sendThreadedEmailReply(args: { leadId: string; text: strin
   if (!lead.email) return { ok: false, status: 400, error: "Lead has no email address to reply to" }
   const tn = String(lead.twilio_number || "")
   if (!tn.startsWith("email:")) return { ok: false, status: 400, error: `Lead is not an email lead (twilio_number=${tn || "null"})` }
-  const mailbox = tn.slice("email:".length).toLowerCase()
-  if (!mailbox) return { ok: false, status: 400, error: "Could not derive sending mailbox" }
+  const fromAddress = tn.slice("email:".length).toLowerCase()
+  if (!fromAddress) return { ok: false, status: 400, error: "Could not derive sending mailbox" }
+  // An alias (campaigns@ hub) is impersonated via its real mailbox; the From stays the alias.
+  const mailbox = resolveMailbox(fromAddress) || fromAddress
 
   const originalSubject = (lead.message || "").split(/\r?\n/, 1)[0].trim().replace(/^subject:\s*/i, "")
   const replySubject = originalSubject
@@ -68,7 +70,7 @@ export async function sendThreadedEmailReply(args: { leadId: string; text: strin
     }
   }
 
-  const raw = buildRawEmail({ to: lead.email, from: mailbox, subject: replySubject, body: text, inReplyTo, references: referencesChain })
+  const raw = buildRawEmail({ to: lead.email, from: fromAddress, subject: replySubject, body: text, inReplyTo, references: referencesChain })
   let sentMessageId: string | null = null
   try {
     const requestBody: { raw: string; threadId?: string } = { raw }

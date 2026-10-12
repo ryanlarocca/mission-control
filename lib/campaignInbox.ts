@@ -631,12 +631,25 @@ async function cardForReply(
  * campaign-related before any content handling. With no argument, scans
  * every campaign inbox (ryansvr@ new threads + info@ legacy threads).
  */
-export async function processCampaignInbox(mailbox?: string): Promise<void> {
+export async function processCampaignInbox(mailbox?: string, recipientFilter?: string[]): Promise<void> {
   const boxes = mailbox ? [mailbox] : CAMPAIGN_INBOXES
-  for (const box of boxes) await processOneCampaignInbox(box)
+  for (const box of boxes) await processOneCampaignInbox(box, recipientFilter)
 }
 
-async function processOneCampaignInbox(mailbox: string): Promise<void> {
+// Recipient headers of a message, lower-cased. Used when a campaign inbox is an
+// alias on a shared mailbox (campaigns@ hub, 2026-10-12): only messages
+// addressed to the alias belong to this pipeline.
+function recipientAddresses(headers: gmail_v1.Schema$MessagePartHeader[] | undefined): Set<string> {
+  const out = new Set<string>()
+  for (const h of headers || []) {
+    const n = (h.name || "").toLowerCase()
+    if (!["delivered-to", "x-original-to", "to", "cc", "x-forwarded-to"].includes(n)) continue
+    for (const m of (h.value || "").match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi) || []) out.add(m.toLowerCase())
+  }
+  return out
+}
+
+async function processOneCampaignInbox(mailbox: string, recipientFilter?: string[]): Promise<void> {
   const sb = getLeadsClient()
   const gmail = getGmailClient(mailbox)
 
@@ -659,6 +672,10 @@ async function processOneCampaignInbox(mailbox: string): Promise<void> {
 
       const { data: message } = await gmail.users.messages.get({ userId: "me", id: gmailId, format: "full" })
       const headers = message.payload?.headers
+      if (recipientFilter?.length) {
+        const rcpt = recipientAddresses(headers)
+        if (!recipientFilter.some((a) => rcpt.has(a.toLowerCase()))) continue
+      }
       const from = getHeader(headers, "From")
       const subject = getHeader(headers, "Subject")
       const sender = parseSenderEmail(from)

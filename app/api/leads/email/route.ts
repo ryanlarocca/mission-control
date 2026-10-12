@@ -12,6 +12,8 @@ import {
   FORWARD_TO,
   dedupeClusterStamps,
   getEmailCampaign,
+  addressesForMailbox,
+  resolveRecipientCampaign,
   getGmailClient,
   getLeadsClient,
   isMobileHome,
@@ -488,6 +490,12 @@ export async function POST(request: Request) {
     return NextResponse.json({ ok: true })
   }
 
+  // A shared mailbox (campaigns@ hub) can host a campaign-inbox alias such as
+  // ryansvr@: run the campaign pipeline on just the messages addressed to that
+  // alias, then lead-ingest the rest (processSingleMessage skips alias mail).
+  const campaignAliases = addressesForMailbox(emailAddress).filter((a) => CAMPAIGN_INBOXES.includes(a))
+  if (campaignAliases.length) await processCampaignInbox(emailAddress, campaignAliases)
+
   const campaign = getEmailCampaign(emailAddress)
   console.log(`[email] Pub/Sub notification — ${emailAddress} (${campaign.source}) historyId:${historyId}`)
 
@@ -750,7 +758,7 @@ async function processSingleMessage(args: {
   emailAddress: string
   campaign: { source: string; source_type: string }
 }): Promise<void> {
-  const { gmail, messageId, emailAddress, campaign } = args
+  const { gmail, messageId, emailAddress } = args
 
   // Fetch the full message payload so we have headers + body.
   const { data: message } = await gmail.users.messages.get({
@@ -774,6 +782,18 @@ async function processSingleMessage(args: {
     console.warn(`[email] ${messageId} missing usable From header: ${fromHeader}`)
     return
   }
+
+  // Alias-aware attribution (2026-10-12): the address the mail was sent TO
+  // picks the campaign label, and replies go back out as that address.
+  // Mail addressed to a campaign-inbox alias belongs to the agent-email
+  // pipeline, which the Pub/Sub handler already ran for this notification.
+  const recipient = resolveRecipientCampaign(headers, emailAddress)
+  if (CAMPAIGN_INBOXES.includes(recipient.address)) {
+    console.log(`[email] Skipping ${messageId} — addressed to campaign inbox alias ${recipient.address}`)
+    return
+  }
+  const campaign = recipient.campaign
+  const replyAddress = recipient.address
   // Don't ingest mail sent from any of our own mailboxes — the receiving
   // inbox itself (Ryan testing) or a reply Ryan sent to a lead from a
   // different LRG mailbox (which would otherwise be born as a bogus inbound
@@ -883,8 +903,9 @@ async function processSingleMessage(args: {
       source: campaign.source,
       // See twilio_number explanation in handleAppsScript above — non-null
       // string with the receiving mailbox so isOutbound() returns false and
-      // the email-reply route knows which mailbox to send from.
-      twilio_number: `email:${emailAddress}`,
+      // the email-reply route knows which address to send from (an alias
+      // resolves to its real mailbox via resolveMailbox).
+      twilio_number: `email:${replyAddress}`,
       caller_phone: phone,
       name,
       email: senderEmail,

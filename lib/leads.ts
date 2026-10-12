@@ -176,6 +176,9 @@ export function isMobileHome(text: string | null | undefined): boolean {
 export interface EmailCampaign {
   source: string
   source_type: string
+  /** Set when this address is an alias delivering into another real mailbox (campaigns@ hub). */
+  mailbox?: string
+  note?: string
 }
 
 const UNKNOWN_EMAIL_CAMPAIGN: EmailCampaign = { source: "Unknown", source_type: "direct_mail" }
@@ -188,6 +191,61 @@ export function getEmailCampaign(emailAddress: string | null | undefined): Email
   return EMAIL_CAMPAIGN_MAP[emailAddress.toLowerCase()] || UNKNOWN_EMAIL_CAMPAIGN
 }
 
+// Aliases (2026-10-12). A map entry with `mailbox` is an alias that delivers
+// into that real Workspace account; the account is the only thing the
+// service account can impersonate or register a Gmail watch on. The address a
+// message was sent TO decides the campaign label, so one real mailbox can
+// host every mailer address (campaigns@ hub, one alias per campaign / A-B side).
+export function resolveMailbox(address: string | null | undefined): string | null {
+  if (!address) return null
+  const a = address.toLowerCase()
+  const entry = EMAIL_CAMPAIGN_MAP[a]
+  return (entry?.mailbox || a).toLowerCase()
+}
+
+/** Real mailboxes to impersonate / watch — map keys minus aliases, deduped. */
+export function watchedMailboxes(): string[] {
+  const out = new Set<string>()
+  for (const [addr, entry] of Object.entries(EMAIL_CAMPAIGN_MAP)) out.add((entry.mailbox || addr).toLowerCase())
+  return Array.from(out)
+}
+
+/** Addresses (aliases + the mailbox itself) that deliver into `mailbox`. */
+export function addressesForMailbox(mailbox: string): string[] {
+  const mb = mailbox.toLowerCase()
+  return Object.entries(EMAIL_CAMPAIGN_MAP)
+    .filter(([addr, entry]) => (entry.mailbox || addr).toLowerCase() === mb)
+    .map(([addr]) => addr.toLowerCase())
+}
+
+const ADDR_RE = /[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi
+
+/**
+ * Which mapped address was this message sent to? Checks the envelope-ish
+ * headers first (Delivered-To is the alias for alias-addressed mail), then
+ * To / Cc / X-Original-To. Falls back to the mailbox's own entry. Returns the
+ * address plus its campaign so callers stamp `email:<address>` and replies
+ * go back out as that address.
+ */
+export function resolveRecipientCampaign(
+  headers: { name?: string | null; value?: string | null }[] | undefined,
+  mailbox: string
+): { address: string; campaign: EmailCampaign } {
+  const mb = mailbox.toLowerCase()
+  const candidates = new Set(addressesForMailbox(mb))
+  const order = ["delivered-to", "x-original-to", "to", "cc", "x-forwarded-to"]
+  for (const want of order) {
+    for (const h of headers || []) {
+      if ((h.name || "").toLowerCase() !== want) continue
+      for (const m of (h.value || "").match(ADDR_RE) || []) {
+        const a = m.toLowerCase()
+        if (candidates.has(a) && EMAIL_CAMPAIGN_MAP[a]) return { address: a, campaign: EMAIL_CAMPAIGN_MAP[a] }
+      }
+    }
+  }
+  return { address: mb, campaign: getEmailCampaign(mb) }
+}
+
 export function getEmailCampaignSource(emailAddress: string | null | undefined): string {
   return getEmailCampaign(emailAddress).source
 }
@@ -198,8 +256,8 @@ export function getEmailCampaignSource(emailAddress: string | null | undefined):
 // in the inbox where the email landed).
 export function getMailboxForSource(source: string | null | undefined): string | null {
   if (!source) return null
-  for (const [mailbox, campaign] of Object.entries(EMAIL_CAMPAIGN_MAP)) {
-    if (campaign.source === source) return mailbox
+  for (const [address, campaign] of Object.entries(EMAIL_CAMPAIGN_MAP)) {
+    if (campaign.source === source) return (campaign.mailbox || address).toLowerCase()
   }
   return null
 }

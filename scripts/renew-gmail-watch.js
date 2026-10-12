@@ -27,9 +27,14 @@ const TOPIC_NAME = "lrg-gmail-leads"
 const CAMPAIGNS_PATH = path.resolve(__dirname, "..", "config", "email-campaigns.json")
 const GMAIL_WATCH_SCOPES = ["https://www.googleapis.com/auth/gmail.modify"]
 
+// Real mailboxes only: an entry with `mailbox` is an alias that delivers into
+// that account (campaigns@ hub, 2026-10-12) and cannot be watched itself.
 function loadMailboxes() {
   const raw = fs.readFileSync(CAMPAIGNS_PATH, "utf-8")
-  return Object.keys(JSON.parse(raw))
+  const map = JSON.parse(raw)
+  const out = new Set()
+  for (const [addr, entry] of Object.entries(map)) out.add(String(entry && entry.mailbox ? entry.mailbox : addr).toLowerCase())
+  return Array.from(out)
 }
 
 function loadEnvLocal() {

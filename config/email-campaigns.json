@@ -1,4 +1,9 @@
 {
+  "campaigns@lrghomes.com": {
+    "source": "NOO-Q4-2026",
+    "source_type": "direct_mail",
+    "note": "hub mailbox (renamed ryansvx@); default label when no alias matches"
+  },
   "info@lrghomes.com": {
     "source": "AGENT-DRIP",
     "source_type": "direct_mail"
@@ -10,6 +15,30 @@
   "ryan@lrghomesoffers.com": {
     "source": "AGENT-DRIP-OFFERS",
     "source_type": "direct_mail"
+  },
+  "ryansva@lrghomes.com": {
+    "source": "Legacy DM",
+    "source_type": "direct_mail",
+    "mailbox": "campaigns@lrghomes.com",
+    "note": "address printed on 2025\u2013Feb 2026 letters; was bouncing until re-added as an alias"
+  },
+  "ryansvb@lrghomes.com": {
+    "source": "Legacy DM",
+    "source_type": "direct_mail",
+    "mailbox": "campaigns@lrghomes.com",
+    "note": "address printed on 2025\u2013Feb 2026 letters; was bouncing until re-added as an alias"
+  },
+  "ryansvc@lrghomes.com": {
+    "source": "Legacy DM",
+    "source_type": "direct_mail",
+    "mailbox": "campaigns@lrghomes.com",
+    "note": "address printed on 2025\u2013Feb 2026 letters; was bouncing until re-added as an alias"
+  },
+  "ryansvd@lrghomes.com": {
+    "source": "Legacy DM",
+    "source_type": "direct_mail",
+    "mailbox": "campaigns@lrghomes.com",
+    "note": "address printed on 2025\u2013Feb 2026 letters; was bouncing until re-added as an alias"
   },
   "ryansvg@lrghomes.com": {
     "source": "MFM-A",
@@ -25,6 +54,13 @@
   },
   "ryansvx@lrghomes.com": {
     "source": "NOO-Q4-2026",
-    "source_type": "direct_mail"
+    "source_type": "direct_mail",
+    "mailbox": "campaigns@lrghomes.com"
+  },
+  "ryansvy@lrghomes.com": {
+    "source": "NOO-Q4-2026",
+    "source_type": "direct_mail",
+    "mailbox": "campaigns@lrghomes.com",
+    "note": "Q4 version B; relabel when the A/B campaign rows exist"
   }
 }

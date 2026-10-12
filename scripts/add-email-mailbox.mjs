@@ -108,11 +108,14 @@ async function main() {
 
   if (dryRun) console.log("DRY RUN — nothing will be written or registered")
 
-  // 1. Update JSON config. Map values are { source, source_type }.
+  // 1. Update JSON config. Map values are { source, source_type[, mailbox] }.
+  //    --alias-of <mailbox>: `email` is an alias delivering into that real
+  //    mailbox (campaigns@ hub); the watch is registered on the mailbox.
+  const aliasOf = (() => { const i = process.argv.indexOf("--alias-of"); return i > -1 ? String(process.argv[i + 1] || "").toLowerCase() : null })()
   const config = JSON.parse(fs.readFileSync(CAMPAIGNS_PATH, "utf-8"))
   const existing = config[email]
-  const desired = { source: label, source_type: "direct_mail" }
-  const same = existing && existing.source === desired.source && existing.source_type === desired.source_type
+  const desired = aliasOf ? { source: label, source_type: "direct_mail", mailbox: aliasOf } : { source: label, source_type: "direct_mail" }
+  const same = existing && existing.source === desired.source && existing.source_type === desired.source_type && (existing.mailbox || null) === (desired.mailbox || null)
   if (same) {
     console.log(`• ${email} already mapped to ${label} in ${path.relative(REPO_ROOT, CAMPAIGNS_PATH)} (no change)`)
   } else if (existing) {
@@ -137,14 +140,14 @@ async function main() {
     email: credentials.client_email,
     key: credentials.private_key,
     scopes: GMAIL_SCOPES,
-    subject: email,
+    subject: aliasOf || email, // aliases can't be impersonated — watch the real mailbox
   })
   const topicPath = `projects/${projectId}/topics/${TOPIC_NAME}`
   if (dryRun) {
     try {
       await auth.authorize()
       console.log(`✓ DWD token minted for ${email} (gmail.modify) — impersonation works`)
-      console.log(`• would call gmail.users.watch(${email}) → ${topicPath}`)
+      console.log(`• would call gmail.users.watch(${aliasOf || email}) → ${topicPath}`)
     } catch (e) {
       const msg = e.response?.data?.error_description || e.response?.data?.error || e.message
       die(`DWD token for ${email} failed: ${msg}\n   Run node scripts/check-dwd-scopes.mjs ${email} for a full diagnosis.`)
@@ -156,7 +159,7 @@ async function main() {
   const gmail = google.gmail({ version: "v1", auth })
   try {
     const { data } = await gmail.users.watch({
-      userId: email,
+      userId: aliasOf || email,
       requestBody: {
         topicName: topicPath,
         labelIds: ["INBOX"],

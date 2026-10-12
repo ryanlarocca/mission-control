@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server"
 import { markDraftSent } from "@/lib/reply/record"
-import { getGmailClient, getLeadsClient, getMailboxForSource, encodeEmailHeader, detectOfferFromText, applyDetectedOfferToCluster, registerManualTouch } from "@/lib/leads"
+import { getGmailClient, getLeadsClient, getMailboxForSource, encodeEmailHeader, detectOfferFromText, applyDetectedOfferToCluster, registerManualTouch, resolveMailbox } from "@/lib/leads"
 
 // Phase 7C — Part 6: send a manual email to a lead from the lead card.
 //
@@ -111,7 +111,9 @@ export async function POST(
         ? "info@lrghomes.com"
         : process.env.DRIP_DEFAULT_MAILBOX || "ryan@lrghomes.com")
 
-    const gmail = getGmailClient(fromMailbox)
+    // `fromMailbox` may be an alias on the campaigns@ hub: impersonate the real
+    // mailbox, keep the alias as the visible From.
+    const gmail = getGmailClient(resolveMailbox(fromMailbox) || fromMailbox)
     const raw = buildRawEmail({ to: recipientEmail, from: fromMailbox, subject, body: text })
     const requestBody: { raw: string; threadId?: string } = { raw }
     if (lead.gmail_thread_id) requestBody.threadId = lead.gmail_thread_id
