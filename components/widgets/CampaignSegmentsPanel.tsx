@@ -30,6 +30,7 @@ interface SegmentsPayload {
 // render after these, with the raw key as the label.
 const DIMENSIONS: { key: string; label: string }[] = [
   { key: "arm",                   label: "Arm" },
+  { key: "piece",                 label: "Piece A/B" },
   { key: "county",                label: "County" },
   { key: "batch",                 label: "Batch" },
   { key: "tenure_bucket",         label: "Tenure" },
@@ -49,7 +50,7 @@ const DIMENSIONS: { key: string; label: string }[] = [
 
 // Dimensions whose segments have an inherent order — keep the API's order
 // (A, B, C / low, mid, high / year ranges) instead of sorting by rate.
-const NATURAL_ORDER = new Set(["arm", "tenure_bucket", "imp_tercile", "year_built_bucket"])
+const NATURAL_ORDER = new Set(["arm", "piece", "tenure_bucket", "imp_tercile", "year_built_bucket"])
 
 function fmtInt(n: number): string { return n.toLocaleString() }
 function fmtRate(n: number): string { return n.toFixed(2) }

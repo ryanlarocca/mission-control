@@ -39,7 +39,7 @@ function parseCsv(text) {
 // (stored verbatim in `raw`) plus the list-build tags; anything in this map
 // is also lifted into a typed column.
 const MAP = {
-  record_id: "record_id", arm: "arm", batch: "batch", is_seed: "is_seed",
+  record_id: "record_id", arm: "arm", batch: "batch", is_seed: "is_seed", piece: "piece", prior_mail: "prior_mail",
   "Parcel Number": "parcel_number", "Owner Name": "owner_name", "Owner Name2": "owner_name2",
   "Owner1 First Name": "owner1_first", "Owner1 Last Name": "owner1_last", "Owner2 First Name": "owner2_first", "Owner2 Last Name": "owner2_last",
   "Site Address": "site_address", "Site Address City": "site_city", "Site Address Zip": "site_zip",
