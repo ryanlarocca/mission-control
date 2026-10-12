@@ -236,6 +236,17 @@ export function isPieceMismatch(campaignPiece: string | null | undefined, record
 }
 
 /**
+ * Lead-card chip text for a piece mismatch — "⚠ piece mismatch (record B,
+ * line A)" — or null when the two agree / either side is unknown. "line" is
+ * the campaign the lead is attributed to (the dialed line or emailed alias
+ * decides the piece); "record" is the mailed record the cluster is linked to.
+ */
+export function pieceMismatchLabel(campaignPiece: string | null | undefined, recordPiece: string | null | undefined): string | null {
+  if (!isPieceMismatch(campaignPiece, recordPiece)) return null
+  return `⚠ piece mismatch (record ${String(recordPiece).trim().toUpperCase()}, line ${String(campaignPiece).trim().toUpperCase()})`
+}
+
+/**
  * Auto-suggest after triage or a manual edit fills name / property_address.
  * Best-effort: callers wrap it in try/catch. Skips manual links and already
  * linked clusters.

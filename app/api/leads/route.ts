@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server"
+import type { SupabaseClient } from "@supabase/supabase-js"
 import {
   getLeadsClient,
   normalizePhone,
@@ -61,12 +62,36 @@ export async function GET(request: NextRequest) {
       }
       if (!data || data.length < to - from + 1) break // short page = done
     }
+    await attachCampaignPiece(sb, rows)
     return NextResponse.json({ leads: rows })
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e)
     console.error("[leads:GET] Threw:", msg)
     return NextResponse.json({ error: msg }, { status: 500 })
   }
+}
+
+// Direct-mail piece cross-check (2026-10-12). The lead card flags a linked
+// mailed record whose `piece` differs from the piece of the campaign the
+// lead is attributed to (lib/mailMatch.ts logs the same condition as
+// "[mail-match] piece mismatch" at auto-link time). campaigns.piece is
+// stamped on each row here as `campaign_piece` — one small read for the
+// distinct campaign ids on the page — rather than through a new route.
+// Best-effort: a failed read leaves the field absent and the chip hidden.
+async function attachCampaignPiece(sb: SupabaseClient, rows: unknown[]): Promise<void> {
+  const leadRows = rows as { campaign_id?: string | null; campaign_piece?: string | null }[]
+  const ids = Array.from(new Set(leadRows.map((r) => r.campaign_id).filter((v): v is string => typeof v === "string" && v.length > 0)))
+  if (ids.length === 0) return
+  const pieceById = new Map<string, string | null>()
+  for (let i = 0; i < ids.length; i += 200) {
+    const { data, error } = await sb.from("campaigns").select("id, piece").in("id", ids.slice(i, i + 200))
+    if (error) {
+      console.warn("[leads:GET] campaign piece join failed:", error.message)
+      return
+    }
+    for (const c of (data ?? []) as { id: string; piece: string | null }[]) pieceById.set(c.id, c.piece ?? null)
+  }
+  for (const r of leadRows) r.campaign_piece = r.campaign_id ? pieceById.get(r.campaign_id) ?? null : null
 }
 
 // Allow-list of patchable columns. Anything else in the body is ignored.
