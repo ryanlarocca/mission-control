@@ -38,7 +38,7 @@ export async function GET(request: NextRequest) {
     const relKeys = await fetchRelationshipContactKeys(sb)
     for (let from = 0; from < limit; from += PAGE) {
       const to = Math.min(from + PAGE, limit) - 1
-      let q = sb.from("leads").select("*").range(from, to)
+      let q = sb.from("leads").select("*")
 
       if (status && VALID_LEAD_STATUSES.includes(status as LeadStatus)) q = q.eq("status", status)
       if (source) q = q.eq("source", source)
@@ -50,8 +50,10 @@ export async function GET(request: NextRequest) {
       } else {
         q = q.order("created_at", { ascending: false })
       }
-
-      const { data, error } = await q
+      // Business ordering above is on non-unique columns; `id` as the final
+      // key makes page boundaries stable (PostgREST range paging without a
+      // total order returns overlapping pages past ~1,000 rows).
+      const { data, error } = await q.order("id", { ascending: true }).range(from, to)
       if (error) {
         console.error("[leads:GET] Query failed:", error)
         return NextResponse.json({ error: error.message }, { status: 500 })

@@ -88,6 +88,7 @@ export async function GET(_req: NextRequest, { params }: { params: { id: string 
         .from("leads")
         .select("id, caller_phone, email, gmail_thread_id, is_junk, mail_record_id, mail_records(arm)")
         .eq("campaign_id", params.id)
+        .order("id", { ascending: true })
         .range(from, from + PAGE - 1)
       if (error) return NextResponse.json({ error: error.message }, { status: 500 })
       for (const l of data ?? []) {

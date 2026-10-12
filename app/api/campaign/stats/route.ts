@@ -31,18 +31,18 @@ export async function GET() {
     const sb = getLeadsClient()
 
     const contacts = await pageAll<{ status: string }>((off) =>
-      sb.from("campaign_contacts").select("status").range(off, off + 999)
+      sb.from("campaign_contacts").select("status").order("id", { ascending: true }).range(off, off + 999)
     )
     const contactsByStatus: Record<string, number> = {}
     for (const c of contacts) contactsByStatus[c.status] = (contactsByStatus[c.status] ?? 0) + 1
 
     const sends = await pageAll<SendRow>((off) =>
-      sb.from("campaign_sends").select("contact_id, touch_number, sent_at, variant, sender").eq("status", "sent").range(off, off + 999)
+      sb.from("campaign_sends").select("contact_id, touch_number, sent_at, variant, sender").eq("status", "sent").order("id", { ascending: true }).range(off, off + 999)
     )
     // triage null = genuine replies only (auto_reply / dead_mailbox /
     // unsubscribe rows are also kind=email_reply and must not count).
     const replies = await pageAll<{ contact_id: string | null; occurred_at: string }>((off) =>
-      sb.from("campaign_events").select("contact_id, occurred_at").eq("kind", "email_reply").is("triage", null).range(off, off + 999)
+      sb.from("campaign_events").select("contact_id, occurred_at").eq("kind", "email_reply").is("triage", null).order("id", { ascending: true }).range(off, off + 999)
     )
     const replyTimes = new Map<string, number[]>()
     for (const r of replies) {

@@ -64,13 +64,21 @@ export async function setSetting(key, patch) {
   return value
 }
 
+/** Primary key per table — the tiebreaker that makes range paging stable.
+ *  Every inbox_* table has a uuid `id` except inbox_messages (gmail_id). */
+const PAGE_KEY = { inbox_messages: "gmail_id" }
+
 /** Page through a PostgREST query (1000-row cap). `build` receives a fresh
- *  query each page and must return it with filters applied (no range). */
+ *  query each page and must return it with filters applied (no range).
+ *  `order` is usually non-unique (created_at), so the table's primary key is
+ *  appended as the final sort key — without a total order PostgREST returns
+ *  overlapping pages once a table passes ~1,000 rows. */
 export async function fetchAll(table, columns, build = (q) => q, order = "created_at") {
   const PAGE = 1000
+  const key = PAGE_KEY[table] ?? "id"
   const out = []
   for (let from = 0; ; from += PAGE) {
-    let q = sb().from(table).select(columns).order(order, { ascending: true }).range(from, from + PAGE - 1)
+    let q = sb().from(table).select(columns).order(order, { ascending: true }).order(key, { ascending: true }).range(from, from + PAGE - 1)
     q = build(q)
     const { data, error } = await q
     if (error) throw new Error(`${table}: ${error.message}`)

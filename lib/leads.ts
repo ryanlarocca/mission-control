@@ -668,6 +668,7 @@ export async function fetchRelationshipContactKeys(sb: SupabaseClient): Promise<
     const { data, error } = await sb
       .from("relationships")
       .select("phone, email")
+      .order("id", { ascending: true })
       .range(from, from + PAGE - 1)
     if (error) {
       console.error("[relationship-keys] query failed:", error.message)

@@ -29,10 +29,12 @@ const sb = createClient(process.env.LRG_SUPABASE_URL, process.env.LRG_SUPABASE_S
 const today = new Date().toISOString().slice(0, 10)
 const weekAgo = new Date(Date.now() - 7 * 86400000).toISOString()
 
+// Callers order by a business column (sent_at / created_at); `id` is appended
+// as the final key so range pages don't overlap (non-unique sort keys do).
 async function all(q) {
   const rows = []
   for (let from = 0; ; from += 1000) {
-    const { data, error } = await q.range(from, from + 999)
+    const { data, error } = await q.order("id", { ascending: true }).range(from, from + 999)
     if (error) throw error
     rows.push(...data)
     if (data.length < 1000) break

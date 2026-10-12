@@ -45,7 +45,7 @@ export async function fetchAllNotes(supabase: SupabaseClient): Promise<DealFlowN
   for (let from = 0; ; from += 1000) {
     const { data, error } = await supabase
       .from("deal_flow_notes").select(NOTE_COLUMNS)
-      .order("created_at", { ascending: true }).range(from, from + 999)
+      .order("created_at", { ascending: true }).order("id", { ascending: true }).range(from, from + 999)
     if (error) throw error
     out.push(...(data as DealFlowNote[]))
     if (data.length < 1000) break

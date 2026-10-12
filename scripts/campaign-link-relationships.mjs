@@ -32,7 +32,7 @@ const sb = createClient(process.env.LRG_SUPABASE_URL, process.env.LRG_SUPABASE_S
 async function all(table, cols) {
   const rows = []
   for (let from = 0; ; from += 1000) {
-    const { data, error } = await sb.from(table).select(cols).range(from, from + 999)
+    const { data, error } = await sb.from(table).select(cols).order("id", { ascending: true }).range(from, from + 999)
     if (error) throw new Error(`${table}: ${error.message}`)
     rows.push(...(data ?? []))
     if (!data || data.length < 1000) break

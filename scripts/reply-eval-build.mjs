@@ -56,7 +56,7 @@ const REL_ITEMS = [
 async function allLeads() {
   const rows = []
   for (let from = 0; ; from += 1000) {
-    const r = await sb.from("leads").select("id,created_at,caller_phone,email,name,lead_type,twilio_number,message,status,temperature,source,property_address,ai_summary,notes,property_details").order("created_at", { ascending: true }).range(from, from + 999)
+    const r = await sb.from("leads").select("id,created_at,caller_phone,email,name,lead_type,twilio_number,message,status,temperature,source,property_address,ai_summary,notes,property_details").order("created_at", { ascending: true }).order("id", { ascending: true }).range(from, from + 999)
     if (r.error) throw r.error
     rows.push(...r.data)
     if (r.data.length < 1000) break

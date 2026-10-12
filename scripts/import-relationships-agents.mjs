@@ -65,7 +65,7 @@ const normPhone = (p) => {
 async function pageAll(build) {
   const out = []
   for (let off = 0; ; off += 1000) {
-    const { data, error } = await build().range(off, off + 999)
+    const { data, error } = await build().order("id", { ascending: true }).range(off, off + 999)
     if (error) throw new Error(error.message)
     out.push(...(data ?? []))
     if ((data ?? []).length < 1000) break

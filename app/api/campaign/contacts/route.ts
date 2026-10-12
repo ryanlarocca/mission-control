@@ -23,6 +23,7 @@ export async function GET(request: NextRequest) {
         { count: "exact" }
       )
       .order("name", { ascending: true })
+      .order("id", { ascending: true })
       .range(page * limit, page * limit + limit - 1)
     if (status) query = query.eq("status", status)
     if (q) {

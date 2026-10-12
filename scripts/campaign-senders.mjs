@@ -308,7 +308,7 @@ export function evaluateSenderDay({ sender, state, day, metrics, trailing, gates
 export async function fetchRelationshipEmails(sb, tiers = ["A", "B", "C"]) {
   const out = new Set()
   for (let from = 0; ; from += 1000) {
-    let q = sb.from("relationships").select("email, tier").not("email", "is", null).range(from, from + 999)
+    let q = sb.from("relationships").select("email, tier").not("email", "is", null).order("id", { ascending: true }).range(from, from + 999)
     if (tiers?.length) q = q.in("tier", tiers)
     const { data, error } = await q
     if (error) throw new Error(`relationships fetch: ${error.message}`)
@@ -322,7 +322,7 @@ export async function fetchRelationshipEmails(sb, tiers = ["A", "B", "C"]) {
 export async function fetchReplierIds(sb) {
   const out = new Set()
   for (let from = 0; ; from += 1000) {
-    const { data, error } = await sb.from("campaign_events").select("contact_id").eq("kind", "email_reply").is("triage", null).range(from, from + 999)
+    const { data, error } = await sb.from("campaign_events").select("contact_id").eq("kind", "email_reply").is("triage", null).order("id", { ascending: true }).range(from, from + 999)
     if (error) throw new Error(`repliers fetch: ${error.message}`)
     for (const r of data ?? []) if (r.contact_id) out.add(r.contact_id)
     if (!data || data.length < 1000) break

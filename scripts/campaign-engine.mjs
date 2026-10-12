@@ -215,6 +215,7 @@ async function fetchSuppressionSets() {
       .from("suppression")
       .select("email, phone")
       .in("channel", ["email", "all"])
+      .order("id", { ascending: true })
       .range(from, from + 999)
     if (error) throw new Error(`suppression fetch: ${error.message}`)
     for (const r of data) {
@@ -366,7 +367,7 @@ async function draftPass() {
       .not("email", "is", null)
       .lte("next_touch_at", new Date().toISOString())
     if (COHORT) dueQuery = dueQuery.eq("cohort", COHORT) // Phase B: only tagged contacts
-    const { data, error } = await dueQuery.order("next_touch_at", { ascending: true }).range(from, from + 999)
+    const { data, error } = await dueQuery.order("next_touch_at", { ascending: true }).order("id", { ascending: true }).range(from, from + 999)
     if (error) throw new Error(`due fetch: ${error.message}`)
     dueList.push(...(data ?? []))
     if (!data || data.length < 1000 || dueList.length >= 5000) break
@@ -383,7 +384,7 @@ async function draftPass() {
   // next weekday (caught in the 2026-10-02 dry run).
   const openContacts = new Set()
   for (let from = 0; ; from += 1000) {
-    const { data, error } = await sb.from("campaign_sends").select("contact_id").in("status", ["draft", "approved"]).range(from, from + 999)
+    const { data, error } = await sb.from("campaign_sends").select("contact_id").in("status", ["draft", "approved"]).order("id", { ascending: true }).range(from, from + 999)
     if (error) throw new Error(`open rows fetch: ${error.message}`)
     for (const r of data ?? []) if (r.contact_id) openContacts.add(r.contact_id)
     if (!data || data.length < 1000) break
@@ -916,7 +917,7 @@ async function senderMetricsRange(startIso, endIso) {
   }
   const events = []
   for (let from = 0; ; from += 1000) {
-    const { data, error } = await sb.from("campaign_events").select("contact_id, kind, triage").in("kind", ["bounce", "email_reply"]).gte("occurred_at", startIso).lte("occurred_at", endIso).range(from, from + 999)
+    const { data, error } = await sb.from("campaign_events").select("contact_id, kind, triage").in("kind", ["bounce", "email_reply"]).gte("occurred_at", startIso).lte("occurred_at", endIso).order("id", { ascending: true }).range(from, from + 999)
     if (error) throw new Error(`sender events: ${error.message}`)
     events.push(...(data ?? []))
     if (!data || data.length < 1000) break
@@ -1110,6 +1111,7 @@ async function scorecardPass() {
       .select("contact_id, sent_at, sender")
       .eq("status", "sent")
       .gte("sent_at", EXPERIMENT_START)
+      .order("id", { ascending: true })
       .range(off, off + 999)
     if (error) throw new Error(`scorecard sends: ${error.message}`)
     sends.push(...(data ?? []))
@@ -1124,6 +1126,7 @@ async function scorecardPass() {
       .eq("kind", "email_reply")
       .is("triage", null) // genuine replies only — not OOO/dead-mailbox/unsub rows
       .gte("occurred_at", EXPERIMENT_START)
+      .order("id", { ascending: true })
       .range(off, off + 999)
     if (error) throw new Error(`scorecard replies: ${error.message}`)
     for (const r of data ?? []) {
