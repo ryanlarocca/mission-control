@@ -35,6 +35,7 @@ export const CLICK_ALLOW = [
   /^got it$/i,
   /^ok(ay)?$/i,
   /^validate$/i, // the access-code form's submit button (DocuSign names it VALIDATE, not Continue)
+  /^send new link$/i, // the expired-link page (Phase 1b): emails a fresh link to ryan@, nothing else
 ]
 // Anything here is refused even if it also matches the allowlist.
 export const CLICK_REFUSE = /sign|adopt|finish(?! later)|submit|decline|agree and sign|complete/i

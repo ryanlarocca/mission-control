@@ -45,7 +45,7 @@ import {
   changePrompt, classifyPrompt, complete, completeJson, filingPrompt, rulesPrompt, screenPrompt, verifyPrompt,
 } from "./llm.mjs"
 import { destinationFor, filingDecision, isPurchaseDoc, nextSequence, refineDocType, stageOf, withTimeSuffix } from "./filing.mjs"
-import { MAX_FETCH_ATTEMPTS, documentLinks, fetchDocuments, nextTryAt, providerLabel, readFetchedBytes, saveFetchedBytes } from "./fetch/index.mjs"
+import { MAX_FETCH_ATTEMPTS, NEW_LINK_ERROR, NEW_LINK_GUARD_MS, documentLinks, fetchDocuments, newLinkGuard, nextTryAt, providerLabel, readFetchedBytes, saveFetchedBytes, waitsClosedBy, waitsTimedOut } from "./fetch/index.mjs"
 import { envelopeMatches, loopEligible, normalizeEnvelope } from "./loops.mjs"
 
 // ------------------------------------------------------------------ args
@@ -1028,6 +1028,49 @@ async function runFetches(ctx) {
       await failAttempt(job, (job.attempts || 0) + 1, { error: e.message, screenshot: null }, `🧨 ${e.message}`)
     }
   }
+  await expireNewLinkWaits()
+}
+
+// ---- Phase 1b: expired email links (briefs/BRIEF_INBOX_LINK_FETCH_2026-10-12.md "Phase 1b")
+// The flow clicks SEND NEW LINK on DocuSign's expired page; the fresh link
+// lands in ryan@ and is queued like any other. The parked job waits — no card —
+// until that later job for the same envelope is done (resolved_by_new_link),
+// or 2 h pass (one ⚠️ card, then failed).
+/** inbox_fetches rows with the email's subject folded in, the shape the pure helpers in fetch/index.mjs take. */
+function withSubject(rows) {
+  return (rows || []).map((r) => ({ ...r, subject: (Array.isArray(r.inbox_messages) ? r.inbox_messages[0] : r.inbox_messages)?.subject || null }))
+}
+/** The row that already asked DocuSign for this envelope's fresh link in the last 24 h — the "never click twice" guard. */
+async function newLinkGuardFor(job, msg) {
+  const since = new Date(Date.now() - NEW_LINK_GUARD_MS).toISOString()
+  const { data, error } = await sb().from("inbox_fetches").select("id, status, thread_id, started_at, error, inbox_messages(subject)").like("error", `${NEW_LINK_ERROR}%`).gte("started_at", since).limit(50)
+  if (error) {
+    warn("inbox_fetches guard read:", error.message)
+    return null
+  }
+  return newLinkGuard({ ...job, subject: msg.subject }, withSubject(data))
+}
+/** The ⚠️ card for a dead link: no Open button (it is the expired one), Retry only. */
+async function expiredCard(job, reason) {
+  return tgSend(`⚠️ Couldn't pull the documents from ${providerLabel(job.provider)} (${esc(reason)}) — ask the sender to resend, or log the agent into DocuSign (<code>node scripts/inbox-agent/fetch/cli.mjs --login --headed</code> on the mini).`, { rows: [[{ text: "🔁 Retry", data: `ix:fr:${job.id}` }]], dryRun: DRY })
+}
+/** A job for the same envelope is done → the parked awaiting_new_link rows are resolved. */
+async function resolveNewLinkWaits(job, msg) {
+  const { data } = await sb().from("inbox_fetches").select("id, status, thread_id, inbox_messages(subject)").eq("status", "awaiting_new_link").limit(50)
+  for (const w of waitsClosedBy({ ...job, subject: msg.subject }, withSubject(data))) {
+    await sb().from("inbox_fetches").update({ status: "resolved_by_new_link", resolved_at: isoNow() }).eq("id", w.id)
+    log(`fetch ${w.id}: resolved by the fresh link (${job.id})`)
+  }
+}
+/** awaiting_new_link for more than 2 h → one ⚠️ card, then failed. */
+async function expireNewLinkWaits() {
+  const { data, error } = await sb().from("inbox_fetches").select("id, status, provider, url, started_at, inbox_messages(subject)").eq("status", "awaiting_new_link").limit(50)
+  if (error) return warn("inbox_fetches waits read:", error.message)
+  for (const w of waitsTimedOut(withSubject(data))) {
+    const mid = await expiredCard(w, `the link had expired and no fresh one arrived in 2 h${w.subject ? ` for “${shortSubject(w.subject)}”` : ""}`)
+    await sb().from("inbox_fetches").update({ status: "failed", error: `${NEW_LINK_ERROR} — nothing arrived in 2 h`, tg_message_id: mid, resolved_at: isoNow() }).eq("id", w.id)
+    warn(`fetch ${w.id}: no fresh link in 2 h — failed`)
+  }
 }
 
 /** Retry with backoff (5 min, 30 min), then give up with a card. */
@@ -1051,10 +1094,27 @@ async function runFetchJob(ctx, job, msg, cls) {
   const attempts = (job.attempts || 0) + 1
   if (!DRY) await sb().from("inbox_fetches").update({ status: "running", started_at: isoNow(), attempts }).eq("id", job.id)
   log(`fetch ${job.id}: ${label} attempt ${attempts} · “${subj}” · ${job.url.slice(0, 70)}`)
-  const r = await fetchDocuments({ url: job.url, provider: job.provider, accessCode: job.access_code || null, jobId: job.id, log })
+  const guard = await newLinkGuardFor(job, msg)
+  const r = await fetchDocuments({ url: job.url, provider: job.provider, accessCode: job.access_code || null, jobId: job.id, log, sendNewLink: !guard })
   const shot = r.screenshots?.at(-1) || null
   const openBtn = { text: `${job.kind === "docusign_request" ? "🖊 " : ""}Open in ${label}`, url: job.url }
   if (!r.ok) {
+    // Phase 1b: the link expired. Either this run asked DocuSign for a fresh
+    // one, or another job for the same envelope is still waiting on its ask —
+    // park this job too, no card; the fresh link's job resolves them both.
+    if (r.needs === "new_link" || (r.needs === "expired" && guard?.status === "awaiting_new_link")) {
+      const error = r.needs === "new_link" ? NEW_LINK_ERROR : `waiting on the fresh link ${guard.id} asked DocuSign for`
+      if (!DRY) await sb().from("inbox_fetches").update({ status: "awaiting_new_link", error, screenshot: shot }).eq("id", job.id)
+      log(`fetch ${job.id}: link expired — ${error}; waiting for DocuSign's email (no card)${shot ? ` · ${shot}` : ""}`)
+      return
+    }
+    if (r.needs === "expired") {
+      const reason = guard ? "the link has expired and a fresh one was already requested in the last 24 h" : "the link has expired"
+      const mid = await expiredCard(job, reason)
+      if (!DRY) await sb().from("inbox_fetches").update({ status: "expired", error: r.error, screenshot: shot, tg_message_id: mid, resolved_at: isoNow() }).eq("id", job.id)
+      warn(`fetch ${job.id}: expired — ${r.error}${shot ? ` · screenshot ${shot}` : ""}`)
+      return
+    }
     if (r.needs === "access_code") {
       const text = `🔐 ${label} wants an access code for “${esc(subj)}”. Reply to this card with  code: 1234  and I'll pull the documents.`
       const mid = await tgSend(text, { rows: [[openBtn]], dryRun: DRY })
@@ -1062,12 +1122,10 @@ async function runFetchJob(ctx, job, msg, cls) {
       log(`fetch ${job.id}: needs access code${shot ? ` · ${shot}` : ""}`)
       return
     }
-    if (r.needs === "login" || r.needs === "expired") {
-      const status = r.needs === "login" ? "needs_login" : "expired"
-      const reason = r.needs === "login" ? "it wants a login or ID check" : "the envelope is expired, voided or no longer accessible"
-      const mid = await tgSend(`⚠️ Couldn't pull the documents from ${label} (${reason}) — open the link.`, { rows: [[{ text: "Open", url: job.url }, { text: "🔁 Retry", data: `ix:fr:${job.id}` }]], dryRun: DRY })
-      if (!DRY) await sb().from("inbox_fetches").update({ status, error: r.error, screenshot: shot, tg_message_id: mid, resolved_at: isoNow() }).eq("id", job.id)
-      warn(`fetch ${job.id}: ${status} — ${r.error}${shot ? ` · screenshot ${shot}` : ""}`)
+    if (r.needs === "login") {
+      const mid = await tgSend(`⚠️ Couldn't pull the documents from ${label} (it wants a login or ID check) — open the link.`, { rows: [[{ text: "Open", url: job.url }, { text: "🔁 Retry", data: `ix:fr:${job.id}` }]], dryRun: DRY })
+      if (!DRY) await sb().from("inbox_fetches").update({ status: "needs_login", error: r.error, screenshot: shot, tg_message_id: mid, resolved_at: isoNow() }).eq("id", job.id)
+      warn(`fetch ${job.id}: needs_login — ${r.error}${shot ? ` · screenshot ${shot}` : ""}`)
       return
     }
     await failAttempt(job, attempts, r, r.error)
@@ -1108,6 +1166,7 @@ async function runFetchJob(ctx, job, msg, cls) {
       return { filename: f.filename, mime: f.mime, size: f.bytes.length, sha256: hash, inbox_file_id: byHash.get(hash) || null }
     })
     await sb().from("inbox_fetches").update({ status: "done", attempts, files: summary, screenshot: shot, tg_message_id: mid, resolved_at: isoNow(), error: null }).eq("id", job.id)
+    await resolveNewLinkWaits(job, msg)
   }
   log(`fetch ${job.id}: done — ${files.length} file(s), ${filed.length} filed`)
 }

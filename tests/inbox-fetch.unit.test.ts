@@ -8,7 +8,7 @@ import { zipSync } from "fflate"
 import { afterEach, describe, expect, it } from "vitest"
 import { detectProvider, documentLinks, extractUrls } from "../scripts/inbox-agent/fetch/providers.mjs"
 import { CLICK_ALLOW, CLICK_REFUSE, isAllowedClick, mimeFor, pruneScreenshots } from "../scripts/inbox-agent/fetch/browser.mjs"
-import { expandDownloads, fetchedFilePath, nextTryAt, readFetchedBytes, saveFetchedBytes, unzipToFiles } from "../scripts/inbox-agent/fetch/index.mjs"
+import { NEW_LINK_ERROR, NEW_LINK_GUARD_MS, NEW_LINK_WAIT_MS, expandDownloads, fetchedFilePath, newLinkGuard, nextTryAt, readFetchedBytes, sameEnvelope, saveFetchedBytes, unzipToFiles, waitsClosedBy, waitsTimedOut } from "../scripts/inbox-agent/fetch/index.mjs"
 import { gateFromText } from "../scripts/inbox-agent/fetch/docusign.mjs"
 import { envelopeMatches, loopEligible, normalizeEnvelope } from "../scripts/inbox-agent/loops.mjs"
 import { tgButton, tgKeyboard } from "../scripts/inbox-agent/telegram.mjs"
@@ -96,7 +96,7 @@ describe("extractUrls / documentLinks", () => {
 
 describe("click allowlist", () => {
   it("allows exactly the labels the brief names", () => {
-    for (const label of ["Continue", "CONTINUE", "Review Documents", "Review Document", "REVIEW DOCUMENTS", "Other Actions", "OTHER ACTIONS", "Print & Download", "Print and Download", "Download", "DOWNLOAD", "Combined PDF", "Separate PDFs", "Separate", "Combined", "Close", "Finish Later", "FINISH LATER", "Got it", "OK", "Okay", "Validate"]) {
+    for (const label of ["Continue", "CONTINUE", "Review Documents", "Review Document", "REVIEW DOCUMENTS", "Other Actions", "OTHER ACTIONS", "Print & Download", "Print and Download", "Download", "DOWNLOAD", "Combined PDF", "Separate PDFs", "Separate", "Combined", "Close", "Finish Later", "FINISH LATER", "Got it", "OK", "Okay", "Validate", "Send New Link", "SEND NEW LINK"]) {
       expect(isAllowedClick(label).ok, label).toBe(true)
     }
     expect(CLICK_ALLOW.length).toBeGreaterThan(8)
@@ -113,6 +113,8 @@ describe("click allowlist", () => {
     expect(isAllowedClick("Next").ok).toBe(false)
     expect(isAllowedClick("Save").ok).toBe(false)
     expect(isAllowedClick("Assign to Someone Else").ok).toBe(false)
+    expect(isAllowedClick("Log In").ok).toBe(false) // the expired page's other button — never clicked by the flow
+    expect(isAllowedClick("Send New Link and Sign").ok).toBe(false)
     expect(isAllowedClick("").ok).toBe(false)
     expect(isAllowedClick("Download…").ok).toBe(true) // trailing ellipsis / icon glyphs are stripped
     expect(isAllowedClick("⬇ Download").ok).toBe(true)
@@ -205,6 +207,59 @@ describe("DocuSign gates from page text", () => {
     expect(gateFromText("This envelope has expired. Please contact the sender.")).toBe("expired")
     expect(gateFromText("This envelope has been voided by the sender and can no longer be accessed.")).toBe("expired")
     expect(gateFromText("Completed: 93 Ridgeview Ave - Disclosures. OTHER ACTIONS. Download")).toBeNull()
+  })
+  it("reads DocuSign's expired-email-link page (/tmp/inbox-fetch/cli-…/02-expired.png, 2026-10-12) as expired", () => {
+    // The page the mini found six days after the 10/06 Ridgeview Completed email.
+    const expiredPage = ["Docusign", "This link from your email has expired", "Docusign will send a fresh link to your email address.", "SEND NEW LINK", "LOG IN", "Powered by Docusign"].join("\n")
+    expect(gateFromText(expiredPage)).toBe("expired")
+    expect(gateFromText("This link from your email has expired. SEND NEW LINK LOG IN")).toBe("expired")
+  })
+})
+
+describe("Phase 1b — expired email links: awaiting_new_link → resolved_by_new_link", () => {
+  const T0 = Date.UTC(2026, 9, 12, 16, 0, 0)
+  const at = (minsAgo: number) => new Date(T0 - minsAgo * 60_000).toISOString()
+  // The job that hit the expired 10/06 link and clicked SEND NEW LINK.
+  const waiting = { id: "aaaaaaaa-0000-0000-0000-000000000001", status: "awaiting_new_link", thread_id: "t-ridgeview-oct6", subject: "Completed: Please Sign: 93 Ridgeview Ave - Disclosures", started_at: at(30), error: NEW_LINK_ERROR }
+  // The fresh link's job: a new email (new thread), same envelope subject.
+  const fresh = { id: "aaaaaaaa-0000-0000-0000-000000000002", status: "done", thread_id: "t-ridgeview-oct12", subject: "Completed: Please Sign: 93 Ridgeview Ave - Disclosures", started_at: at(1), error: null }
+  const other = { id: "aaaaaaaa-0000-0000-0000-000000000003", status: "awaiting_new_link", thread_id: "t-quito", subject: "Completed: 2116 Quito Rd - OFFER", started_at: at(30), error: NEW_LINK_ERROR }
+
+  it("sameEnvelope: same thread, or the same normalized subject across threads — never two typed links", () => {
+    expect(sameEnvelope(waiting, fresh)).toBe(true)
+    expect(sameEnvelope({ thread_id: "t1", subject: "" }, { thread_id: "t1", subject: null })).toBe(true)
+    expect(sameEnvelope(waiting, other)).toBe(false)
+    expect(sameEnvelope({ subject: "Please Sign: 93 Ridgeview Ave - Disclosures" }, { subject: "Completed: Please Sign: 93 Ridgeview Ave - Disclosures" })).toBe(true)
+    expect(sameEnvelope({ subject: "fetch na4.docusign.net" }, { subject: "fetch na4.docusign.net" })).toBe(false)
+  })
+  it("a done job for the same envelope closes the waiting row — and only that one", () => {
+    expect(waitsClosedBy(fresh, [waiting, other]).map((r: { id: string }) => r.id)).toEqual([waiting.id])
+    expect(waitsClosedBy(fresh, [{ ...waiting, status: "failed" }])).toEqual([])
+    expect(waitsClosedBy(waiting, [waiting])).toEqual([]) // never itself
+  })
+  it("a wait older than 2 h times out; a younger one keeps waiting", () => {
+    expect(waitsTimedOut([waiting, other], T0)).toEqual([])
+    const old = { ...waiting, started_at: at(121) }
+    expect(waitsTimedOut([old, other], T0).map((r: { id: string }) => r.id)).toEqual([old.id])
+    expect(waitsTimedOut([{ ...waiting, started_at: null }], T0).length).toBe(1)
+    expect(waitsTimedOut([{ ...old, status: "failed" }], T0)).toEqual([])
+    expect(NEW_LINK_WAIT_MS).toBe(2 * 60 * 60_000)
+  })
+  it("never asks DocuSign twice for the same envelope within 24 h — the row that asked is the guard", () => {
+    // A second expired link for the same envelope (the request email's) comes up while the first is waiting.
+    const second = { id: "aaaaaaaa-0000-0000-0000-000000000004", status: "queued", thread_id: "t-ridgeview-request", subject: "Please Sign: 93 Ridgeview Ave - Disclosures", started_at: null, error: null }
+    expect(newLinkGuard(second, [waiting, other], T0)?.id).toBe(waiting.id)
+    // The timed-out row still guards (its error keeps the prefix) until 24 h after it asked…
+    const timedOut = { ...waiting, status: "failed", error: `${NEW_LINK_ERROR} — nothing arrived in 2 h`, started_at: at(5 * 60) }
+    expect(newLinkGuard(second, [timedOut], T0)?.id).toBe(waiting.id)
+    // …and stops guarding after that.
+    expect(newLinkGuard(second, [{ ...timedOut, started_at: new Date(T0 - NEW_LINK_GUARD_MS - 1).toISOString() }], T0)).toBeNull()
+    // A row that was retried (error cleared) or merely joined another row's wait is not a guard.
+    expect(newLinkGuard(second, [{ ...waiting, status: "queued", error: null }], T0)).toBeNull()
+    expect(newLinkGuard(second, [{ ...waiting, error: `waiting on the fresh link ${other.id} asked DocuSign for` }], T0)).toBeNull()
+    // A different envelope never guards; a job never guards itself.
+    expect(newLinkGuard(second, [other], T0)).toBeNull()
+    expect(newLinkGuard(waiting, [waiting], T0)).toBeNull()
   })
 })
 

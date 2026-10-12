@@ -2,7 +2,7 @@
 //
 //   fetchDocuments({ url, provider, accessCode, jobId, log, headed })
 //     → { ok: true,  files: [{ filename, mime, bytes }], screenshots: [paths], steps }
-//     → { ok: false, error, needs: "access_code" | "login" | "expired" | null, screenshots, steps }
+//     → { ok: false, error, needs: "access_code" | "login" | "expired" | "new_link" | null, screenshots, steps }
 //
 // The dispatcher owns the cross-provider rules: the 90 s job cap, ZIP
 // expansion (Separate PDFs come back as one ZIP), screenshot pruning, and the
@@ -16,6 +16,7 @@ import { unzipSync } from "fflate"
 import { JOB_TIMEOUT_MS, mimeFor, pruneScreenshots, withTimeout } from "./browser.mjs"
 import { fetchDocuSign } from "./docusign.mjs"
 import { detectProvider } from "./providers.mjs"
+import { envelopeMatches } from "../loops.mjs"
 
 export { detectProvider, documentLinks, extractUrls, providerLabel } from "./providers.mjs"
 
@@ -25,6 +26,55 @@ export const RETRY_BACKOFF_MS = [5 * 60_000, 30 * 60_000]
 export function nextTryAt(attempts, now = Date.now()) {
   const wait = RETRY_BACKOFF_MS[attempts - 1]
   return wait === undefined ? null : new Date(now + wait).toISOString()
+}
+
+// ---------------------------------------------------------------- Phase 1b: expired email links
+// DocuSign email links expire. The flow clicks SEND NEW LINK (a fresh link is
+// emailed to ryan@, the mailbox the agent reads) and the job parks as
+// `awaiting_new_link` with no card. The fresh email is classified and queued
+// like any other; when that job reaches `done` for the same envelope, the
+// parked job becomes `resolved_by_new_link`. Two hours with no fresh link →
+// the usual ⚠️ card, then `failed`. Never ask twice for the same envelope
+// within 24 h — the rows below are the guard (pure, so the worker and the
+// unit test agree). Statuses are free text: no migration.
+export const NEW_LINK_ERROR = "asked DocuSign for a fresh link"
+export const NEW_LINK_WAIT_MS = 2 * 60 * 60_000
+export const NEW_LINK_GUARD_MS = 24 * 60 * 60_000
+
+const ms = (iso) => (iso ? new Date(iso).getTime() : NaN)
+
+/**
+ * Same envelope = same Gmail thread, or the same normalized subject (the fresh
+ * email may start a new thread). Synthetic `fetch <host>` subjects (typed
+ * links) never match by subject — two manual pulls are not one envelope.
+ * @param {{thread_id?: string|null, subject?: string|null}} a
+ * @param {{thread_id?: string|null, subject?: string|null}} b
+ */
+export function sameEnvelope(a, b) {
+  if (a?.thread_id && a.thread_id === b?.thread_id) return true
+  const sa = String(a?.subject || "")
+  const sb = String(b?.subject || "")
+  if (/^fetch\s/i.test(sa) || /^fetch\s/i.test(sb)) return false
+  return envelopeMatches(sa, sb)
+}
+
+/**
+ * The row that already asked DocuSign for this envelope's fresh link in the
+ * last 24 h (still waiting, or timed out), else null. `rows` are inbox_fetches
+ * rows with `subject` folded in; `job` is the one about to run.
+ */
+export function newLinkGuard(job, rows, now = Date.now()) {
+  return (rows || []).find((r) => r.id !== job.id && String(r.error || "").startsWith(NEW_LINK_ERROR) && ms(r.started_at) >= now - NEW_LINK_GUARD_MS && sameEnvelope(r, job)) || null
+}
+
+/** The `awaiting_new_link` rows a job reaching `done` closes (same envelope). */
+export function waitsClosedBy(done, rows) {
+  return (rows || []).filter((r) => r.id !== done.id && r.status === "awaiting_new_link" && sameEnvelope(r, done))
+}
+
+/** The `awaiting_new_link` rows that have waited more than 2 h (or carry no start time at all). */
+export function waitsTimedOut(rows, now = Date.now()) {
+  return (rows || []).filter((r) => r.status === "awaiting_new_link" && !(ms(r.started_at) > now - NEW_LINK_WAIT_MS))
 }
 
 // ---------------------------------------------------------------- zip
@@ -88,9 +138,9 @@ export function readFetchedBytes(fetchId, sha, root = FETCH_STORE) {
 
 // ---------------------------------------------------------------- dispatcher
 /**
- * @param {{ url: string, provider?: string|null, accessCode?: string|null, jobId?: string, log?: Function, headed?: boolean, timeoutMs?: number }} job
+ * @param {{ url: string, provider?: string|null, accessCode?: string|null, jobId?: string, log?: Function, headed?: boolean, timeoutMs?: number, sendNewLink?: boolean }} job
  */
-export async function fetchDocuments({ url, provider = null, accessCode = null, jobId = `job-${Date.now()}`, log = () => {}, headed = false, timeoutMs = JOB_TIMEOUT_MS }) {
+export async function fetchDocuments({ url, provider = null, accessCode = null, jobId = `job-${Date.now()}`, log = () => {}, headed = false, timeoutMs = JOB_TIMEOUT_MS, sendNewLink = true }) {
   const p = provider || detectProvider(url)
   if (p !== "docusign") return { ok: false, error: `no fetcher for ${p || "that link"}`, needs: null, screenshots: [], steps: [] }
   try {
@@ -98,7 +148,7 @@ export async function fetchDocuments({ url, provider = null, accessCode = null, 
   } catch {}
   let r
   try {
-    r = await withTimeout(fetchDocuSign({ url, accessCode, jobId, log, headed }), timeoutMs, `fetch ${jobId}`)
+    r = await withTimeout(fetchDocuSign({ url, accessCode, jobId, log, headed, sendNewLink }), timeoutMs, `fetch ${jobId}`)
   } catch (e) {
     return { ok: false, error: e?.message || String(e), needs: null, screenshots: [], steps: [] }
   }

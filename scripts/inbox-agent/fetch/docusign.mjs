@@ -8,6 +8,13 @@
 // Gates, in order: e-records consent (tick + CONTINUE) → access code (type it,
 // or `needs: "access_code"`) → ID verification / phone auth / "sign in to view"
 // (`needs: "login"`) → expired / voided / no longer accessible (`needs: "expired"`).
+// Phase 1b (2026-10-12, after the first live run): DocuSign *email* links expire
+// (the 10/06 Ridgeview link was dead six days later). The expired page offers
+// SEND NEW LINK — "Docusign will send a fresh link to your email address" —
+// and that address is ryan@, the mailbox the agent reads. So the flow clicks
+// it (it sends an email, nothing else) and returns `needs: "new_link"`; the
+// worker parks the job until the fresh link arrives and is fetched like any
+// other. No button → `needs: "expired"` as before.
 // Then download — Separate PDFs preferred (a ZIP, one PDF per document, keeps
 // DocuSign's document names, which match what the agent files disclosures
 // under), Combined PDF as the fallback — then Finish Later / close. Never
@@ -37,6 +44,7 @@ const NEEDS_WHY = {
   access_code: "the envelope wants an access code",
   login: "DocuSign wants a login or ID verification",
   expired: "the envelope is expired, voided or no longer accessible",
+  new_link: "asked DocuSign for a fresh link",
 }
 
 async function settle(page, ms = 1_200) {
@@ -82,6 +90,15 @@ async function continueButton(page) {
     (p) => p.locator('[data-qa="continue"], [data-qa*="continue" i], button#action-bar-btn-continue'),
     (p) => p.getByText(/^continue$/i),
   ])
+}
+/** The expired-link page's SEND NEW LINK button (Phase 1b). LOG IN sits next to it and is never clicked here. */
+async function sendNewLinkButton(page) {
+  return firstVisible(page, [
+    (p) => p.getByRole("button", { name: /^send new link$/i }),
+    (p) => p.getByRole("link", { name: /^send new link$/i }),
+    (p) => p.locator('[data-qa*="send-new-link" i], [data-qa*="sendnewlink" i]'),
+    (p) => p.getByText(/^send new link$/i),
+  ], 2_000)
 }
 async function reviewButton(page) {
   return firstVisible(page, [
@@ -190,10 +207,12 @@ async function finishLater(page, log) {
 
 // ---------------------------------------------------------------- the flow
 /**
+ * `sendNewLink: false` keeps the expired gate from clicking SEND NEW LINK (the
+ * worker passes it when another job already asked for this envelope's fresh link).
  * @returns {Promise<{ok:true, files:Array<{filename,mime,bytes}>, screenshots:string[], steps:string[]} |
- *                   {ok:false, error:string, needs:"access_code"|"login"|"expired"|null, screenshots:string[], steps:string[]}>}
+ *                   {ok:false, error:string, needs:"access_code"|"login"|"expired"|"new_link"|null, screenshots:string[], steps:string[]}>}
  */
-export async function fetchDocuSign({ url, accessCode = null, jobId = "job", log = () => {}, headed = false }) {
+export async function fetchDocuSign({ url, accessCode = null, jobId = "job", log = () => {}, headed = false, sendNewLink = true }) {
   const { page, close } = await openBrowser({ headed })
   const shooter = makeShooter(page, jobId)
   const steps = []
@@ -206,10 +225,24 @@ export async function fetchDocuSign({ url, accessCode = null, jobId = "job", log
     for (let i = 0; i < 6; i++) {
       const gate = await detectGate(page)
       if (!gate) break
-      if (gate.kind === "expired" || gate.kind === "login") {
-        steps.push(gate.kind)
-        await shooter.shot(gate.kind)
-        return fail(gate.kind, NEEDS_WHY[gate.kind])
+      if (gate.kind === "expired") {
+        steps.push("expired")
+        await shooter.shot("expired")
+        const btn = sendNewLink ? await sendNewLinkButton(page) : null
+        if (btn && (await safeClick(btn, { expect: "Send New Link", log }))) {
+          await settle(page, 2_500)
+          steps.push("send_new_link")
+          await shooter.shot("send_new_link")
+          log(`[fetch] docusign: ${steps.join(" → ")} — fresh link requested, waiting for DocuSign's email`)
+          return fail("new_link", NEEDS_WHY.new_link)
+        }
+        if (!sendNewLink) log("[fetch] docusign: expired — Send New Link skipped (already asked for this envelope)")
+        return fail("expired", NEEDS_WHY.expired)
+      }
+      if (gate.kind === "login") {
+        steps.push("login")
+        await shooter.shot("login")
+        return fail("login", NEEDS_WHY.login)
       }
       if (gate.kind === "review") {
         steps.push("review")
