@@ -9,6 +9,8 @@
 // cluster; several hits are stored as candidates for the card picker; a
 // manual link is never overwritten. The whole list is searched, including
 // arm = 'none' rows, so an "in the list but not mailed" caller is visible.
+// A/B piece children (2026-10-12) search their parent's list — see
+// mailSearchCampaignId.
 import type { SupabaseClient } from "@supabase/supabase-js"
 
 const SUFFIX: Record<string, string> = {
@@ -82,7 +84,7 @@ export function parseFreeAddress(addr: unknown): { street: string; city: string;
 export type MailMatchMethod = "auto_address" | "auto_mail_address" | "auto_surname" | "manual"
 
 export const MAIL_RECORD_LITE_COLUMNS =
-  "id, campaign_id, record_id, owner_name, site_address, site_city, site_zip, mail_address, mail_city, mail_zip, county, arm, batch, is_seed, tenure_bucket, imp_tercile, any_signal, estate_language, family_transfer, out_of_state, multi_parcel_personal"
+  "id, campaign_id, record_id, owner_name, site_address, site_city, site_zip, mail_address, mail_city, mail_zip, county, arm, batch, is_seed, piece, tenure_bucket, imp_tercile, any_signal, estate_language, family_transfer, out_of_state, multi_parcel_personal"
 
 export interface MailRecordLite {
   id: string
@@ -99,6 +101,8 @@ export interface MailRecordLite {
   arm: "A" | "B" | "C" | "none" | "seed"
   batch: number | null
   is_seed: boolean
+  /** Creative mailed (NOO Q4 2026 A/B: A = bullets, B = prose); null when the list has no split. */
+  piece: string | null
   tenure_bucket: string | null
   imp_tercile: string | null
   any_signal: boolean | null
@@ -203,10 +207,44 @@ export async function linkMailRecordToCluster(
   return (data ?? []).length
 }
 
+export interface CampaignScopeLite {
+  id: string
+  parent_campaign_id: string | null
+  piece: string | null
+}
+
+/**
+ * Which campaign's mail_records to search for a lead attributed to
+ * `campaign`. A/B piece children (NOO Q4 2026 — A / — B) own no records: the
+ * one list lives on the parent, so a child scopes to its parent. A parent
+ * (or a campaign that is nobody's child) scopes to itself. Unknown campaign
+ * → the lead's own campaign_id, as before.
+ */
+export function mailSearchCampaignId(campaign: CampaignScopeLite | null, leadCampaignId: string | null): string | null {
+  if (!campaign) return leadCampaignId
+  return campaign.parent_campaign_id ?? campaign.id
+}
+
+/**
+ * True when the lead's campaign says one creative (the dialed line / emailed
+ * alias) but the matched record was mailed the other. Null on either side =
+ * nothing to compare (pre-split rows, lists without a piece split).
+ */
+export function isPieceMismatch(campaignPiece: string | null | undefined, recordPiece: string | null | undefined): boolean {
+  if (!campaignPiece || !recordPiece) return false
+  return campaignPiece.trim().toUpperCase() !== recordPiece.trim().toUpperCase()
+}
+
 /**
  * Auto-suggest after triage or a manual edit fills name / property_address.
  * Best-effort: callers wrap it in try/catch. Skips manual links and already
  * linked clusters.
+ *
+ * Search scope: the lead's campaign, or its parent when the campaign is an
+ * A/B piece child (the records are on the parent). When the matched
+ * record's `piece` disagrees with the child campaign's `piece`, the link is
+ * kept as-is (the line/alias decides attribution; the record is the
+ * cross-check) and a `[mail-match] piece mismatch` warning is logged.
  */
 export async function autoLinkMailRecord(sb: SupabaseClient, leadId: string): Promise<MailMatchResult | null> {
   const { data: lead } = await sb
@@ -236,12 +274,27 @@ export async function autoLinkMailRecord(sb: SupabaseClient, leadId: string): Pr
     }
   }
   if (!lead.property_address && !lead.name) return null
+  let campaign: CampaignScopeLite | null = null
+  if (lead.campaign_id) {
+    const { data: c } = await sb
+      .from("campaigns")
+      .select("id, parent_campaign_id, piece")
+      .eq("id", lead.campaign_id)
+      .maybeSingle()
+    campaign = (c as CampaignScopeLite | null) ?? null
+  }
   const result = await suggestMailRecord(sb, {
-    campaignId: lead.campaign_id ?? null,
+    campaignId: mailSearchCampaignId(campaign, lead.campaign_id ?? null),
     propertyAddress: lead.property_address,
     name: lead.name,
   })
   if (result.record) {
+    if (isPieceMismatch(campaign?.piece, result.record.piece)) {
+      console.warn(
+        `[mail-match] piece mismatch: lead ${lead.id} campaign ${campaign?.id} piece ${campaign?.piece} ` +
+          `matched record ${result.record.record_id} (${result.record.id}) piece ${result.record.piece} via ${result.method}`
+      )
+    }
     await linkMailRecordToCluster(sb, lead, result.record.id, result.method)
   } else if (result.candidates.length) {
     await linkMailRecordToCluster(sb, lead, null, null, result.candidates.map(c => c.id))

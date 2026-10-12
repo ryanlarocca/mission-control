@@ -53,14 +53,15 @@
     "source_type": "direct_mail"
   },
   "ryansvx@lrghomes.com": {
-    "source": "NOO-Q4-2026",
-    "source_type": "direct_mail",
-    "mailbox": "campaigns@lrghomes.com"
-  },
-  "ryansvy@lrghomes.com": {
-    "source": "NOO-Q4-2026",
+    "source": "NOO-Q4-2026-A",
     "source_type": "direct_mail",
     "mailbox": "campaigns@lrghomes.com",
-    "note": "Q4 version B; relabel when the A/B campaign rows exist"
+    "note": "NOO Q4 2026 piece A (bullets); printed on the A letter with 408-418-6294"
+  },
+  "ryansvy@lrghomes.com": {
+    "source": "NOO-Q4-2026-B",
+    "source_type": "direct_mail",
+    "mailbox": "campaigns@lrghomes.com",
+    "note": "NOO Q4 2026 piece B (prose); printed on the B letter with 408-418-8450"
   }
 }
