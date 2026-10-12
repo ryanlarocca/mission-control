@@ -47,7 +47,7 @@ LANGUAGE sql STABLE AS $$
     SELECT batch, jsonb_object_agg(week::text, n ORDER BY week) AS weekly
     FROM weeks
     GROUP BY 1
-  )
+  ),
   stats AS (
     SELECT batch,
            count(*) AS pieces,
@@ -101,7 +101,7 @@ LANGUAGE sql STABLE AS $$
     SELECT batch, jsonb_object_agg(week::text, n ORDER BY week) AS weekly
     FROM weeks
     GROUP BY 1
-  )
+  ),
   stats AS (
     SELECT batch,
            count(*) AS pieces,
