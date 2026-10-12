@@ -209,3 +209,43 @@ email, insert a synthetic `inbox_messages` row first (`gmail_id = 'manual:' + Da
 ## Out of scope (later phases, don't build)
 
 Disclosures.io / Glide (email one-time-code login using the agent's inbox access), Zix portal, Authentisign, SMS codes via the chat.db sidecar, a `--login` headed helper for the persistent profile.
+
+---
+
+## Phase 1b (2026-10-12, after the first live run) — expired email links
+
+**What the mini found:** DocuSign email links **expire** (the 10/06 Ridgeview
+Completed link was dead six days later). The expired page
+(`/tmp/inbox-fetch/cli-…/02-expired.png`) shows "This link from your email has
+expired" with two buttons: **SEND NEW LINK** ("Docusign will send a fresh link
+to your email address") and **LOG IN**. The fresh link lands in ryan@ — the
+mailbox the agent reads — so the agent can get itself a working link.
+
+Build, same files as Phase 1:
+
+1. `docusign.mjs`: when the `expired` gate shows a **Send New Link** button,
+   click it (add `/^send new link$/i` to `CLICK_ALLOW`; it sends an email, nothing
+   else), screenshot, and return `{ ok: false, needs: "new_link" }`. If the
+   expired page has no such button, keep `needs: "expired"`.
+2. Worker: `needs: "new_link"` → `inbox_fetches.status = 'awaiting_new_link'`,
+   `error = 'asked DocuSign for a fresh link'`, **no Telegram card**. The fresh
+   email is a normal DocuSign message: it is classified, its link is a new
+   `url_sha256`, it is enqueued and fetched like any other. When that later job
+   for the **same thread_id or normalized envelope subject** reaches `done`,
+   mark the `awaiting_new_link` job `resolved_by_new_link` (free-text status,
+   no migration). A job still `awaiting_new_link` after **2 hours** gets the
+   usual ⚠️ card (one, then `failed`). Never click Send New Link twice for the
+   same envelope within 24 h (the `awaiting_new_link` row is the guard).
+3. The ⚠️ expired/failed card: drop the "Open" URL button when the link is the
+   expired one (it is useless) — keep only 🔁 Retry, and say "ask the sender to
+   resend, or log the agent into DocuSign".
+4. **`--login` helper** (`fetch/cli.mjs --login --headed`): opens
+   `https://account.docusign.com` in the persistent profile and waits (up to
+   10 min) for the URL to leave the login flow, then exits. Ryan runs it once
+   on the mini over screen share; after that `app.docusign.com` links and
+   expired-link recovery via LOG IN both work. Document in the file header.
+5. Tests: allowlist accepts "Send New Link"; a fixture of the expired page text
+   → `gateFromText` = `expired`; the awaiting → resolved transition.
+
+The live worker already runs Phase 1 on the mini (`main` 087806a, migration
+applied 2026-10-12). Keep the diff minimal and leave `fileDocuments` alone.
