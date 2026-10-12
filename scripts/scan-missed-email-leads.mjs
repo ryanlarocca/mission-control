@@ -14,11 +14,14 @@
 //   node scripts/scan-missed-email-leads.mjs --mailbox ryan@lrghomes.com
 //   node scripts/scan-missed-email-leads.mjs --wide            # drop keyword prefilter
 //
-// Only 5 lrghomes.com mailboxes actually exist (probed 2026-09-02); the old
-// ryansva/ryansvd "shell seats" are aliases, not accounts, and 401 on
-// impersonation. The two personal boxes (ryan@ 61k msgs, info@ 10k) are far too
-// big to walk message-by-message, so the seller keywords are pushed into the
-// Gmail query and run server-side.
+// Only the real mailboxes can be impersonated: the alias addresses (ryansva@,
+// ryansvx@, … — `mailbox` entries in config/email-campaigns.json that point at
+// the campaigns@ hub) are not accounts and 401 on impersonation, so the
+// mailbox list is derived from that config (entries WITHOUT a `mailbox`
+// field, the same rule as watchedMailboxes() in lib/leads.ts). The two
+// personal boxes (ryan@ 61k msgs, info@ 10k) are far too big to walk
+// message-by-message, so the seller keywords are pushed into the Gmail query
+// and run server-side.
 import fs from "node:fs"
 import path from "node:path"
 import { google } from "googleapis"
@@ -43,12 +46,23 @@ const ONLY = opt("--mailbox")
 
 // Campaign mailboxes are small enough to walk in full; the personal boxes are
 // keyword-filtered server-side or they take hours.
+//
+// Small = every real mailbox in config/email-campaigns.json. Plain Node here,
+// so the watchedMailboxes() dedupe from lib/leads.ts is re-implemented
+// inline: an entry's mailbox is its `mailbox` field when set (alias → hub),
+// else the address itself; each distinct, lowercased mailbox once.
+const EMAIL_CAMPAIGNS = JSON.parse(
+  fs.readFileSync(new URL("../config/email-campaigns.json", import.meta.url), "utf-8")
+)
+const BIG_MAILBOXES = ["info@lrghomes.com", "ryan@lrghomes.com"]
+const campaignMailboxes = new Set()
+for (const [addr, entry] of Object.entries(EMAIL_CAMPAIGNS)) {
+  campaignMailboxes.add((entry.mailbox || addr).toLowerCase())
+}
+for (const big of BIG_MAILBOXES) campaignMailboxes.delete(big)
 const MAILBOXES = [
-  { addr: "ryansvg@lrghomes.com", small: true },
-  { addr: "ryansvj@lrghomes.com", small: true },
-  { addr: "ryansvr@lrghomes.com", small: true },
-  { addr: "info@lrghomes.com", small: false },
-  { addr: "ryan@lrghomes.com", small: false },
+  ...Array.from(campaignMailboxes).sort().map((addr) => ({ addr, small: true })),
+  ...BIG_MAILBOXES.map((addr) => ({ addr, small: false })),
 ].filter((m) => !ONLY || m.addr === ONLY)
 
 // Seller-intent terms, used both as the Gmail-side prefilter for the big

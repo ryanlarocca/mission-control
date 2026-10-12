@@ -15,6 +15,7 @@ import {
 import { isAnonymousCaller } from "@/lib/anonymous"
 import { handleSessionExpired } from "@/lib/session-expired"
 import type { LeadStatus, PropertyDetail } from "@/lib/leads"
+import { pieceMismatchLabel } from "@/lib/mailMatch"
 import { formatPhone } from "@/lib/utils"
 import { ReplyPlanner } from "./ReplyPlanner"
 import { type Plan, requestDraft, executePlan, sendSuffixFor, defaultNextAction } from "@/lib/reply-client"
@@ -90,6 +91,9 @@ interface Lead {
   offer_amount?: number | null
   offer_verbalized_at?: string | null
   campaign_id?: string | null
+  // campaigns.piece of campaign_id ("A" / "B" on A/B children), joined onto
+  // the row by GET /api/leads (2026-10-12) for the piece-mismatch chip.
+  campaign_piece?: string | null
   // Direct-mail tracking (2026-10-08): the mailed piece this responder
   // answered. Auto-matched at intake; "manual" after Ryan picks one.
   mail_record_id?: string | null
@@ -176,6 +180,10 @@ interface LeadGroup {
   mailMatchMethod: string | null
   mailMatchCandidates: string[]
   campaignId: string | null
+  // Piece of the campaign the newest inbound row is attributed to — the
+  // dialed line / emailed alias decides it. Compared with the linked
+  // record's piece on the card ("⚠ piece mismatch").
+  campaignPiece: string | null
 }
 
 // Phase 7D: top-row lifecycle chips only. Source / temperature / flag-hides
@@ -447,6 +455,7 @@ function groupLeads(leads: Lead[]): LeadGroup[] {
       mailMatchMethod: mailRow?.mail_match_method ?? null,
       mailMatchCandidates: mailRow ? [] : (candidateRow?.mail_match_candidates ?? []),
       campaignId: newestFirst.map(e => e.campaign_id).find(v => !!v) ?? null,
+      campaignPiece: mostRecentInbound?.campaign_piece ?? null,
     })
   }
   // Sort groups by newest event first
@@ -2104,6 +2113,13 @@ function LeadCard(p: LeadCardProps) {
       .finally(() => { if (!cancelled) setMailRecordLoading(false) })
     return () => { cancelled = true }
   }, [expanded, group.mailRecordId, mailRecord?.id])
+  // Piece cross-check: the linked record was mailed one creative, the lead's
+  // campaign (line / alias) says the other. Needs the loaded record, so it
+  // shows once the card has been expanded. Null = agree or unknown.
+  const pieceMismatch =
+    mailRecord && mailRecord.id === group.mailRecordId
+      ? pieceMismatchLabel(group.campaignPiece, mailRecord.piece)
+      : null
   async function commitMailRecord(record: MailRecordLite | null) {
     setMailSaving(true)
     setMailError(null)
@@ -2218,6 +2234,14 @@ function LeadCard(p: LeadCardProps) {
                   title={`Linked to a mailed record${group.mailMatchMethod ? ` (${group.mailMatchMethod.replace(/_/g, " ")})` : ""}`}
                 >
                   📬 Matched
+                </span>
+              )}
+              {pieceMismatch && (
+                <span
+                  className="px-1.5 py-0.5 text-[9px] font-semibold rounded uppercase tracking-wider bg-amber-950 text-amber-300 border border-amber-900 shrink-0"
+                  title="The linked mailed record was sent the other A/B creative than the line / alias this lead came in on. The line decides attribution; check the link."
+                >
+                  {pieceMismatch}
                 </span>
               )}
               {mailState === "candidates" && (
@@ -2400,6 +2424,14 @@ function LeadCard(p: LeadCardProps) {
                     ? "Loading…"
                     : "Linked (record unavailable)"}
                 </span>
+                {pieceMismatch && (
+                  <span
+                    className="rounded border border-amber-900 bg-amber-950 px-1.5 py-0.5 text-[10px] text-amber-300 shrink-0"
+                    title="The linked mailed record was sent the other A/B creative than the line / alias this lead came in on. The line decides attribution; check the link."
+                  >
+                    {pieceMismatch}
+                  </span>
+                )}
                 <button
                   onClick={() => setMailPickerOpen(true)}
                   disabled={mailSaving}

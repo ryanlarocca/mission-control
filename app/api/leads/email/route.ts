@@ -7,9 +7,7 @@ import { triggerTelegramDraft } from "@/lib/reply/telegram"
 export const maxDuration = 30
 import { CAMPAIGN_INBOXES, processCampaignInbox } from "@/lib/campaignInbox"
 import {
-  CAMPAIGN_MAP,
   EMAIL_CAMPAIGN_MAP,
-  FORWARD_TO,
   dedupeClusterStamps,
   getEmailCampaign,
   addressesForMailbox,
@@ -17,6 +15,7 @@ import {
   getGmailClient,
   getLeadsClient,
   isMobileHome,
+  isOwnedNumber,
   type LeadStatus,
   normalizePhone,
   sendTelegramAlert,
@@ -295,10 +294,8 @@ async function ingestGoogleVoice(args: {
 
   // The body's correspondent is one of OUR OWN lines — a Twilio campaign /
   // outbound number, or Ryan's forward-to cell texting his own GV line (e.g.
-  // during testing). That's not a prospect. Skip. (LRG_OWN_NUMBERS is defined
-  // lower in the module but only read here at request time, so the reference
-  // is safe.)
-  if (LRG_OWN_NUMBERS.has(phone.replace(/\D/g, "").slice(-10))) {
+  // during testing). That's not a prospect. Skip.
+  if (isOwnedNumber(phone)) {
     console.log(`[email][gv] Skipping — body number ${phone} is one of our own lines`)
     return { skipped: "gv_own_number" }
   }
@@ -318,6 +315,8 @@ async function ingestGoogleVoice(args: {
   const messageText = `${kindLabel} (Google Voice)\n\n${content}`.slice(0, 2000)
 
   // Dedup on the *caller* (not the shared voice-noreply@ address) + message.
+  // Same 50-row window as the per-sender email dedupe below (memo "Known
+  // limitations": a burst from one sender slipped past the old limit(5)).
   const oneHourAgo = new Date(Date.now() - 60 * 60 * 1000).toISOString()
   const { data: existing } = await sb
     .from("leads")
@@ -572,7 +571,11 @@ async function handleAppsScript(payload: AppsScriptPayload): Promise<NextRespons
     : null
   const messageText = `${subject}\n\n${bodyText}`.slice(0, 2000)
 
-  // Dedup: check for same sender + similar message in the last hour
+  // Dedup: check for same sender + similar message in the last hour.
+  // Window is the last 50 rows from this sender (memo "Known limitations":
+  // the earlier limit(5) let a burst of more than five emails from one
+  // sender in an hour slip past the check and insert duplicates). 50 is
+  // far above any real burst while keeping the read cheap.
   const sb = getLeadsClient()
   const oneHourAgo = new Date(Date.now() - 60 * 60 * 1000).toISOString()
   const { data: existing } = await sb
@@ -1234,22 +1237,18 @@ function stripQuoted(text: string): string {
   return out.join("\n").trim()
 }
 
-// LRG's own numbers (last-10-digit form): the Twilio campaign numbers, the
-// outbound caller-ID line, the forward-to cell. A direct-mail reply email
-// routinely quotes the original mailer — which prints Ryan's callback number
-// — so the naive "first 10 digits wins" grabbed Ryan's number and merged the
-// lead onto the wrong cluster. Skip any match that is one of these.
-const LRG_OWN_NUMBERS = new Set(
-  [...Object.keys(CAMPAIGN_MAP), FORWARD_TO].map((n) => n.replace(/\D/g, "").slice(-10))
-)
-
+// A direct-mail reply email routinely quotes the original mailer — which
+// prints Ryan's callback number — so the naive "first 10 digits wins" grabbed
+// Ryan's number and merged the lead onto the wrong cluster. Skip any match
+// that is one of LRG's own lines (isOwnedNumber in lib/leads.ts: the Twilio
+// campaign numbers, the outbound caller-ID line, the forward-to cell).
 function extractPhoneFromText(text: string): string | null {
   if (!text) return null
   const re = /(?:\+?1[\s.\-]*)?\(?(\d{3})\)?[\s.\-]*(\d{3})[\s.\-]*(\d{4})/g
   let m: RegExpExecArray | null
   while ((m = re.exec(text)) !== null) {
     const digits = `${m[1]}${m[2]}${m[3]}`
-    if (LRG_OWN_NUMBERS.has(digits)) continue // skip Ryan's / Twilio's own numbers
+    if (isOwnedNumber(digits)) continue // skip Ryan's / Twilio's own numbers
     return digits
   }
   return null

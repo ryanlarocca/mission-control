@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { normStreet, normSurname, parseFreeAddress } from "@/lib/mailMatch"
+import { isPieceMismatch, normStreet, normSurname, parseFreeAddress, pieceMismatchLabel } from "@/lib/mailMatch"
 
 describe("mailMatch normalizers", () => {
   it("drops units and standardizes suffixes", () => {
@@ -23,5 +23,26 @@ describe("mailMatch normalizers", () => {
     expect(parseFreeAddress("1450 Merrill St Santa Cruz")).toEqual({ street: "1450 MERRILL ST", city: "SANTA CRUZ", zip: "", hasNumber: true })
     expect(parseFreeAddress("San Jose, CA (duplex)").hasNumber).toBe(false)
     expect(parseFreeAddress("").hasNumber).toBe(false)
+  })
+})
+
+// A/B piece cross-check (2026-10-12): the lead card chip for a linked record
+// whose creative differs from the lead's campaign piece.
+describe("pieceMismatchLabel", () => {
+  it("names the record piece first, then the line piece", () => {
+    expect(pieceMismatchLabel("A", "B")).toBe("⚠ piece mismatch (record B, line A)")
+    expect(pieceMismatchLabel("B", "A")).toBe("⚠ piece mismatch (record A, line B)")
+  })
+  it("normalizes case and whitespace like isPieceMismatch", () => {
+    expect(isPieceMismatch(" a ", "A")).toBe(false)
+    expect(pieceMismatchLabel(" a ", "A")).toBeNull()
+    expect(pieceMismatchLabel("a", " b")).toBe("⚠ piece mismatch (record B, line A)")
+  })
+  it("is null when the pieces agree or either side is unknown", () => {
+    expect(pieceMismatchLabel("A", "A")).toBeNull()
+    expect(pieceMismatchLabel(null, "B")).toBeNull()
+    expect(pieceMismatchLabel("A", null)).toBeNull()
+    expect(pieceMismatchLabel(undefined, undefined)).toBeNull()
+    expect(pieceMismatchLabel("", "B")).toBeNull()
   })
 })

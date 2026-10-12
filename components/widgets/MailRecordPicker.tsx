@@ -24,6 +24,9 @@ export interface MailRecordLite {
   arm: "A" | "B" | "C" | "none" | "seed"
   batch: number | null
   is_seed: boolean
+  // A/B creative this record was mailed ("A" / "B"); null on lists without a
+  // piece split. The lead card compares it with the lead's campaign piece.
+  piece: string | null
   tenure_bucket: string | null
   imp_tercile: string | null
   any_signal: boolean | null
