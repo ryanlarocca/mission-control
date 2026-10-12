@@ -87,6 +87,11 @@ export const OUTBOUND_TWILIO_NUMBER = "+16502043247"
 // and the google_ads_form drip path in the voice/sms webhooks.
 export const GOOGLE_ADS_LANDING_NUMBER = "+16506703914"
 
+// Ryan's cell — every inbound call forwards here, and it is the number that
+// texts the campaign lines during testing. Owned for the same reason as the
+// Twilio lines: traffic from it is never a prospect.
+export const FORWARD_TO = "+14085006293"
+
 // Every phone number WE own on the Twilio account. A webhook whose `From` is
 // one of these is our own infrastructure talking to itself, never a lead.
 //
@@ -98,27 +103,54 @@ export const GOOGLE_ADS_LANDING_NUMBER = "+16506703914"
 // outbound caller-ID number. 33 rows across 4 of our numbers had accumulated
 // this way.
 //
-// CAMPAIGN_MAP holds the lead-facing lines; the agents line is owned by the
+// CAMPAIGN_MAP holds the lead-facing lines (OFFICE_NUMBERS and the outbound
+// caller-ID line are keys there too); the agents line is owned by the
 // email-campaign stack (app/api/campaign/voice) and isn't in that map, so it
-// is listed explicitly. Keep in sync with the Twilio console.
+// is listed explicitly, as is Ryan's forward-to cell. Keep in sync with the
+// Twilio console.
+//
+// 2026-10-12: this is the ONE owned-number list. app/api/leads/email/route.ts
+// used to keep a parallel `LRG_OWN_NUMBERS` (CAMPAIGN_MAP + FORWARD_TO) for
+// the quoted-mailer phone filter and the Google Voice self-text guard; it
+// now calls isOwnedNumber() (tests/owned-numbers.unit.test.ts pins that the
+// old membership is still covered).
 export const AGENTS_LINE_NUMBER = "+16509104007"
 const OWNED_NUMBER_LIST: readonly string[] = [
   ...Object.keys(CAMPAIGN_MAP),
   AGENTS_LINE_NUMBER,
+  FORWARD_TO,
 ]
 export const OWNED_NUMBERS: ReadonlySet<string> = new Set(OWNED_NUMBER_LIST)
 // Compared on the last 10 digits so unformatted variants ("6506703914",
 // "1 650-670-3914") match the E.164 form Twilio normally sends.
-const OWNED_LAST10: ReadonlySet<string> = new Set(
-  OWNED_NUMBER_LIST.map((n) => n.replace(/\D/g, "").slice(-10))
-)
+const last10 = (n: string): string => n.replace(/\D/g, "").slice(-10)
+const OWNED_LAST10: ReadonlySet<string> = new Set(OWNED_NUMBER_LIST.map(last10))
 
-// True when a webhook's caller is one of our own Twilio numbers. Callers must
-// drop the event rather than write a lead row.
+// Env-provided lines, read at call time (no env is needed at module init /
+// build): TWILIO_NUMBER is the click-to-call caller ID (getTwilioNumber), and
+// LRG_OWN_NUMBERS is an optional comma-separated list for a line that was
+// bought on Twilio but not yet added to CAMPAIGN_MAP — a redeploy-free guard.
+function envOwnedLast10(): string[] {
+  const raw = [process.env.TWILIO_NUMBER, process.env.LRG_OWN_NUMBERS]
+    .filter((v): v is string => !!v && v.trim() !== "")
+    .join(",")
+  if (!raw) return []
+  return raw
+    .split(",")
+    .map((n) => last10(n))
+    .filter((d) => d.length === 10)
+}
+
+// True when a phone number is one of our own lines (Twilio numbers, Ryan's
+// cell, env-provided extras). Webhook callers must drop the event rather than
+// write a lead row; the email route skips such numbers when it pulls a
+// callback number out of a reply that quotes our mailer.
 export function isOwnedNumber(raw: string | null | undefined): boolean {
   if (!raw) return false
   const d = String(raw).replace(/\D/g, "")
-  return d.length >= 10 && OWNED_LAST10.has(d.slice(-10))
+  if (d.length < 10) return false
+  const tail = d.slice(-10)
+  return OWNED_LAST10.has(tail) || envOwnedLast10().includes(tail)
 }
 
 // Phase 7C-may8 Bug 6: explicit STOP keywords flag the lead DNC and kill the
@@ -326,7 +358,8 @@ export function normalizePhone(raw: string | null | undefined): string {
 // existing `@/lib/leads` importers keep working.
 export { isAnonymousCaller }
 
-export const FORWARD_TO = "+14085006293"
+// FORWARD_TO (Ryan's cell) is declared above, next to the other owned
+// numbers, because OWNED_NUMBERS is built from it at module init.
 
 // Outbound Twilio number used as caller ID for click-to-call relays
 // (`/api/leads/call` + `/api/leads/call/bridge`). Throws on missing so a
