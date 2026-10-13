@@ -41,14 +41,21 @@ describe("email alias map", () => {
     expect(r.campaign.source).toBe("NOO-Q4-2026")
   })
 
-  it("ignores aliases that belong to a different mailbox", () => {
-    // ryansvg@ is still a real mailbox (not yet migrated); mail to it must not attribute from the hub
-    const r = resolveRecipientCampaign(h([["To", "ryansvg@lrghomes.com"]]), HUB)
+  it("ignores addresses that belong to a different mailbox", () => {
+    // ryan@lrghomesbuys.com is a real mailbox of its own; mail to it must not attribute from the hub
+    const r = resolveRecipientCampaign(h([["To", "ryan@lrghomesbuys.com"]]), HUB)
     expect(r.address).toBe(HUB)
+  })
+
+  it("moved MFM addresses attribute to their original labels from the hub (2026-10-12 seat move)", () => {
+    expect(resolveRecipientCampaign(h([["Delivered-To", "ryansvg@lrghomes.com"]]), HUB).campaign.source).toBe("MFM-A")
+    expect(resolveRecipientCampaign(h([["Delivered-To", "ryansvj@lrghomes.com"]]), HUB).campaign.source).toBe("MFM-B")
+    expect(resolveRecipientCampaign(h([["Delivered-To", "ryansvr@lrghomes.com"]]), HUB).campaign.source).toBe("AGENT-DRIP-2")
   })
 
   it("reverse lookup returns the real mailbox for an alias-backed source", () => {
     expect(getMailboxForSource("Legacy DM")).toBe(HUB)
-    expect(getMailboxForSource("MFM-A")).toBe("ryansvg@lrghomes.com")
+    expect(getMailboxForSource("MFM-A")).toBe(HUB)
+    expect(getMailboxForSource("AGENT-DRIP-BUYS")).toBe("ryan@lrghomesbuys.com")
   })
 })
