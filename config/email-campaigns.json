@@ -42,15 +42,21 @@
   },
   "ryansvg@lrghomes.com": {
     "source": "MFM-A",
-    "source_type": "direct_mail"
+    "source_type": "direct_mail",
+    "mailbox": "campaigns@lrghomes.com",
+    "note": "MFM-A reply address (May 2026 pink envelope); user renamed old-svg@ 2026-10-12, address is an alias on the hub"
   },
   "ryansvj@lrghomes.com": {
     "source": "MFM-B",
-    "source_type": "direct_mail"
+    "source_type": "direct_mail",
+    "mailbox": "campaigns@lrghomes.com",
+    "note": "MFM-B reply address (May 2026 white envelope); user renamed old-svj@ 2026-10-12, address is an alias on the hub"
   },
   "ryansvr@lrghomes.com": {
     "source": "AGENT-DRIP-2",
-    "source_type": "direct_mail"
+    "source_type": "direct_mail",
+    "mailbox": "campaigns@lrghomes.com",
+    "note": "legacy Gmail agent-campaign replies (campaign-inbox pipeline, filtered by recipient); user renamed old-svr@ 2026-10-12"
   },
   "ryansvx@lrghomes.com": {
     "source": "NOO-Q4-2026-A",
