@@ -148,3 +148,54 @@ an existing verdict".
 - No PR, no merge. Push the branch, run tsc + vitest, stop and report with a
   summary of files changed and the exact Mac-mini steps to go live
   (env vars to add, consent command, first `--judge-backfill` run).
+
+## Addendum 2026-10-12 evening — judge reads over IMAP, not the Gmail API
+
+The Google Cloud console refused to publish the OAuth app (Publish stayed
+greyed with "complete your configuration on the Branding page" even after
+Branding was saved), and a Testing-status token expires every 7 days, which
+would re-create exactly the stall this build exists to remove. So the judge
+reads the inbox over **IMAP with a Gmail App Password** instead. Verified
+live 2026-10-12 with `imapflow@1` against the judge mailbox:
+
+- login works; folders `INBOX`, `[Gmail]/All Mail`, `[Gmail]/Spam`, …
+- `search({ gmraw: "from:lrghomesbuys.com category:primary" })` in
+  `[Gmail]/All Mail` → 7 (all canaries); `category:promotions` → 0;
+  `[Gmail]/Spam` → 0 messages. Gmail's `X-GM-RAW` search honours
+  `category:` and `from:` / `newer_than:`.
+- **`subject:"[C7 buys]"` returns 0** — Gmail's tokenizer drops the
+  brackets. Search by `from:<sender> newer_than:3d` and match the subject
+  prefix `[C<n> <label>]` client-side on the envelope.
+- fetch `{ envelope, labels, internalDate }` only — never a body, never
+  `\Seen`. Gmail labels show `\Inbox`/`\Important`; categories are NOT in the
+  labels, so category membership comes from the gmraw searches.
+
+### Task 4 — replace the Gmail API read with IMAP (supersedes Task 1 and the Gmail parts of Task 2)
+
+- Add `imapflow` (^1) to `package.json` dependencies (this is the one
+  allowed new dependency). Delete `scripts/canary-judge-consent.mjs` and every
+  `CANARY_JUDGE_OAUTH_*` reference; the OAuth path is gone.
+- Env: `CANARY_JUDGE_IMAP_USER` (the judge address, = `CAMPAIGN_CANARY_TO`)
+  and `CANARY_JUDGE_IMAP_PASSWORD` (16-char app password, spaces stripped).
+  Judge pass skips with one log line when either is unset.
+- `scripts/canary-judge.mjs`: open `[Gmail]/All Mail`; for each sender run
+  `from:<sender.email> newer_than:3d` (judge) or `newer_than:30d`
+  (backfill), fetch envelope+labels+internalDate, keep messages whose subject
+  starts with `[C<n> <label>]`. Verdict per message:
+  1. message UID appears in `[Gmail]/Spam` search `from:<sender.email>` (open
+     that folder separately; All Mail excludes Spam) → `spam`
+  2. UID in the All-Mail search `from:<sender.email> newer_than:30d
+     (category:promotions OR category:social OR category:updates OR
+     category:forums)` → `promotions`
+  3. labels include `\Inbox` → `primary`
+  4. otherwise `null` (not found).
+  Keep `verdictFromLabels` semantics as a pure function taking
+  `{ inSpam, inPromotions, labels }` and keep every test; adapt the names.
+  Spam matching across folders: match by `Message-ID` from the envelope, not
+  UID (UIDs are per folder).
+- One IMAP connection per pass, `logout()` in `finally`; auth failure →
+  the existing once-per-day Telegram alert, text now says "rerun the app
+  password" instead of the consent script.
+- Everything else from Tasks 2 and 3 stands unchanged (timing, never
+  overwrite Ryan's verdict, Telegram lines, `--judge-now`,
+  `--judge-backfill`, stall watchdog, dry-run writes nothing).
