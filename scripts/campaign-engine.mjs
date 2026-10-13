@@ -32,6 +32,16 @@
  * Safety checks (never bypassable): suppression, contact status,
  * daily cap, send window
  * (--now excepted), touch-10 placeholder refusal.
+ *
+ * JUDGE pass (2026-10-13, briefs/BRIEF_CANARY_JUDGE_AUTOMATION_2026-10-12.md):
+ *   reads each day's canary placement from the judge inbox over Gmail
+ *   (CANARY_JUDGE_OAUTH_REFRESH_TOKEN) and records the verdict the way
+ *   Ryan's Telegram reply does. Flags:
+ *     --judge-now        judge-only run; skips the 20-minute beat (pair with
+ *                        --dry-run to print what WOULD be recorded)
+ *     --judge-backfill   judge-only run; records a verdict for every canary
+ *                        in the judge inbox from the last 30 days that has
+ *                        none (--dry-run prints the table, writes nothing)
  */
 
 import fs from "node:fs"
@@ -41,7 +51,8 @@ import path from "node:path"
 import { fileURLToPath } from "node:url"
 import { createClient } from "@supabase/supabase-js"
 import { TOUCHES, renderTouch, nextOffsetDays } from "./campaign-touches.mjs"
-import { loadSenderConfig, loadSenderStates, saveSenderState, capFor, evaluateSenderDay, fetchRelationshipEmails, fetchReplierIds, fetchLastSenderByContact, assignSender, priorityOf, isSenderPaused, pauseLabel, withPause, withResume } from "./campaign-senders.mjs"
+import { loadSenderConfig, loadSenderStates, saveSenderState, capFor, evaluateSenderDay, fetchRelationshipEmails, fetchReplierIds, fetchLastSenderByContact, assignSender, priorityOf, isSenderPaused, pauseLabel, withPause, withResume, withCanaryVerdict } from "./campaign-senders.mjs"
+import { judgeConfigured, judgeGmailClient, findNewestCanary, listCanaryMessages, judgeQueryFor, decideVerdict, canaryOldEnough, planBackfill, stallReason, verdictWord, isJudgeAuthError } from "./canary-judge.mjs"
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const REPO_ROOT = path.resolve(__dirname, "..")
@@ -161,6 +172,9 @@ const limitArg = args.find((a) => a.startsWith("--limit="))
 const limit = limitArg ? Number(limitArg.split("=")[1]) : null
 const toArg = args.find((a) => a.startsWith("--to="))
 const redirectTo = toArg ? toArg.split("=")[1] : null
+const judgeNow = args.includes("--judge-now")
+const judgeBackfill = args.includes("--judge-backfill")
+const judgeOnly = judgeNow || judgeBackfill // manual judge runs never draft/send
 
 // ---------- helpers ----------
 function log(msg) {
@@ -882,6 +896,14 @@ function bumpHealthCounter(key, n = 1) {
   st[day][key] = (st[day][key] || 0) + n
   fs.writeFileSync(HEALTH_STATE, JSON.stringify(st))
 }
+/** Merge `patch` (or `patch(current)`) into the day's local health record. Re-reads first so concurrent passes never clobber each other. */
+function patchHealthDay(day, patch) {
+  const st = readHealthState()
+  const cur = st[day] || {}
+  st[day] = { ...cur, ...(typeof patch === "function" ? patch(cur) : patch) }
+  fs.writeFileSync(HEALTH_STATE, JSON.stringify(st))
+  return st[day]
+}
 
 async function dayMetrics(dayStr) {
   const start = new Date(`${dayStr}T00:00:00-07:00`).toISOString()
@@ -968,11 +990,159 @@ async function canaryPass() {
     const gmail = await gmailClient(s)
     await sendCampaignMessage(gmail, { from: s.email, to, subject: `[C${n} ${s.label}] ${subject}`, body, contactId: null, unsubHeaders: false, extraHeaders: s.replyTo ? [`Reply-To: ${s.replyTo}`] : [] })
     bumpHealthCounter("canary_sent", 1)
-    const cur = readHealthState()
-    cur[day] = { ...(cur[day] || {}), canary: { ...(typeof cur[day]?.canary === "object" ? cur[day].canary : {}), [s.email]: `C${n}` } }
-    fs.writeFileSync(HEALTH_STATE, JSON.stringify(cur))
+    // canary_at (additive, 2026-10-13): when it left, so the judge pass can
+    // give Gmail a beat before reading the placement. Existing readers only
+    // look at `canary`.
+    patchHealthDay(day, (cur) => ({
+      canary: { ...(typeof cur.canary === "object" && cur.canary ? cur.canary : {}), [s.email]: `C${n}` },
+      canary_at: { ...(cur.canary_at || {}), [s.email]: new Date().toISOString() },
+    }))
     log(`canary C${n} from ${s.email} → ${to}`)
   }
+}
+
+// ---------- JUDGE pass (2026-10-13) ----------
+// Reads where today's canaries landed straight from the judge inbox
+// (CAMPAIGN_CANARY_TO over OAuth, gmail.readonly) and records the verdict in
+// the sender's `canary_verdicts[day]` — the same slot the Telegram "canary
+// <label> <verdict>" command writes. Ryan's reply is the override: a verdict
+// already recorded for the day is never overwritten. Brief:
+// briefs/BRIEF_CANARY_JUDGE_AUTOMATION_2026-10-12.md (Task 2).
+//
+// Local bookkeeping on the health-state day (all additive):
+//   canary_at              { [sender]: ISO }      stamped by canaryPass
+//   canary_judged          { [sender]: verdict }  judged (by the engine or by Ryan) — no re-query
+//   canary_judge_missing   { [sender]: true }     the after-hours "not in the judge inbox" alert went out
+//   canary_judge_summary   true                   the one-line day summary went out
+//   canary_judge_alerted   string                 the day's single auth/API failure alert
+const JUDGE_ALERT_HOUR = 17.25 // same hour the health pass evaluates: 5:15 PM PT
+
+async function judgePass() {
+  if (!judgeConfigured()) { log("judge: CANARY_JUDGE_OAUTH_REFRESH_TOKEN unset — verdicts come from Telegram only"); return }
+  if (dryRun && !judgeOnly) { log("judge: dry run without --judge-now/--judge-backfill — skipped"); return }
+  let gmail
+  try { gmail = judgeGmailClient() } catch (e) { await judgeFailed(e); return }
+  if (judgeBackfill) { try { await runJudgeBackfill(gmail) } catch (e) { await judgeFailed(e) } return }
+  const day = ptToday()
+  const today = readHealthState()[day] || {}
+  const canaries = typeof today.canary === "object" && today.canary ? today.canary : {}
+  const sentAt = today.canary_at || {}
+  const judged = { ...(today.canary_judged || {}) }
+  const missing = { ...(today.canary_judge_missing || {}) }
+  const withCanary = SENDERS.filter((s) => canaries[s.email])
+  if (!withCanary.length) { log("judge: no canary recorded today — nothing to judge"); return }
+  const afterHours = laHourNow() >= JUDGE_ALERT_HOUR
+  const results = [] // { s, code, verdict, by } for the Telegram summary
+  for (const s of withCanary) {
+    const code = canaries[s.email]
+    // Ryan already answered (Telegram) or a previous pass judged it → done.
+    const existing = SENDER_STATE.get(s.email)?.canary_verdicts?.[day] ?? null
+    if (existing) {
+      if (!judged[s.email] && !dryRun) patchHealthDay(day, (cur) => ({ canary_judged: { ...(cur.canary_judged || {}), [s.email]: existing } }))
+      judged[s.email] = existing
+      results.push({ s, code, verdict: existing, by: today.canary_judged?.[s.email] ? "engine" : "ryan" })
+      continue
+    }
+    if (judged[s.email] && !judgeNow) { results.push({ s, code, verdict: judged[s.email], by: "engine" }); continue }
+    if (!judgeNow && !canaryOldEnough(sentAt[s.email])) { log(`judge: ${code} ${s.label} left at ${sentAt[s.email]} — giving Gmail a beat`); continue }
+    let found
+    try {
+      found = await findNewestCanary(gmail, judgeQueryFor(s.email, code, s.label))
+    } catch (e) { await judgeFailed(e); return }
+    const decision = decideVerdict({ state: SENDER_STATE.get(s.email), day, labelIds: found?.labelIds, found: Boolean(found) })
+    if (decision.action !== "record") {
+      log(`judge: ${code} ${s.label} — ${decision.reason}${found ? ` (labels ${found.labelIds.join(",")})` : ""}`)
+      if (decision.reason === "not found" && afterHours && !missing[s.email]) {
+        const text = `⚠️ judge: canary ${code} ${s.label} not in the judge inbox — reply "canary ${s.label} primary|promotions|spam"`
+        if (dryRun) log(`would telegram: ${text}`)
+        else {
+          await telegram(escHtml(text))
+          patchHealthDay(day, (cur) => ({ canary_judge_missing: { ...(cur.canary_judge_missing || {}), [s.email]: true } }))
+        }
+        missing[s.email] = true
+      }
+      continue
+    }
+    const verdict = decision.verdict
+    log(`judge: ${code} ${s.label} → ${verdict} (labels ${found.labelIds.join(",")})${dryRun ? " — DRY RUN, not recorded" : ""}`)
+    if (dryRun) { results.push({ s, code, verdict, by: "engine" }); judged[s.email] = verdict; continue }
+    // Re-read right before writing: Ryan may have replied on Telegram since
+    // loadRamp() — his verdict wins and is never overwritten.
+    const fresh = (await loadSenderStates(sb, [s])).get(s.email)
+    if (fresh?.canary_verdicts?.[day]) {
+      SENDER_STATE.set(s.email, fresh)
+      judged[s.email] = fresh.canary_verdicts[day]
+      patchHealthDay(day, (cur) => ({ canary_judged: { ...(cur.canary_judged || {}), [s.email]: judged[s.email] } }))
+      results.push({ s, code, verdict: judged[s.email], by: "ryan" })
+      log(`judge: ${code} ${s.label} — Ryan recorded ${judged[s.email]} meanwhile, kept`)
+      continue
+    }
+    const saved = await saveSenderState(sb, s.email, withCanaryVerdict(fresh, day, verdict))
+    SENDER_STATE.set(s.email, saved)
+    judged[s.email] = verdict
+    patchHealthDay(day, (cur) => ({ canary_judged: { ...(cur.canary_judged || {}), [s.email]: verdict } }))
+    results.push({ s, code, verdict, by: "engine" })
+    // Bad placement goes out at once — no waiting for the other sender.
+    if (verdict !== "primary") await telegram(`🐤 judge: <b>${escHtml(s.label)}</b> ${escHtml(code)} → ${verdictWord(verdict)}`)
+  }
+  // One line per day once every sender with a canary is judged.
+  const allJudged = withCanary.every((s) => judged[s.email])
+  if (allJudged && !today.canary_judge_summary) {
+    const line = `🐤 judge: ${withCanary.map((s) => `${escHtml(s.label)} ${escHtml(canaries[s.email])} → ${verdictWord(judged[s.email])}${results.find((r) => r.s === s)?.by === "ryan" ? " (Ryan)" : ""}`).join(" · ")}`
+    if (dryRun) log(`would telegram: ${line}`)
+    else {
+      await telegram(line)
+      patchHealthDay(day, { canary_judge_summary: true })
+    }
+  }
+}
+
+/** One Telegram alert per day for a judge auth/API failure; the pass returns instead of throwing so the other passes run as usual. */
+async function judgeFailed(e) {
+  const msg = String(e?.response?.data?.error ?? e?.message ?? e)
+  console.error("[campaign] judge pass error:", msg)
+  const text = isJudgeAuthError(e)
+    ? `⚠️ judge: Gmail auth failed (${msg.slice(0, 80)}) — rerun scripts/canary-judge-consent.mjs --write-env`
+    : `⚠️ judge: Gmail read failed (${msg.slice(0, 120)}) — retrying next pass`
+  if (dryRun) { log(`would telegram: ${text}`); return }
+  const day = ptToday()
+  if (readHealthState()[day]?.canary_judge_alerted) return
+  await telegram(escHtml(text))
+  patchHealthDay(day, { canary_judge_alerted: text })
+}
+
+/**
+ * --judge-backfill: every canary message in the judge inbox from the last 30
+ * days → a verdict for each (sender, PT day) that has none. Prints a table;
+ * --dry-run writes nothing and sends nothing. This fills the Oct 5–12 gap on
+ * the first live run.
+ */
+async function runJudgeBackfill(gmail) {
+  const messages = await listCanaryMessages(gmail)
+  const states = await loadSenderStates(sb, SENDERS)
+  const rows = planBackfill({ messages, senders: SENDERS, states })
+  log(`judge backfill: ${messages.length} canary message(s) in the judge inbox, ${rows.length} (sender, day) row(s)${dryRun ? " — DRY RUN" : ""}`)
+  const pad = (v, n) => String(v ?? "").padEnd(n)
+  console.log(`  ${pad("day", 11)}${pad("sender", 28)}${pad("code", 6)}${pad("labels", 36)}${pad("action", 8)}detail`)
+  for (const r of rows) {
+    const detail = r.action === "record" ? r.verdict : r.reason === "already recorded" ? `already recorded: ${r.existing}` : r.reason
+    console.log(`  ${pad(r.day, 11)}${pad(r.sender, 28)}${pad(r.code, 6)}${pad(r.labels.join(","), 36)}${pad(r.action, 8)}${detail}`)
+  }
+  const toRecord = rows.filter((r) => r.action === "record")
+  if (!toRecord.length) { log("judge backfill: nothing to record"); return }
+  if (dryRun) { log(`judge backfill: would record ${toRecord.length} verdict(s) — DRY RUN, nothing written`); return }
+  const perSender = new Map()
+  for (const r of toRecord) {
+    const next = withCanaryVerdict(states.get(r.sender), r.day, r.verdict)
+    const saved = await saveSenderState(sb, r.sender, next)
+    states.set(r.sender, saved)
+    SENDER_STATE.set(r.sender, saved)
+    perSender.set(r.sender, (perSender.get(r.sender) ?? 0) + 1)
+  }
+  const days = toRecord.map((r) => r.day).sort()
+  const summary = SENDERS.filter((s) => perSender.has(s.email)).map((s) => `${s.label} ${perSender.get(s.email)}`).join(", ")
+  log(`judge backfill: recorded ${toRecord.length} verdict(s) (${summary}) over ${days[0]}…${days[days.length - 1]}`)
+  await telegram(`🐤 judge backfill: recorded ${toRecord.length} canary verdict(s) from the judge inbox (${escHtml(summary)}) for ${escHtml(days[0].slice(5))}…${escHtml(days[days.length - 1].slice(5))}`)
 }
 
 async function healthPass() {
@@ -1019,6 +1189,7 @@ async function healthPass() {
   const perSender = await senderMetricsRange(dayStart, dayEnd)
   const trailing = await senderMetricsRange(new Date(new Date(dayStart).getTime() - 7 * 86_400_000).toISOString(), new Date(new Date(dayStart).getTime() - 1000).toISOString())
   const senderLines = []
+  const stallLines = [] // 🚨 ramp stalled on the judge (Task 3) — printed above the header
   const senderSnap = {}
   let worst = "🟢"
   const canaryToday = typeof m.canary === "object" && m.canary ? m.canary : {}
@@ -1047,6 +1218,11 @@ async function healthPass() {
       await telegram(`⏸ <b>${escHtml(s.label)}</b> ${escHtml(s.email)} AUTO-PAUSED ${pausedNow.hours}h at the day's health check: ${escHtml(pausedNow.reason)}. ${others.length ? `${escHtml(others.join(", "))} keeps sending.` : "No other sender is active."} Reply "resume ${escHtml(s.label)}" to override.`)
     }
     senderSnap[s.email] = { ...sm, cap: ev.cap, step: ev.state.step, status: ev.status, decision: ev.decision, healthy_days: ev.state.healthy_days, checks: ev.checks, warnings: ev.warnings, paused: isSenderPaused(saved) ? pauseLabel(saved) : null, canary: ev.canary.note }
+    // Stall watchdog (2026-10-13): healthy days banked, every gate green
+    // except the canary verdicts → the judge is not recording. Loud, at the
+    // top of the card, one line per stalled sender.
+    const stall = stallReason(ev, SENDER_CFG.gates, s.label)
+    if (stall) { stallLines.push(`🚨 ${escHtml(stall)}`); senderSnap[s.email].stalled = stall }
     if (ev.status === "🔴" || (ev.status === "🟡" && worst === "🟢")) worst = ev.status
     const verdict =
       ev.decision === "advance" ? `⬆️ next batch ${ev.nextCap}/day` :
@@ -1070,6 +1246,7 @@ async function healthPass() {
   if (m.sent === 0 && !warnings.length && !rehearsal) { log("health: no sends today, snapshot stored, no card"); return }
   const canaryNote = m.canary ? (typeof m.canary === "object" ? Object.entries(m.canary).map(([e, c]) => `${c} ${e.split("@")[1]}`).join(", ") : m.canary) : null
   const card =
+    (stallLines.length ? `${stallLines.join("\n")}\n\n` : "") +
     `🩺 <b>Campaign health ${status} — ${wd} ${day.slice(5)}</b>\n` +
       `📤 ${m.sent} sent (caps ${capTotal}) · ↩️ ${m.bounces} bounced (${pct(m.bounces, m.sent)}) · 💬 ${m.replies} replies · 🚫 ${m.unsubs} removes · 🤖 ${m.autoReplies} auto-replies · ⚠️ ${m.failed} failed · 🧹 ${m.lint_rejected} lint-rejected` +
       (canaryNote ? ` · 🐤 canary ${escHtml(canaryNote)} sent` : "") +
@@ -1188,12 +1365,15 @@ async function runPass(name, fn) {
 const rampOk = await runPass("ramp", loadRamp)
 // Without sender ramp state the caps are unknown — skip the passes that
 // would send/draft at the wrong volume; observation passes still run.
-if (rampOk && !digestOnly && doDraft) await runPass("draft", draftPass)
-if (rampOk && !digestOnly && doSend) await runPass("send", sendPass)
-await runPass("digest", digestPass)
-if (rampOk && !digestOnly && doSend) await runPass("canary", canaryPass)
-await runPass("health", healthPass)
-await runPass("scorecard", scorecardPass)
+// --judge-now / --judge-backfill are judge-only runs: ramp (for the sender
+// states) + judge, nothing else — so a manual backfill never drafts or sends.
+if (rampOk && !digestOnly && !judgeOnly && doDraft) await runPass("draft", draftPass)
+if (rampOk && !digestOnly && !judgeOnly && doSend) await runPass("send", sendPass)
+if (!judgeOnly) await runPass("digest", digestPass)
+if (rampOk && !digestOnly && !judgeOnly && doSend) await runPass("canary", canaryPass)
+if (rampOk && !digestOnly) await runPass("judge", judgePass)
+if (!judgeOnly) await runPass("health", healthPass)
+if (!judgeOnly) await runPass("scorecard", scorecardPass)
 if (passFailures.length) {
   await telegram(`🔥 Campaign engine: ${passFailures.length} pass(es) failed — ${passFailures.join(" · ")}`)
   process.exit(1)
