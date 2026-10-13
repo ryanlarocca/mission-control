@@ -121,6 +121,10 @@ describe("click allowlist", () => {
     expect(isAllowedClickAny(["expired-content-send-new-link-button", "Send New Link"]).ok).toBe(true)
     expect(isAllowedClickAny(["expired content send new link button Send New Link"]).ok).toBe(false) // the old joined form
     expect(isAllowedClickAny(["download-button", "Download"]).ok).toBe(true)
+    // Second drift, same run: the Download panel's links (visible text doubled by screen-reader text).
+    expect(isAllowedClickAny(["Separate PDFs Separate PDFs", "toolbar-download-separate-link"]).ok).toBe(true)
+    expect(isAllowedClickAny(["Combined PDF Combined PDF", "toolbar-download-combined-link"]).ok).toBe(true)
+    expect(isAllowedClickAny(["Combined PDF and Sign"]).ok).toBe(false)
     // A refused candidate wins over an allowed one.
     expect(isAllowedClickAny(["Continue", "sign-button"]).ok).toBe(false)
     expect(isAllowedClickAny(["Send New Link", "Finish"]).ok).toBe(false)

@@ -171,9 +171,20 @@ async function downloadFromDialog(page, log) {
       continue
     }
     const role = await opt.getAttribute("type").catch(() => null)
-    if (role === "radio" || role === "checkbox") await opt.check({ timeout: 3_000 }).catch(() => opt.click({ timeout: 3_000 }))
-    else await opt.click({ timeout: 3_000 })
+    if (role === "radio" || role === "checkbox") {
+      await opt.check({ timeout: 3_000 }).catch(() => opt.click({ timeout: 3_000 }))
+      mode = name
+      break
+    }
+    // Ridgeview 2026-10-12: on completed envelopes the option is a link and the
+    // click itself starts the download (no Download button follows). Capture it;
+    // if nothing arrives, fall through to the dialog's Download button.
+    const direct = await captureDownload(page, () => opt.click({ timeout: 3_000 }), { timeout: 15_000 })
     mode = name
+    if (direct) {
+      log(`[fetch] docusign: ${name} link downloaded ${direct.filename}`)
+      return { mode, file: direct }
+    }
     break
   }
   const go = await firstVisible(dialog, [

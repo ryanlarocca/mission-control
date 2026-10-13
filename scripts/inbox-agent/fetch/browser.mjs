@@ -35,6 +35,12 @@ export const CLICK_ALLOW = [
   /^got it$/i,
   /^ok(ay)?$/i,
   /^validate$/i, // the access-code form's submit button (DocuSign names it VALIDATE, not Continue)
+  // First live run (2026-10-12, Ridgeview): the Download panel's two links read
+  // "Combined PDF Combined PDF" / "Separate PDFs Separate PDFs" (visible + sr text)
+  // with data-qa toolbar-download-{combined,separate}-link — and clicking one
+  // IS the download; there is no Download button.
+  /^(combined pdf|separate pdfs?)(\s+(combined pdf|separate pdfs?))?$/i,
+  /^toolbar download (combined|separate) link$/i,
   /^send new link$/i, // the expired-link page (Phase 1b): emails a fresh link to ryan@, nothing else
 ]
 // Anything here is refused even if it also matches the allowlist.
