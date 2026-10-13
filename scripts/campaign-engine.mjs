@@ -34,9 +34,9 @@
  * (--now excepted), touch-10 placeholder refusal.
  *
  * JUDGE pass (2026-10-13, briefs/BRIEF_CANARY_JUDGE_AUTOMATION_2026-10-12.md):
- *   reads each day's canary placement from the judge inbox over Gmail
- *   (CANARY_JUDGE_OAUTH_REFRESH_TOKEN) and records the verdict the way
- *   Ryan's Telegram reply does. Flags:
+ *   reads each day's canary placement from the judge inbox over IMAP with a
+ *   Gmail App Password (CANARY_JUDGE_IMAP_USER / CANARY_JUDGE_IMAP_PASSWORD)
+ *   and records the verdict the way Ryan's Telegram reply does. Flags:
  *     --judge-now        judge-only run; skips the 20-minute beat (pair with
  *                        --dry-run to print what WOULD be recorded)
  *     --judge-backfill   judge-only run; records a verdict for every canary
@@ -52,7 +52,7 @@ import { fileURLToPath } from "node:url"
 import { createClient } from "@supabase/supabase-js"
 import { TOUCHES, renderTouch, nextOffsetDays } from "./campaign-touches.mjs"
 import { loadSenderConfig, loadSenderStates, saveSenderState, capFor, evaluateSenderDay, fetchRelationshipEmails, fetchReplierIds, fetchLastSenderByContact, assignSender, priorityOf, isSenderPaused, pauseLabel, withPause, withResume, withCanaryVerdict } from "./campaign-senders.mjs"
-import { judgeConfigured, judgeGmailClient, findNewestCanary, listCanaryMessages, judgeQueryFor, decideVerdict, canaryOldEnough, planBackfill, stallReason, verdictWord, isJudgeAuthError } from "./canary-judge.mjs"
+import { judgeConfigured, connectJudge, disconnectJudge, readCanaryMessages, newestCanary, describePlacement, decideVerdict, canaryOldEnough, planBackfill, stallReason, verdictWord, isJudgeAuthError, judgeErrorText, JUDGE_SEARCH_DAYS, BACKFILL_SEARCH_DAYS } from "./canary-judge.mjs"
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const REPO_ROOT = path.resolve(__dirname, "..")
@@ -1003,11 +1003,12 @@ async function canaryPass() {
 
 // ---------- JUDGE pass (2026-10-13) ----------
 // Reads where today's canaries landed straight from the judge inbox
-// (CAMPAIGN_CANARY_TO over OAuth, gmail.readonly) and records the verdict in
-// the sender's `canary_verdicts[day]` — the same slot the Telegram "canary
+// (CAMPAIGN_CANARY_TO over IMAP with a Gmail App Password — envelope, labels
+// and internalDate only, never a body) and records the verdict in the
+// sender's `canary_verdicts[day]` — the same slot the Telegram "canary
 // <label> <verdict>" command writes. Ryan's reply is the override: a verdict
 // already recorded for the day is never overwritten. Brief:
-// briefs/BRIEF_CANARY_JUDGE_AUTOMATION_2026-10-12.md (Task 2).
+// briefs/BRIEF_CANARY_JUDGE_AUTOMATION_2026-10-12.md (Task 2 + Task 4).
 //
 // Local bookkeeping on the health-state day (all additive):
 //   canary_at              { [sender]: ISO }      stamped by canaryPass
@@ -1018,11 +1019,16 @@ async function canaryPass() {
 const JUDGE_ALERT_HOUR = 17.25 // same hour the health pass evaluates: 5:15 PM PT
 
 async function judgePass() {
-  if (!judgeConfigured()) { log("judge: CANARY_JUDGE_OAUTH_REFRESH_TOKEN unset — verdicts come from Telegram only"); return }
+  if (!judgeConfigured()) { log("judge: CANARY_JUDGE_IMAP_USER / CANARY_JUDGE_IMAP_PASSWORD unset — verdicts come from Telegram only"); return }
   if (dryRun && !judgeOnly) { log("judge: dry run without --judge-now/--judge-backfill — skipped"); return }
-  let gmail
-  try { gmail = judgeGmailClient() } catch (e) { await judgeFailed(e); return }
-  if (judgeBackfill) { try { await runJudgeBackfill(gmail) } catch (e) { await judgeFailed(e) } return }
+  // One IMAP connection per pass, closed in `finally`; a login/read failure
+  // becomes the day's single Telegram alert and the pass returns so the
+  // other passes run as usual.
+  if (judgeBackfill) {
+    let client = null
+    try { client = await connectJudge(); await runJudgeBackfill(client) } catch (e) { await judgeFailed(e) } finally { await disconnectJudge(client) }
+    return
+  }
   const day = ptToday()
   const today = readHealthState()[day] || {}
   const canaries = typeof today.canary === "object" && today.canary ? today.canary : {}
@@ -1033,6 +1039,9 @@ async function judgePass() {
   if (!withCanary.length) { log("judge: no canary recorded today — nothing to judge"); return }
   const afterHours = laHourNow() >= JUDGE_ALERT_HOUR
   const results = [] // { s, code, verdict, by } for the Telegram summary
+  // Decide first which senders still need a read, so the mailbox is opened
+  // only when there is something to judge (and once per pass).
+  const toRead = []
   for (const s of withCanary) {
     const code = canaries[s.email]
     // Ryan already answered (Telegram) or a previous pass judged it → done.
@@ -1045,13 +1054,22 @@ async function judgePass() {
     }
     if (judged[s.email] && !judgeNow) { results.push({ s, code, verdict: judged[s.email], by: "engine" }); continue }
     if (!judgeNow && !canaryOldEnough(sentAt[s.email])) { log(`judge: ${code} ${s.label} left at ${sentAt[s.email]} — giving Gmail a beat`); continue }
-    let found
+    toRead.push(s)
+  }
+  let byEmail = new Map()
+  if (toRead.length) {
+    let client = null
     try {
-      found = await findNewestCanary(gmail, judgeQueryFor(s.email, code, s.label))
-    } catch (e) { await judgeFailed(e); return }
-    const decision = decideVerdict({ state: SENDER_STATE.get(s.email), day, labelIds: found?.labelIds, found: Boolean(found) })
+      client = await connectJudge()
+      byEmail = await readCanaryMessages(client, toRead.map((s) => s.email), { days: JUDGE_SEARCH_DAYS })
+    } catch (e) { await judgeFailed(e); return } finally { await disconnectJudge(client) }
+  }
+  for (const s of toRead) {
+    const code = canaries[s.email]
+    const found = newestCanary(byEmail.get(s.email) ?? [], code, s.label)
+    const decision = decideVerdict({ state: SENDER_STATE.get(s.email), day, placement: found, found: Boolean(found) })
     if (decision.action !== "record") {
-      log(`judge: ${code} ${s.label} — ${decision.reason}${found ? ` (labels ${found.labelIds.join(",")})` : ""}`)
+      log(`judge: ${code} ${s.label} — ${decision.reason}${found ? ` (${describePlacement(found)})` : ""}`)
       if (decision.reason === "not found" && afterHours && !missing[s.email]) {
         const text = `⚠️ judge: canary ${code} ${s.label} not in the judge inbox — reply "canary ${s.label} primary|promotions|spam"`
         if (dryRun) log(`would telegram: ${text}`)
@@ -1064,7 +1082,7 @@ async function judgePass() {
       continue
     }
     const verdict = decision.verdict
-    log(`judge: ${code} ${s.label} → ${verdict} (labels ${found.labelIds.join(",")})${dryRun ? " — DRY RUN, not recorded" : ""}`)
+    log(`judge: ${code} ${s.label} → ${verdict} (${describePlacement(found)})${dryRun ? " — DRY RUN, not recorded" : ""}`)
     if (dryRun) { results.push({ s, code, verdict, by: "engine" }); judged[s.email] = verdict; continue }
     // Re-read right before writing: Ryan may have replied on Telegram since
     // loadRamp() — his verdict wins and is never overwritten.
@@ -1097,13 +1115,13 @@ async function judgePass() {
   }
 }
 
-/** One Telegram alert per day for a judge auth/API failure; the pass returns instead of throwing so the other passes run as usual. */
+/** One Telegram alert per day for a judge login/read failure; the pass returns instead of throwing so the other passes run as usual. */
 async function judgeFailed(e) {
-  const msg = String(e?.response?.data?.error ?? e?.message ?? e)
+  const msg = judgeErrorText(e)
   console.error("[campaign] judge pass error:", msg)
   const text = isJudgeAuthError(e)
-    ? `⚠️ judge: Gmail auth failed (${msg.slice(0, 80)}) — rerun scripts/canary-judge-consent.mjs --write-env`
-    : `⚠️ judge: Gmail read failed (${msg.slice(0, 120)}) — retrying next pass`
+    ? `⚠️ judge: IMAP login failed (${msg.slice(0, 80)}) — rerun the app password (Google Account → Security → App passwords) and update CANARY_JUDGE_IMAP_PASSWORD in .env.local`
+    : `⚠️ judge: IMAP read failed (${msg.slice(0, 120)}) — retrying next pass`
   if (dryRun) { log(`would telegram: ${text}`); return }
   const day = ptToday()
   if (readHealthState()[day]?.canary_judge_alerted) return
@@ -1112,21 +1130,22 @@ async function judgeFailed(e) {
 }
 
 /**
- * --judge-backfill: every canary message in the judge inbox from the last 30
- * days → a verdict for each (sender, PT day) that has none. Prints a table;
- * --dry-run writes nothing and sends nothing. This fills the Oct 5–12 gap on
- * the first live run.
+ * --judge-backfill: every canary message from our senders in the judge
+ * mailbox from the last 30 days → a verdict for each (sender, PT day) that
+ * has none. Prints a table; --dry-run writes nothing and sends nothing. This
+ * fills the Oct 5–12 gap on the first live run.
  */
-async function runJudgeBackfill(gmail) {
-  const messages = await listCanaryMessages(gmail)
+async function runJudgeBackfill(client) {
+  const byEmail = await readCanaryMessages(client, SENDERS.map((s) => s.email), { days: BACKFILL_SEARCH_DAYS })
+  const messages = [...byEmail.values()].flat()
   const states = await loadSenderStates(sb, SENDERS)
   const rows = planBackfill({ messages, senders: SENDERS, states })
   log(`judge backfill: ${messages.length} canary message(s) in the judge inbox, ${rows.length} (sender, day) row(s)${dryRun ? " — DRY RUN" : ""}`)
   const pad = (v, n) => String(v ?? "").padEnd(n)
-  console.log(`  ${pad("day", 11)}${pad("sender", 28)}${pad("code", 6)}${pad("labels", 36)}${pad("action", 8)}detail`)
+  console.log(`  ${pad("day", 11)}${pad("sender", 28)}${pad("code", 6)}${pad("placement", 44)}${pad("action", 8)}detail`)
   for (const r of rows) {
     const detail = r.action === "record" ? r.verdict : r.reason === "already recorded" ? `already recorded: ${r.existing}` : r.reason
-    console.log(`  ${pad(r.day, 11)}${pad(r.sender, 28)}${pad(r.code, 6)}${pad(r.labels.join(","), 36)}${pad(r.action, 8)}${detail}`)
+    console.log(`  ${pad(r.day, 11)}${pad(r.sender, 28)}${pad(r.code, 6)}${pad(describePlacement(r), 44)}${pad(r.action, 8)}${detail}`)
   }
   const toRecord = rows.filter((r) => r.action === "record")
   if (!toRecord.length) { log("judge backfill: nothing to record"); return }

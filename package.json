@@ -22,6 +22,7 @@
     "fflate": "^0.8.3",
     "geist": "^1.7.0",
     "googleapis": "^171.4.0",
+    "imapflow": "^1",
     "libphonenumber-js": "^1.13.3",
     "lucide-react": "^1.7.0",
     "next": "14.2.35",
