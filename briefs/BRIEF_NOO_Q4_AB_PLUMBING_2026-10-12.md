@@ -1,6 +1,6 @@
 # NOO Q4 2026 — A/B piece plumbing (Mission Control side)
 
-> **Status:** spec, approved by Ryan 2026-10-12. Built by a cloud session on a branch; merged, migrated and deployed from the Mac mini.
+> **Status:** BUILT 2026-10-12 — cloud session (6 min on the $250 credit) → branch `cloud/noo-q4-ab-plumbing` → merged `e144454`, migration applied, importer re-run (children pieces_sent A 8,140 / B 8,136), tests 144/144. Child ids: A `bf35b00c-4046-43ab-bb71-f70656ceda71`, B `a7da6999-e218-486c-9f52-4115ff72c3c1`.
 > **Owner memo:** `../lead-pipeline/PROJECT_MEMO.md`. Background: `BRIEF_DM_ABSENTEE_Q4_2026_2026-10-08.md`.
 
 ## What exists (do not rebuild)
