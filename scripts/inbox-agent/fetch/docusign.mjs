@@ -179,7 +179,7 @@ async function downloadFromDialog(page, log) {
     // Ridgeview 2026-10-12: on completed envelopes the option is a link and the
     // click itself starts the download (no Download button follows). Capture it;
     // if nothing arrives, fall through to the dialog's Download button.
-    const direct = await captureDownload(page, () => opt.click({ timeout: 3_000 }), { timeout: 15_000 })
+    const direct = await captureDownload(page, () => opt.click({ timeout: 5_000, noWaitAfter: true }), { timeout: 15_000 })
     mode = name
     if (direct) {
       log(`[fetch] docusign: ${name} link downloaded ${direct.filename}`)
@@ -193,7 +193,7 @@ async function downloadFromDialog(page, log) {
     (d) => d.getByText(/^download$/i),
   ], 2_000)
   if (!go) return { mode, file: null }
-  const file = await captureDownload(page, () => safeClick(go, { expect: "Download", log }), { timeout: 30_000 })
+  const file = await captureDownload(page, () => safeClick(go, { expect: "Download", log, noWaitAfter: true }), { timeout: 30_000 })
   return { mode, file }
 }
 

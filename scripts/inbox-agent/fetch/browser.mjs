@@ -166,14 +166,14 @@ export function isAllowedClickAny(labels) {
  * Click only if the element's label is on the allowlist. `expect` is what the
  * caller believes the label is (logged on refusal). Returns true when clicked.
  */
-export async function safeClick(locator, { expect = "", log = () => {}, timeout = 8_000 } = {}) {
+export async function safeClick(locator, { expect = "", log = () => {}, timeout = 8_000, noWaitAfter = false } = {}) {
   const labels = await labelsOf(locator)
   const check = isAllowedClickAny(labels.length ? labels : [expect])
   if (!check.ok) {
     log(`[fetch] click refused (${check.why})${expect ? ` — wanted "${expect}"` : ""}`)
     return false
   }
-  await locator.click({ timeout })
+  await locator.click({ timeout, noWaitAfter })
   return true
 }
 
@@ -192,9 +192,19 @@ export function withTimeout(promise, ms, what = "job") {
  */
 export async function captureDownload(page, trigger, { timeout = 30_000 } = {}) {
   const waiting = page.waitForEvent("download", { timeout }).catch(() => null)
-  await trigger()
+  // Ridgeview 2026-10-13 attempt 2: the click itself resolved ("click action
+  // done") but Playwright then waited for a navigation that never finishes
+  // because the click starts a download, and threw. A download that arrives
+  // wins over a trigger error; the error only surfaces when nothing came.
+  let triggerErr = null
+  await Promise.resolve().then(trigger).catch((e) => {
+    triggerErr = e
+  })
   const dl = await waiting
-  if (!dl) return null
+  if (!dl) {
+    if (triggerErr) throw triggerErr
+    return null
+  }
   const file = await dl.path()
   if (!file) {
     const err = await dl.failure().catch(() => null)
