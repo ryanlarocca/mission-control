@@ -124,16 +124,36 @@ export async function openBrowser({ headed = false, timeoutMs = 30_000 } = {}) {
   return { context, page, close }
 }
 
-/** Visible label of a locator (text, aria-label, data-qa, title) for the allowlist check. */
-export async function labelOf(locator) {
+/** Every label a locator carries (visible text, aria-label, data-qa, title, value), each on its own. */
+export async function labelsOf(locator) {
+  const out = []
   try {
     const text = (await locator.innerText({ timeout: 2_000 }).catch(() => "")) || ""
-    if (text.trim()) return text
-    const attrs = await locator.evaluate((el) => [el.getAttribute("aria-label"), el.getAttribute("data-qa"), el.getAttribute("title"), el.getAttribute("value")].filter(Boolean).join(" "), { timeout: 2_000 }).catch(() => "")
-    return attrs || ""
-  } catch {
-    return ""
-  }
+    if (text.trim()) out.push(text)
+    const attrs = await locator.evaluate((el) => [el.getAttribute("aria-label"), el.getAttribute("data-qa"), el.getAttribute("title"), el.getAttribute("value")], { timeout: 2_000 }).catch(() => [])
+    for (const a of attrs || []) if (a && String(a).trim()) out.push(String(a))
+  } catch {}
+  return out
+}
+/** Visible label of a locator (text, aria-label, data-qa, title) for the allowlist check. */
+export async function labelOf(locator) {
+  return (await labelsOf(locator)).join(" ")
+}
+
+/**
+ * The allowlist over several candidate labels: any candidate on the refuse
+ * list refuses the click; otherwise any single candidate on the allowlist
+ * allows it. First live run (2026-10-12, Ridgeview): the button's visible text
+ * came back empty and the joined attributes read "expired content send new
+ * link button Send New Link", which no whole-label pattern matches — each
+ * label has to be judged on its own.
+ */
+export function isAllowedClickAny(labels) {
+  const list = (Array.isArray(labels) ? labels : [labels]).map(cleanLabel).filter(Boolean)
+  if (!list.length) return { ok: false, why: "empty label" }
+  for (const l of list) if (CLICK_REFUSE.test(l)) return { ok: false, why: `refused: "${l}" matches ${CLICK_REFUSE}` }
+  for (const l of list) if (CLICK_ALLOW.some((re) => re.test(l))) return { ok: true }
+  return { ok: false, why: `not on the allowlist: ${list.map((l) => `"${l}"`).join(" / ")}` }
 }
 
 /**
@@ -141,8 +161,8 @@ export async function labelOf(locator) {
  * caller believes the label is (logged on refusal). Returns true when clicked.
  */
 export async function safeClick(locator, { expect = "", log = () => {}, timeout = 8_000 } = {}) {
-  const label = (await labelOf(locator)) || expect
-  const check = isAllowedClick(label)
+  const labels = await labelsOf(locator)
+  const check = isAllowedClickAny(labels.length ? labels : [expect])
   if (!check.ok) {
     log(`[fetch] click refused (${check.why})${expect ? ` — wanted "${expect}"` : ""}`)
     return false

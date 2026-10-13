@@ -7,7 +7,7 @@ import path from "node:path"
 import { zipSync } from "fflate"
 import { afterEach, describe, expect, it } from "vitest"
 import { detectProvider, documentLinks, extractUrls } from "../scripts/inbox-agent/fetch/providers.mjs"
-import { CLICK_ALLOW, CLICK_REFUSE, isAllowedClick, mimeFor, pruneScreenshots } from "../scripts/inbox-agent/fetch/browser.mjs"
+import { CLICK_ALLOW, CLICK_REFUSE, isAllowedClick, isAllowedClickAny, mimeFor, pruneScreenshots } from "../scripts/inbox-agent/fetch/browser.mjs"
 import { NEW_LINK_ERROR, NEW_LINK_GUARD_MS, NEW_LINK_WAIT_MS, expandDownloads, fetchedFilePath, newLinkGuard, nextTryAt, readFetchedBytes, sameEnvelope, saveFetchedBytes, unzipToFiles, waitsClosedBy, waitsTimedOut } from "../scripts/inbox-agent/fetch/index.mjs"
 import { gateFromText } from "../scripts/inbox-agent/fetch/docusign.mjs"
 import { envelopeMatches, loopEligible, normalizeEnvelope } from "../scripts/inbox-agent/loops.mjs"
@@ -115,6 +115,17 @@ describe("click allowlist", () => {
     expect(isAllowedClick("Assign to Someone Else").ok).toBe(false)
     expect(isAllowedClick("Log In").ok).toBe(false) // the expired page's other button — never clicked by the flow
     expect(isAllowedClick("Send New Link and Sign").ok).toBe(false)
+  })
+  it("judges each label candidate on its own (first live run: empty text, attributes only)", () => {
+    // What the Ridgeview expired page produced on 2026-10-12: no innerText, data-qa + aria-label.
+    expect(isAllowedClickAny(["expired-content-send-new-link-button", "Send New Link"]).ok).toBe(true)
+    expect(isAllowedClickAny(["expired content send new link button Send New Link"]).ok).toBe(false) // the old joined form
+    expect(isAllowedClickAny(["download-button", "Download"]).ok).toBe(true)
+    // A refused candidate wins over an allowed one.
+    expect(isAllowedClickAny(["Continue", "sign-button"]).ok).toBe(false)
+    expect(isAllowedClickAny(["Send New Link", "Finish"]).ok).toBe(false)
+    expect(isAllowedClickAny([]).ok).toBe(false)
+    expect(isAllowedClickAny("Finish Later").ok).toBe(true)
     expect(isAllowedClick("").ok).toBe(false)
     expect(isAllowedClick("Download…").ok).toBe(true) // trailing ellipsis / icon glyphs are stripped
     expect(isAllowedClick("⬇ Download").ok).toBe(true)

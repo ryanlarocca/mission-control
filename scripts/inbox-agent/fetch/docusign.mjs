@@ -22,7 +22,7 @@
 //
 // Selectors drift: role/text first, data-qa second, a short list of fallbacks
 // per step, a screenshot before giving up.
-import { captureDownload, isAllowedClick, labelOf, makeShooter, openBrowser, safeClick } from "./browser.mjs"
+import { captureDownload, isAllowedClickAny, labelsOf, makeShooter, openBrowser, safeClick } from "./browser.mjs"
 
 // Page-text signatures of each gate. Exported for the unit test.
 export const CONSENT_RE = /agree to use electronic records and signatures|electronic record and signature disclosure/i
@@ -164,8 +164,8 @@ async function downloadFromDialog(page, log) {
   ]) {
     const opt = await firstVisible(dialog, finders, 1_200)
     if (!opt) continue
-    const label = await labelOf(opt)
-    const check = isAllowedClick(label || name)
+    const labels = await labelsOf(opt)
+    const check = isAllowedClickAny(labels.length ? labels : [name])
     if (!check.ok) {
       log(`[fetch] docusign: option refused (${check.why})`)
       continue
