@@ -115,3 +115,22 @@ describe("triageEmailLead — follow-up extraction", () => {
     expect(r?.temperature).toBe("warm")
   })
 })
+
+// 2026-10-13 — mailed-record matching. autoLinkMailRecord keys on
+// leads.property_address; the email path never extracted one, so the NOO Q4
+// smoke-test email ("got your letter about 4032 Ross Park Ct") stayed
+// Unmatched. Pins the parse: trimmed string through, junk → null.
+describe("triageEmailLead property_address", () => {
+  it("passes a stated address through, trimmed", async () => {
+    ok({ ...BASE, property_address: "  4032 Ross Park Ct, San Jose  " })
+    const r = await triageEmailLead("Your letter", "I got your letter about 4032 Ross Park Ct in San Jose.")
+    expect(r?.property_address).toBe("4032 Ross Park Ct, San Jose")
+  })
+  it("is null when the model returns null, blank, or a non-string", async () => {
+    for (const v of [null, "", "   ", 42, { street: "x" }]) {
+      ok({ ...BASE, property_address: v })
+      const r = await triageEmailLead("Re: letter", "Not interested, thanks.")
+      expect(r?.property_address).toBeNull()
+    }
+  })
+})

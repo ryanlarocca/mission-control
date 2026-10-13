@@ -2941,6 +2941,12 @@ export interface EmailTriageResult {
   // so the card, worklists and the drip engine know what kind of moment the
   // latest message created. Null when the model didn't return a valid one.
   moment: string | null
+  // Mailed-record matching (2026-10-13). The call path has always extracted
+  // the property address; email never did, so an owner who wrote "got your
+  // letter about 4032 Ross Park Ct" stayed Unmatched in Campaign Performance
+  // (autoLinkMailRecord keys on leads.property_address). Best-effort, even
+  // partial — Ryan can clean it up. Null when no address was mentioned.
+  property_address: string | null
 }
 
 export async function triageEmailLead(
@@ -2970,7 +2976,8 @@ Respond in JSON only:
   "offer_verbalized": true | false,
   "recommended_followup_date": "YYYY-MM-DD" | null,
   "followup_reason": "short phrase quoting the sender" | null,
-  "moment": "soft_no" | "hard_no_optout" | "question" | "invitation_to_talk" | "price_pushback" | "offer_requested" | "info_provided" | "junk_wrong_person"
+  "moment": "soft_no" | "hard_no_optout" | "question" | "invitation_to_talk" | "price_pushback" | "offer_requested" | "info_provided" | "junk_wrong_person",
+  "property_address": "street address of the property the sender is writing about" | null
 }
 
 temperature:
@@ -3013,7 +3020,16 @@ FOLLOW-UP DATE
     what Ryan reads in the worklist, so make it specific and quote them.
 - Both null when the sender declined, opted out, or gave nothing to act on.
     Never invent a date to look useful — null is the correct answer for a
-    hard no. If you set one field you must set the other.`
+    hard no. If you set one field you must set the other.
+
+PROPERTY ADDRESS
+- property_address: the address of the property the sender is writing
+    about — the house the mailer was about, or one they want to sell. Copy
+    it as written, street number + street first, then city/zip if given
+    ("4032 Ross Park Ct, San Jose"). Partial is fine ("the Ross Park house"
+    → "Ross Park"). Null only if no property address or street is mentioned.
+    Never use Ryan's own address, a return address, or an address in a
+    signature block.`
 
   try {
     // 200 was already tight for summary + suggestedReply; the two follow-up
@@ -3034,6 +3050,7 @@ FOLLOW-UP DATE
       recommended_followup_date?: unknown
       followup_reason?: unknown
       moment?: unknown
+      property_address?: unknown
     }
     if (
       !parsed.temperature ||
@@ -3074,6 +3091,10 @@ FOLLOW-UP DATE
       recommended_followup_date: followupDate,
       followup_reason: followupReason,
       moment: isLeadMoment(parsed.moment) ? parsed.moment : null,
+      property_address:
+        typeof parsed.property_address === "string" && parsed.property_address.trim()
+          ? parsed.property_address.trim().slice(0, 200)
+          : null,
     }
   } catch (e) {
     console.error("[triage-email] Threw:", e)

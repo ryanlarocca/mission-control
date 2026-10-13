@@ -377,6 +377,8 @@ async function ingestGoogleVoice(args: {
       email: null,
       message: messageText,
       ai_notes: triage?.summary ?? null,
+      // Lets autoLinkMailRecord (called after insert) match the mailed record.
+      property_address: triage?.property_address ?? null,
       suggested_reply: triage?.suggestedReply ?? null,
       moment: triage?.moment ?? null,
       moment_at: triage?.moment ? new Date().toISOString() : null,
@@ -647,6 +649,8 @@ async function handleAppsScript(payload: AppsScriptPayload): Promise<NextRespons
       email: senderEmail,
       message: messageText,
       ai_notes: triage?.summary ?? null,
+      // Lets autoLinkMailRecord (called after insert) match the mailed record.
+      property_address: triage?.property_address ?? null,
       suggested_reply: triage?.suggestedReply ?? null,
       moment: triage?.moment ?? null,
       moment_at: triage?.moment ? new Date().toISOString() : null,
@@ -914,6 +918,8 @@ async function processSingleMessage(args: {
       email: senderEmail,
       message: messageText,
       ai_notes: triage?.summary ?? null,
+      // Lets autoLinkMailRecord (called after insert) match the mailed record.
+      property_address: triage?.property_address ?? null,
       suggested_reply: triage?.suggestedReply ?? null,
       moment: triage?.moment ?? null,
       moment_at: triage?.moment ? new Date().toISOString() : null,
