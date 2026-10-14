@@ -16,27 +16,11 @@
 import fs from "node:fs"
 import { createClient } from "@supabase/supabase-js"
 import { normStreet, normCity, normSurname, normName } from "../lib/mailMatch.ts"
+import { parseCsv } from "../lib/csv.ts"
 
 const arg = (k) => { const i = process.argv.indexOf(k); return i > -1 ? process.argv[i + 1] : null }
 const campaign = arg("--campaign"), file = arg("--file"), expectPath = arg("--expect"), commit = process.argv.includes("--commit")
 if (!campaign || !file) { console.error("usage: --campaign <uuid> --file <csv> [--commit] [--expect <json>]"); process.exit(1) }
-
-// Quote-aware CSV parser (RFC 4180: "" escapes a quote, newlines allowed inside quotes).
-function parseCsv(text) {
-  const rows = []; let row = [], field = "", inQ = false
-  for (let i = 0; i < text.length; i++) {
-    const ch = text[i]
-    if (inQ) {
-      if (ch === '"') { if (text[i + 1] === '"') { field += '"'; i++ } else inQ = false }
-      else field += ch
-    } else if (ch === '"') inQ = true
-    else if (ch === ",") { row.push(field); field = "" }
-    else if (ch === "\n" || ch === "\r") { if (ch === "\r" && text[i + 1] === "\n") i++; row.push(field); rows.push(row); row = []; field = "" }
-    else field += ch
-  }
-  if (field !== "" || row.length) { row.push(field); rows.push(row) }
-  return rows
-}
 
 // Explicit header → column map. The import file carries every vendor column
 // (stored verbatim in `raw`) plus the list-build tags; anything in this map

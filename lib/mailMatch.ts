@@ -57,6 +57,16 @@ export function normName(s: unknown): string {
   return normText(s)
 }
 
+/**
+ * Assessor parcel number key: uppercase, keep only [0-9A-Z].
+ * "050-273-520" → "050273520", "058 702 030" → "058702030". Used by the
+ * vendor v2 join (scripts/join-mail-records-v2.mjs) to match a re-pulled
+ * county file back onto mail_records.parcel_number / parcels.
+ */
+export function normApn(s: unknown): string {
+  return String(s ?? "").toUpperCase().replace(/[^0-9A-Z]/g, "")
+}
+
 /** Split a caller's free-text address: "860 24th Ave., Santa Cruz 95062" → street / city / zip. */
 export function parseFreeAddress(addr: unknown): { street: string; city: string; zip: string; hasNumber: boolean } {
   const a = String(addr ?? "").trim()
