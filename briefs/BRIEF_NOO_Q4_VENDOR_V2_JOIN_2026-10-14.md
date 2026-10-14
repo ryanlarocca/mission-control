@@ -1,6 +1,6 @@
 # NOO Q4 2026 — vendor re-pull (v2) join: intake findings + cloud build spec
 
-> **Status:** intake DONE 2026-10-14 (read-only, Mac mini). Cloud build of Task 1 launched 2026-10-14 on branch `cloud/mail-records-vendor-v2`. Ryan 2026-10-14: **DNM is not a gate** (moot anyway — see findings); files are a data point. Dimensions are proposed in §4, nothing built until Ryan picks.
+> **Status (2026-10-14 pm):** intake DONE · Task 1 BUILT and on `main` (`7fd0c5c` cloud + `090a8de` / `660432e` / `60b241f` Mac-mini fixes: NOT NULL echo in the upsert, lenient stray-quote CSV rule, county-scoped APN index) · dry run against prod reconciles (28,191 matched / 10 unmatched / 4 seeds / 36 sale-date drifts) · **§3 steps 2–3 (apply migration, `--commit`) NOT run — the auto-mode permission classifier refused `run-migration.mjs` as a production deploy; Ryan runs or approves the two commands in `../lead-pipeline/PROJECT_MEMO.md`.** Drive Raw Data upload done. Ryan 2026-10-14: DNM is not a gate (moot anyway — see §1). Dimensions in §4 await Ryan's pick.
 > **Owner memo:** `../lead-pipeline/PROJECT_MEMO.md`. Plan: `BRIEF_NOO_Q4_DOMINIC_REPULL_2026-10-12.md`. Background: `BRIEF_DM_ABSENTEE_Q4_2026_2026-10-08.md`.
 
 ## 1. Intake (2026-10-14, read-only)
@@ -103,10 +103,10 @@ Migration path, script usage line, test names, and anything you could not verify
 
 ## 3. Mac mini steps after the branch lands
 
-1. Fetch `cloud/mail-records-vendor-v2`, read the diff and the SQL, merge into the worktree branch, `tsc` + `vitest`, push `HEAD:main`, `git -C <main> pull --ff-only`.
-2. `node scripts/run-migration.mjs supabase/migrations/2026-10-14_mail_records_vendor_v2.sql`.
-3. Dry-run the join on the three `raw_v2` files against the parent campaign; compare the report to §1 (16,268 matched / 8 unmatched / 21 sale-date drift). Then `--commit`.
-4. Upload the three v2 originals to Drive `Marketing/2026/NOO October2026/Raw Data/` as `v2 2026-10-14 - <name>` (done 2026-10-14 if the Drive step below says so).
+1. ✅ Fetched, reviewed, merged, fixed (three gotchas, see status), `tsc` + 246 tests green, on `main`, main checkout fast-forwarded, remote branch deleted.
+2. ⏳ `node scripts/run-migration.mjs supabase/migrations/2026-10-14_mail_records_vendor_v2.sql` — refused by the permission classifier from the bridge session; Ryan runs it.
+3. ✅ Dry run done (list-wide: 28,191 matched / 10 unmatched = the 8 mailed + NOO26-23507, NOO26-26251 unmailed / 4 seeds / 36 drifts, 21 of them mailed — ties to §1). ⏳ `--commit` pending Ryan (after step 2).
+4. ✅ Uploaded the three v2 originals to Drive `Marketing/2026/NOO October2026/Raw Data/` as `v2 2026-10-14 - <name>` (MD5s tie).
 5. Wrap: CHANGELOG + PROJECT_MEMO in `../lead-pipeline/`, memory, delete the remote branch.
 
 ## 4. Proposed dimensions (for Ryan to pick — build nothing until then)

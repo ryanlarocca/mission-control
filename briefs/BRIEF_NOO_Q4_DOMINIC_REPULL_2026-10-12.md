@@ -1,6 +1,6 @@
 # NOO Q4 2026 — Dominic's re-pull (FARM 2.0 columns): join + DNM drop + proposed dimensions
 
-> **Status:** PLAN, agreed 2026-10-12 with Ryan's chat agent (answers relayed by Ryan). Not started. Files land in Drive `Marketing/2026/NOO October2026` as one CSV per county (same naming as Oct 2), then Ryan says "go".
+> **Status (2026-10-14):** SUPERSEDED by `BRIEF_NOO_Q4_VENDOR_V2_JOIN_2026-10-14.md` — files arrived 10/13–14; the Mail Flag / Phone / Lender / Spouse / Sales Price Code columns listed below did NOT come through, so steps 4 and 7 are moot. Original plan: agreed 2026-10-12 with Ryan's chat agent (answers relayed by Ryan). Not started. Files land in Drive `Marketing/2026/NOO October2026` as one CSV per county (same naming as Oct 2), then Ryan says "go".
 > **Owner memo:** `../lead-pipeline/PROJECT_MEMO.md`. Background: `BRIEF_DM_ABSENTEE_Q4_2026_2026-10-08.md`.
 
 ## Facts (from the Zoom with Dominic, via the chat agent)
