@@ -69,6 +69,16 @@ export const PROTECTED_COLUMNS: readonly string[] = [
   "site_street_norm", "site_city_norm", "mail_line_norm", "mail_city_norm", "owner_surname_norm", "owner_name_norm",
 ]
 
+/**
+ * Identity columns the commit echoes back unchanged beside the v2 columns.
+ * Postgres checks NOT NULL on the proposed row BEFORE `ON CONFLICT (id) DO
+ * UPDATE` arbitration, so an upsert payload that omits the NOT NULL columns
+ * record_id / arm fails even though the row exists. The script copies both
+ * from the row it just loaded; the guard in the script asserts they are
+ * identical, so they are never a write in practice.
+ */
+export const IDENTITY_ECHO_COLUMNS: readonly string[] = ["record_id", "arm"]
+
 /** Report columns whose value distribution is printed. */
 export const DISTRIBUTION_COLUMNS: readonly string[] = [
   "deed_type", "owner_type_vendor", "tax_delinquent", "homeowner_exemption", "loan_type", "distressed_status", "air_conditioning",
@@ -196,11 +206,12 @@ export function buildV2Index(files: { file: string; rows: Record<string, string>
 }
 
 /** The mail_records columns the join reads. */
-export const MAIL_RECORD_JOIN_COLUMNS = "id, record_id, parcel_number, parcels, parcel_count, sale_date, owner_name, is_seed"
+export const MAIL_RECORD_JOIN_COLUMNS = "id, record_id, arm, parcel_number, parcels, parcel_count, sale_date, owner_name, is_seed"
 
 export interface MailRecordJoinRow {
   id: string
   record_id: string
+  arm: string
   parcel_number: string | null
   parcels: string | null
   parcel_count: number | null

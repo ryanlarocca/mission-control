@@ -6,11 +6,13 @@
 //   node --env-file=.env.local scripts/join-mail-records-v2.mjs --campaign <uuid> --file <csv> [--file <csv> …] [--commit]
 //
 // Offline dry run (no Supabase): --records-json <file> supplies the campaign's
-// mail_records rows (array of {id, record_id, parcel_number, parcels,
+// mail_records rows (array of {id, record_id, arm, parcel_number, parcels,
 // parcel_count, sale_date, owner_name, is_seed}) instead of loading them.
 //
 // Writes ONLY the v2 columns + id + campaign_id (upsert on id, batches of
-// 500). Never sale_date, owner_name, arm, batch, piece, raw or the match keys.
+// 500), echoing record_id + arm unchanged because they are NOT NULL and the
+// upsert's INSERT half is validated before the conflict is resolved. Never
+// sale_date, owner_name, batch, piece, raw or the match keys.
 // Afterwards re-reads the campaign and asserts: vendor_v2_at set == matched
 // count, row count unchanged, sale_date unchanged on a 200-row sample.
 // Exit 1 usage / input error · 2 reconciliation failure · 3 Supabase error.
@@ -20,7 +22,7 @@ import fs from "node:fs"
 import path from "node:path"
 import { parseCsvTable } from "../lib/csv.ts"
 import {
-  MAIL_RECORD_JOIN_COLUMNS, WRITTEN_COLUMNS, PROTECTED_COLUMNS,
+  MAIL_RECORD_JOIN_COLUMNS, WRITTEN_COLUMNS, PROTECTED_COLUMNS, IDENTITY_ECHO_COLUMNS,
   checkHeaders, buildV2Index, matchRecords, rowToUpdate, buildReport, formatReport,
 } from "../lib/mailRecordsV2.ts"
 
@@ -83,13 +85,19 @@ console.log(formatReport(report))
 if (!commit) { console.log("dry run — add --commit to write"); process.exit(0) }
 if (!match.matched.length) { console.error("nothing matched — refusing to commit"); process.exit(2) }
 
-// 7. Commit: upsert on id with only the v2 columns + id + campaign_id.
-// Belt and braces: every payload key must be a v2 column, id or campaign_id.
-const allowed = new Set([...WRITTEN_COLUMNS, "id", "campaign_id"])
-const payload = match.matched.map((m, i) => ({ id: m.record.id, campaign_id: campaign, ...updates[i] }))
-for (const p of payload) for (const k of Object.keys(p)) {
-  if (!allowed.has(k) || PROTECTED_COLUMNS.includes(k)) { console.error(`refusing to write column ${k}`); process.exit(2) }
-}
+// 7. Commit: upsert on id with only the v2 columns + id + campaign_id, plus
+// record_id / arm echoed verbatim (NOT NULL columns — see IDENTITY_ECHO_COLUMNS).
+// Belt and braces: every payload key must be a v2 column, id, campaign_id or an
+// identity echo whose value equals the loaded row's.
+const allowed = new Set([...WRITTEN_COLUMNS, "id", "campaign_id", ...IDENTITY_ECHO_COLUMNS])
+const payload = match.matched.map((m, i) => ({ id: m.record.id, campaign_id: campaign, record_id: m.record.record_id, arm: m.record.arm, ...updates[i] }))
+match.matched.forEach((m, i) => {
+  const p = payload[i]
+  for (const k of Object.keys(p)) {
+    if (!allowed.has(k) || (PROTECTED_COLUMNS.includes(k) && !IDENTITY_ECHO_COLUMNS.includes(k))) { console.error(`refusing to write column ${k}`); process.exit(2) }
+  }
+  for (const k of IDENTITY_ECHO_COLUMNS) if (p[k] == null || p[k] !== m.record[k]) { console.error(`identity echo mismatch on ${k} for ${m.record.record_id}`); process.exit(2) }
+})
 // Sample captured BEFORE the write; sale_date must be byte-identical afterwards.
 const sampleBefore = new Map(records.filter((r) => !r.is_seed).slice(0, 200).map((r) => [r.id, r.sale_date ?? null]))
 const countBefore = records.length

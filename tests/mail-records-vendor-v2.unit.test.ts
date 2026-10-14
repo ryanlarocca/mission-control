@@ -29,6 +29,7 @@ const NOW = "2026-10-14T20:00:00.000Z"
 
 const rec = (o: Partial<MailRecordJoinRow> & { record_id: string }): MailRecordJoinRow => ({
   id: `id-${o.record_id}`,
+  arm: "A",
   parcel_number: null,
   parcels: null,
   parcel_count: null,
