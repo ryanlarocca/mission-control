@@ -1,5 +1,6 @@
 # NOO Q4 2026 — vendor re-pull (v2) join: intake findings + cloud build spec
 
+> **Status (2026-10-14 eve):** Ryan's decisions — **no questions to Dominic (§5 closed), no features / chips / dimensions (§4 closed): the 20 fields are stored for analysis once calls come in, nothing is built on them.** Drive master rebuilt with the v2 fields (`2 - MASTER - NOO Q4 2026 - all data + Dominic v2 fields (joined 2026-10-14).csv`, 95 cols, 28,191 / 10 / 4 ties to the dry run; `_tmp_dm2026/join_master_v2.py`) and the campaign folder reorganised (README, mail-house folder with the ITI invoice 243481 + font samples, Raw Data paired v1/v2, Working numbered + index; `_tmp_dm2026/drive_reorg_v2.mjs`). **Still pending Ryan: §3 steps 2–3 (migration + `--commit`)** — the classifier refused `run-migration.mjs` again from the bridge session. Invoice read-out in `../lead-pipeline/CHANGELOG.md` 10/14 eve.
 > **Status (2026-10-14 pm):** intake DONE · Task 1 BUILT and on `main` (`7fd0c5c` cloud + `090a8de` / `660432e` / `60b241f` Mac-mini fixes: NOT NULL echo in the upsert, lenient stray-quote CSV rule, county-scoped APN index) · dry run against prod reconciles (28,191 matched / 10 unmatched / 4 seeds / 36 sale-date drifts) · **§3 steps 2–3 (apply migration, `--commit`) NOT run — the auto-mode permission classifier refused `run-migration.mjs` as a production deploy; Ryan runs or approves the two commands in `../lead-pipeline/PROJECT_MEMO.md`.** Drive Raw Data upload done. Ryan 2026-10-14: DNM is not a gate (moot anyway — see §1). Dimensions in §4 await Ryan's pick.
 > **Owner memo:** `../lead-pipeline/PROJECT_MEMO.md`. Plan: `BRIEF_NOO_Q4_DOMINIC_REPULL_2026-10-12.md`. Background: `BRIEF_DM_ABSENTEE_Q4_2026_2026-10-08.md`.
 
@@ -109,7 +110,7 @@ Migration path, script usage line, test names, and anything you could not verify
 4. ✅ Uploaded the three v2 originals to Drive `Marketing/2026/NOO October2026/Raw Data/` as `v2 2026-10-14 - <name>` (MD5s tie).
 5. Wrap: CHANGELOG + PROJECT_MEMO in `../lead-pipeline/`, memory, delete the remote branch.
 
-## 4. Proposed dimensions (for Ryan to pick — build nothing until then)
+## 4. Proposed dimensions — CLOSED (Ryan 2026-10-14: nothing built on the new fields until there are calls to read; kept for reference)
 
 Fill rates support these on the mailed set; each would be one more `(dimension, segment)` line in `mail_segment_stats` / `_piece`:
 
@@ -123,7 +124,7 @@ Fill rates support these on the mailed set; each would be one more `(dimension, 
 
 Not proposed: Distressed (7 rows), Effective Year Built (12% fill in SC), Air Conditioning (county-specific coding), Total Market Value (blank), DNM / phone (absent).
 
-## 5. Open items for Dominic (Ryan is texting him — no email needed)
+## 5. Open items for Dominic — CLOSED (Ryan 2026-10-14: not asking; the fields we have are enough)
 
 - Can the farming tool export `Mail Flag`, `Phone`, `Phone Flag`, `Lender Name`, `Interest Rate`, `Owner1 Spouse First Name`, `Sales Price Code`? They were discussed but are not in the files.
 - What is Owner Type `Ct`? What are the Air Conditioning codes `C`, `O`, `L`?
