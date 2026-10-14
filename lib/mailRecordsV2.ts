@@ -51,7 +51,7 @@ export const V2_COLUMNS: readonly V2ColumnSpec[] = [
 
 /** Every header the join needs; hard-fail when one is missing. */
 export const REQUIRED_HEADERS: readonly string[] = Array.from(
-  new Set(["Parcel Number", "Owner Name", "Sale Date", ...V2_COLUMNS.map(c => c.source)])
+  new Set(["Parcel Number", "County", "Owner Name", "Sale Date", ...V2_COLUMNS.map(c => c.source)])
 )
 
 /** The full set of columns a commit writes (besides id + campaign_id). */
@@ -86,7 +86,7 @@ export const DISTRIBUTION_COLUMNS: readonly string[] = [
 
 /** The 40 Oct 2 vendor columns the join reads only into raw_v2 — known, not "extra". */
 export const ORIGINAL_HEADERS: readonly string[] = [
-  "Full Site Address", "Site Address", "Site Address City", "Site Address State", "Site Address Zip", "County", "Owner Occupied",
+  "Full Site Address", "Site Address", "Site Address City", "Site Address State", "Site Address Zip", "Owner Occupied",
   "Full Mail Address", "Mail Address", "Mail Address City", "Mail Address State", "Mail Address Zip",
   "Assessed Land Value", "Assessed Improve Percent", "Use Code", "Use Code Description", "Zoning", "Year Built", "Building Area",
   "Number of Units", "Rooms", "Bedrooms", "Bathrooms", "Lot Area Acres", "Lot Area SQFT", "Number of Stories", "Pool",
@@ -182,24 +182,42 @@ export function rowToUpdate(row: Record<string, string>, file: string, now: stri
 
 // ---- matcher ----------------------------------------------------------------
 
+/** County name key: letters only, lowercase ("Santa Clara" → "santaclara"). */
+export function normCounty(s: unknown): string {
+  return String(s ?? "").toLowerCase().replace(/[^a-z]/g, "")
+}
+
+/**
+ * Index key. APNs are only unique WITHIN a county: Santa Clara 015-06-101 and
+ * Santa Cruz 015-061-01 both normalize to 01506101 (hit 2026-10-14), so the
+ * key is county + APN. mail_records.county carries the same full county name
+ * as the vendor "County" column.
+ */
+export function apnKey(county: unknown, apn: string): string {
+  return `${normCounty(county)}|${apn}`
+}
+
 export interface V2Row {
   /** normApn(Parcel Number) */
   apn: string
+  /** normCounty(County) */
+  county: string
   /** basename of the source file */
   file: string
   row: Record<string, string>
 }
 
 export interface V2Index {
+  /** apnKey(county, apn) → row */
   byApn: Map<string, V2Row>
   /** rows whose Parcel Number normalizes to "" — never matchable, reported */
   blankApn: number
 }
 
 /**
- * Index parsed vendor rows by normalized APN. Throws on a duplicate APN
- * (within or across files) — the county files are disjoint by design and a
- * duplicate would make the join ambiguous.
+ * Index parsed vendor rows by county + normalized APN. Throws on a duplicate
+ * key (within or across files) — the county files are disjoint by design and
+ * a duplicate would make the join ambiguous.
  */
 export function buildV2Index(files: { file: string; rows: Record<string, string>[] }[]): V2Index {
   const byApn = new Map<string, V2Row>()
@@ -208,21 +226,24 @@ export function buildV2Index(files: { file: string; rows: Record<string, string>
     for (const row of f.rows) {
       const apn = normApn(row["Parcel Number"])
       if (!apn) { blankApn++; continue }
-      const prev = byApn.get(apn)
-      if (prev) throw new Error(`duplicate normalized APN ${apn} (${prev.file} and ${f.file})`)
-      byApn.set(apn, { apn, file: f.file, row })
+      const county = normCounty(row["County"])
+      const key = apnKey(county, apn)
+      const prev = byApn.get(key)
+      if (prev) throw new Error(`duplicate normalized APN ${apn} in county "${row["County"]}" (${prev.file} and ${f.file})`)
+      byApn.set(key, { apn, county, file: f.file, row })
     }
   }
   return { byApn, blankApn }
 }
 
 /** The mail_records columns the join reads. */
-export const MAIL_RECORD_JOIN_COLUMNS = "id, record_id, arm, parcel_number, parcels, parcel_count, sale_date, owner_name, is_seed"
+export const MAIL_RECORD_JOIN_COLUMNS = "id, record_id, arm, county, parcel_number, parcels, parcel_count, sale_date, owner_name, is_seed"
 
 export interface MailRecordJoinRow {
   id: string
   record_id: string
   arm: string
+  county: string | null
   parcel_number: string | null
   parcels: string | null
   parcel_count: number | null
@@ -255,9 +276,10 @@ export function splitParcels(parcels: string | null | undefined): string[] {
 }
 
 /**
- * Primary key = normApn(parcel_number). Miss → walk `parcels` in order and take
- * the first hit (matched_via_secondary_parcel). Seeds and blank parcels are
- * skipped. One v2 row may serve several records (shared parcel); every
+ * Primary key = county + normApn(parcel_number). Miss → walk `parcels` in
+ * order (same county) and take the first hit (matched_via_secondary_parcel).
+ * Seeds and blank parcels are skipped; a record with no county can never
+ * match (reported as unmatched). One v2 row may serve several records (shared parcel); every
  * record is updated.
  */
 export function matchRecords(records: readonly MailRecordJoinRow[], index: V2Index): MatchResult {
@@ -268,15 +290,16 @@ export function matchRecords(records: readonly MailRecordJoinRow[], index: V2Ind
   for (const r of records) {
     const primary = normApn(r.parcel_number)
     if (r.is_seed || !primary) { seeds.push(r); continue }
-    let hit = index.byApn.get(primary)
+    const county = normCounty(r.county)
+    let hit = index.byApn.get(apnKey(county, primary))
     let via: MatchVia = "primary"
     if (!hit) {
       for (const apn of splitParcels(r.parcels)) {
-        const h = index.byApn.get(apn)
+        const h = index.byApn.get(apnKey(county, apn))
         if (h) { hit = h; via = "secondary_parcel"; break }
       }
     }
-    if (hit) { matched.push({ record: r, v2: hit, via }); claimed.add(hit.apn) }
+    if (hit) { matched.push({ record: r, v2: hit, via }); claimed.add(apnKey(hit.county, hit.apn)) }
     else unmatched.push(r)
   }
   return { matched, unmatched, seeds, v2NotInRecords: index.byApn.size - claimed.size }

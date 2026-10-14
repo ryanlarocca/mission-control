@@ -8,8 +8,10 @@ import {
   V2_COLUMNS,
   WRITTEN_COLUMNS,
   buildReport,
+  apnKey,
   buildV2Index,
   checkHeaders,
+  normCounty,
   formatReport,
   matchRecords,
   parseDate,
@@ -30,6 +32,7 @@ const NOW = "2026-10-14T20:00:00.000Z"
 const rec = (o: Partial<MailRecordJoinRow> & { record_id: string }): MailRecordJoinRow => ({
   id: `id-${o.record_id}`,
   arm: "A",
+  county: "San Mateo",
   parcel_number: null,
   parcels: null,
   parcel_count: null,
@@ -101,8 +104,9 @@ describe("checkHeaders", () => {
     expect(c.missing).toContain("Loan Amount 2nd")
     expect(c.missing.length).toBe(REQUIRED_HEADERS.length - 2)
   })
-  it("requires the 3 keys + 20 v2 columns", () => {
-    expect(REQUIRED_HEADERS.length).toBe(23)
+  it("requires the 4 keys (Parcel Number, County, Owner Name, Sale Date) + 20 v2 columns", () => {
+    expect(REQUIRED_HEADERS.length).toBe(24)
+    expect(REQUIRED_HEADERS).toContain("County")
     expect(V2_COLUMNS.length).toBe(23) // 20 new + vendor_v2_sale_date + vendor_v2_owner_name + homeowner_exemption (derived)
   })
 })
@@ -217,18 +221,29 @@ describe("rowToUpdate", () => {
 })
 
 describe("buildV2Index", () => {
-  it("keys rows by normalized APN and remembers the file", () => {
-    const idx = buildV2Index([{ file: "a.csv", rows: [{ "Parcel Number": "001-001-001" }] }, { file: "b.csv", rows: [{ "Parcel Number": "002 002 002" }] }])
-    expect(idx.byApn.get("001001001")?.file).toBe("a.csv")
-    expect(idx.byApn.get("002002002")?.file).toBe("b.csv")
+  it("keys rows by county + normalized APN and remembers the file", () => {
+    const idx = buildV2Index([{ file: "a.csv", rows: [{ "Parcel Number": "001-001-001", County: "San Mateo" }] }, { file: "b.csv", rows: [{ "Parcel Number": "002 002 002", County: "Santa Cruz" }] }])
+    expect(idx.byApn.get(apnKey("San Mateo", "001001001"))?.file).toBe("a.csv")
+    expect(idx.byApn.get(apnKey("Santa Cruz", "002002002"))?.file).toBe("b.csv")
     expect(idx.blankApn).toBe(0)
+    expect(normCounty("Santa Clara")).toBe("santaclara")
   })
-  it("fails on a duplicate APN across files, counts blank APNs", () => {
+  it("fails on a duplicate APN within a county, counts blank APNs", () => {
     expect(() => buildV2Index([
-      { file: "a.csv", rows: [{ "Parcel Number": "001-001-001" }] },
-      { file: "b.csv", rows: [{ "Parcel Number": "001001001" }] },
+      { file: "a.csv", rows: [{ "Parcel Number": "001-001-001", County: "San Mateo" }] },
+      { file: "b.csv", rows: [{ "Parcel Number": "001001001", County: "San Mateo" }] },
     ])).toThrow(/duplicate normalized APN 001001001/)
-    expect(buildV2Index([{ file: "a.csv", rows: [{ "Parcel Number": "" }] }]).blankApn).toBe(1)
+    expect(buildV2Index([{ file: "a.csv", rows: [{ "Parcel Number": "", County: "San Mateo" }] }]).blankApn).toBe(1)
+  })
+  it("the same digits in two counties are two parcels (Santa Clara 015-06-101 vs Santa Cruz 015-061-01)", () => {
+    const idx = buildV2Index([
+      { file: "sc.csv", rows: [{ "Parcel Number": "015-06-101", County: "Santa Clara" }] },
+      { file: "scz.csv", rows: [{ "Parcel Number": "015-061-01", County: "Santa Cruz" }] },
+    ])
+    expect(idx.byApn.size).toBe(2)
+    const m = matchRecords([rec({ record_id: "NOO26-9", county: "Santa Cruz", parcel_number: "015-061-01" })], idx)
+    expect(m.matched[0]?.v2.file).toBe("scz.csv")
+    expect(matchRecords([rec({ record_id: "NOO26-10", county: null, parcel_number: "015-061-01" })], idx).unmatched.length).toBe(1)
   })
 })
 
