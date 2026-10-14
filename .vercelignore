@@ -1,0 +1,26 @@
+# Vercel CLI upload filter (`vercel --prod` from the Mac mini sidecar-URL sync).
+# The CLI does NOT read .gitignore — only its built-in defaults plus this file.
+#
+# Cloud-session worktrees live under .claude/worktrees/ inside the main
+# checkout. Each is a ~500-file copy of the repo; 30+ of them pushed the CLI
+# upload past Vercel's hard 15,000-file cap and every sidecar-URL redeploy
+# failed from 2026-10-13 15:09 until the next git auto-deploy. 2026-10-14.
+.claude/
+
+# Local state / reports that .gitignore keeps out of git but the CLI would
+# otherwise upload (names, emails, phones of real contacts).
+.env*.bak*
+.env*.save
+.env.local.save
+.campaign-digest-state.json
+scripts/.*.json
+scripts/.*.jsonl
+scripts/.*.csv
+
+# Never needed in a deployment.
+briefs/
+tests/
+supabase/
+infrastructure/
+coverage/
+*.tsbuildinfo
