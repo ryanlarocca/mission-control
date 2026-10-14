@@ -1,7 +1,8 @@
 // Shared CSV parser for the direct-mail scripts (import-mail-records.mjs,
 // join-mail-records-v2.mjs). RFC 4180: fields may be quoted, `""` inside a
 // quoted field is a literal quote, newlines are allowed inside quotes, CRLF
-// and LF both end a row. A leading UTF-8 BOM (the vendor files carry one) is
+// and LF both end a row. One leniency: a lone quote inside a quoted field
+// that is not followed by a delimiter is kept as text (see parseCsv). A leading UTF-8 BOM (the vendor files carry one) is
 // stripped so the first header is clean.
 
 export function stripBom(text: string): string {
@@ -19,7 +20,14 @@ export function parseCsv(input: string): string[][] {
     const ch = text[i]
     if (inQ) {
       if (ch === '"') {
-        if (text[i + 1] === '"') { field += '"'; i++ } else inQ = false
+        const nx = text[i + 1]
+        if (nx === '"') { field += '"'; i++ }
+        // Lenient (Python csv non-strict): a quote NOT followed by a delimiter,
+        // a row end or end-of-text is a stray literal quote, not a closer. The
+        // vendor files carry `"4 S Bay Close #A11 "Hong Kong China"`; treating
+        // that inner quote as a closer swallowed the next column (2026-10-14).
+        else if (nx === undefined || nx === "," || nx === "\n" || nx === "\r") inQ = false
+        else field += '"'
       } else field += ch
     } else if (ch === '"') inQ = true
     else if (ch === ",") { row.push(field); field = "" }

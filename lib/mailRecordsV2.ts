@@ -84,17 +84,28 @@ export const DISTRIBUTION_COLUMNS: readonly string[] = [
   "deed_type", "owner_type_vendor", "tax_delinquent", "homeowner_exemption", "loan_type", "distressed_status", "air_conditioning",
 ]
 
+/** The 40 Oct 2 vendor columns the join reads only into raw_v2 — known, not "extra". */
+export const ORIGINAL_HEADERS: readonly string[] = [
+  "Full Site Address", "Site Address", "Site Address City", "Site Address State", "Site Address Zip", "County", "Owner Occupied",
+  "Full Mail Address", "Mail Address", "Mail Address City", "Mail Address State", "Mail Address Zip",
+  "Assessed Land Value", "Assessed Improve Percent", "Use Code", "Use Code Description", "Zoning", "Year Built", "Building Area",
+  "Number of Units", "Rooms", "Bedrooms", "Bathrooms", "Lot Area Acres", "Lot Area SQFT", "Number of Stories", "Pool",
+  "Garage Number of Cars", "Number of Building", "Garage Type", "Sales Price", "Owner Name2",
+  "Owner1 First Name", "Owner1 Last Name", "Owner2 First Name", "Owner2 Last Name",
+  "Prior Seller1 First Name", "Prior Seller1 Last Name", "Seller1 First Name", "Seller1 Last Name",
+]
+
 export interface HeaderCheck {
   missing: string[]
   extra: string[]
 }
 
-/** Required headers absent → `missing` (fatal); anything else in the file → `extra` (warn only). */
+/** Required headers absent → `missing` (fatal); headers that are neither required nor one of the 40 original vendor columns → `extra` (warn only). */
 export function checkHeaders(header: readonly string[]): HeaderCheck {
   const have = new Set(header.map(h => h.trim()))
   const missing = REQUIRED_HEADERS.filter(h => !have.has(h))
-  const req = new Set(REQUIRED_HEADERS)
-  const extra = header.map(h => h.trim()).filter(h => !req.has(h))
+  const known = new Set([...REQUIRED_HEADERS, ...ORIGINAL_HEADERS])
+  const extra = header.map(h => h.trim()).filter(h => !known.has(h))
   return { missing, extra }
 }
 

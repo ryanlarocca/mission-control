@@ -63,6 +63,12 @@ describe("lib/csv parseCsv", () => {
     expect(stripBom("﻿x")).toBe("x")
     expect(stripBom("x")).toBe("x")
   })
+  it("keeps a stray quote inside a quoted field as text (vendor file, 2026-10-14)", () => {
+    const rows = parseCsv('"a","4 S Bay Close #A11 "Hong Kong China","4 S Bay Close #A11 "Hong Kong China","",1\n')
+    expect(rows).toEqual([["a", '4 S Bay Close #A11 "Hong Kong China', '4 S Bay Close #A11 "Hong Kong China', "", "1"]])
+    // still a closer when followed by a delimiter / row end / end of text
+    expect(parseCsv('"x","y"\r\n"z"')).toEqual([["x", "y"], ["z"]])
+  })
   it("parses the committed fixture: BOM gone, 63 headers, 3 rows", () => {
     const t = parseCsvTable(fixtureText())
     expect(t.header[0]).toBe("Parcel Number")
@@ -77,12 +83,17 @@ describe("lib/csv parseCsv", () => {
 })
 
 describe("checkHeaders", () => {
-  it("accepts the fixture and reports only extras", () => {
+  it("accepts the fixture with no extras — the 40 original columns are known, not extra", () => {
     const { header } = parseCsvTable(fixtureText())
     const c = checkHeaders(header)
     expect(c.missing).toEqual([])
-    expect(c.extra).toContain("Site Address")
-    expect(c.extra).not.toContain("Deed Type")
+    expect(c.extra).toEqual([])
+  })
+  it("flags a genuinely unknown header as extra (warn only)", () => {
+    const { header } = parseCsvTable(fixtureText())
+    const c = checkHeaders([...header, "Mail Flag"])
+    expect(c.missing).toEqual([])
+    expect(c.extra).toEqual(["Mail Flag"])
   })
   it("names every missing required header", () => {
     const c = checkHeaders(["Parcel Number", "Owner Name"])
