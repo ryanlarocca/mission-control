@@ -42,6 +42,18 @@
  *     --judge-backfill   judge-only run; records a verdict for every canary
  *                        in the judge inbox from the last 30 days that has
  *                        none (--dry-run prints the table, writes nothing)
+ *
+ * VERIFY pass (2026-10-15, briefs/BRIEF_CAMPAIGN_AUTOPILOT_GATES_2026-10-14.md
+ *   Task 5): Kickbox-verifies, once per weekday morning before the mint,
+ *   everything due in the next 7 days whose verdict is missing, > 30 days
+ *   old, or "unknown" ≥ 7 days old — up to VERIFY_DAILY_MAX (500) a day.
+ *   Needs KICKBOX_API_KEY. Verify-only runs (ramp + verify, nothing else):
+ *     --verify-all                   the one-time first pass over the whole active
+ *                                    queue; Telegram summary + top 15 catch-all domains
+ *     --verify-domains a.com,b.com   one address per listed domain, prints accept_all
+ *                                    (Ryan's 100-free-credit catch-all survey)
+ *     --verify-now                   run the morning pass regardless of the clock
+ *   All honour --dry-run (verify, print, write nothing) and --limit=N.
  */
 
 import fs from "node:fs"
@@ -55,6 +67,7 @@ import { loadSenderConfig, loadSenderStates, saveSenderState, capFor, evaluateSe
 import { judgeConfigured, connectJudge, disconnectJudge, readCanaryMessages, newestCanary, describePlacement, decideVerdict, canaryOldEnough, planBackfill, stallReason, verdictWord, isJudgeAuthError, judgeErrorText, JUDGE_SEARCH_DAYS, BACKFILL_SEARCH_DAYS } from "./canary-judge.mjs"
 import { AUTO_SEND_KEY, resolveAutoSend, withTouchRegated, removeTripwire, describeRemovedSends, touchesOfRemoves, bounceBreaker, isDayStopped, withDayStop } from "./campaign-gates.mjs"
 import { checkRecipientDomain, dnsBlocks, readDnsCache } from "./campaign-dns.mjs"
+import { verifyMany, verifyAction, isDraftEligible, unknownTwice, selectVerifyCandidates, summarizeVerification, summaryLine, isSandboxKey, KickboxAuthError, VERIFY_DAILY_MAX_DEFAULT } from "./campaign-verify.mjs"
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const REPO_ROOT = path.resolve(__dirname, "..")
@@ -211,6 +224,16 @@ const redirectTo = toArg ? toArg.split("=")[1] : null
 const judgeNow = args.includes("--judge-now")
 const judgeBackfill = args.includes("--judge-backfill")
 const judgeOnly = judgeNow || judgeBackfill // manual judge runs never draft/send
+const verifyAll = args.includes("--verify-all")
+const verifyDomainsArg = (() => {
+  const eq = args.find((a) => a.startsWith("--verify-domains="))
+  if (eq) return eq.slice("--verify-domains=".length)
+  const i = args.indexOf("--verify-domains")
+  return i >= 0 && args[i + 1] && !args[i + 1].startsWith("--") ? args[i + 1] : null
+})()
+const verifyDomains = verifyDomainsArg ? verifyDomainsArg.split(",").map((d) => d.trim().toLowerCase()).filter(Boolean) : null
+const verifyOnly = verifyAll || Boolean(verifyDomains) // manual verify runs never draft/send
+const VERIFY_DAILY_MAX = Number(process.env.VERIFY_DAILY_MAX || VERIFY_DAILY_MAX_DEFAULT)
 
 // ---------- helpers ----------
 function log(msg) {
@@ -431,11 +454,15 @@ async function draftPass() {
   // fetched, then sorted repliers → Relationships matches → everyone else,
   // oldest due first within a tier. A capped/ordered DB query would let the
   // 2,100 long-due strangers crowd out the 14 repliers at 5/day.
+  // Verify rule (Task 5): behind campaign_settings `verify_required`. Off
+  // until Ryan says "verify rule on" after the first --verify-all pass.
+  const verifyRequired = await getVerifyRequired()
+  log(`verify rule: ${verifyRequired ? "ENABLED (verify_required on) — unverified / stale / unknown / undeliverable contacts are held out of the queue" : "disabled (verify_required off)"}`)
   const dueList = []
   for (let from = 0; ; from += 1000) {
     let dueQuery = sb
       .from("campaign_contacts")
-      .select("id, name, first_name, email, phone, status, touch_number, next_touch_at, cohort, variant, property_address, import_flags")
+      .select("id, name, first_name, email, phone, status, touch_number, next_touch_at, cohort, variant, property_address, import_flags, verified_at, verify_result, verify_accept_all")
       .eq("status", "active")
       .not("email", "is", null)
       .lte("next_touch_at", new Date().toISOString())
@@ -484,6 +511,7 @@ async function draftPass() {
   const gatedTouches = new Set()
   let lintFailed = 0
   const variantCounts = {}
+  const heldByVerify = {} // why → count (Task 5 send rule)
   for (const c of dueList) {
     if (drafted >= totalBudget) break
     if (openContacts.has(c.id)) continue // already drafted/approved and waiting for its slot
@@ -494,6 +522,8 @@ async function draftPass() {
       }
       continue
     }
+    const elig = isDraftEligible(c, { required: verifyRequired })
+    if (!elig.eligible) { heldByVerify[elig.why] = (heldByVerify[elig.why] || 0) + 1; continue } // stays due; the morning verify pass catches it
     const touch = c.touch_number + 1
     const rendered = renderTouch(touch, c, templates)
     if (!rendered) {
@@ -589,7 +619,8 @@ async function draftPass() {
   }
   const needReview = drafted - autoApproved
   const fromList = SENDERS.filter((s) => perSender.get(s.email)).map((s) => `${s.email} (${perSender.get(s.email)})`).join(", ") || "nobody"
-  log(`draft pass done: ${drafted} drafted (${autoApproved} auto-approved, ${needReview} gated) from ${fromList}, ${skippedSupp} newly suppressed, ${lintFailed} rejected by lint`)
+  const heldNote = Object.keys(heldByVerify).length ? `, held by the verify rule: ${Object.entries(heldByVerify).map(([k, v]) => `${v} ${k}`).join(", ")}` : ""
+  log(`draft pass done: ${drafted} drafted (${autoApproved} auto-approved, ${needReview} gated) from ${fromList}, ${skippedSupp} newly suppressed, ${lintFailed} rejected by lint${heldNote}`)
   if (lintFailed && !dryRun) bumpHealthCounter("lint_rejected", lintFailed)
   if (gatedAllowed && !dryRun) markGatedMinted()
   // Auto-approved minting is silent — the tick is machinery Ryan never
@@ -964,6 +995,149 @@ async function markFailed(row, err) {
   if (!dryRun) await sb.from("campaign_sends").update({ status: "failed", error: err }).eq("id", row.id)
 }
 
+// ---------- VERIFY pass (Kickbox, autopilot brief Task 5) ----------
+// Once per weekday morning BEFORE the mint (so the day's drafts come from a
+// verified pool): every active, non-suppressed contact due within 7 days
+// whose verdict is missing, > 30 days old, or "unknown" ≥ 7 days old —
+// soonest-due first, at most VERIFY_DAILY_MAX a day, the rest tomorrow.
+// Verdicts land on campaign_contacts (verified_at / verify_result /
+// verify_reason / verify_accept_all); undeliverable → suppressed as
+// "verify_undeliverable" with status "invalid"; a second "unknown" →
+// "verify_unknown". Catch-all is a property of the domain and never filters.
+// Needs KICKBOX_API_KEY (.env.local + the launchd plist); without it the
+// pass logs one line and the draft rule simply sees no verdicts.
+const VERIFY_STATE = path.join(__dirname, ".campaign-verify-state.json")
+
+async function getVerifyRequired() {
+  const { data } = await sb.from("campaign_settings").select("value").eq("key", "verify_required").maybeSingle()
+  return data?.value?.enabled === true
+}
+
+function verifyRanToday() {
+  try { return JSON.parse(fs.readFileSync(VERIFY_STATE, "utf-8")).last === ptToday() } catch { return false }
+}
+
+/** Fetch active contacts with an email (optionally only those due within `horizonDays`), paged. */
+async function fetchVerifyPool({ horizonDays = null, domains = null } = {}) {
+  const out = []
+  for (let from = 0; ; from += 1000) {
+    let q = sb.from("campaign_contacts").select("id, name, email, status, touch_number, next_touch_at, verified_at, verify_result, verify_reason, verify_accept_all").eq("status", "active").not("email", "is", null)
+    if (horizonDays !== null) q = q.lte("next_touch_at", new Date(Date.now() + horizonDays * 86_400_000).toISOString())
+    if (domains?.length) q = q.or(domains.map((d) => `email.ilike.%@${d}`).join(","))
+    const { data, error } = await q.order("next_touch_at", { ascending: true }).order("id", { ascending: true }).range(from, from + 999)
+    if (error) throw new Error(`verify pool fetch: ${error.message}`)
+    out.push(...(data ?? []))
+    if (!data || data.length < 1000 || out.length >= 10000) break
+  }
+  return out
+}
+
+/** Write one verdict to the contact and act on it. Returns the action taken. */
+async function applyVerdict(c, v) {
+  const act = verifyAction(v)
+  const patch = { verified_at: v.checked_at, verify_result: v.result, verify_reason: v.reason, verify_accept_all: v.accept_all, updated_at: new Date().toISOString() }
+  const line = `${c.email} → ${v.result}${v.accept_all ? " (accept_all)" : ""} [${v.reason}${v.sendex !== null ? `, sendex ${v.sendex}` : ""}] → ${act.bucket}`
+  if (act.bucket === "risky") log(`verify: ${line} — eligible, reason logged`)
+  if (dryRun) { log(`verify (dry): ${line}`); return act.bucket }
+  const { error } = await sb.from("campaign_contacts").update(patch).eq("id", c.id)
+  if (error) throw new Error(`verify write (${c.email}): ${error.message}`)
+  if (act.action === "suppress") {
+    await suppressContact(c, { source: act.source, reason: `Kickbox ${v.result}: ${v.reason}`, status: act.status })
+    return act.bucket
+  }
+  if (act.action === "hold" && unknownTwice(c, v)) {
+    await suppressContact(c, { source: "verify_unknown", reason: `Kickbox unknown twice (${c.verify_reason ?? "?"} then ${v.reason})` })
+    return "unknown_suppressed"
+  }
+  return act.bucket
+}
+
+async function verifyPass() {
+  const apiKey = process.env.KICKBOX_API_KEY
+  if (!apiKey) {
+    if (verifyOnly) throw new Error("KICKBOX_API_KEY is not set — add it to .env.local (and the launchd plist for the scheduled pass)")
+    log("verify: KICKBOX_API_KEY unset — pass skipped (the draft rule sees no verdicts)")
+    return
+  }
+  const keyNote = isSandboxKey(apiKey) ? " (SANDBOX key — canned results, no credits)" : ""
+  if (verifyDomains) return verifyDomainsRun(apiKey, keyNote)
+  if (!verifyAll) {
+    const wd = laWeekdayNow()
+    if (!args.includes("--verify-now")) {
+      if (wd === "Sat" || wd === "Sun") return
+      if (laHourNow() >= MINT_HOUR) { log("verify: after the mint hour — the morning pass waits for tomorrow"); return }
+      if (verifyRanToday()) return
+    }
+  }
+  const sets = await fetchSuppressionSets()
+  const pool = await fetchVerifyPool({ horizonDays: verifyAll ? null : 7 })
+  let candidates = selectVerifyCandidates(pool, { all: verifyAll, suppressedEmails: sets.emails })
+  const cap = verifyAll ? (limit ?? Infinity) : Math.min(VERIFY_DAILY_MAX, limit ?? Infinity)
+  const deferred = Math.max(0, candidates.length - (Number.isFinite(cap) ? cap : candidates.length))
+  if (Number.isFinite(cap)) candidates = candidates.slice(0, cap)
+  log(`verify${verifyAll ? " --verify-all" : ""}${keyNote}: ${pool.length} in pool, ${candidates.length} to verify now${deferred ? ` (${deferred} deferred to the next pass, VERIFY_DAILY_MAX ${VERIFY_DAILY_MAX})` : ""}${dryRun ? " — DRY RUN, nothing written" : ""}`)
+  if (!candidates.length) { if (!verifyAll && !dryRun) fs.writeFileSync(VERIFY_STATE, JSON.stringify({ last: ptToday(), verified: 0 })); return }
+  const rows = []
+  const tally = {}
+  let balance = null
+  try {
+    await verifyMany(candidates, {
+      apiKey,
+      onResult: async (c, v) => {
+        rows.push({ email: c.email, verdict: v })
+        if (v.balance !== null && v.balance !== undefined) balance = v.balance
+        const bucket = await applyVerdict(c, v)
+        tally[bucket] = (tally[bucket] || 0) + 1
+      },
+    })
+  } catch (e) {
+    if (e instanceof KickboxAuthError) {
+      const text = `⚠️ Kickbox stopped the verify pass after ${rows.length}: ${e.message}. ${e.status === 403 ? "Top up the credit pack, then rerun." : "Check KICKBOX_API_KEY in .env.local + the plist."}`
+      if (dryRun) log(`would telegram: ${text}`)
+      else await telegram(escHtml(text))
+    }
+    throw e
+  }
+  const summary = summarizeVerification(rows)
+  const text = `🔎 Kickbox ${verifyAll ? "first pass" : "morning pass"}${keyNote}: ${summaryLine(summary)}${deferred ? `\n${deferred} more deferred to the next pass.` : ""}${balance !== null ? `\nCredits left: ${balance}` : ""}${tally.unknown_suppressed ? `\n${tally.unknown_suppressed} suppressed after a second unknown.` : ""}`
+  log(text.replace(/\n/g, " · "))
+  if (!dryRun) {
+    bumpHealthCounter("verified", rows.length)
+    if (summary.counts.undeliverable) bumpHealthCounter("verify_undeliverable", summary.counts.undeliverable)
+    if (!verifyAll) fs.writeFileSync(VERIFY_STATE, JSON.stringify({ last: ptToday(), verified: rows.length }))
+  }
+  // The one-time first pass is a Ryan-facing event (catch-all share decides
+  // the credit pack); the morning pass is machinery — only its undeliverables
+  // are worth a line.
+  if (verifyAll) {
+    if (dryRun) log(`would telegram: ${text}`)
+    else await telegram(escHtml(text))
+  } else if (summary.counts.undeliverable && !dryRun) {
+    await telegram(escHtml(`🔎 Verify: ${summary.counts.undeliverable} undeliverable parked as invalid (of ${rows.length} checked) — they would have bounced.`))
+  }
+}
+
+/** --verify-domains a.com,b.com: one active contact per domain → accept_all flag (the catch-all survey). */
+async function verifyDomainsRun(apiKey, keyNote) {
+  const pool = await fetchVerifyPool({ domains: verifyDomains })
+  const picks = []
+  for (const d of verifyDomains) {
+    const c = pool.find((x) => String(x.email).toLowerCase().endsWith(`@${d}`))
+    if (c) picks.push(c)
+    else log(`verify-domains: no active contact at ${d} — skipped`)
+  }
+  log(`verify --verify-domains${keyNote}: ${picks.length}/${verifyDomains.length} domains have an active contact${dryRun ? " — DRY RUN, nothing written" : ""}`)
+  const pad = (v, n) => String(v ?? "").padEnd(n)
+  console.log(`  ${pad("domain", 28)}${pad("accept_all", 12)}${pad("result", 15)}${pad("reason", 22)}sendex`)
+  await verifyMany(picks, {
+    apiKey,
+    onResult: async (c, v) => {
+      console.log(`  ${pad(String(c.email).split("@")[1], 28)}${pad(v.accept_all ? "YES" : "no", 12)}${pad(v.result, 15)}${pad(v.reason, 22)}${v.sendex ?? "—"}`)
+      await applyVerdict(c, v)
+    },
+  })
+}
+
 // ---------- DIGEST pass ----------
 // One visible receipt per batch instead of silence (Ryan, 2026-07-22:
 // "bounces + no Telegram = looks broken every day"). Any bounce events
@@ -1054,7 +1228,24 @@ async function dayMetrics(dayStr) {
   const unsubs = await cnt("campaign_events", "occurred_at", { kind: "email_reply", triage: "unsubscribe" })
   const autoReplies = await cnt("campaign_events", "occurred_at", { kind: "email_reply", triage: ["auto_reply", "dead_mailbox"] })
   const local = readHealthState()[dayStr] || {}
-  return { day: dayStr, sent, failed, bounces, replies, unsubs, autoReplies, lint_rejected: local.lint_rejected || 0, dns_no_mx: local.dns_no_mx || 0, canary: local.canary || null }
+  return { day: dayStr, sent, failed, bounces, replies, unsubs, autoReplies, lint_rejected: local.lint_rejected || 0, dns_no_mx: local.dns_no_mx || 0, verified: local.verified || 0, verify_undeliverable: local.verify_undeliverable || 0, canary: local.canary || null }
+}
+
+/** Sends today whose contact is on a catch-all domain (verify_accept_all) — counted, never filtered (Task 5). */
+async function catchAllSentCount(startIso, endIso) {
+  const ids = []
+  for (let from = 0; ; from += 1000) {
+    const { data, error } = await sb.from("campaign_sends").select("contact_id").eq("status", "sent").gte("sent_at", startIso).lte("sent_at", endIso).order("id", { ascending: true }).range(from, from + 999)
+    if (error) throw new Error(`catch-all sends: ${error.message}`)
+    ids.push(...(data ?? []).map((r) => r.contact_id).filter(Boolean))
+    if (!data || data.length < 1000) break
+  }
+  let n = 0
+  for (let i = 0; i < ids.length; i += 200) {
+    const { count } = await sb.from("campaign_contacts").select("id", { count: "exact", head: true }).in("id", ids.slice(i, i + 200)).eq("verify_accept_all", true)
+    n += count ?? 0
+  }
+  return n
 }
 
 // Per-sender metrics over [startIso, endIso]. Sends/failures carry the
@@ -1355,6 +1546,7 @@ async function healthPass() {
   // sent nothing today are left untouched (pre-launch, nothing to judge).
   const dayStart = new Date(`${day}T00:00:00-07:00`).toISOString()
   const dayEnd = new Date(`${day}T23:59:59-07:00`).toISOString()
+  const catchAllSent = await catchAllSentCount(dayStart, dayEnd)
   const perSender = await senderMetricsRange(dayStart, dayEnd)
   const trailing = await senderMetricsRange(new Date(new Date(dayStart).getTime() - 7 * 86_400_000).toISOString(), new Date(new Date(dayStart).getTime() - 1000).toISOString())
   const senderLines = []
@@ -1411,7 +1603,7 @@ async function healthPass() {
   }
   const status = warnings.length ? (warnings.some((w) => /PAUSED|^RED:/.test(w)) ? "🔴" : "🟡") : worst
   const capTotal = SENDERS.reduce((a, s) => a + senderCap(s), 0)
-  const snapshot = { ...m, warnings, sender: SENDERS.map((s) => s.email).join(","), cap: capTotal, senders: senderSnap, recorded_at: now.toISOString() }
+  const snapshot = { ...m, catch_all_sent: catchAllSent, warnings, sender: SENDERS.map((s) => s.email).join(","), cap: capTotal, senders: senderSnap, recorded_at: now.toISOString() }
   if (!rehearsal) await sb.from("campaign_settings").upsert({ key: `health:${day}`, value: snapshot, updated_at: now.toISOString() })
   const rampNote = senderLines.length ? `\n\n${senderLines.join("\n")}` : ""
   if (m.sent === 0 && !warnings.length && !rehearsal) { log("health: no sends today, snapshot stored, no card"); return }
@@ -1419,7 +1611,8 @@ async function healthPass() {
   const card =
     (stallLines.length ? `${stallLines.join("\n")}\n\n` : "") +
     `🩺 <b>Campaign health ${status} — ${wd} ${day.slice(5)}</b>\n` +
-      `📤 ${m.sent} sent (caps ${capTotal}) · ↩️ ${m.bounces} bounced (${pct(m.bounces, m.sent)}) · 💬 ${m.replies} replies · 🚫 ${m.unsubs} removes · 🤖 ${m.autoReplies} auto-replies · ⚠️ ${m.failed} failed · 🧹 ${m.lint_rejected} lint-rejected · 🌐 ${m.dns_no_mx} no-MX` +
+      `📤 ${m.sent} sent (caps ${capTotal}) · 🪣 ${catchAllSent} catch-all · ↩️ ${m.bounces} bounced (${pct(m.bounces, m.sent)}) · 💬 ${m.replies} replies · 🚫 ${m.unsubs} removes · 🤖 ${m.autoReplies} auto-replies · ⚠️ ${m.failed} failed · 🧹 ${m.lint_rejected} lint-rejected · 🌐 ${m.dns_no_mx} no-MX` +
+      (m.verified ? ` · 🔎 ${m.verified} verified (${m.verify_undeliverable} invalid)` : "") +
       (canaryNote ? ` · 🐤 canary ${escHtml(canaryNote)} sent` : "") +
       `\n📈 7-day: ${agg.sent} sent, bounces ${pct(agg.bounces, agg.sent)}, replies ${pct(agg.replies, agg.sent)}, ${agg.unsubs} removes` +
       (warnings.length ? `\n\n${warnings.map((w) => `• ${escHtml(w)}`).join("\n")}` : "\n\nAll clear.") + rampNote
@@ -1538,13 +1731,16 @@ const rampOk = await runPass("ramp", loadRamp)
 // would send/draft at the wrong volume; observation passes still run.
 // --judge-now / --judge-backfill are judge-only runs: ramp (for the sender
 // states) + judge, nothing else — so a manual backfill never drafts or sends.
-if (rampOk && !digestOnly && !judgeOnly && doDraft) await runPass("draft", draftPass)
-if (rampOk && !digestOnly && !judgeOnly && doSend) await runPass("send", sendPass)
-if (!judgeOnly) await runPass("digest", digestPass)
-if (rampOk && !digestOnly && !judgeOnly && doSend) await runPass("canary", canaryPass)
-if (rampOk && !digestOnly) await runPass("judge", judgePass)
-if (!judgeOnly) await runPass("health", healthPass)
-if (!judgeOnly) await runPass("scorecard", scorecardPass)
+// --verify-all / --verify-domains are verify-only runs the same way.
+const manualOnly = judgeOnly || verifyOnly
+if (rampOk && !digestOnly && !judgeOnly && (verifyOnly || doDraft)) await runPass("verify", verifyPass)
+if (rampOk && !digestOnly && !manualOnly && doDraft) await runPass("draft", draftPass)
+if (rampOk && !digestOnly && !manualOnly && doSend) await runPass("send", sendPass)
+if (!manualOnly) await runPass("digest", digestPass)
+if (rampOk && !digestOnly && !manualOnly && doSend) await runPass("canary", canaryPass)
+if (rampOk && !digestOnly && !verifyOnly) await runPass("judge", judgePass)
+if (!manualOnly) await runPass("health", healthPass)
+if (!manualOnly) await runPass("scorecard", scorecardPass)
 if (passFailures.length) {
   await telegram(`🔥 Campaign engine: ${passFailures.length} pass(es) failed — ${passFailures.join(" · ")}`)
   process.exit(1)

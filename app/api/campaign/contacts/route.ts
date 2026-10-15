@@ -37,7 +37,7 @@ export async function GET(request: NextRequest) {
     if (error) return NextResponse.json({ error: error.message }, { status: 500 })
 
     // status rollup for the header chips
-    const statuses = ["active", "paused", "replied", "bounced", "unsubscribed", "suppressed", "bad_email", "no_email"]
+    const statuses = ["active", "paused", "replied", "bounced", "unsubscribed", "suppressed", "bad_email", "no_email", "invalid"]
     const counts = await Promise.all(
       statuses.map((s) =>
         sb.from("campaign_contacts").select("id", { count: "exact", head: true }).eq("status", s)

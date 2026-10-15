@@ -1,0 +1,221 @@
+// Kickbox list verification (autopilot brief 2026-10-15, Task 5).
+//
+// "Nothing fancy on the verifier: cheapest tool that answers 'does this
+// mailbox exist'." One GET per address against Kickbox's single-verify
+// endpoint, ≤ 5 in flight, 429s backed off. The list is 2–3k addresses, so
+// the async bulk endpoint is not worth its plumbing.
+//
+// This module is the canonical implementation for BOTH the engine
+// (scripts/campaign-engine.mjs verifyPass / --verify-all / --verify-domains)
+// and the Next.js side (lib/verify.ts re-exports it with types). Everything
+// that decides something is pure and unit-tested against Kickbox's
+// documented response shape (tests/campaign-verify.unit.test.ts) — never
+// against the live API. Sandbox keys (`test_…`) return canned results from
+// Kickbox and consume no credits.
+//
+// Mapping → engine action (brief, Task 5):
+//   deliverable                         → eligible
+//   deliverable/risky + accept_all      → eligible, counted as "catch-all" on the card (NEVER filtered —
+//                                         catch-all is a property of the domain, not the agent)
+//   risky (no accept_all)               → eligible (reason logged)
+//   unknown                             → hold out of the queue; re-verify after 7 days; still unknown → suppress "verify_unknown"
+//   undeliverable                       → suppress "verify_undeliverable", contact status "invalid" (NOT "bounced")
+
+export const KICKBOX_URL = "https://api.kickbox.com/v2/verify"
+export const KICKBOX_TIMEOUT_MS = 10_000 // the `timeout` query param Kickbox accepts (ms)
+export const VERIFY_FRESH_DAYS = 30 // a verdict older than this is stale for the draft rule
+export const VERIFY_UNKNOWN_RETRY_DAYS = 7 // re-verify an "unknown" after this many days
+export const VERIFY_HORIZON_DAYS = 7 // the morning pass verifies whatever is due within this window
+export const VERIFY_DAILY_MAX_DEFAULT = 500
+export const VERIFY_CONCURRENCY = 5
+export const KICKBOX_RESULTS = ["deliverable", "undeliverable", "risky", "unknown"]
+
+export function isSandboxKey(apiKey) {
+  return /^test_/.test(String(apiKey ?? ""))
+}
+
+export class KickboxAuthError extends Error {
+  constructor(status, message) {
+    super(`Kickbox ${status}: ${message}`)
+    this.name = "KickboxAuthError"
+    this.status = status
+  }
+}
+
+/**
+ * Kickbox's documented single-verify response →
+ * { result, reason, accept_all, sendex, checked_at, role, free, disposable, did_you_mean, domain }.
+ * Anything off-shape (success:false, missing result) maps to "unknown" so
+ * a bad day at Kickbox never suppresses anyone.
+ */
+export function mapKickbox(json, now = new Date()) {
+  const j = json && typeof json === "object" ? json : {}
+  const result = KICKBOX_RESULTS.includes(j.result) && j.success !== false ? j.result : "unknown"
+  const reason = typeof j.reason === "string" && j.reason ? j.reason : j.success === false ? `api_error:${String(j.message ?? "").slice(0, 60) || "unknown"}` : "bad_response"
+  return {
+    result,
+    reason,
+    accept_all: j.accept_all === true,
+    sendex: typeof j.sendex === "number" ? j.sendex : null,
+    checked_at: now.toISOString(),
+    role: j.role === true,
+    free: j.free === true,
+    disposable: j.disposable === true,
+    did_you_mean: typeof j.did_you_mean === "string" && j.did_you_mean ? j.did_you_mean : null,
+    domain: typeof j.domain === "string" ? j.domain.toLowerCase() : null,
+  }
+}
+
+/**
+ * What the engine does with a verdict (see the table above).
+ * Returns { action: "eligible"|"hold"|"suppress", bucket, source?, status? }.
+ */
+export function verifyAction(v) {
+  const r = v?.result ?? "unknown"
+  if (r === "deliverable") return { action: "eligible", bucket: v.accept_all ? "catch_all" : "deliverable" }
+  if (r === "risky") return { action: "eligible", bucket: v.accept_all ? "catch_all" : "risky" }
+  if (r === "undeliverable") return { action: "suppress", bucket: "undeliverable", source: "verify_undeliverable", status: "invalid" }
+  return { action: "hold", bucket: "unknown" }
+}
+
+/** Second consecutive "unknown" (the first was ≥ 7 days ago) → suppress "verify_unknown". */
+export function unknownTwice(previous, next, now = new Date()) {
+  if (next?.result !== "unknown") return false
+  if (previous?.verify_result !== "unknown" || !previous?.verified_at) return false
+  return ageDays(previous.verified_at, now) >= VERIFY_UNKNOWN_RETRY_DAYS
+}
+
+export function ageDays(iso, now = new Date()) {
+  const t = new Date(iso ?? NaN).getTime()
+  if (!Number.isFinite(t)) return Infinity
+  return (now.getTime() - t) / 86_400_000
+}
+
+/**
+ * The send rule: draft-eligible only when verified within 30 days with an
+ * eligible result — gated by campaign_settings `verify_required`. Pure.
+ * Returns { eligible, why, bucket }.
+ */
+export function isDraftEligible(contact, { required = false, now = new Date() } = {}) {
+  if (!required) return { eligible: true, why: "verify_required off", bucket: contact?.verify_result === "unknown" ? "unknown" : contact?.verify_accept_all ? "catch_all" : contact?.verify_result ?? "unverified" }
+  if (!contact?.verified_at) return { eligible: false, why: "unverified", bucket: "unverified" }
+  if (ageDays(contact.verified_at, now) > VERIFY_FRESH_DAYS) return { eligible: false, why: `verified ${Math.floor(ageDays(contact.verified_at, now))} days ago (> ${VERIFY_FRESH_DAYS})`, bucket: "stale" }
+  const act = verifyAction({ result: contact.verify_result, accept_all: contact.verify_accept_all === true })
+  if (act.action === "eligible") return { eligible: true, why: act.bucket, bucket: act.bucket }
+  return { eligible: false, why: act.action === "hold" ? "unknown — awaiting re-verify" : "undeliverable", bucket: act.bucket }
+}
+
+/**
+ * Which contacts the morning pass verifies (pure filter over active,
+ * non-suppressed contacts): due within `horizonDays` AND (never verified, or
+ * verified > 30 days ago, or "unknown" ≥ 7 days ago). `all: true` drops the
+ * due filter (the one-time --verify-all first pass) but still skips fresh
+ * verdicts so a re-run is cheap. Sorted soonest-due first, then stable.
+ */
+export function selectVerifyCandidates(contacts, { now = new Date(), horizonDays = VERIFY_HORIZON_DAYS, all = false, suppressedEmails = null } = {}) {
+  const horizon = now.getTime() + horizonDays * 86_400_000
+  const out = []
+  for (const c of contacts ?? []) {
+    if (!c || c.status !== "active" || !c.email) continue
+    const email = String(c.email).trim().toLowerCase()
+    if (suppressedEmails?.has?.(email)) continue
+    if (!all) {
+      const due = c.next_touch_at ? new Date(c.next_touch_at).getTime() : 0
+      if (due > horizon) continue
+    }
+    const age = ageDays(c.verified_at, now)
+    const needs = !c.verified_at || age > VERIFY_FRESH_DAYS || (c.verify_result === "unknown" && age >= VERIFY_UNKNOWN_RETRY_DAYS)
+    if (!needs) continue
+    out.push(c)
+  }
+  return out.sort((a, b) => String(a.next_touch_at ?? "").localeCompare(String(b.next_touch_at ?? "")))
+}
+
+const defaultSleep = (ms) => new Promise((r) => setTimeout(r, ms))
+
+/**
+ * One Kickbox call. 429 → exponential backoff (1 s, 2 s, 4 s) up to
+ * `maxRetries`; 401/403 (bad key / no balance) → KickboxAuthError (the pass
+ * stops rather than burning the queue on a dead key); any other non-200 or a
+ * network error → "unknown" with reason `http_<status>` / `fetch_error`.
+ */
+export async function verifyEmail(email, { apiKey = process.env.KICKBOX_API_KEY, fetchImpl = globalThis.fetch, timeoutMs = KICKBOX_TIMEOUT_MS, maxRetries = 3, sleep = defaultSleep, now = () => new Date() } = {}) {
+  if (!apiKey) throw new KickboxAuthError(0, "KICKBOX_API_KEY is not set")
+  const url = `${KICKBOX_URL}?email=${encodeURIComponent(String(email).trim())}&apikey=${encodeURIComponent(apiKey)}&timeout=${timeoutMs}`
+  let attempt = 0
+  for (;;) {
+    let res
+    try {
+      res = await fetchImpl(url, { method: "GET", headers: { Accept: "application/json" } })
+    } catch (e) {
+      return { ...mapKickbox({ success: false, message: `fetch: ${e?.message ?? e}` }, now()), reason: "fetch_error", balance: null }
+    }
+    const balance = Number(res.headers?.get?.("x-kickbox-balance") ?? NaN)
+    if (res.status === 429 && attempt < maxRetries) {
+      await sleep(1000 * 2 ** attempt)
+      attempt++
+      continue
+    }
+    if (res.status === 401 || res.status === 403) {
+      let msg = ""
+      try { msg = (await res.json())?.message ?? "" } catch { /* no body */ }
+      throw new KickboxAuthError(res.status, msg || (res.status === 401 ? "invalid API key" : "forbidden / insufficient balance"))
+    }
+    if (res.status !== 200) return { ...mapKickbox({ success: false, message: `http ${res.status}` }, now()), reason: `http_${res.status}`, balance: Number.isFinite(balance) ? balance : null }
+    let json = null
+    try { json = await res.json() } catch { json = null }
+    return { ...mapKickbox(json, now()), balance: Number.isFinite(balance) ? balance : null }
+  }
+}
+
+/**
+ * Sequential-ish batch: ≤ `concurrency` calls in flight, results in input
+ * order. `onResult(item, verdict, index)` fires as each lands (the engine
+ * writes the contact there). A KickboxAuthError aborts the whole batch.
+ */
+export async function verifyMany(items, { concurrency = VERIFY_CONCURRENCY, emailOf = (x) => (typeof x === "string" ? x : x.email), onResult = null, ...opts } = {}) {
+  const results = new Array(items.length)
+  let next = 0
+  let aborted = null
+  async function worker() {
+    while (next < items.length && !aborted) {
+      const i = next++
+      try {
+        const v = await verifyEmail(emailOf(items[i]), opts)
+        results[i] = v
+        if (onResult) await onResult(items[i], v, i)
+      } catch (e) {
+        aborted = e
+        throw e
+      }
+    }
+  }
+  await Promise.all(Array.from({ length: Math.max(1, Math.min(concurrency, items.length)) }, worker))
+  return results
+}
+
+/** Counts per bucket + the top N domains by catch-all for the Telegram summary. */
+export function summarizeVerification(rows, { topDomains = 15 } = {}) {
+  const counts = { deliverable: 0, catch_all: 0, risky: 0, unknown: 0, undeliverable: 0 }
+  const catchAll = new Map()
+  for (const r of rows ?? []) {
+    if (!r) continue
+    const v = r.verdict ?? r
+    const b = verifyAction(v).bucket
+    counts[b] = (counts[b] ?? 0) + 1
+    if (b === "catch_all") {
+      const d = v.domain ?? (r.email ? String(r.email).split("@")[1]?.toLowerCase() : null)
+      if (d) catchAll.set(d, (catchAll.get(d) ?? 0) + 1)
+    }
+  }
+  const top = [...catchAll.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).slice(0, topDomains).map(([domain, n]) => ({ domain, n }))
+  const total = Object.values(counts).reduce((a, b) => a + b, 0)
+  return { total, counts, topCatchAll: top }
+}
+
+export function summaryLine({ total, counts, topCatchAll }) {
+  const pct = (n) => (total ? ` (${((100 * n) / total).toFixed(1)}%)` : "")
+  const line = `verified ${total}: ${counts.deliverable} deliverable${pct(counts.deliverable)} · ${counts.catch_all} catch-all${pct(counts.catch_all)} · ${counts.risky} risky${pct(counts.risky)} · ${counts.unknown} unknown${pct(counts.unknown)} · ${counts.undeliverable} undeliverable${pct(counts.undeliverable)}`
+  const top = topCatchAll?.length ? `\nTop catch-all domains: ${topCatchAll.map((d) => `${d.domain} (${d.n})`).join(", ")}` : ""
+  return line + top
+}
