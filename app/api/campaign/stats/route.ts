@@ -122,6 +122,7 @@ export async function GET() {
         replied: totalReplied,
         reply_rate: totalSent ? totalReplied / totalSent : 0,
         bounced: contactsByStatus["bounced"] ?? 0,
+        invalid: contactsByStatus["invalid"] ?? 0, // verifier said undeliverable (autopilot brief, Task 5) — kept apart from the July bounces
         unsubscribed: contactsByStatus["unsubscribed"] ?? 0,
         sent_today: sentToday,
         queue_draft: draftCount ?? 0,

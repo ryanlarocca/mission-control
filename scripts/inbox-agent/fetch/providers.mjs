@@ -7,10 +7,17 @@
 //
 // Ryan 2026-10-12: the DocuSign link is "an ongoing friction point" — the
 // Completed email often arrives without the PDF, only the EmailStart link.
-// DocuSign is the only provider in v1; Disclosures.io / Glide / Zix /
+// DocuSign is the only document provider in v1; Disclosures.io / Glide / Zix /
 // Authentisign are later phases.
+//
+// Ryan 2026-10-15: listing photos arrive the same way — as a link, not an
+// attachment. f8 Real Estate Media (Aryeo) is the first "media" provider
+// (briefs/BRIEF_INBOX_MEDIA_DELIVERY_2026-10-15.md): the Download Center link
+// is the one that matters; portal / property-website / app-store links on the
+// same email are not documents.
 
-/** @typedef {"docusign"} Provider */
+/** @typedef {"docusign"|"f8"} Provider */
+/** @typedef {"document"|"media"} ProviderKind */
 
 const URL_RE = /https?:\/\/[^\s<>"'()\[\]]+/gi
 // Trailing punctuation that plain-text mail wraps around a URL ("…link.", "(…link)").
@@ -23,6 +30,16 @@ const DOCUSIGN_SIGNING_HOST_RE = /^([a-z0-9-]+\.)?docusign\.net$/i
 const DOCUSIGN_APP_HOST_RE = /^app(-d|-s)?\.docusign\.com$/i
 const DOCUSIGN_SIGNING_PATH_RE = /^\/signing\/(emailstart\.aspx|startinsession\.aspx)?(\?|$)/i
 const UNSUBSCRIBE_RE = /unsubscribe|optout|opt-out|preferences|privacy|terms|reportabuse|report-abuse/i
+// f8 (Aryeo white label): https://f8.f8re.com/listings/<uuid>/download-center?signature=…
+// Only the Download Center opens photos; /portal, /sites/<slug>/branded,
+// www.f8re.com/… and the app-store links are noise.
+const F8_HOST_RE = /^f8\.f8re\.com$/i
+const F8_DOWNLOAD_CENTER_RE = /^\/listings\/[0-9a-f-]{20,}\/download-center\/?$/i
+const F8_SITE_RE = /^\/sites\/([^/?#]+)\/(branded|unbranded)\/?$/i
+// Postmark click tracking wraps every link in the f8 email:
+// https://track.pstmrk.it/3ts/<urlencoded target>/<junk>. The target keeps
+// its scheme only sometimes ("f8.f8re.com/listings/…" came through bare).
+const POSTMARK_HOST_RE = /^track\.pstmrk\.it$/i
 
 /**
  * "docusign" when the URL opens an envelope, null for everything else
@@ -46,15 +63,57 @@ export function detectProvider(url) {
   if (DOCUSIGN_SIGNING_HOST_RE.test(host) && DOCUSIGN_SIGNING_PATH_RE.test(u.pathname + u.search)) return "docusign"
   // Account links: https://app.docusign.com/documents/details/<envelope id>
   if (DOCUSIGN_APP_HOST_RE.test(host) && /^\/(documents|envelopes|signing)\b/i.test(u.pathname)) return "docusign"
+  // f8 Download Center (photos). Everything else on f8re.com is null.
+  if (F8_HOST_RE.test(host) && F8_DOWNLOAD_CENTER_RE.test(u.pathname)) return "f8"
   return null
 }
 
-/** Every http(s) URL in a blob of text, in order, trailing punctuation stripped, de-duplicated. */
+/** "document" providers go through the PDF filing pipeline; "media" providers (photos) go to Photos/. */
+export function providerKind(provider) {
+  return provider === "f8" ? "media" : "document"
+}
+
+/**
+ * A Postmark click-tracking link → the link it wraps; anything else passes
+ * through untouched. Rule (brief 2026-10-15): take the path segment right
+ * after `/3ts/`, URL-decode it, and if it starts with `f8.f8re.com/` (or any
+ * bare host) prefix `https://`.
+ * @param {string|null|undefined} url
+ * @returns {string}
+ */
+export function unwrapTrackingUrl(url) {
+  const raw = String(url || "").trim()
+  let u
+  try {
+    u = new URL(raw)
+  } catch {
+    return raw
+  }
+  if (!POSTMARK_HOST_RE.test(u.hostname)) return raw
+  const m = /^\/3ts\/([^/]+)/.exec(u.pathname)
+  if (!m) return raw
+  let target
+  try {
+    target = decodeURIComponent(m[1])
+  } catch {
+    return raw
+  }
+  if (!/^https?:\/\//i.test(target)) target = `https://${target}`
+  try {
+    return new URL(target).href
+  } catch {
+    return raw
+  }
+}
+
+/** Every http(s) URL in a blob of text, in order, trailing punctuation stripped,
+ *  tracking wrappers unwrapped, de-duplicated (so a wrapped and a plain copy of
+ *  the same Download Center link count once). */
 export function extractUrls(text) {
   const out = []
   const seen = new Set()
   for (const raw of String(text || "").match(URL_RE) || []) {
-    const url = raw.replace(TRAIL_RE, "")
+    const url = unwrapTrackingUrl(raw.replace(TRAIL_RE, ""))
     if (!url || seen.has(url)) continue
     seen.add(url)
     out.push(url)
@@ -72,7 +131,7 @@ export function extractUrls(text) {
 export function documentLinks(msg, extra = []) {
   const out = []
   const seen = new Set()
-  for (const url of [...extractUrls(msg?.text), ...(Array.isArray(extra) ? extra : [])]) {
+  for (const url of [...extractUrls(msg?.text), ...(Array.isArray(extra) ? extra : []).map((u) => unwrapTrackingUrl(u))]) {
     const provider = detectProvider(url)
     if (!provider || seen.has(url)) continue
     seen.add(url)
@@ -83,5 +142,31 @@ export function documentLinks(msg, extra = []) {
 
 /** Human label for cards. */
 export function providerLabel(provider) {
-  return provider === "docusign" ? "DocuSign" : provider || "the link"
+  return provider === "docusign" ? "DocuSign" : provider === "f8" ? "f8" : provider || "the link"
+}
+
+/**
+ * The branded / unbranded property-website links in an f8 delivery email
+ * (`https://f8.f8re.com/sites/<slug>/branded`, `/sites/<code>/unbranded`),
+ * tracking wrappers removed. Each is null when absent. They go on the card,
+ * never on the queue.
+ * @param {string|null|undefined} text
+ * @returns {{ branded: string|null, unbranded: string|null }}
+ */
+export function propertyWebsiteLinks(text) {
+  const out = { branded: null, unbranded: null }
+  for (const url of extractUrls(text)) {
+    let u
+    try {
+      u = new URL(url)
+    } catch {
+      continue
+    }
+    if (!F8_HOST_RE.test(u.hostname)) continue
+    const m = F8_SITE_RE.exec(u.pathname)
+    if (!m) continue
+    const which = m[2].toLowerCase()
+    if (!out[which]) out[which] = url
+  }
+  return out
 }

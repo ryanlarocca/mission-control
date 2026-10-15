@@ -16,6 +16,7 @@
 import fs from "node:fs"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
+import { bounceBreaker, removeTripwire, isDayStopped } from "./campaign-gates.mjs"
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 export const REPO_ROOT = path.resolve(__dirname, "..")
@@ -25,8 +26,12 @@ export const DEFAULT_GATES = {
   minHealthyDays: 3, // green send days at a step before it can advance ("canary Primary 3 days running")
   healthyDayMinFraction: 0.6, // a green day counts toward the streak only if ≥ this share of the cap went out
   maxWeekOverWeek: 2, // next cap ≤ this × the cap in force 7 days ago
-  bounceHoldRate: 0.01, // yellow (hold) line
-  bounceRedRate: 0.02, // red (drop a step) line, once ≥10 sent in the day
+  bounceHoldRate: 0.01, // yellow (watch) line
+  // Bounce breaker (autopilot brief 2026-10-15, Task 3), evaluated every engine
+  // cycle, not only at the 5:15 PM health pass. Percentages apply at ≥ 10 sent;
+  // below that only the absolute counts do, and a single bounce never trips.
+  bounceRedRate: 0.02, // DAY-STOP line (2nd bounce, or this rate at ≥ 10 sent): nothing more today, resumes next weekday — holds the rung (yellow)
+  bounceBreakerRate: 0.05, // RED line (this rate at ≥ 10 sent, or 3 bounces in the first hour): 48 h auto-pause + drop a rung
   replyCheckMinSends: 40, // once a sender has this many sends in 7 days, zero genuine replies = hold
   requireCanaryVerdict: true, // brief: "canary Primary 3 days running" — verdicts arrive via Telegram "canary <label> <verdict>" (item 3, 2026-09-05)
   canaryVerdictMaxAgeDays: 7, // the newest recorded verdict must be at most this old for the canary gate to count
@@ -98,6 +103,8 @@ export function freshState() {
     gap_days: 0, // consecutive weekdays with zero sends
     canary_verdicts: {}, // { "YYYY-MM-DD": "primary" | "promotions" | "spam" } — Ryan's read of the judge inbox
     postmaster: null, // { reputation: "HIGH"|"MEDIUM"|"LOW"|"BAD", recorded_at, by } — manual until the Postmaster API is authorized
+    day_stop: null, // { day, reason, at } — bounce breaker / remove tripwire stopped this sender for the rest of that PT day (Task 3)
+    copy_trip: null, // { day, level, touches } — the remove tripwire level already alerted for that day (Task 2), so Telegram says it once
   }
 }
 
@@ -208,7 +215,7 @@ export function capAsOf(sender, state, day, daysAgo = 7) {
  * decision, and the state to persist. Called once per weekday by the engine's
  * health pass; the engine also owns the Telegram wording.
  *
- * metrics:  { sent, failed, bounces, replies, unsubs, autoReplies }
+ * metrics:  { sent, failed, bounces, bouncesFirstHour?, replies, unsubs, autoReplies }
  * trailing: { sent, bounces, replies }  (the previous 7 days, this sender)
  * extra:    { paused (label of a pause in force, or null), canaryVerdicts?, postmaster? }
  *           canaryVerdicts / postmaster default to the state's own slots.
@@ -217,11 +224,19 @@ export function capAsOf(sender, state, day, daysAgo = 7) {
  * this sender should stop on its own (item 3): a red bounce day, or the
  * canary landing in Spam two days running (the brief's 2-in-a-row rule). The
  * engine applies it; a pause never drops a rung by itself.
+ *
+ * Day quality since the autopilot brief (2026-10-15): the bounce breaker
+ * (campaign-gates.mjs) decides red vs day-stop so the 5:15 PM evaluation and
+ * the every-cycle intraday check agree — a day-stopped day is YELLOW (hold),
+ * only breaker-red drops a rung. Removes never hold the rung on their own;
+ * the floored remove tripwire (yellow = hold + "check the copy", red = the
+ * engine day-stops and re-gates) replaces the old "N removes in one day".
+ * Also returned: `breaker` and `removeTrip` ({ level, text }).
  */
 export function evaluateSenderDay({ sender, state, day, metrics, trailing, gates = DEFAULT_GATES, extra = {} }) {
   const st = { ...freshState(), ...(state ?? {}) }
   const cap = capFor(sender, st)
-  const m = { sent: 0, failed: 0, bounces: 0, replies: 0, unsubs: 0, autoReplies: 0, ...(metrics ?? {}) }
+  const m = { sent: 0, failed: 0, bounces: 0, bouncesFirstHour: 0, replies: 0, unsubs: 0, autoReplies: 0, ...(metrics ?? {}) }
   const tr = { sent: 0, bounces: 0, replies: 0, ...(trailing ?? {}) }
   const checks = []
   const warnings = []
@@ -231,11 +246,18 @@ export function evaluateSenderDay({ sender, state, day, metrics, trailing, gates
 
   // --- day quality ---
   const bounceRate = m.sent ? m.bounces / m.sent : 0
-  const red = m.sent >= 10 ? bounceRate >= gates.bounceRedRate : m.bounces >= 2
-  if (red) warnings.push({ level: "red", text: `bounce rate ${pct(m.bounces, m.sent)} (${m.bounces}/${m.sent}) ≥ ${gates.bounceRedRate * 100}%` })
+  const breaker = bounceBreaker(m, gates)
+  const removeTrip = removeTripwire(m, gates)
+  const red = breaker.level === "red"
+  if (red) warnings.push({ level: "red", text: breaker.text })
+  else if (breaker.level === "day_stop") warnings.push({ level: "yellow", text: `day-stopped: ${breaker.text}` })
   else if (m.bounces && bounceRate >= gates.bounceHoldRate) warnings.push({ level: "yellow", text: `bounce rate ${pct(m.bounces, m.sent)} — watch line ${gates.bounceHoldRate * 100}%` })
+  if (breaker.level !== "day_stop" && isDayStopped(st, day)) warnings.push({ level: "yellow", text: `day-stopped: ${st.day_stop?.reason ?? "engine"}` })
   if (m.failed) warnings.push({ level: "yellow", text: `${m.failed} send failure${m.failed === 1 ? "" : "s"}` })
-  if (m.unsubs >= 2) warnings.push({ level: "yellow", text: `${m.unsubs} removes in one day` })
+  // Removes: counted, never a hold by themselves. The tripwire holds (yellow)
+  // or, at red, the engine also day-stops + re-gates — still a hold here, not a drop.
+  if (removeTrip.level === "red") warnings.push({ level: "yellow", text: `copy tripwire RED: ${removeTrip.text} — day-stopped, touch re-gated` })
+  else if (removeTrip.level === "yellow") warnings.push({ level: "yellow", text: `copy tripwire: ${removeTrip.text} — check the copy` })
   if (extra.paused) warnings.push({ level: "yellow", text: `paused: ${extra.paused}` }) // a pause holds the rung; only bounces drop it
   if (tr.sent >= gates.replyCheckMinSends && tr.replies === 0) warnings.push({ level: "yellow", text: `no genuine replies on the last ${tr.sent} sends (7 days)` })
   // Canary placement (brief: expect some week-1 spam-foldering; the 2-in-a-row
@@ -260,7 +282,7 @@ export function evaluateSenderDay({ sender, state, day, metrics, trailing, gates
   const atCeiling = cap >= sender.ceiling || nextStep === st.step || nextCap <= cap
   const weekAgoCap = capAsOf(sender, st, day, 7)
   checks.push({ name: "healthy days at step", pass: healthy >= gates.minHealthyDays, note: `${healthy}/${gates.minHealthyDays}` })
-  checks.push({ name: "bounces < 2%", pass: !red, note: `${pct(m.bounces, m.sent)} today` })
+  checks.push({ name: "bounce breaker clear", pass: !red, note: `${pct(m.bounces, m.sent)} today${breaker.level === "day_stop" ? " (day-stopped)" : ""}` })
   checks.push({ name: "no failures / pause", pass: !m.failed && !extra.paused, note: m.failed ? `${m.failed} failed` : extra.paused ? "paused" : "ok" })
   checks.push({ name: "replies still arriving", pass: !(tr.sent >= gates.replyCheckMinSends && tr.replies === 0), note: `${tr.replies} on ${tr.sent} (7d)` })
   checks.push({ name: "≤ 2× week-over-week", pass: nextCap <= weekAgoCap * gates.maxWeekOverWeek, note: `next ${nextCap} vs ${weekAgoCap} a week ago` })
@@ -269,7 +291,7 @@ export function evaluateSenderDay({ sender, state, day, metrics, trailing, gates
 
   // --- auto-pause (item 3): the engine stops THIS sender, the other keeps going ---
   let autoPause = null
-  if (red && m.bounces) autoPause = { reason: `bounce rate ${pct(m.bounces, m.sent)} (${m.bounces}/${m.sent}) ≥ ${gates.bounceRedRate * 100}%`, hours: gates.autoPauseHours ?? 48 }
+  if (red && m.bounces) autoPause = { reason: breaker.text, hours: gates.autoPauseHours ?? 48 }
   else if (canary.spamStreak >= 2 && canary.newest === day) autoPause = { reason: `canary in Spam ${canary.spamStreak} days running`, hours: gates.autoPauseHours ?? 48 }
   else if (gates.requirePostmaster && rep === "BAD") autoPause = { reason: "Postmaster reputation BAD", hours: gates.autoPauseHours ?? 48 }
 
@@ -299,7 +321,7 @@ export function evaluateSenderDay({ sender, state, day, metrics, trailing, gates
   if (!next.entered_step && !gap) next.entered_step = day
   const entry = { day, step: st.step, cap, sent: m.sent, bounces: m.bounces, replies: m.replies, status, decision, ...(canary.today ? { canary: canary.today } : {}) }
   next.history = [...(st.history ?? []).filter((h) => h.day !== day), entry].sort((a, b) => (a.day < b.day ? -1 : 1)).slice(-40)
-  return { status, warnings: warnings.map((w) => w.text), checks, decision, cap, nextCap: capFor(sender, next), state: next, autoPause, canary }
+  return { status, warnings: warnings.map((w) => w.text), checks, decision, cap, nextCap: capFor(sender, next), state: next, autoPause, canary, breaker, removeTrip }
 }
 
 // ---------- segment + ordering helpers (engagement-first ramp) ----------
@@ -330,22 +352,32 @@ export async function fetchReplierIds(sb) {
   return out
 }
 
-/** contact_id → sender of that contact's most recent sent row (null = pre-multi-sender). */
-export async function fetchLastSenderByContact(sb, contactIds) {
+/**
+ * contact_id → that contact's most recent sent row
+ * ({ id, sender, sent_at, touch_number, prompt_version, variant, subject }).
+ * The copy that produced a bounce or a remove (autopilot brief, Task 2).
+ */
+export async function fetchLastSendByContact(sb, contactIds) {
   const map = new Map()
   const ids = [...new Set(contactIds)].filter(Boolean)
   for (let i = 0; i < ids.length; i += 200) {
     const chunk = ids.slice(i, i + 200)
     const { data, error } = await sb
       .from("campaign_sends")
-      .select("contact_id, sender, sent_at")
+      .select("id, contact_id, sender, sent_at, touch_number, prompt_version, variant, subject")
       .in("contact_id", chunk)
       .eq("status", "sent")
       .order("sent_at", { ascending: false })
-    if (error) throw new Error(`last sender fetch: ${error.message}`)
-    for (const r of data ?? []) if (!map.has(r.contact_id)) map.set(r.contact_id, r.sender ? String(r.sender).toLowerCase() : null)
+    if (error) throw new Error(`last send fetch: ${error.message}`)
+    for (const r of data ?? []) if (!map.has(r.contact_id)) map.set(r.contact_id, { ...r, sender: r.sender ? String(r.sender).toLowerCase() : null })
   }
   return map
+}
+
+/** contact_id → sender of that contact's most recent sent row (null = pre-multi-sender). */
+export async function fetchLastSenderByContact(sb, contactIds) {
+  const sends = await fetchLastSendByContact(sb, contactIds)
+  return new Map([...sends.entries()].map(([id, r]) => [id, r.sender]))
 }
 
 /**

@@ -1,11 +1,13 @@
 import { NextRequest, NextResponse } from "next/server"
 import { getLeadsClient } from "@/lib/leads"
-import { randomSendSlot } from "@/lib/campaignSlots"
+import { ensureFreshSlot, randomSendSlot } from "@/lib/campaignSlots"
 
 // Batch-approve campaign drafts ("Approve all on page" / "Queue N for
 // send"). Only rows still in 'draft' flip — a concurrent skip or send
 // isn't clobbered. Without an explicit hold-until, every row gets its own
-// random send-time-experiment slot (next weekday, 7a-5p PT).
+// random send-time-experiment slot (next weekday, 7a-5p PT). An explicit
+// time that is already past is respread into the next window ahead
+// (autopilot brief 2026-10-15, Task 8).
 
 export async function POST(request: NextRequest) {
   let body: { ids?: unknown; scheduled_for?: unknown } = {}
@@ -25,7 +27,7 @@ export async function POST(request: NextRequest) {
     if (Number.isNaN(d.getTime())) {
       return NextResponse.json({ error: "scheduled_for is not a valid time" }, { status: 400 })
     }
-    scheduledFor = d.toISOString()
+    scheduledFor = ensureFreshSlot(d.toISOString())
   }
 
   try {
@@ -45,7 +47,7 @@ export async function POST(request: NextRequest) {
     for (const id of ids) {
       const { data, error } = await sb
         .from("campaign_sends")
-        .update({ status: "approved", approved_at: new Date().toISOString(), scheduled_for: randomSendSlot() })
+        .update({ status: "approved", approved_at: new Date().toISOString(), scheduled_for: ensureFreshSlot(randomSendSlot()) })
         .eq("id", id)
         .eq("status", "draft")
         .select("id")

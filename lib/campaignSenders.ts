@@ -38,6 +38,10 @@ export interface SenderState {
   canary_verdicts: Record<string, CanaryVerdict>
   postmaster: { reputation: PostmasterLevel; recorded_at: string; by: string } | null
   history: { day: string; step: number; cap: number; sent: number; bounces: number; replies: number; status: string; decision: string }[]
+  /** Autopilot brief (2026-10-15, Task 3): the engine stopped this sender for the rest of that PT day; the next weekday clears it. */
+  day_stop?: { day: string; reason: string | null; at: string } | null
+  /** Task 2: the remove-tripwire level already alerted for that day. */
+  copy_trip?: { day: string; level: "yellow" | "red"; touches: number[] } | null
   updated_at?: string
 }
 
@@ -76,8 +80,13 @@ export function freshSenderState(): SenderState {
   return {
     step: 0, entered_step: null, healthy_days: 0, held_reason: null, last_change: null,
     paused: false, paused_reason: null, paused_by: null, paused_at: null, paused_until: null,
-    gap_days: 0, canary_verdicts: {}, postmaster: null, history: [],
+    gap_days: 0, canary_verdicts: {}, postmaster: null, history: [], day_stop: null, copy_trip: null,
   }
+}
+
+/** True while the engine's day-stop for `day` (PT, default today) is in force. */
+export function isDayStopped(state: SenderState | null | undefined, day = ptToday()): boolean {
+  return Boolean(state?.day_stop?.day) && state!.day_stop!.day === day
 }
 
 export function isSenderPaused(state: SenderState | null | undefined, now = Date.now()): boolean {
@@ -156,9 +165,12 @@ export async function senderStatusLines(): Promise<string[]> {
     const paused = isSenderPaused(st)
     const until = st.paused_until ? ` until ${new Date(st.paused_until).toLocaleString("en-US", { timeZone: PT, month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}` : ""
     const verdicts = Object.keys(st.canary_verdicts ?? {}).sort().slice(-3).map((d) => st.canary_verdicts[d])
+    const stopped = isDayStopped(st)
     out.push(
-      `${paused ? "⏸" : "▶️"} ${s.label} (${s.email}): ${cap}/day, step ${st.step}, healthy ${st.healthy_days}/3` +
+      `${paused ? "⏸" : stopped ? "🛑" : "▶️"} ${s.label} (${s.email}): ${cap}/day, step ${st.step}, healthy ${st.healthy_days}/3` +
         (paused ? ` — PAUSED: ${st.paused_reason ?? "manual"} (${st.paused_by ?? "?"}${until})` : "") +
+        (stopped ? ` — DAY-STOP today: ${st.day_stop?.reason ?? "engine"} (resumes next weekday)` : "") +
+        (st.copy_trip?.day === ptToday() ? ` — copy tripwire ${st.copy_trip.level} today` : "") +
         (st.held_reason ? ` — held: ${st.held_reason}` : "") +
         (verdicts.length ? ` — canary ${verdicts.join(",")}` : " — no canary verdicts") +
         (st.postmaster ? ` — Postmaster ${st.postmaster.reputation}` : "")

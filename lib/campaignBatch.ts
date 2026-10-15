@@ -1,6 +1,23 @@
 import { getLeadsClient } from "@/lib/leads"
-import { randomSendSlot } from "@/lib/campaignSlots"
-import { senderStatusLines } from "@/lib/campaignSenders"
+import { ensureFreshSlot, randomSendSlot } from "@/lib/campaignSlots"
+import { senderStatusLines, listSenders, getSenderState, capFor, isSenderPaused } from "@/lib/campaignSenders"
+import { autoSendStatusLine } from "@/lib/campaignAutoSend"
+import * as gates from "../scripts/campaign-gates.mjs"
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const { t1Supply, describeT1Supply } = gates as unknown as Record<string, any>
+
+/** "T1 remaining: N · ~D weekdays of supply at C/day" (autopilot brief, Task 6). */
+export async function t1SupplyLine(): Promise<string> {
+  const sb = getLeadsClient()
+  const { count } = await sb.from("campaign_contacts").select("id", { count: "exact", head: true }).eq("status", "active").eq("touch_number", 0).not("email", "is", null)
+  let capTotal = 0
+  for (const s of listSenders().filter((x) => x.enabled)) {
+    const st = await getSenderState(s.email)
+    if (!isSenderPaused(st)) capTotal += capFor(s, st)
+  }
+  return describeT1Supply(t1Supply({ remaining: count ?? 0, capTotal })) as string
+}
 
 // Phase B guardrails (2026-08-21, Ryan: "one tap a day, not twenty" +
 // "draft the night before, I might be asleep"):
@@ -40,7 +57,7 @@ export async function approveBatch(batchDate: string): Promise<{ success: boolea
   for (const r of rows) {
     const { error: uErr } = await sb
       .from("campaign_sends")
-      .update({ status: "approved", approved_at: now.toISOString(), scheduled_for: randomSendSlot() })
+      .update({ status: "approved", approved_at: now.toISOString(), scheduled_for: ensureFreshSlot(randomSendSlot(now), now) }) // Task 8: never a stale minute
       .eq("id", r.id)
       .eq("status", "draft")
     if (!uErr) approved++
@@ -87,5 +104,6 @@ export async function campaignStatusLine(): Promise<string> {
   // Per-sender lines (item 3, 2026-09-05) replace the old single
   // CAMPAIGN_SEND_AS mention — senders live in config/campaign-senders.json.
   const senders = await senderStatusLines()
-  return `${state} · today: ${sentToday ?? 0} sent, ${bouncedToday ?? 0} bounced · queue: ${draft ?? 0} drafts awaiting ✅, ${approved ?? 0} approved${senders.length ? `\n${senders.join("\n")}` : ""}`
+  const [supply, auto] = await Promise.all([t1SupplyLine(), autoSendStatusLine()])
+  return `${state} · today: ${sentToday ?? 0} sent, ${bouncedToday ?? 0} bounced · queue: ${draft ?? 0} drafts awaiting ✅, ${approved ?? 0} approved\n📚 ${supply}\n🔁 ${auto}${senders.length ? `\n${senders.join("\n")}` : ""}`
 }

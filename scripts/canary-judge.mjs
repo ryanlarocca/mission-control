@@ -230,6 +230,9 @@ export function planBackfill({ messages, senders, states }) {
  */
 export function stallReason(evaluation, gates, senderLabel = null) {
   if (!evaluation || evaluation.decision !== "hold") return null
+  // A yellow day (day-stop, copy tripwire, watch-line bounces, pause) held
+  // the rung on its own evidence — that is not the judge stalling.
+  if (evaluation.status && evaluation.status !== "🟢") return null
   const healthy = Number(evaluation.state?.healthy_days ?? 0)
   const min = Number(gates?.minHealthyDays ?? 3)
   if (healthy < min) return null

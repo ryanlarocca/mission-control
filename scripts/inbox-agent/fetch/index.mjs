@@ -15,10 +15,15 @@ import path from "node:path"
 import { unzipSync } from "fflate"
 import { JOB_TIMEOUT_MS, mimeFor, pruneScreenshots, withTimeout } from "./browser.mjs"
 import { fetchDocuSign } from "./docusign.mjs"
+import { F8_JOB_TIMEOUT_MS, fetchF8 } from "./f8.mjs"
 import { detectProvider } from "./providers.mjs"
 import { envelopeMatches } from "../loops.mjs"
 
-export { detectProvider, documentLinks, extractUrls, providerLabel } from "./providers.mjs"
+export { detectProvider, documentLinks, extractUrls, propertyWebsiteLinks, providerKind, providerLabel, unwrapTrackingUrl } from "./providers.mjs"
+export { fetchF8, parseDownloadCenter, parseDownloadJson } from "./f8.mjs"
+
+/** Media jobs (f8: ~255 MB over 72 CDN downloads) get 10 min; document jobs keep the 90 s browser cap. */
+export const MEDIA_JOB_TIMEOUT_MS = F8_JOB_TIMEOUT_MS
 
 export const MAX_FETCH_ATTEMPTS = 3
 /** Backoff before attempt n+1 (ms): 5 min after the first failure, 30 min after the second, then give up. */
@@ -138,11 +143,25 @@ export function readFetchedBytes(fetchId, sha, root = FETCH_STORE) {
 
 // ---------------------------------------------------------------- dispatcher
 /**
- * @param {{ url: string, provider?: string|null, accessCode?: string|null, jobId?: string, log?: Function, headed?: boolean, timeoutMs?: number, sendNewLink?: boolean }} job
+ * Documents come back as `files`; media (f8 photos) as `sets` — no ZIP
+ * expansion, no screenshots, no browser on that path.
+ * @param {{ url: string, provider?: string|null, accessCode?: string|null, jobId?: string, log?: Function, headed?: boolean, timeoutMs?: number|null, sendNewLink?: boolean, fetchImpl?: typeof fetch }} job
  */
-export async function fetchDocuments({ url, provider = null, accessCode = null, jobId = `job-${Date.now()}`, log = () => {}, headed = false, timeoutMs = JOB_TIMEOUT_MS, sendNewLink = true }) {
+export async function fetchDocuments({ url, provider = null, accessCode = null, jobId = `job-${Date.now()}`, log = () => {}, headed = false, timeoutMs = null, sendNewLink = true, fetchImpl = fetch }) {
   const p = provider || detectProvider(url)
+  if (p === "f8") {
+    const budget = timeoutMs ?? MEDIA_JOB_TIMEOUT_MS
+    let r
+    try {
+      r = await withTimeout(fetchF8({ url, jobId, log, fetchImpl, timeoutMs: budget }), budget, `fetch ${jobId}`)
+    } catch (e) {
+      return { ok: false, error: e?.message || String(e), needs: null, screenshots: [], steps: [] }
+    }
+    if (r.ok) log(`[fetch] ${p}: ${r.steps.join(" → ")} → ${r.sets.map((s) => `${s.set} ${s.files.length}`).join(" · ")}`)
+    return { ...r, screenshots: [] }
+  }
   if (p !== "docusign") return { ok: false, error: `no fetcher for ${p || "that link"}`, needs: null, screenshots: [], steps: [] }
+  timeoutMs = timeoutMs ?? JOB_TIMEOUT_MS
   try {
     pruneScreenshots()
   } catch {}

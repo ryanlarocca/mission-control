@@ -52,3 +52,5 @@ scripts/.campaign-draft-starved-state.json
 # Regenerate with scripts/verify-email-list.mjs.
 scripts/.email-verify-report.json
 scripts/.email-verify-report.csv
+scripts/.campaign-dns-cache.json
+scripts/.campaign-verify-state.json

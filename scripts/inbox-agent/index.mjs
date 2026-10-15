@@ -10,7 +10,10 @@
 //                        document links (DocuSign) are queued in inbox_fetches.
 //   2b. runFetches     — open queued links in headless Chrome, pull the PDFs
 //                        and run them through the same filing pipeline
-//                        (briefs/BRIEF_INBOX_LINK_FETCH_2026-10-12.md).
+//                        (briefs/BRIEF_INBOX_LINK_FETCH_2026-10-12.md); photo
+//                        deliveries (f8) are pulled with plain fetch and filed
+//                        into Properties/<address>/Photos/{MLS,Print}
+//                        (briefs/BRIEF_INBOX_MEDIA_DELIVERY_2026-10-15.md).
 //   3. resolveLoops    — close loops Ryan answered (sent mail) or that expired.
 //   4. interviewStep   — before any filing: ask Ryan one document at a time
 //                        where it goes, then write + approve the convention.
@@ -45,7 +48,8 @@ import {
   changePrompt, classifyPrompt, complete, completeJson, filingPrompt, rulesPrompt, screenPrompt, verifyPrompt,
 } from "./llm.mjs"
 import { destinationFor, filingDecision, isPurchaseDoc, nextSequence, refineDocType, stageOf, withTimeSuffix } from "./filing.mjs"
-import { MAX_FETCH_ATTEMPTS, NEW_LINK_ERROR, NEW_LINK_GUARD_MS, documentLinks, fetchDocuments, newLinkGuard, nextTryAt, providerLabel, readFetchedBytes, saveFetchedBytes, waitsClosedBy, waitsTimedOut } from "./fetch/index.mjs"
+import { MAX_FETCH_ATTEMPTS, NEW_LINK_ERROR, NEW_LINK_GUARD_MS, documentLinks, fetchDocuments, newLinkGuard, nextTryAt, propertyWebsiteLinks, providerKind, providerLabel, readFetchedBytes, saveFetchedBytes, waitsClosedBy, waitsTimedOut } from "./fetch/index.mjs"
+import { DUP_STATUSES, gmailLink, photoDedupeVerdict, propertyFolderFromReply, propertyLabelFromSubject, suffixedFilename } from "./photos.mjs"
 import { envelopeMatches, loopEligible, normalizeEnvelope } from "./loops.mjs"
 
 // ------------------------------------------------------------------ args
@@ -301,6 +305,10 @@ async function applyAskAnswers(ctx) {
   const { data: rows } = await sb().from("inbox_interview").select("*, inbox_files(*)").is("seq", null).in("status", ["answered", "skipped"]).limit(20)
   for (const iv of rows || []) {
     const f = iv.inbox_files
+    if (f?.fetch_id && providerKind(f.source) === "media") {
+      await applyPhotoPropertyAnswer(iv, f)
+      continue
+    }
     if (iv.status === "skipped") {
       if (!DRY) await sb().from("inbox_interview").update({ status: "applied" }).eq("id", iv.id)
       continue
@@ -314,6 +322,23 @@ async function applyAskAnswers(ctx) {
     }
     if (!DRY) await sb().from("inbox_interview").update({ status: "applied" }).eq("id", iv.id)
   }
+}
+
+/** Ryan's answer to a photo batch's "New property?" card: the folder rides on the
+ *  ask row (proposed_folder) and the parked job goes back on the queue; `skip`
+ *  (or the ⏭ button) ends the job. filePhotos reads proposed_folder on the re-run. */
+async function applyPhotoPropertyAnswer(iv, f) {
+  const folder = iv.status === "skipped" ? null : propertyFolderFromReply(iv.answer_text)
+  if (DRY) return log(`photos ${f.fetch_id}: Ryan answered "${iv.answer_text || "skip"}" → ${folder || "skip"}`)
+  if (!folder) {
+    await sb().from("inbox_fetches").update({ status: "skipped", error: "Ryan skipped the batch", resolved_at: isoNow() }).eq("id", f.fetch_id)
+    await sb().from("inbox_files").update({ status: "skipped", resolved_at: isoNow() }).eq("id", f.id)
+  } else {
+    await sb().from("inbox_files").update({ status: "answered", proposed_folder: folder, resolved_at: isoNow() }).eq("id", f.id)
+    await sb().from("inbox_fetches").update({ status: "queued", attempts: 0, next_try_at: null, error: null }).eq("id", f.fetch_id)
+    log(`photos ${f.fetch_id}: Ryan says ${folder} — requeued`)
+  }
+  await sb().from("inbox_interview").update({ status: "applied" }).eq("id", iv.id)
 }
 
 // ------------------------------------------------------------------ classify + record
@@ -965,21 +990,30 @@ async function fileDocuments(ctx, msg, cls, docs, { source = "attachment", fetch
 // "grab it from the DocuSign link" and Ryan did it by hand. Now the link is
 // queued (inbox_fetches, one row per distinct URL) and runFetches opens it in
 // headless Chrome on the mini. The old notice is the failure card.
-const FETCH_KINDS = new Set(["docusign_request", "docusign_completed", "esign_completed"])
+const FETCH_KINDS = new Set(["docusign_request", "docusign_completed", "esign_completed", "media_delivery"])
+
+/** The media (photo) links in one email — the provider match is the gate, never the classifier. */
+function mediaLinks(msg, cls) {
+  return documentLinks(msg, Array.isArray(cls?.document_links) ? cls.document_links : []).filter((l) => providerKind(l.provider) === "media")
+}
 
 async function enqueueFetches(ctx, msg, cls, kind, atts = []) {
   const reported = Array.isArray(cls?.document_links) ? cls.document_links : []
-  if (!FETCH_KINDS.has(kind) && !reported.length) return
   const links = documentLinks(msg, reported)
+  // Ryan 2026-10-15: the f8 delivery email classifies as "automated" and the
+  // classifier may not report the link — a media provider link queues regardless.
+  if (!FETCH_KINDS.has(kind) && !reported.length && !links.some((l) => providerKind(l.provider) === "media")) return
   if (!links.length) {
     if (kind === "docusign_completed" && !atts.length) await tgSend(`🖊 DocuSign completed — “${esc(shortSubject(msg.subject))}” — no signed PDF attached and no envelope link I can open; grab it from the email.`, { dryRun: DRY })
     return
   }
   for (const link of links) {
+    const linkKind = providerKind(link.provider) === "media" ? "media_delivery" : kind
     if (DRY) {
       // --dry-run: the fetch runs right here (browser and all) with no DB
-      // writes and no Drive upload; files land in /tmp/inbox-fetch/<job>/files.
-      await runFetchJob(ctx, { id: `dry-${msg.id}`, url: link.url, provider: link.provider, gmail_id: msg.id, thread_id: msg.threadId, kind, attempts: 0, access_code: null }, msg, cls)
+      // writes and no Drive upload; files land in /tmp/inbox-fetch/<job>/files
+      // (photos: /tmp/inbox-fetch/<job>/MLS|Print).
+      await runFetchJob(ctx, { id: `dry-${msg.id}`, url: link.url, provider: link.provider, gmail_id: msg.id, thread_id: msg.threadId, kind: linkKind, attempts: 0, access_code: null }, msg, cls)
       continue
     }
     const url_sha256 = sha256(link.url)
@@ -988,7 +1022,7 @@ async function enqueueFetches(ctx, msg, cls, kind, atts = []) {
       log(`fetch: duplicate link (${existing.status} · ${existing.id}) ${link.url.slice(0, 70)}`)
       continue
     }
-    const { error } = await sb().from("inbox_fetches").insert({ gmail_id: msg.id, thread_id: msg.threadId, url: link.url, url_sha256, provider: link.provider, kind, status: "queued" })
+    const { error } = await sb().from("inbox_fetches").insert({ gmail_id: msg.id, thread_id: msg.threadId, url: link.url, url_sha256, provider: link.provider, kind: linkKind, status: "queued" })
     if (error) throw new Error(`inbox_fetches insert: ${error.message}`)
     log(`fetch queued: ${link.provider} · ${shortSubject(msg.subject, 50)} · ${link.url.slice(0, 70)}`)
   }
@@ -1010,15 +1044,24 @@ async function messageForFetch(ctx, job) {
   return { msg, cls: m?.classification || null }
 }
 
-/** Up to 3 due jobs per pass; each one opens a browser, so this stays small. */
+/** Up to 3 due jobs per pass; each one opens a browser, so this stays small.
+ *  At most 1 media job per pass (a photo batch is ~255 MB and up to 10 min) so
+ *  DocuSign jobs are never starved behind photo deliveries. */
 async function runFetches(ctx) {
   if (DRY) return // dry runs fetch inline from enqueueFetches (nothing is queued)
-  const { data: jobs, error } = await sb().from("inbox_fetches").select("*").eq("status", "queued").or(`next_try_at.is.null,next_try_at.lte.${isoNow()}`).order("created_at").limit(3)
+  const { data: due, error } = await sb().from("inbox_fetches").select("*").eq("status", "queued").or(`next_try_at.is.null,next_try_at.lte.${isoNow()}`).order("created_at").limit(6)
   if (error) {
     warn("inbox_fetches read:", error.message)
     return
   }
-  for (const job of jobs || []) {
+  const jobs = []
+  let media = 0
+  for (const job of due || []) {
+    if (jobs.length >= 3) break
+    if (providerKind(job.provider) === "media" && media++ >= 1) continue
+    jobs.push(job)
+  }
+  for (const job of jobs) {
     try {
       const { msg, cls } = await messageForFetch(ctx, job)
       await runFetchJob(ctx, job, msg, cls)
@@ -1052,7 +1095,9 @@ async function newLinkGuardFor(job, msg) {
 }
 /** The ⚠️ card for a dead link: no Open button (it is the expired one), Retry only. */
 async function expiredCard(job, reason) {
-  return tgSend(`⚠️ Couldn't pull the documents from ${providerLabel(job.provider)} (${esc(reason)}) — ask the sender to resend, or log the agent into DocuSign (<code>node scripts/inbox-agent/fetch/cli.mjs --login --headed</code> on the mini).`, { rows: [[{ text: "🔁 Retry", data: `ix:fr:${job.id}` }]], dryRun: DRY })
+  const what = providerKind(job.provider) === "media" ? "photos" : "documents"
+  const hint = job.provider === "docusign" ? ", or log the agent into DocuSign (<code>node scripts/inbox-agent/fetch/cli.mjs --login --headed</code> on the mini)" : ""
+  return tgSend(`⚠️ Couldn't pull the ${what} from ${providerLabel(job.provider)} (${esc(reason)}) — ask the sender to resend${hint}.`, { rows: [[{ text: "🔁 Retry", data: `ix:fr:${job.id}` }]], dryRun: DRY })
 }
 /** A job for the same envelope is done → the parked awaiting_new_link rows are resolved. */
 async function resolveNewLinkWaits(job, msg) {
@@ -1083,7 +1128,11 @@ async function failAttempt(job, attempts, r, reason) {
     if (!DRY) await sb().from("inbox_fetches").update({ status: "queued", attempts, error: r.error, screenshot: shot, next_try_at: next }).eq("id", job.id)
     return
   }
-  const mid = await tgSend(`⚠️ Couldn't pull the documents from ${label} (${esc(reason)}) — open the link.`, { rows: [[{ text: "Open", url: job.url }, { text: "🔁 Retry", data: `ix:fr:${job.id}` }]], dryRun: DRY })
+  // The final card for a photo batch carries the email and the Download Center (no Undo, no Send-New-Link for f8).
+  const media = providerKind(job.provider) === "media"
+  const emailBtn = media && job.gmail_id && !/^manual:/.test(job.gmail_id) ? [{ text: "✉️ Email", url: gmailLink(job.gmail_id, MAILBOX) }] : []
+  const text = media ? `⚠️ Couldn't file the photos from ${label} — ${esc(reason)}. Nothing was filed; open the Download Center to grab them by hand.` : `⚠️ Couldn't pull the documents from ${label} (${esc(reason)}) — open the link.`
+  const mid = await tgSend(text, { rows: [[{ text: media ? "Open Download Center" : "Open", url: job.url }, ...emailBtn, { text: "🔁 Retry", data: `ix:fr:${job.id}` }]], dryRun: DRY })
   if (!DRY) await sb().from("inbox_fetches").update({ status: "failed", attempts, error: r.error, screenshot: shot, tg_message_id: mid, resolved_at: isoNow() }).eq("id", job.id)
   warn(`fetch ${job.id}: failed after ${attempts} attempts — ${r.error}${shot ? ` · screenshot ${shot}` : ""}`)
 }
@@ -1094,7 +1143,8 @@ async function runFetchJob(ctx, job, msg, cls) {
   const attempts = (job.attempts || 0) + 1
   if (!DRY) await sb().from("inbox_fetches").update({ status: "running", started_at: isoNow(), attempts }).eq("id", job.id)
   log(`fetch ${job.id}: ${label} attempt ${attempts} · “${subj}” · ${job.url.slice(0, 70)}`)
-  const guard = await newLinkGuardFor(job, msg)
+  const media = providerKind(job.provider) === "media"
+  const guard = media ? null : await newLinkGuardFor(job, msg) // Send-New-Link is DocuSign's; f8 has no such page
   const r = await fetchDocuments({ url: job.url, provider: job.provider, accessCode: job.access_code || null, jobId: job.id, log, sendNewLink: !guard })
   const shot = r.screenshots?.at(-1) || null
   const openBtn = { text: `${job.kind === "docusign_request" ? "🖊 " : ""}Open in ${label}`, url: job.url }
@@ -1131,6 +1181,7 @@ async function runFetchJob(ctx, job, msg, cls) {
     await failAttempt(job, attempts, r, r.error)
     return
   }
+  if (media) return filePhotos(ctx, msg, cls, job, r, attempts)
 
   // Keep the bytes (a later ✅/✏️/↩️ re-reads them like an attachment), then
   // file through the same pipeline as attachments.
@@ -1171,6 +1222,165 @@ async function runFetchJob(ctx, job, msg, cls) {
   log(`fetch ${job.id}: done — ${files.length} file(s), ${filed.length} filed`)
 }
 
+// ------------------------------------------------------------------ 2c. listing photos (f8)
+// Ryan 2026-10-15: both sets (Web/MLS + Print) go to Properties/<full address>/
+// Photos/{MLS,Print}, photographer filenames kept, never the same photo twice,
+// near-duplicates mentioned on the card, never a silently created property
+// folder. The MLS listing sheet the agent emails separately stays unfiled and
+// there is no "Marketing" subfolder under a property. No ↩️ Undo for a batch.
+const PHOTO_SETS = { MLS: "MLS", Print: "Print" }
+
+/** The property folder for a photo batch: Ryan's reply (proposed_folder on the
+ *  ask row) wins; else the classifier's label / the subject, matched against an
+ *  EXISTING full-address folder — the hand-made "Halleck" folder never matches
+ *  "5764 Halleck Dr" on its own. Never creates a property folder. */
+async function photoPropertyFolder(ctx, job, label) {
+  await loadTree(ctx)
+  if (!DRY && job.id) {
+    const { data: asked } = await sb().from("inbox_files").select("proposed_folder").eq("fetch_id", job.id).eq("status", "answered").not("proposed_folder", "is", null).order("resolved_at", { ascending: false }).limit(1)
+    const answered = asked?.[0]?.proposed_folder
+    if (answered) {
+      const byPath = ctx.propFolders.find((f) => f.path.toLowerCase() === answered.toLowerCase())
+      const byName = propertyFolderFor(ctx, answered.replace(/^Properties\//i, "").split("/").at(-1))
+      // Ryan named it himself — creating that folder is his call, not the agent's guess.
+      return { pf: byPath || byName || { id: null, name: answered.split("/").at(-1), path: answered }, answered: true }
+    }
+  }
+  // Full-address convention only: the folder's key must equal the label's key
+  // ("5764 Halleck Dr" ↔ "5764 Halleck Drive" both key to 5764halleck) and
+  // start with the street number — keysMatch alone would let the hand-made
+  // "Halleck" folder claim every Halleck delivery.
+  const key = propertyKey(label)
+  const pf = key && /^\d/.test(key) ? ctx.propFolders.filter((f) => !/^(19|20)\d{2}$|^old$/i.test(f.name)).find((f) => propertyKey(f.name) === key) || null : null
+  return { pf, answered: false }
+}
+
+/** One ❓ card on the first image's row; the job parks as needs_property until Ryan replies (or skips). */
+async function askPhotoProperty(ctx, msg, job, r, label) {
+  const first = r.sets.find((s) => s.files.length)?.files[0]
+  const question = `New property? I don't have a folder for ${label || "this listing"} (${r.counts.mls} photos from f8). Reply with the folder, or \`skip\`.`
+  const base = { gmail_id: msg.id, thread_id: msg.threadId, attachment_id: first ? `f8:${first.imageId}:MLS` : null, part_id: null, filename: first?.filename || "photos", mime: first?.mime || "image/jpeg", size_bytes: first?.bytes.length || 0, sha256: first ? sha256(first.bytes) : null, source: job.provider, fetch_id: DRY ? null : job.id, sender: msg.from.email, subject: msg.subject, received_at: msg.internalDate, property_key: propertyKey(label), property_label: label, doc_type: "photos", status: "asked" }
+  let row = { ...base, id: "dry-run" }
+  if (!DRY) {
+    const { data, error } = await sb().from("inbox_files").insert(base).select("*").single()
+    if (error) throw new Error(`inbox_files insert: ${error.message}`)
+    row = data
+  }
+  await postAskCard(ctx, row, question, null)
+  if (!DRY) await sb().from("inbox_fetches").update({ status: "needs_property", error: `no property folder for ${label || "this listing"}`, resolved_at: null }).eq("id", job.id)
+  log(`photos ${job.id}: no folder for ${label || "?"} — asked (needs_property)`)
+}
+
+/**
+ * File a photo delivery (fetchF8 result) into Photos/MLS + Photos/Print, dedupe
+ * three ways per file, record inbox_files rows, label the email, post ONE card.
+ * Never calls classify / fetchedDocs / fileDocuments / refineDocType / verifyProperty.
+ */
+async function filePhotos(ctx, msg, cls, job, r, attempts) {
+  const label = cls?.property?.label || propertyLabelFromSubject(msg.subject)
+  const { pf, answered } = await photoPropertyFolder(ctx, job, label)
+  if (!pf) return askPhotoProperty(ctx, msg, job, r, label)
+  const property = answered ? pf.name : label
+  const key = propertyKey(property)
+  if (!DRY && (!ctx.drive || !ctx.rootId)) return failAttempt(job, attempts, { error: `Drive not available — ${ctx.driveErr || "setup incomplete"}` }, "Drive is not available")
+
+  // Dedupe inputs: every sha already on file, every f8 image id already filed for this property.
+  const allFiles = r.sets.flatMap((s) => s.files.map((f) => ({ ...f, set: s.set, sha: sha256(f.bytes) })))
+  const knownShas = new Set()
+  const knownImageIds = new Set()
+  for (let i = 0; i < allFiles.length; i += 100) {
+    const { data } = await sb().from("inbox_files").select("sha256").in("sha256", allFiles.slice(i, i + 100).map((f) => f.sha)).in("status", DUP_STATUSES)
+    for (const x of data || []) knownShas.add(x.sha256)
+  }
+  if (key) {
+    const { data } = await sb().from("inbox_files").select("attachment_id").eq("property_key", key).eq("status", "filed").like("attachment_id", "f8:%")
+    for (const x of data || []) knownImageIds.add(x.attachment_id)
+  }
+
+  const photosPath = `${pf.path}/Photos`
+  const canRead = !!(ctx.drive && ctx.rootId) // a dry run without Drive still reports verdicts
+  const photosFolder = canRead ? await resolvePath(ctx.drive, ctx.rootId, photosPath, { create: !DRY }) : { id: null }
+  const dryDir = path.join("/tmp/inbox-fetch", String(job.id))
+  const stats = {} // set → { new, dup, reedited, differed }
+  const rows = []
+  const errors = []
+  for (const s of r.sets) {
+    const destPath = `${photosPath}/${PHOTO_SETS[s.set]}`
+    const dest = canRead ? await resolvePath(ctx.drive, ctx.rootId, destPath, { create: !DRY }) : { id: null }
+    const folderFiles = dest.id ? (await listChildren(ctx.drive, dest.id)).filter((k) => k.mimeType !== "application/vnd.google-apps.folder").map((k) => ({ name: k.name, size: k.size == null ? null : Number(k.size), id: k.id, webViewLink: k.webViewLink })) : []
+    const st = (stats[s.set] = { new: 0, dup: 0, reedited: 0, differed: 0 })
+    if (!dest.id) log(`photos ${job.id}: ${destPath} does not exist yet — ${DRY ? "would create it" : "created"}`)
+    for (const f of allFiles.filter((x) => x.set === s.set)) {
+      const imageKey = `f8:${f.imageId}:${s.set}`
+      const v = photoDedupeVerdict({ sha: f.sha, filename: f.filename, size: f.bytes.length, imageId: imageKey }, { knownShas, folderFiles, knownImageIds })
+      const base = { gmail_id: msg.id, thread_id: msg.threadId, attachment_id: imageKey, part_id: null, filename: f.filename, mime: f.mime, size_bytes: f.bytes.length, sha256: f.sha, source: job.provider, fetch_id: DRY ? null : job.id, sender: msg.from.email, subject: msg.subject, received_at: msg.internalDate, property_key: key, property_label: property, doc_type: "photos" }
+      if (v.verdict === "duplicate") {
+        st.dup++
+        if (v.reason === "image_id") st.reedited++
+        log(`photos ${job.id}: ${s.set}/${f.filename} duplicate (${v.reason})${v.existing ? ` → ${v.existing.id}` : ""}`)
+        rows.push({ ...base, status: "duplicate", error: `duplicate: ${v.reason}`, final_folder: destPath, final_name: v.existing?.name || null, drive_file_id: v.existing?.id || null, drive_url: v.existing?.webViewLink || null, resolved_at: isoNow() })
+        continue
+      }
+      const name = v.suffix ? suffixedFilename(f.filename, folderFiles.map((x) => x.name)) : f.filename
+      if (v.suffix) st.differed++
+      if (DRY) {
+        const dir = path.join(dryDir, s.set)
+        fs.mkdirSync(dir, { recursive: true })
+        fs.writeFileSync(path.join(dir, sanitizeFilename(name)), f.bytes)
+        log(`photos ${job.id}: ${s.set}/${name} → would upload to ${destPath}${v.suffix ? " (same name, different size)" : ""}`)
+        st.new++
+        folderFiles.push({ name, size: f.bytes.length })
+        knownShas.add(f.sha)
+        continue
+      }
+      try {
+        const up = await uploadFile(ctx.drive, dest.id, name, f.mime, f.bytes)
+        st.new++
+        rows.push({ ...base, status: "filed", final_folder: destPath, final_name: name, drive_file_id: up.id, drive_folder_id: dest.id, drive_url: up.webViewLink, filed_at: isoNow(), resolved_at: isoNow() })
+        folderFiles.push({ name, size: f.bytes.length, id: up.id, webViewLink: up.webViewLink })
+        knownShas.add(f.sha)
+        knownImageIds.add(imageKey)
+      } catch (e) {
+        const error = e?.response?.data?.error?.message || e.message
+        errors.push(`${s.set}/${name}: ${error}`)
+        warn(`photos ${job.id}: upload ${s.set}/${name} failed — ${error}`)
+      }
+    }
+  }
+  const line2 = Object.entries(stats).map(([set, st]) => `${set}: ${st.new} new${st.dup ? `, ${st.dup} skipped as duplicate${st.dup === 1 ? "" : "s"}` : ""}`).join(" · ")
+  if (DRY) return log(`photos ${job.id}: dry run — ${line2} · files in ${dryDir} · property ${pf.path}`)
+
+  // Rows first (so a crash after upload still leaves a trace), then the job, the label, the card.
+  let inserted = []
+  for (let i = 0; i < rows.length; i += 100) {
+    const { data, error } = await sb().from("inbox_files").insert(rows.slice(i, i + 100)).select("id, sha256, attachment_id, status")
+    if (error) throw new Error(`inbox_files insert: ${error.message}`)
+    inserted.push(...(data || []))
+  }
+  if (errors.length) {
+    // Partial upload: the next attempt dedupes what already landed (sha / name+size) and finishes the rest.
+    await failAttempt(job, attempts, { error: `${errors.length} of ${allFiles.length} uploads failed — ${errors[0]}` }, `${errors.length} upload${errors.length === 1 ? "" : "s"} failed: ${errors[0]}`)
+    return
+  }
+  if (!/^manual:/.test(msg.id)) await addLabel(ctx.gmail, msg.id, "MC/Filed")
+  const reedited = Object.values(stats).reduce((n, st) => n + st.reedited, 0)
+  const differed = Object.values(stats).reduce((n, st) => n + st.differed, 0)
+  const sites = propertyWebsiteLinks(msg.text)
+  const lines = [`📸 <b>Photos filed — ${esc(property)}</b>`, line2]
+  if (reedited) lines.push(`⚠️ ${reedited} looked like existing photos (re-edited?) — kept the originals`)
+  if (differed) lines.push(`ℹ️ ${differed} looked like a duplicate but differed — uploaded with a (2) suffix`)
+  const buttons = [{ text: "Open Photos/", url: photosFolder.id ? `https://drive.google.com/drive/folders/${photosFolder.id}` : job.url }]
+  if (sites.branded) buttons.push({ text: "🌐 Branded site", url: sites.branded })
+  if (sites.unbranded) buttons.push({ text: "🌐 Unbranded site", url: sites.unbranded })
+  const mid = await tgSend(lines.join("\n"), { rows: [buttons.slice(0, 1), ...(buttons.length > 1 ? [buttons.slice(1)] : [])], dryRun: DRY })
+  const idByKey = new Map(inserted.map((x) => [`${x.attachment_id}|${x.sha256}`, x.id]))
+  const summary = allFiles.map((f) => ({ filename: f.filename, mime: f.mime, size: f.bytes.length, sha256: f.sha, set: f.set, imageId: f.imageId, inbox_file_id: idByKey.get(`f8:${f.imageId}:${f.set}|${f.sha}`) || null }))
+  await sb().from("inbox_fetches").update({ status: "done", attempts, files: summary, tg_message_id: mid, resolved_at: isoNow(), error: null }).eq("id", job.id)
+  if (mid) await sb().from("inbox_files").update({ tg_message_id: mid }).eq("fetch_id", job.id).eq("status", "filed")
+  await sb().from("inbox_files").update({ status: "resolved", resolved_at: isoNow() }).eq("fetch_id", job.id).in("status", ["asked", "answered"])
+  log(`photos ${job.id}: done — ${line2} → ${photosPath}`)
+}
+
 async function handleMessage(ctx, msg) {
   let cls = await classify(ctx, msg)
   const kind = cls?.kind || "human"
@@ -1181,7 +1391,14 @@ async function handleMessage(ctx, msg) {
   // draws from servicing@ — the classifier said "needs reply" but the kind was
   // "automated" and this return threw the ask away. A system-looking sender that
   // needs something from Ryan is still a loop.
-  if ((kind === "automated" || kind === "newsletter" || kind === "skip") && !(cls.needs_reply && !cls.solicitation)) return
+  // Ryan 2026-10-15: f8's "Media Delivery" email is automated — and it is the
+  // one carrying the listing photos. A media provider link on a system email
+  // (or a classified media_delivery) queues the photo pull and nothing else:
+  // no loops, no screens. The provider match is the gate, not the classifier.
+  if (kind === "media_delivery" || ((kind === "automated" || kind === "newsletter" || kind === "skip") && !(cls.needs_reply && !cls.solicitation))) {
+    if (mediaLinks(msg, cls).length) await enqueueFetches(ctx, msg, cls, "media_delivery")
+    return
+  }
 
   // --- attachments → the filing pipeline (shared with documents pulled from links).
   const atts = relevantAttachments(msg, cls)
