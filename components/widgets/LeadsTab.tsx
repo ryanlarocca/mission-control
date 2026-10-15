@@ -18,7 +18,11 @@ import type { LeadStatus, PropertyDetail } from "@/lib/leads"
 import { pieceMismatchLabel } from "@/lib/mailMatch"
 import { formatPhone } from "@/lib/utils"
 import { ReplyPlanner } from "./ReplyPlanner"
-import { type Plan, requestDraft, executePlan, sendSuffixFor, defaultNextAction } from "@/lib/reply-client"
+import { type Plan, type CoachTurn, requestDraft, requestCoach, executePlan, sendSuffixFor, defaultNextAction } from "@/lib/reply-client"
+
+// Coach mode (2026-10-15): one coach turn from a card. Shared by the card
+// planner and the email pop-out.
+type CoachArgs = { gist: string; turns: CoachTurn[]; plan: Plan | null }
 import {
   type RelationshipCategory,
   RELATIONSHIP_CATEGORY_LABELS,
@@ -889,6 +893,50 @@ export function LeadsTab() {
       setDraftingFor(null)
     }
   }, [replyPlan, replyDraftId, emailSubject, emailDraft, draftMessage])
+
+  // Coach mode (2026-10-15): Ryan dictates the gist; Opus reads the whole
+  // history and returns a read + the draft. Same draftId / plan / send path
+  // as Auto, so Send still executes the chips and links the coached row.
+  const [coachRead, setCoachRead] = useState<Record<string, string | null>>({})
+  const plannerCoach = useCallback(async (
+    group: LeadGroup,
+    channel: "imessage" | "email",
+    args: CoachArgs,
+  ): Promise<boolean> => {
+    const key = `${group.phone}:${channel}`
+    setDraftingFor(key)
+    setDraftError(null)
+    try {
+      const data = await requestCoach({
+        leadId: group.mostRecentId,
+        channel: channel === "imessage" ? "sms" : "email",
+        surface: "leads_card",
+        gist: args.gist,
+        turns: args.turns,
+        plan: args.plan ?? replyPlan[group.phone] ?? null,
+        parentDraftId: args.turns.length ? replyDraftId[key] ?? null : null,
+      })
+      setReplyPlan(prev => ({ ...prev, [group.phone]: data.plan }))
+      setReplyDraftId(prev => ({ ...prev, [key]: data.draftId }))
+      setCoachRead(prev => ({ ...prev, [group.phone]: data.read || null }))
+      setReplyStatus(prev => ({
+        ...prev,
+        [group.phone]: data.critic?.rewritten ? `checked: ${data.critic.issues.join("; ")}` : args.turns.length ? "refined" : "coached",
+      }))
+      if (channel === "imessage") {
+        setDraftMessage(prev => ({ ...prev, [group.phone]: data.body || "" }))
+      } else {
+        setEmailDraft(prev => ({ ...prev, [group.phone]: data.body || "" }))
+        if (data.subject) setEmailSubject(prev => ({ ...prev, [group.phone]: data.subject! }))
+      }
+      return true
+    } catch (e) {
+      setDraftError(e instanceof Error ? e.message : String(e))
+      return false
+    } finally {
+      setDraftingFor(null)
+    }
+  }, [replyPlan, replyDraftId])
 
   // Auto-draft on expand when the conversation is waiting on Ryan (last event
   // inbound) and he hasn't typed anything yet. Once per card per session.
@@ -1821,6 +1869,8 @@ export function LeadsTab() {
                 void plannerDraft(group, channel, { plan })
               }}
               onRegenerate={(channel, why) => plannerDraft(group, channel, why ? { why } : undefined)}
+              coachRead={coachRead[group.phone] ?? null}
+              onCoach={(channel, args) => plannerCoach(group, channel, args)}
               draftingText={draftingFor === `${group.phone}:imessage`}
               draftingEmail={draftingFor === `${group.phone}:email`}
               draftError={expandedPhone === group.phone ? draftError : null}
@@ -1981,6 +2031,9 @@ interface LeadCardProps {
   planStatus: string | null
   onPlanChange: (plan: Plan, channel: "imessage" | "email") => void
   onRegenerate: (channel: "imessage" | "email", why?: string) => void
+  // Coach mode: the read for the current coached draft + one coach turn.
+  coachRead: string | null
+  onCoach: (channel: "imessage" | "email", args: CoachArgs) => Promise<boolean>
   onPatchField: (field: "name" | "property_address" | "email", value: string) => void
   // Offer amount edit — separate from onPatchField because the value is a
   // number (or null to clear), not a string. PATCH /api/leads coerces.
@@ -2550,6 +2603,11 @@ function LeadCard(p: LeadCardProps) {
                 status={p.planStatus}
                 onPlanChange={(plan) => p.onPlanChange(plan, primary)}
                 onRegenerate={(why) => p.onRegenerate(primary, why)}
+                coach={{
+                  read: p.coachRead,
+                  currentBody: primary === "email" ? p.emailDraft : p.draftMessage,
+                  onDraft: (args) => p.onCoach(primary, args),
+                }}
               />
             )
           })()}
@@ -2743,6 +2801,8 @@ function LeadCard(p: LeadCardProps) {
               draftError={p.draftError}
               onPlanChange={(plan) => p.onPlanChange(plan, "email")}
               onRegenerate={(why) => p.onRegenerate("email", why)}
+              coachRead={p.coachRead}
+              onCoach={(args) => p.onCoach("email", args)}
             />
           )}
 
@@ -2996,6 +3056,8 @@ function EmailComposerModal(props: {
   draftError: string | null
   onPlanChange: (plan: Plan) => void
   onRegenerate: (why?: string) => void
+  coachRead: string | null
+  onCoach: (args: CoachArgs) => Promise<boolean>
 }) {
   const {
     leadName, hasInboundEmail, subject, onEditSubject, body, onEditBody,
@@ -3054,6 +3116,7 @@ function EmailComposerModal(props: {
             status={props.planStatus}
             onPlanChange={props.onPlanChange}
             onRegenerate={props.onRegenerate}
+            coach={{ read: props.coachRead, currentBody: body, onDraft: props.onCoach }}
           />
           {!hasInboundEmail && (
             <div>

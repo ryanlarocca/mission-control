@@ -9,7 +9,7 @@ import type { LucideIcon } from "lucide-react"
 import { RelationshipThread, invalidateRelationshipThread } from "./RelationshipThread"
 import { useRelationshipCall, CallButton, CallStatusLine } from "./RelationshipCall"
 import { ReplyPlanner } from "./ReplyPlanner"
-import { type Plan, requestDraft } from "@/lib/reply-client"
+import { type Plan, type CoachTurn, requestDraft, requestCoach } from "@/lib/reply-client"
 
 export interface TouchesSummary {
   count: number
@@ -160,6 +160,35 @@ export function ContactDetailModal({ contact, onClose, onSendToast, onNotesSaved
       if (ch === "email" && data.subject) setQuickSubject(data.subject)
     } catch (e) {
       setDraftError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setDrafting(false)
+    }
+  }
+  // Coach mode (2026-10-15): the gist → Opus → read + draft into quick-send.
+  const [coachRead, setCoachRead] = useState<string | null>(null)
+  async function coach(args: { gist: string; turns: CoachTurn[]; plan: Plan | null }): Promise<boolean> {
+    setDrafting(true)
+    setDraftError(null)
+    try {
+      const data = await requestCoach({
+        relationshipId: contact.id,
+        channel: channel === "email" ? "email" : "imessage",
+        surface: "relationships",
+        gist: args.gist,
+        turns: args.turns,
+        plan: args.plan ?? plan,
+        parentDraftId: args.turns.length ? draftId : null,
+      })
+      setPlan(data.plan)
+      setDraftId(data.draftId)
+      setCoachRead(data.read || null)
+      setDraftStatus(data.critic?.rewritten ? `checked: ${data.critic.issues.join("; ")}` : args.turns.length ? "refined" : "coached")
+      setQuickMessage(data.body || "")
+      if (channel === "email" && data.subject) setQuickSubject(data.subject)
+      return true
+    } catch (e) {
+      setDraftError(e instanceof Error ? e.message : String(e))
+      return false
     } finally {
       setDrafting(false)
     }
@@ -580,6 +609,7 @@ export function ContactDetailModal({ contact, onClose, onSendToast, onNotesSaved
               status={draftStatus}
               onPlanChange={(next) => { setPlan(next); void aiDraft({ plan: next }) }}
               onRegenerate={(why) => void aiDraft(why ? { why } : undefined)}
+              coach={{ read: coachRead, currentBody: quickMessage, onDraft: coach }}
             />
             {/* Via — only when both channels exist; a text-only or email-only contact gets no toggle */}
             {contact.email && contact.phone && (

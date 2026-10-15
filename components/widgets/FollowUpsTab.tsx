@@ -9,7 +9,10 @@ import {
 import { formatPhone } from "@/lib/utils"
 import { handleSessionExpired } from "@/lib/session-expired"
 import { ReplyPlanner } from "./ReplyPlanner"
-import { type Plan, requestDraft, executePlan, sendSuffixFor } from "@/lib/reply-client"
+import { type Plan, type CoachTurn, requestDraft, requestCoach, executePlan, sendSuffixFor } from "@/lib/reply-client"
+
+// Coach mode (2026-10-15): one coach turn — the gist, the prior turns, the chips.
+type CoachArgs = { gist: string; turns: CoachTurn[]; plan: Plan | null }
 import {
   classifyUrgency, describeTouchWhen, touchSortKey, isOwedReason, stripOwedPrefix,
   type NextTouch, type NextTouchUrgency,
@@ -386,6 +389,45 @@ export function FollowUpsTab() {
       })
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e))
+    } finally {
+      setActingOn(null)
+    }
+  }
+
+  // Coach on a queued drip — Ryan's gist through /api/reply/coach with the
+  // drip_queue id; the route writes the coached text into the pending row.
+  const [dripCoachRead, setDripCoachRead] = useState<Record<string, string | null>>({})
+  async function coachDrip(row: ContactRow, queueId: string, args: CoachArgs): Promise<boolean> {
+    setActingOn(row.clusterKey)
+    try {
+      const data = await requestCoach({
+        leadId: row.leadId,
+        channel: row.primary?.queueId === queueId && row.primary.channel === "email" ? "email" : row.secondary?.queueId === queueId && row.secondary.channel === "email" ? "email" : "sms",
+        surface: "drip",
+        gist: args.gist,
+        turns: args.turns,
+        plan: args.plan,
+        dripQueueId: queueId,
+      })
+      setDripCoachRead(prev => ({ ...prev, [queueId]: data.read || null }))
+      const item = data.item
+      if (!item?.message) return true
+      setData(prev => {
+        if (!prev) return prev
+        return {
+          ...prev,
+          rows: prev.rows.map(r => {
+            if (r.clusterKey !== row.clusterKey) return r
+            const patch = (t: NextTouch | null): NextTouch | null =>
+              t && t.queueId === queueId ? { ...t, message: item.message ?? t.message, subject: item.subject ?? t.subject ?? null, stale: false } : t
+            return { ...r, primary: patch(r.primary)!, secondary: patch(r.secondary) }
+          }),
+        }
+      })
+      return true
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e))
+      return false
     } finally {
       setActingOn(null)
     }
@@ -784,6 +826,8 @@ export function FollowUpsTab() {
     onSendDrip: sendDrip,
     onRegenerateDrip: regenerateDrip,
     onRedraftDrip: redraftDrip,
+    onCoachDrip: coachDrip,
+    dripCoachRead,
     onQueueAction: queueAction,
     onStartEdit: (queueId: string, t: NextTouch) =>
       setEditing(prev => new Map(prev).set(queueId, { message: t.message ?? "", subject: t.subject ?? "" })),
@@ -998,6 +1042,8 @@ interface CardHandlers {
   onSendDrip: (row: ContactRow, queueId: string, opts?: { force?: boolean }) => void
   onRegenerateDrip: (row: ContactRow, queueId: string) => void
   onRedraftDrip: (row: ContactRow, queueId: string, why?: string) => void
+  onCoachDrip: (row: ContactRow, queueId: string, args: CoachArgs) => Promise<boolean>
+  dripCoachRead: Record<string, string | null>
   onQueueAction: (row: ContactRow, queueId: string, action: "skip" | "snooze", days?: 1 | 3 | 7) => void
   onStartEdit: (queueId: string, t: NextTouch) => void
   onChangeEdit: (queueId: string, field: "message" | "subject", value: string) => void
@@ -1283,6 +1329,8 @@ function ContactCard({ row, ...h }: { row: ContactRow } & CardHandlers) {
           onSend={(opts) => dripTouch.queueId && h.onSendDrip(row, dripTouch.queueId, opts)}
           onRegenerate={() => dripTouch.queueId && h.onRegenerateDrip(row, dripTouch.queueId)}
           onRedraft={(why) => dripTouch.queueId && h.onRedraftDrip(row, dripTouch.queueId, why)}
+          onCoach={(args) => dripTouch.queueId ? h.onCoachDrip(row, dripTouch.queueId, args) : Promise.resolve(false)}
+          coachRead={dripTouch.queueId ? h.dripCoachRead[dripTouch.queueId] ?? null : null}
           onSkip={() => dripTouch.queueId && h.onQueueAction(row, dripTouch.queueId, "skip")}
           onSnooze={(d) => h.onSnoozeContact(row, d)}
           onStartEdit={() => dripTouch.queueId && h.onStartEdit(dripTouch.queueId, dripTouch)}
@@ -1430,7 +1478,7 @@ function CallBlock({
 
 function DripBlock({
   row, touch, acting, hasCallAbove, editDraft,
-  onOpenLead, onSend, onRegenerate, onRedraft, onSkip, onSnooze,
+  onOpenLead, onSend, onRegenerate, onRedraft, onCoach, coachRead, onSkip, onSnooze,
   onStartEdit, onChangeEdit, onCancelEdit, onSaveEdit,
   onPrepare, onSkipForecast,
 }: {
@@ -1443,6 +1491,8 @@ function DripBlock({
   onSend: (opts?: { force?: boolean }) => void
   onRegenerate: () => void
   onRedraft: (why?: string) => void
+  onCoach: (args: CoachArgs) => Promise<boolean>
+  coachRead: string | null
   onSkip: () => void
   onSnooze: (days: 1 | 3 | 7) => void
   onStartEdit: () => void
@@ -1498,6 +1548,7 @@ function DripBlock({
             status={null}
             onPlanChange={() => {}}
             onRegenerate={(why) => onRedraft(why)}
+            coach={{ read: coachRead, currentBody: touch.message ?? "", onDraft: onCoach }}
           />
         </div>
       )}
@@ -1782,12 +1833,42 @@ function ComposeModal({
   const [plan, setPlan] = useState<Plan | null>(null)
   const [draftId, setDraftId] = useState<string | null>(null)
   const [planStatus, setPlanStatus] = useState<string | null>(null)
+  const [coachRead, setCoachRead] = useState<string | null>(null)
 
   useEffect(() => {
     function onKey(e: KeyboardEvent) { if (e.key === "Escape") onClose() }
     document.addEventListener("keydown", onKey)
     return () => document.removeEventListener("keydown", onKey)
   }, [onClose])
+
+  // Coach mode: Ryan's gist → Opus reads the whole history → read + draft.
+  async function coach(args: CoachArgs): Promise<boolean> {
+    setDrafting(true)
+    setError(null)
+    try {
+      const data = await requestCoach({
+        leadId: row.leadId,
+        channel: isEmail ? "email" : "sms",
+        surface: "followups",
+        gist: args.gist,
+        turns: args.turns,
+        plan: args.plan ?? plan,
+        parentDraftId: args.turns.length ? draftId : null,
+      })
+      setPlan(data.plan)
+      setDraftId(data.draftId)
+      setCoachRead(data.read || null)
+      setPlanStatus(data.critic?.rewritten ? `checked: ${data.critic.issues.join("; ")}` : args.turns.length ? "refined" : "coached")
+      setBody(data.body || "")
+      if (isEmail && data.subject && !threaded) setSubject(data.subject)
+      return true
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+      return false
+    } finally {
+      setDrafting(false)
+    }
+  }
 
   const aiDraft = useCallback(async (opts?: { why?: string; plan?: Plan | null }) => {
     setDrafting(true)
@@ -1917,6 +1998,7 @@ function ComposeModal({
             status={planStatus}
             onPlanChange={(next) => { setPlan(next); void aiDraft({ plan: next }) }}
             onRegenerate={(why) => void aiDraft(why ? { why } : undefined)}
+            coach={{ read: coachRead, currentBody: body, onDraft: coach }}
           />
           {row.notes && (
             <div className="text-xs text-zinc-400 bg-zinc-900/60 rounded px-2.5 py-1.5">

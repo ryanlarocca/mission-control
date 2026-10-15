@@ -14,7 +14,7 @@ import { RelationshipThread, invalidateRelationshipThread } from "./Relationship
 import { useRelationshipCall, CallButton, CallStatusLine } from "./RelationshipCall"
 import { CleanupMode } from "./CleanupMode"
 import { ReplyPlanner } from "./ReplyPlanner"
-import { requestDraft } from "@/lib/reply-client"
+import { requestDraft, requestCoach, type Plan, type CoachTurn } from "@/lib/reply-client"
 
 // ══════════════════════════════════════════════════════════════════════════════
 // TYPES
@@ -662,6 +662,45 @@ function CRMSTabInner() {
       setGeneratedMessages(prev => { const n = { ...prev }; delete n[msgKey]; return n })
     }
     await generate(selectedContact, modality, true, undefined, why)
+  }
+
+  // Coach mode (2026-10-15): Ryan's gist → Opus reads the whole thread and
+  // the notes → read + draft. Lands in the same message slot as generate(),
+  // with the same draftId path, so Send logs the coached row.
+  const [coachRead, setCoachRead] = useState<string | null>(null)
+  async function coach(contact: CRMSContact, args: { gist: string; turns: CoachTurn[]; plan: Plan | null }): Promise<boolean> {
+    if (generatingFor) return false
+    const msgKey = msgKeyFor(contact, modality, channel)
+    generateAbortRef.current?.abort()
+    const controller = new AbortController()
+    generateAbortRef.current = controller
+    setGeneratingFor(contact.id)
+    try {
+      const intent = modalityToIntent(modality)
+      const data = await requestCoach({
+        relationshipId: contact.id,
+        channel: channel === "email" ? "email" : "imessage",
+        surface: "relationships",
+        gist: args.gist,
+        turns: args.turns,
+        plan: args.plan ?? { moment: momentFor(contact, intent), temperature: null, next_action: "send", reason: "", source: "ryan", familiarity, intent },
+        parentDraftId: args.turns.length ? draftIds[msgKey] ?? null : null,
+      })
+      if (controller.signal.aborted) return false
+      if (!data.body) return false
+      setGeneratedMessages(prev => ({ ...prev, [msgKey]: data.body }))
+      setEditedMessages(prev => { const n = { ...prev }; delete n[msgKey]; return n })
+      setDraftIds(prev => ({ ...prev, [msgKey]: data.draftId }))
+      if (channel === "email" && data.subject) setSubjects(prev => ({ ...prev, [msgKey]: data.subject as string }))
+      setCoachRead(data.read || null)
+      setDraftStatus(data.critic?.rewritten ? `checked: ${data.critic.issues.join("; ")}` : args.turns.length ? "refined" : "coached")
+      return true
+    } catch (e) {
+      if (!controller.signal.aborted) setSendError(`Coach failed: ${e instanceof Error ? e.message : String(e)}`)
+      return false
+    } finally {
+      if (generateAbortRef.current === controller) setGeneratingFor(null)
+    }
   }
 
   // ── Category change: PATCH sheet + update local state ──
@@ -1605,6 +1644,7 @@ function CRMSTabInner() {
                   status={draftStatus}
                   onPlanChange={() => {}}
                   onRegenerate={(why) => void regenerate(why)}
+                  coach={{ read: coachRead, currentBody: currentMessage, onDraft: (args) => coach(selectedContact, args) }}
                 />
                 {isGenerating ? (
                   <div className="flex items-center justify-center gap-2 bg-zinc-800 border border-zinc-700 rounded h-20">
