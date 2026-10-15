@@ -78,6 +78,7 @@ const STATUS_BADGE: Record<string, string> = {
   unsubscribed: "bg-red-950 text-red-300",
   suppressed: "bg-red-950 text-red-300",
   bad_email: "bg-zinc-800 text-zinc-400",
+  invalid: "bg-zinc-800 text-zinc-400",
   no_email: "bg-zinc-800 text-zinc-400",
   draft: "bg-sky-950 text-sky-300",
   approved: "bg-emerald-950 text-emerald-300",

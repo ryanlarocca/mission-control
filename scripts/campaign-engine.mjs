@@ -42,6 +42,19 @@
  *     --judge-backfill   judge-only run; records a verdict for every canary
  *                        in the judge inbox from the last 30 days that has
  *                        none (--dry-run prints the table, writes nothing)
+ *
+ * VERIFY pass (2026-10-15, briefs/BRIEF_CAMPAIGN_AUTOPILOT_GATES_2026-10-14.md
+ *   Task 5): verifies (MillionVerifier), once per weekday morning before the
+ *   mint, everything due in the next 7 days whose verdict is missing, > 30
+ *   days old, or "unknown" ≥ 7 days old — up to VERIFY_DAILY_MAX (500) a day.
+ *   Needs MILLIONVERIFIER_API_KEY in .env.local. Verify-only runs (ramp +
+ *   verify, nothing else):
+ *     --verify-all                   the one-time first pass over the whole active
+ *                                    queue; Telegram summary + top 15 catch-all domains
+ *     --verify-domains a.com,b.com   one address per listed domain, prints accept_all
+ *                                    (Ryan's 100-free-credit catch-all survey)
+ *     --verify-now                   run the morning pass regardless of the clock
+ *   All honour --dry-run (verify, print, write nothing) and --limit=N.
  */
 
 import fs from "node:fs"
@@ -51,8 +64,11 @@ import path from "node:path"
 import { fileURLToPath } from "node:url"
 import { createClient } from "@supabase/supabase-js"
 import { TOUCHES, renderTouch, nextOffsetDays } from "./campaign-touches.mjs"
-import { loadSenderConfig, loadSenderStates, saveSenderState, capFor, evaluateSenderDay, fetchRelationshipEmails, fetchReplierIds, fetchLastSenderByContact, assignSender, priorityOf, isSenderPaused, pauseLabel, withPause, withResume, withCanaryVerdict } from "./campaign-senders.mjs"
+import { loadSenderConfig, loadSenderStates, saveSenderState, capFor, evaluateSenderDay, fetchRelationshipEmails, fetchReplierIds, fetchLastSenderByContact, fetchLastSendByContact, assignSender, priorityOf, isSenderPaused, pauseLabel, withPause, withResume, withCanaryVerdict } from "./campaign-senders.mjs"
 import { judgeConfigured, connectJudge, disconnectJudge, readCanaryMessages, newestCanary, describePlacement, decideVerdict, canaryOldEnough, planBackfill, stallReason, verdictWord, isJudgeAuthError, judgeErrorText, JUDGE_SEARCH_DAYS, BACKFILL_SEARCH_DAYS } from "./canary-judge.mjs"
+import { AUTO_SEND_KEY, resolveAutoSend, withTouchRegated, removeTripwire, describeRemovedSends, touchesOfRemoves, bounceBreaker, isDayStopped, withDayStop, partitionTouchOne, t1Supply, describeT1Supply, CANARY2_REMINDER_KEY, canary2ReminderDue, canary2ReminderText, withCanary2Reminder, windowStartIso, respreadSlot } from "./campaign-gates.mjs"
+import { checkRecipientDomain, dnsBlocks, readDnsCache } from "./campaign-dns.mjs"
+import { verifyMany, verifyAction, isDraftEligible, unknownTwice, selectVerifyCandidates, summarizeVerification, summaryLine, isSandboxKey, VerifierAuthError, VERIFIER_ENV, VERIFY_DAILY_MAX_DEFAULT } from "./campaign-verify.mjs"
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const REPO_ROOT = path.resolve(__dirname, "..")
@@ -94,19 +110,53 @@ const COHORT = process.env.CAMPAIGN_COHORT || null
 // batch is Monday's). CAMPAIGN_MINT_HOUR=11 since 2026-09-30 (Ryan reviews
 // during work hours); the 18 default is the original evening mint.
 const MINT_HOUR = Number(process.env.CAMPAIGN_MINT_HOUR || 18)
-const BOUNCE_PAUSE_RATE = 0.02
 const REVIEW_URL = "https://mission-control-three-chi.vercel.app/email-campaign"
 // Per-touch training wheels (Ryan 2026-07-31: "I don't need to approve the
 // 200 batch each day, at least for touch one"). Touches listed here are
 // drafted straight to 'approved' — no review stop. Everything else still
 // waits for Ryan. Send-time safety checks (suppression, status, cap,
-// window) are unchanged and never bypassable. Extend later: "1,2,3".
-const AUTO_SEND_TOUCHES = new Set(
-  (process.env.CAMPAIGN_AUTO_SEND_TOUCHES || "")
-    .split(",")
-    .map((s) => Number.parseInt(s.trim(), 10))
-    .filter(Number.isFinite)
-)
+// window) are unchanged and never bypassable.
+//
+// 2026-10-15 (autopilot brief, Task 1): the list lives in campaign_settings
+// `auto_send_touches` — { touches, pinned_prompt_version, changed_by,
+// changed_at, reason } — read every pass by loadAutoSend() (ramp pass). The
+// env var CAMPAIGN_AUTO_SEND_TOUCHES is only the fallback when the row is
+// absent (the engine then writes the row, retiring the env var). A touch is
+// auto ONLY while PROMPT_VERSION equals the pinned version: a prompt change
+// re-gates it until Ryan replies "auto T1 on" (which re-pins). Tripwires
+// (Task 2/3) re-gate through regateTouch() and leave their reason on the row.
+const AUTO_SEND = { touches: new Set(), row: null, pinned: null, source: null }
+async function loadAutoSend() {
+  const { data, error } = await sb.from("campaign_settings").select("value").eq("key", AUTO_SEND_KEY).maybeSingle()
+  if (error) throw new Error(`auto_send_touches: ${error.message}`)
+  const r = resolveAutoSend({ row: data?.value ?? null, envValue: process.env.CAMPAIGN_AUTO_SEND_TOUCHES, promptVersion: PROMPT_VERSION })
+  AUTO_SEND.touches = r.touches
+  AUTO_SEND.row = r.write ?? data?.value ?? null
+  AUTO_SEND.pinned = r.write?.pinned_prompt_version ?? r.pinned
+  AUTO_SEND.source = r.source
+  log(r.logLine)
+  if (r.write) {
+    if (dryRun) log(`would write ${AUTO_SEND_KEY}: ${JSON.stringify(r.write)}`)
+    else await sb.from("campaign_settings").upsert({ key: AUTO_SEND_KEY, value: r.write, updated_at: new Date().toISOString() })
+  }
+  if (r.alert) {
+    if (dryRun) log(`would telegram: ${r.alert}`)
+    else await telegram(`🔒 ${escHtml(r.alert)}`)
+  }
+}
+/** A tripwire re-gates one touch: the row keeps the reason, Telegram says so. Dry runs only log. */
+async function regateTouch(touch, reason) {
+  if (!AUTO_SEND.touches.has(touch)) return false
+  const { row, changed } = withTouchRegated(AUTO_SEND.row ?? { touches: [...AUTO_SEND.touches], pinned_prompt_version: AUTO_SEND.pinned }, touch, reason)
+  if (!changed) return false
+  AUTO_SEND.touches.delete(touch)
+  AUTO_SEND.row = row
+  if (dryRun) { log(`would RE-GATE T${touch}: ${reason}`); return true }
+  await sb.from("campaign_settings").upsert({ key: AUTO_SEND_KEY, value: row, updated_at: new Date().toISOString() })
+  log(`RE-GATED T${touch}: ${reason}`)
+  await telegram(`🔒 T${touch} re-gated: ${escHtml(reason)}. New T${touch} drafts wait for your ✅ until you reply "auto T${touch} on".`)
+  return true
+}
 const WINDOW = { startHour: 7, endHour: 17 } // America/Los_Angeles, Mon-Fri (widened for the send-time experiment, Ryan 2026-07-31)
 
 // ---- Send-time experiment (Ryan 2026-07-31) ----
@@ -175,6 +225,16 @@ const redirectTo = toArg ? toArg.split("=")[1] : null
 const judgeNow = args.includes("--judge-now")
 const judgeBackfill = args.includes("--judge-backfill")
 const judgeOnly = judgeNow || judgeBackfill // manual judge runs never draft/send
+const verifyAll = args.includes("--verify-all")
+const verifyDomainsArg = (() => {
+  const eq = args.find((a) => a.startsWith("--verify-domains="))
+  if (eq) return eq.slice("--verify-domains=".length)
+  const i = args.indexOf("--verify-domains")
+  return i >= 0 && args[i + 1] && !args[i + 1].startsWith("--") ? args[i + 1] : null
+})()
+const verifyDomains = verifyDomainsArg ? verifyDomainsArg.split(",").map((d) => d.trim().toLowerCase()).filter(Boolean) : null
+const verifyOnly = verifyAll || Boolean(verifyDomains) // manual verify runs never draft/send
+const VERIFY_DAILY_MAX = Number(process.env.VERIFY_DAILY_MAX || VERIFY_DAILY_MAX_DEFAULT)
 
 // ---------- helpers ----------
 function log(msg) {
@@ -243,6 +303,31 @@ async function fetchSuppressionSets() {
 
 function isSuppressed(contact, sets) {
   return (contact.email && sets.emails.has(contact.email)) || (contact.phone && sets.phones.has(contact.phone))
+}
+
+/**
+ * Engine-side twin of lib/suppression.ts addSuppression (check-then-insert
+ * on (source, source_ref); a duplicate-key race reads as "already there")
+ * plus the contact status flip. Used by the DNS backstop (Task 4,
+ * source "dns_no_mx") and the verifier verdicts (Task 5, "verify_undeliverable"
+ * / "verify_unknown"). Dry runs log and write nothing.
+ */
+async function suppressContact(contact, { source, reason, status = "suppressed" }) {
+  const email = String(contact.email ?? "").trim().toLowerCase()
+  if (!email) return false
+  if (dryRun) { log(`would suppress ${email} (${source}: ${reason}) → status ${status}`); return true }
+  const source_ref = `campaign_contact:${contact.id}`
+  const { data: existing } = await sb.from("suppression").select("id").eq("source", source).eq("source_ref", source_ref).limit(1)
+  if (!existing?.length) {
+    const { error } = await sb.from("suppression").insert({ email, phone: null, name: contact.name ?? null, reason, source, source_ref, channel: "email", audience: "agent" })
+    if (error && !/duplicate key/i.test(error.message)) throw new Error(`suppression insert (${email}): ${error.message}`)
+  }
+  const { error: cErr } = await sb.from("campaign_contacts").update({ status, next_touch_at: null, updated_at: new Date().toISOString() }).eq("id", contact.id)
+  if (cErr) throw new Error(`suppress ${email}: contact status → ${status} failed (${cErr.message}) — suppression row written, contact still ${contact.status ?? "active"}`)
+  const { error: sErr } = await sb.from("campaign_sends").update({ status: "skipped", error: source }).eq("contact_id", contact.id).in("status", ["draft", "approved"])
+  if (sErr) log(`suppress ${email}: open sends not skipped (${sErr.message}) — the send pass re-checks suppression anyway`)
+  log(`suppressed ${email} (${source}: ${reason}) → status ${status}`)
+  return true
 }
 
 async function countToday(table, tsCol, filters) {
@@ -372,11 +457,15 @@ async function draftPass() {
   // fetched, then sorted repliers → Relationships matches → everyone else,
   // oldest due first within a tier. A capped/ordered DB query would let the
   // 2,100 long-due strangers crowd out the 14 repliers at 5/day.
+  // Verify rule (Task 5): behind campaign_settings `verify_required`. Off
+  // until Ryan says "verify rule on" after the first --verify-all pass.
+  const verifyRequired = await getVerifyRequired()
+  log(`verify rule: ${verifyRequired ? "ENABLED (verify_required on) — unverified / stale / unknown / undeliverable contacts are held out of the queue" : "disabled (verify_required off)"}`)
   const dueList = []
   for (let from = 0; ; from += 1000) {
     let dueQuery = sb
       .from("campaign_contacts")
-      .select("id, name, first_name, email, phone, status, touch_number, next_touch_at, cohort, variant, property_address, import_flags")
+      .select("id, name, first_name, email, phone, status, touch_number, next_touch_at, cohort, variant, property_address, import_flags, verified_at, verify_result, verify_accept_all")
       .eq("status", "active")
       .not("email", "is", null)
       .lte("next_touch_at", new Date().toISOString())
@@ -391,6 +480,15 @@ async function draftPass() {
   const replierIds = await fetchReplierIds(sb)
   const lastSender = await fetchLastSenderByContact(sb, dueList.filter((c) => c.touch_number > 0).map((c) => c.id))
   dueList.sort((a, b) => priorityOf(a, { replierIds, relEmails }) - priorityOf(b, { replierIds, relEmails }) || (a.next_touch_at < b.next_touch_at ? -1 : a.next_touch_at > b.next_touch_at ? 1 : 0))
+  // Event-based touches (Task 6): every T1-due contact precedes every T2+
+  // contact regardless of next_touch_at — T2 never mints while any T1 is
+  // due; the day the T1 queue is empty, T2 starts by itself, oldest first.
+  const t1Due = dueList.filter((c) => Number(c.touch_number) === 0).length
+  const laterDue = dueList.length - t1Due
+  const ordered = partitionTouchOne(dueList)
+  dueList.length = 0
+  dueList.push(...ordered)
+  log(`draft order: T1 first — ${t1Due} T1 due, then ${laterDue} T2+ due${t1Due && laterDue ? " (T2+ waits until the T1 queue is empty)" : ""}`)
   const perSender = new Map(SENDERS.map((s) => [s.email, 0]))
   // One open row per contact. A contact's touch clock only advances at send
   // time, so at an 11 AM mint everyone slotted for this afternoon is still
@@ -425,6 +523,7 @@ async function draftPass() {
   const gatedTouches = new Set()
   let lintFailed = 0
   const variantCounts = {}
+  const heldByVerify = {} // why → count (Task 5 send rule)
   for (const c of dueList) {
     if (drafted >= totalBudget) break
     if (openContacts.has(c.id)) continue // already drafted/approved and waiting for its slot
@@ -435,6 +534,8 @@ async function draftPass() {
       }
       continue
     }
+    const elig = isDraftEligible(c, { required: verifyRequired })
+    if (!elig.eligible) { heldByVerify[elig.why] = (heldByVerify[elig.why] || 0) + 1; continue } // stays due; the morning verify pass catches it
     const touch = c.touch_number + 1
     const rendered = renderTouch(touch, c, templates)
     if (!rendered) {
@@ -446,7 +547,7 @@ async function draftPass() {
       log(`touch ${touch} is a placeholder (${rendered.label}) — skipping ${c.email} until copy is written`)
       continue
     }
-    const auto = AUTO_SEND_TOUCHES.has(touch)
+    const auto = AUTO_SEND.touches.has(touch)
     if (!auto && !gatedAllowed) continue // gated touches mint once daily, first pass after MINT_HOUR PT
     // Which mailbox carries this contact: sticky to the thread's mailbox,
     // else the understudy's segment claim, else the workhorse, else (once the
@@ -530,7 +631,8 @@ async function draftPass() {
   }
   const needReview = drafted - autoApproved
   const fromList = SENDERS.filter((s) => perSender.get(s.email)).map((s) => `${s.email} (${perSender.get(s.email)})`).join(", ") || "nobody"
-  log(`draft pass done: ${drafted} drafted (${autoApproved} auto-approved, ${needReview} gated) from ${fromList}, ${skippedSupp} newly suppressed, ${lintFailed} rejected by lint`)
+  const heldNote = Object.keys(heldByVerify).length ? `, held by the verify rule: ${Object.entries(heldByVerify).map(([k, v]) => `${v} ${k}`).join(", ")}` : ""
+  log(`draft pass done: ${drafted} drafted (${autoApproved} auto-approved, ${needReview} gated) from ${fromList}, ${skippedSupp} newly suppressed, ${lintFailed} rejected by lint${heldNote}`)
   if (lintFailed && !dryRun) bumpHealthCounter("lint_rejected", lintFailed)
   if (gatedAllowed && !dryRun) markGatedMinted()
   // Auto-approved minting is silent — the tick is machinery Ryan never
@@ -573,6 +675,7 @@ async function gmailClient(sender) {
 
 async function loadRamp() {
   if (!SENDERS.length) throw new Error("no enabled sender — populate config/campaign-senders.json (CAMPAIGN_SENDERS can only narrow it)")
+  await loadAutoSend()
   const states = await loadSenderStates(sb, SENDERS)
   for (const s of SENDERS) {
     let st = states.get(s.email)
@@ -625,6 +728,67 @@ async function pauseSender(s, reason, { hours = SENDER_CFG.gates.autoPauseHours 
   )
   return st
 }
+/**
+ * Day-stop (autopilot brief, Task 3): this sender sends nothing more today
+ * and resumes by itself on the next weekday — a softer brake than the 48 h
+ * pause, for the 2nd-bounce / ≥ 2% line. The health pass reads it as yellow
+ * (hold), never red. Dry runs log the decision and touch nothing.
+ */
+async function dayStopSender(s, reason) {
+  const day = ptToday()
+  let st = withDayStop(SENDER_STATE.get(s.email), { day, reason })
+  if (dryRun) {
+    log(`would DAY-STOP ${s.email} (${day}): ${reason}`)
+    SENDER_STATE.set(s.email, st)
+    return st
+  }
+  st = await saveSenderState(sb, s.email, st)
+  SENDER_STATE.set(s.email, st)
+  log(`DAY-STOPPED ${s.email} (${day}): ${reason}`)
+  await telegram(`🛑 <b>${escHtml(s.label)}</b> ${escHtml(s.email)} day-stopped: ${escHtml(reason)}. Nothing more from it today; it resumes on the next weekday. Its approved emails stay queued.`)
+  return st
+}
+
+/**
+ * Every-cycle guardrails for one sender (autopilot brief, Tasks 2 + 3):
+ * the bounce breaker (day-stop / red) and the floored remove tripwire
+ * (yellow "check the copy" / red day-stop + re-gate). `tm` is today's
+ * per-sender metrics from senderMetricsRange(). Each level alerts once per
+ * day (sender state `copy_trip`); red escalates after a yellow. Returns the
+ * (possibly updated) sender state.
+ */
+async function guardSender(s, tm) {
+  const today = ptToday()
+  let st = SENDER_STATE.get(s.email)
+  const brk = bounceBreaker(tm, SENDER_CFG.gates)
+  if (brk.level === "red" && !isSenderPaused(st)) {
+    st = await pauseSender(s, brk.text, { why: "Check the list before resuming — July died on day-one bounces." })
+  } else if (brk.level === "day_stop" && !isDayStopped(st, today) && !isSenderPaused(st)) {
+    st = await dayStopSender(s, brk.text)
+  }
+  const rt = removeTripwire(tm, SENDER_CFG.gates)
+  const already = st?.copy_trip?.day === today ? st.copy_trip.level : "none"
+  const rank = { none: 0, yellow: 1, red: 2 }
+  if (rank[rt.level] > rank[already]) {
+    const copy = describeRemovedSends(tm.unsubDetails)
+    const touches = touchesOfRemoves(tm.unsubDetails)
+    if (rt.level === "red") {
+      if (!isDayStopped(st, today) && !isSenderPaused(st)) st = await dayStopSender(s, `copy tripwire: ${rt.text}`)
+      for (const t of touches.length ? touches : [1]) await regateTouch(t, `${s.label}: ${rt.text}`)
+      const text = `🧯 <b>${escHtml(s.label)}</b> copy tripwire RED — ${escHtml(rt.text)}. Day-stopped and ${escHtml((touches.length ? touches : [1]).map((t) => `T${t}`).join("/"))} re-gated. Removed sends: ${escHtml(copy || "—")}`
+      if (dryRun) log(`would telegram: ${text.replace(/<[^>]+>/g, "")}`)
+      else await telegram(text)
+    } else {
+      const text = `🟡 <b>${escHtml(s.label)}</b> check the copy — ${escHtml(rt.text)}. Rung held today. Removed sends: ${escHtml(copy || "—")}`
+      if (dryRun) log(`would telegram: ${text.replace(/<[^>]+>/g, "")}`)
+      else await telegram(text)
+    }
+    st = { ...st, copy_trip: { day: today, level: rt.level, touches } }
+    if (!dryRun) st = await saveSenderState(sb, s.email, st)
+    SENDER_STATE.set(s.email, st)
+  }
+  return st
+}
 const THROTTLE_RE = /\b429\b|rate ?limit|quota|too many|user-rate|backend error|temporarily/i
 // A DWD/OAuth failure means no mail can leave this mailbox at all (the
 // Aug-28 token death failed every approved row, one by one, for four days).
@@ -652,12 +816,14 @@ async function sendPass() {
     log(`PAUSED (${pause.reason ?? "manual"}${pause.until ? ` until ${pause.until}` : ""}) — no sends`)
     return
   }
+  await respreadStaleApprovals()
   const sentToday = await countToday("campaign_sends", "sent_at", { status: ["sent"] })
-  // Per-sender health check before any send (item 3): today's bounces are
-  // attributed to the mailbox that sent the contact's latest touch, and a
-  // red bounce day pauses THAT sender only — the other domain keeps its
-  // streak. Same red line as the health pass (≥2% at ≥10 sends, or 2
-  // bounces below that), so intraday and end-of-day agree.
+  // Per-sender guardrails before any send (item 3 + autopilot brief Tasks
+  // 2/3): today's bounces and removes are attributed to the mailbox that
+  // sent the contact's latest touch. The bounce breaker day-stops or pauses
+  // THAT sender only; the remove tripwire holds / day-stops + re-gates. The
+  // same functions run at the 5:15 PM health pass, so intraday and
+  // end-of-day agree.
   const todayStart = new Date(`${ptToday()}T00:00:00-07:00`).toISOString()
   const todayBySender = await senderMetricsRange(todayStart, new Date().toISOString())
   // Per-sender budgets: each mailbox sends up to ITS ramp cap for the day.
@@ -673,16 +839,13 @@ async function sendPass() {
       budgets.set(s.email, 0)
       continue
     }
-    let st = SENDER_STATE.get(s.email)
-    const tm = todayBySender.get(s.email) ?? { sent: 0, bounces: 0 }
-    const red = tm.sent >= 10 ? tm.bounces / tm.sent >= BOUNCE_PAUSE_RATE : tm.bounces >= 2
-    if (red && !isSenderPaused(st)) {
-      st = await pauseSender(s, `bounce rate ${((100 * tm.bounces) / Math.max(tm.sent, 1)).toFixed(1)}% (${tm.bounces}/${tm.sent}) today ≥ ${BOUNCE_PAUSE_RATE * 100}%`, { why: "Check the list before resuming — July died on day-one bounces." })
-    }
+    const tm = todayBySender.get(s.email) ?? { sent: 0, bounces: 0, unsubs: 0, bouncesFirstHour: 0, unsubDetails: [] }
+    const st = await guardSender(s, tm)
     if (isSenderPaused(st)) { budgets.set(s.email, 0); notes.push(`${s.label} PAUSED (${pauseLabel(st)})`); continue }
+    if (isDayStopped(st, ptToday())) { budgets.set(s.email, 0); notes.push(`${s.label} DAY-STOP (${st.day_stop?.reason ?? ""})`); continue }
     const cap = senderCap(s)
     budgets.set(s.email, Math.max(0, cap - tm.sent))
-    notes.push(`${s.label} ${tm.sent}/${cap}${tm.bounces ? ` (${tm.bounces} bounced)` : ""}`)
+    notes.push(`${s.label} ${tm.sent}/${cap}${tm.bounces ? ` (${tm.bounces} bounced)` : ""}${tm.unsubs ? ` (${tm.unsubs} removes)` : ""}`)
   }
   let budget = Math.max(0, Math.min(TOTAL_SEND_CEILING - sentToday, [...budgets.values()].reduce((a, b) => a + b, 0)))
   if (limit !== null) budget = Math.min(budget, limit)
@@ -727,8 +890,13 @@ async function sendPass() {
   if ([...budgets.values()].every((b) => b <= 0)) { log("every sender is paused or out of budget — nothing to send"); return }
 
   const sets = await fetchSuppressionSets()
+  // Free DNS backstop (Task 4): MX / A for the recipient domain, cached per
+  // domain per PT day; no_mx fails the row and suppresses the contact. A
+  // 2 s timeout or resolver trouble is a pass — never block on DNS latency.
+  const dnsCache = readDnsCache(ptToday())
   let sent = 0
   let failed = 0
+  let noMx = 0
   for (const row of approved) {
     if (sent >= budget) break
     // A row minted for a mailbox that is no longer enabled waits (stays
@@ -752,9 +920,17 @@ async function sendPass() {
       log(`skipped ${contact.email}: ${contact.status}/suppression at send time`)
       continue
     }
+    const dnsCheck = await checkRecipientDomain(contact.email, { cache: dnsCache, persist: !dryRun })
+    if (dnsBlocks(dnsCheck.status)) {
+      await markFailed(row, "no_mx")
+      await suppressContact(contact, { source: "dns_no_mx", reason: `no MX and no A record for ${dnsCheck.domain}` })
+      failed++
+      noMx++
+      continue
+    }
     const to = redirectTo ?? contact.email
     if (dryRun) {
-      log(`would send T${row.touch_number} from ${sender.email}${sender.replyTo ? ` (reply-to ${sender.replyTo})` : ""} → ${to} "${row.subject}"`)
+      log(`would send T${row.touch_number} from ${sender.email}${sender.replyTo ? ` (reply-to ${sender.replyTo})` : ""} → ${to} "${row.subject}"${dnsCheck.status === "unknown" ? " (dns unknown → pass)" : ""}`)
       sent++
       budgets.set(sender.email, budgets.get(sender.email) - 1)
       continue
@@ -822,13 +998,191 @@ async function sendPass() {
     }
     await sleep(3000 + Math.random() * 7000)
   }
-  log(`send pass done: ${sent} sent, ${failed} failed`)
-  if (failed > 0) await telegram(`⚠️ Campaign: <b>${failed}</b> send failures this pass — check campaign_sends.error`)
+  log(`send pass done: ${sent} sent, ${failed} failed${noMx ? ` (${noMx} no_mx — suppressed)` : ""}`)
+  if (noMx && !dryRun) bumpHealthCounter("dns_no_mx", noMx)
+  if (failed > noMx) await telegram(`⚠️ Campaign: <b>${failed - noMx}</b> send failures this pass — check campaign_sends.error`)
+}
+
+/**
+ * Safety net (autopilot brief, Task 8): approved rows whose scheduled_for is
+ * before today's 07:00 PT (an approval after the window kept that day's
+ * minute, or the engine was down) get a fresh random minute in the next
+ * window ahead instead of bursting at 7:00–7:20. Runs at the top of every
+ * send pass; dry runs only count.
+ */
+async function respreadStaleApprovals() {
+  const now = new Date()
+  // Stale = scheduled before today's PT midnight (a window that already
+  // closed). A slot earlier today but before 07:00 is an explicit choice
+  // (sendPass: "an explicit choice beats the default") and is left alone.
+  const ptMidnightIso = new Date(new Date(windowStartIso(now)).getTime() - WINDOW.startHour * 3_600_000).toISOString()
+  const { data: stale, error } = await sb.from("campaign_sends").select("id, scheduled_for").eq("status", "approved").lt("scheduled_for", ptMidnightIso).order("scheduled_for", { ascending: true }).limit(500)
+  if (error) throw new Error(`stale approvals fetch: ${error.message}`)
+  if (!stale?.length) return 0
+  if (dryRun) { log(`would respread ${stale.length} approved row(s) with a stale scheduled_for (oldest ${stale[0].scheduled_for}) into the next window ahead`); return stale.length }
+  for (const r of stale) {
+    const slot = respreadSlot(now)
+    await sb.from("campaign_sends").update({ scheduled_for: slot }).eq("id", r.id).eq("status", "approved")
+  }
+  log(`respread ${stale.length} approved row(s) with a stale scheduled_for (oldest ${stale[0].scheduled_for}) into the next window ahead`)
+  return stale.length
 }
 
 async function markFailed(row, err) {
   log(`FAILED send ${row.id}: ${err}`)
   if (!dryRun) await sb.from("campaign_sends").update({ status: "failed", error: err }).eq("id", row.id)
+}
+
+// ---------- VERIFY pass (MillionVerifier, autopilot brief Task 5) ----------
+// Once per weekday morning BEFORE the mint (so the day's drafts come from a
+// verified pool): every active, non-suppressed contact due within 7 days
+// whose verdict is missing, > 30 days old, or "unknown" ≥ 7 days old —
+// soonest-due first, at most VERIFY_DAILY_MAX a day, the rest tomorrow.
+// Verdicts land on campaign_contacts (verified_at / verify_result /
+// verify_reason / verify_accept_all); undeliverable → suppressed as
+// "verify_undeliverable" with status "invalid"; a second "unknown" →
+// "verify_unknown". Catch-all is a property of the domain and never filters.
+// Needs MILLIONVERIFIER_API_KEY in .env.local (the engine reads it itself;
+// the launchd plist carries no EnvironmentVariables); without it the pass
+// logs one line and the draft rule simply sees no verdicts.
+const VERIFY_STATE = path.join(__dirname, ".campaign-verify-state.json")
+
+async function getVerifyRequired() {
+  const { data } = await sb.from("campaign_settings").select("value").eq("key", "verify_required").maybeSingle()
+  return data?.value?.enabled === true
+}
+
+function verifyRanToday() {
+  try { return JSON.parse(fs.readFileSync(VERIFY_STATE, "utf-8")).last === ptToday() } catch { return false }
+}
+
+/** Fetch active contacts with an email (optionally only those due within `horizonDays`), paged. */
+async function fetchVerifyPool({ horizonDays = null, domains = null } = {}) {
+  const out = []
+  for (let from = 0; ; from += 1000) {
+    let q = sb.from("campaign_contacts").select("id, name, email, status, touch_number, next_touch_at, verified_at, verify_result, verify_reason, verify_accept_all").eq("status", "active").not("email", "is", null)
+    if (horizonDays !== null) q = q.lte("next_touch_at", new Date(Date.now() + horizonDays * 86_400_000).toISOString())
+    if (domains?.length) q = q.or(domains.map((d) => `email.ilike.%@${d}`).join(","))
+    const { data, error } = await q.order("next_touch_at", { ascending: true }).order("id", { ascending: true }).range(from, from + 999)
+    if (error) throw new Error(`verify pool fetch: ${error.message}`)
+    out.push(...(data ?? []))
+    if (!data || data.length < 1000 || out.length >= 10000) break
+  }
+  return out
+}
+
+/** Write one verdict to the contact and act on it. Returns the action taken. */
+async function applyVerdict(c, v) {
+  const act = verifyAction(v)
+  const patch = { verified_at: v.checked_at, verify_result: v.result, verify_reason: v.reason, verify_accept_all: v.accept_all, updated_at: new Date().toISOString() }
+  const line = `${c.email} → ${v.result}${v.accept_all ? " (accept_all)" : ""} [${v.reason}${v.sendex !== null ? `, sendex ${v.sendex}` : ""}] → ${act.bucket}`
+  if (act.bucket === "risky") log(`verify: ${line} — eligible, reason logged`)
+  if (dryRun) { log(`verify (dry): ${line}`); return act.bucket }
+  const { error } = await sb.from("campaign_contacts").update(patch).eq("id", c.id)
+  if (error) throw new Error(`verify write (${c.email}): ${error.message}`)
+  if (act.action === "suppress") {
+    await suppressContact(c, { source: act.source, reason: `verifier ${v.result}: ${v.reason}`, status: act.status })
+    return act.bucket
+  }
+  if (act.action === "hold" && unknownTwice(c, v)) {
+    await suppressContact(c, { source: "verify_unknown", reason: `verifier unknown twice (${c.verify_reason ?? "?"} then ${v.reason})` })
+    return "unknown_suppressed"
+  }
+  return act.bucket
+}
+
+async function verifyPass() {
+  const apiKey = process.env[VERIFIER_ENV]
+  if (!apiKey) {
+    if (verifyOnly) throw new Error(`${VERIFIER_ENV} is not set — add it to .env.local`)
+    log(`verify: ${VERIFIER_ENV} unset — pass skipped (the draft rule sees no verdicts)`)
+    return
+  }
+  const keyNote = isSandboxKey(apiKey) ? " (SANDBOX key — canned results, no credits)" : ""
+  if (verifyDomains) return verifyDomainsRun(apiKey, keyNote)
+  if (!verifyAll) {
+    const wd = laWeekdayNow()
+    if (!args.includes("--verify-now")) {
+      if (wd === "Sat" || wd === "Sun") return
+      if (laHourNow() >= MINT_HOUR) { log("verify: after the mint hour — the morning pass waits for tomorrow"); return }
+      if (verifyRanToday()) return
+    }
+  }
+  const sets = await fetchSuppressionSets()
+  const pool = await fetchVerifyPool({ horizonDays: verifyAll ? null : 7 })
+  let candidates = selectVerifyCandidates(pool, { all: verifyAll, suppressedEmails: sets.emails })
+  const cap = verifyAll ? (limit ?? Infinity) : Math.min(VERIFY_DAILY_MAX, limit ?? Infinity)
+  const deferred = Math.max(0, candidates.length - (Number.isFinite(cap) ? cap : candidates.length))
+  if (Number.isFinite(cap)) candidates = candidates.slice(0, cap)
+  log(`verify${verifyAll ? " --verify-all" : ""}${keyNote}: ${pool.length} in pool, ${candidates.length} to verify now${deferred ? ` (${deferred} deferred to the next pass, VERIFY_DAILY_MAX ${VERIFY_DAILY_MAX})` : ""}${dryRun ? " — DRY RUN, nothing written" : ""}`)
+  if (!candidates.length) { if (!verifyAll && !dryRun) fs.writeFileSync(VERIFY_STATE, JSON.stringify({ last: ptToday(), verified: 0 })); return }
+  const rows = []
+  const tally = {}
+  let balance = null
+  try {
+    await verifyMany(candidates, {
+      apiKey,
+      onResult: async (c, v) => {
+        rows.push({ email: c.email, verdict: v })
+        if (v.balance !== null && v.balance !== undefined) balance = v.balance
+        const bucket = await applyVerdict(c, v)
+        tally[bucket] = (tally[bucket] || 0) + 1
+      },
+    })
+  } catch (e) {
+    if (e instanceof VerifierAuthError) {
+      const text = `⚠️ MillionVerifier stopped the verify pass after ${rows.length}: ${e.message}. ${e.status === 403 ? "Top up the credit pack, then rerun." : `Check ${VERIFIER_ENV} in .env.local.`}`
+      if (dryRun) log(`would telegram: ${text}`)
+      else await telegram(escHtml(text))
+      // The scheduled pass must not retry (and re-alert) every 20-minute
+      // cycle until the mint hour: mark today as run and stop quietly. The
+      // CLI runs (--verify-all / --verify-now) still surface the error.
+      if (!verifyAll && !verifyOnly && !args.includes("--verify-now")) {
+        if (!dryRun) fs.writeFileSync(VERIFY_STATE, JSON.stringify({ last: ptToday(), verified: rows.length, error: e.message }))
+        log(`verify: stopped by the vendor (${e.message}) — pass marked done for today`)
+        return
+      }
+    }
+    throw e
+  }
+  const summary = summarizeVerification(rows)
+  const text = `🔎 MillionVerifier ${verifyAll ? "first pass" : "morning pass"}${keyNote}: ${summaryLine(summary)}${deferred ? `\n${deferred} more deferred to the next pass.` : ""}${balance !== null ? `\nCredits left: ${balance}` : ""}${tally.unknown_suppressed ? `\n${tally.unknown_suppressed} suppressed after a second unknown.` : ""}`
+  log(text.replace(/\n/g, " · "))
+  if (!dryRun) {
+    bumpHealthCounter("verified", rows.length)
+    if (summary.counts.undeliverable) bumpHealthCounter("verify_undeliverable", summary.counts.undeliverable)
+    if (!verifyAll) fs.writeFileSync(VERIFY_STATE, JSON.stringify({ last: ptToday(), verified: rows.length }))
+  }
+  // The one-time first pass is a Ryan-facing event (catch-all share decides
+  // the credit pack); the morning pass is machinery — only its undeliverables
+  // are worth a line.
+  if (verifyAll) {
+    if (dryRun) log(`would telegram: ${text}`)
+    else await telegram(escHtml(text))
+  } else if (summary.counts.undeliverable && !dryRun) {
+    await telegram(escHtml(`🔎 Verify: ${summary.counts.undeliverable} undeliverable parked as invalid (of ${rows.length} checked) — they would have bounced.`))
+  }
+}
+
+/** --verify-domains a.com,b.com: one active contact per domain → accept_all flag (the catch-all survey). */
+async function verifyDomainsRun(apiKey, keyNote) {
+  const pool = await fetchVerifyPool({ domains: verifyDomains })
+  const picks = []
+  for (const d of verifyDomains) {
+    const c = pool.find((x) => String(x.email).toLowerCase().endsWith(`@${d}`))
+    if (c) picks.push(c)
+    else log(`verify-domains: no active contact at ${d} — skipped`)
+  }
+  log(`verify --verify-domains${keyNote}: ${picks.length}/${verifyDomains.length} domains have an active contact${dryRun ? " — DRY RUN, nothing written" : ""}`)
+  const pad = (v, n) => String(v ?? "").padEnd(n)
+  console.log(`  ${pad("domain", 28)}${pad("accept_all", 12)}${pad("result", 15)}${pad("reason", 22)}sendex`)
+  await verifyMany(picks, {
+    apiKey,
+    onResult: async (c, v) => {
+      console.log(`  ${pad(String(c.email).split("@")[1], 28)}${pad(v.accept_all ? "YES" : "no", 12)}${pad(v.result, 15)}${pad(v.reason, 22)}${v.sendex ?? "—"}`)
+      await applyVerdict(c, v)
+    },
+  })
 }
 
 // ---------- DIGEST pass ----------
@@ -921,38 +1275,82 @@ async function dayMetrics(dayStr) {
   const unsubs = await cnt("campaign_events", "occurred_at", { kind: "email_reply", triage: "unsubscribe" })
   const autoReplies = await cnt("campaign_events", "occurred_at", { kind: "email_reply", triage: ["auto_reply", "dead_mailbox"] })
   const local = readHealthState()[dayStr] || {}
-  return { day: dayStr, sent, failed, bounces, replies, unsubs, autoReplies, lint_rejected: local.lint_rejected || 0, canary: local.canary || null }
+  return { day: dayStr, sent, failed, bounces, replies, unsubs, autoReplies, lint_rejected: local.lint_rejected || 0, dns_no_mx: local.dns_no_mx || 0, verified: local.verified || 0, verify_undeliverable: local.verify_undeliverable || 0, canary: local.canary || null }
+}
+
+/** T1 remaining (active contacts with an email still at touch 0) and days of supply at today's caps (Task 6). */
+async function t1SupplyNow() {
+  const { count, error } = await sb.from("campaign_contacts").select("id", { count: "exact", head: true }).eq("status", "active").eq("touch_number", 0).not("email", "is", null)
+  if (error) throw new Error(`T1 remaining count: ${error.message}`)
+  const capTotal = SENDERS.filter((s) => !isSenderPaused(SENDER_STATE.get(s.email))).reduce((a, s) => a + senderCap(s), 0)
+  return t1Supply({ remaining: count ?? 0, capTotal })
+}
+
+/** Sends today whose contact is on a catch-all domain (verify_accept_all) — counted, never filtered (Task 5). */
+async function catchAllSentCount(startIso, endIso) {
+  const ids = []
+  for (let from = 0; ; from += 1000) {
+    const { data, error } = await sb.from("campaign_sends").select("contact_id").eq("status", "sent").gte("sent_at", startIso).lte("sent_at", endIso).order("id", { ascending: true }).range(from, from + 999)
+    if (error) throw new Error(`catch-all sends: ${error.message}`)
+    ids.push(...(data ?? []).map((r) => r.contact_id).filter(Boolean))
+    if (!data || data.length < 1000) break
+  }
+  let n = 0
+  for (let i = 0; i < ids.length; i += 200) {
+    const { count } = await sb.from("campaign_contacts").select("id", { count: "exact", head: true }).in("id", ids.slice(i, i + 200)).eq("verify_accept_all", true)
+    n += count ?? 0
+  }
+  return n
 }
 
 // Per-sender metrics over [startIso, endIso]. Sends/failures carry the
 // sender column; bounces/replies/unsubs are keyed by contact, so they are
 // attributed to the mailbox that sent that contact's most recent touch
 // (null = pre-multi-sender → workhorse). One fetch, tallied per sender.
+// Also (autopilot brief): `bouncesFirstHour` (bounces within an hour of the
+// sender's first send in the range — the breaker's 3-in-the-first-hour line)
+// and `unsubDetails` (the copy behind each remove: touch / prompt_version /
+// variant / subject, from the remove event's raw.send stamp or the
+// contact's latest sent row), so the tripwire can say which copy to check.
 async function senderMetricsRange(startIso, endIso) {
-  const out = new Map(SENDERS.map((s) => [s.email, { sent: 0, failed: 0, bounces: 0, replies: 0, unsubs: 0, autoReplies: 0 }]))
+  const out = new Map(SENDERS.map((s) => [s.email, { sent: 0, failed: 0, bounces: 0, bouncesFirstHour: 0, replies: 0, unsubs: 0, autoReplies: 0, unsubDetails: [], firstSentAt: null }]))
   for (const s of SENDERS) {
     const m = out.get(s.email)
     const { count: sent } = await senderFilter(sb.from("campaign_sends").select("id", { count: "exact", head: true }).eq("status", "sent").gte("sent_at", startIso).lte("sent_at", endIso), s)
     const { count: failed } = await senderFilter(sb.from("campaign_sends").select("id", { count: "exact", head: true }).eq("status", "failed").gte("created_at", startIso).lte("created_at", endIso), s)
+    const { data: first } = await senderFilter(sb.from("campaign_sends").select("sent_at").eq("status", "sent").gte("sent_at", startIso).lte("sent_at", endIso).order("sent_at", { ascending: true }).limit(1), s)
     m.sent = sent ?? 0
     m.failed = failed ?? 0
+    m.firstSentAt = first?.[0]?.sent_at ?? null
   }
   const events = []
   for (let from = 0; ; from += 1000) {
-    const { data, error } = await sb.from("campaign_events").select("contact_id, kind, triage").in("kind", ["bounce", "email_reply"]).gte("occurred_at", startIso).lte("occurred_at", endIso).order("id", { ascending: true }).range(from, from + 999)
+    const { data, error } = await sb.from("campaign_events").select("contact_id, kind, triage, occurred_at, raw").in("kind", ["bounce", "email_reply"]).gte("occurred_at", startIso).lte("occurred_at", endIso).order("id", { ascending: true }).range(from, from + 999)
     if (error) throw new Error(`sender events: ${error.message}`)
     events.push(...(data ?? []))
     if (!data || data.length < 1000) break
   }
-  const lastSender = await fetchLastSenderByContact(sb, events.map((e) => e.contact_id))
+  const lastSend = await fetchLastSendByContact(sb, events.map((e) => e.contact_id))
   for (const e of events) {
-    const owner = ownerOf(lastSender.get(e.contact_id))
+    const last = lastSend.get(e.contact_id) ?? null
+    const owner = ownerOf(last?.sender ?? null)
     const m = owner ? out.get(owner.email) : null
     if (!m) continue
-    if (e.kind === "bounce") m.bounces++
-    else if (e.triage === null) m.replies++
-    else if (e.triage === "unsubscribe") m.unsubs++
-    else if (e.triage === "auto_reply" || e.triage === "dead_mailbox") m.autoReplies++
+    if (e.kind === "bounce") {
+      // A DSN can land hours or days after the send (greylisting, deferred
+      // 4.x.x retries). Charge it to the day the send went out, not the day
+      // the inbox pass read it — else overnight bounces day-stop a sender
+      // before it has sent anything.
+      const sentAt = last?.sent_at ? new Date(last.sent_at).getTime() : NaN
+      if (!(sentAt >= new Date(startIso).getTime() && sentAt <= new Date(endIso).getTime())) continue
+      m.bounces++
+      if (m.firstSentAt && new Date(e.occurred_at).getTime() - new Date(m.firstSentAt).getTime() <= 3_600_000) m.bouncesFirstHour++
+    } else if (e.triage === null) m.replies++
+    else if (e.triage === "unsubscribe") {
+      m.unsubs++
+      const send = e.raw?.send ?? (last ? { touch_number: last.touch_number, prompt_version: last.prompt_version, variant: last.variant, subject: last.subject } : null)
+      m.unsubDetails.push(send)
+    } else if (e.triage === "auto_reply" || e.triage === "dead_mailbox") m.autoReplies++
   }
   return out
 }
@@ -1192,8 +1590,12 @@ async function healthPass() {
   const pause = await getPause()
   const pct = (n, d) => (d ? `${((n / d) * 100).toFixed(1)}%` : "—")
   const warnings = []
-  if (m.sent && m.bounces / m.sent >= 0.01) warnings.push(`bounce rate ${pct(m.bounces, m.sent)} (watch line 1%, auto-pause 2%)`)
-  if (m.unsubs >= 2) warnings.push(`${m.unsubs} removes in one day`)
+  // Removes stay on the card as a count only (autopilot brief, Task 2) — the
+  // per-sender copy tripwire below decides whether they mean anything.
+  const globalBreaker = bounceBreaker(m, SENDER_CFG.gates)
+  if (globalBreaker.level === "red") warnings.push(`RED: ${globalBreaker.text}`)
+  else if (globalBreaker.level === "day_stop") warnings.push(`bounce rate ${pct(m.bounces, m.sent)} — day-stop line (2nd bounce, or 2% at ≥ 10 sent; breaker red at 5%)`)
+  else if (m.sent && m.bounces / m.sent >= 0.01) warnings.push(`bounce rate ${pct(m.bounces, m.sent)} (watch line 1%; day-stop at 2nd bounce / 2%, breaker red at 5%)`)
   if (m.failed) warnings.push(`${m.failed} send failures`)
   if (m.lint_rejected >= 3) warnings.push(`${m.lint_rejected} drafts rejected by lint`)
   if (agg.sent >= 40 && agg.replies / agg.sent < 0.01) warnings.push(`7-day reply rate ${pct(agg.replies, agg.sent)} — below 1%`)
@@ -1205,6 +1607,8 @@ async function healthPass() {
   // sent nothing today are left untouched (pre-launch, nothing to judge).
   const dayStart = new Date(`${day}T00:00:00-07:00`).toISOString()
   const dayEnd = new Date(`${day}T23:59:59-07:00`).toISOString()
+  const catchAllSent = await catchAllSentCount(dayStart, dayEnd)
+  const supply = await t1SupplyNow()
   const perSender = await senderMetricsRange(dayStart, dayEnd)
   const trailing = await senderMetricsRange(new Date(new Date(dayStart).getTime() - 7 * 86_400_000).toISOString(), new Date(new Date(dayStart).getTime() - 1000).toISOString())
   const senderLines = []
@@ -1214,8 +1618,10 @@ async function healthPass() {
   const canaryToday = typeof m.canary === "object" && m.canary ? m.canary : {}
   if (SENDER_CFG.gates.requireCanaryVerdict && !process.env.CAMPAIGN_CANARY_TO) warnings.push("CAMPAIGN_CANARY_TO is unset — no canary goes out, so the canary gate can never clear and every sender holds its rung")
   for (const s of SENDERS) {
-    let state = SENDER_STATE.get(s.email)
     const sm = perSender.get(s.email)
+    // End-of-day pass of the same guardrails the send pass runs every cycle
+    // (bounces / removes that landed after the last send still count).
+    let state = sm.sent || sm.bounces || sm.unsubs ? await guardSender(s, sm) : SENDER_STATE.get(s.email)
     if (sm.sent === 0 && !state?.entered_step) { senderSnap[s.email] = { ...sm, cap: senderCap(s), step: state?.step ?? 0, decision: "idle" }; continue }
     const ev = evaluateSenderDay({ sender: s, state, day, metrics: sm, trailing: trailing.get(s.email), gates: SENDER_CFG.gates, extra: { paused: pause.paused ? `campaign: ${pause.reason ?? "manual"}` : isSenderPaused(state) ? pauseLabel(state) : null } })
     // The day's evidence says stop (red bounces, canary in Spam two days
@@ -1255,11 +1661,11 @@ async function healthPass() {
     const canaryLine = needVerdict
       ? ` · 🐤 ${canaryToday[s.email]} sent — where did it land? reply "canary ${s.label} primary|promotions|spam"`
       : ev.canary.today ? ` · 🐤 ${ev.canary.today}` : ""
-    senderLines.push(`${ev.status} <b>${escHtml(s.label)}</b> ${escHtml(s.email)}: ${sm.sent}/${ev.cap} sent · ${sm.bounces} bounced (${pct(sm.bounces, sm.sent)}) · ${sm.replies} replies · ${sm.failed} failed · healthy ${ev.state.healthy_days}/${SENDER_CFG.gates.minHealthyDays}${isSenderPaused(saved) ? ` · ⏸ PAUSED ${escHtml(pauseLabel(saved))}` : ""}${escHtml(canaryLine)} → ${escHtml(verdict)}`)
+    senderLines.push(`${ev.status} <b>${escHtml(s.label)}</b> ${escHtml(s.email)}: ${sm.sent}/${ev.cap} sent · ${sm.bounces} bounced (${pct(sm.bounces, sm.sent)}) · ${sm.replies} replies · ${sm.unsubs} removes · ${sm.failed} failed · healthy ${ev.state.healthy_days}/${SENDER_CFG.gates.minHealthyDays}${isSenderPaused(saved) ? ` · ⏸ PAUSED ${escHtml(pauseLabel(saved))}` : ""}${isDayStopped(saved, day) ? ` · 🛑 DAY-STOP ${escHtml(saved.day_stop?.reason ?? "")}` : ""}${escHtml(canaryLine)} → ${escHtml(verdict)}`)
   }
-  const status = warnings.length ? (warnings.some((w) => /PAUSED|2%/.test(w)) ? "🔴" : "🟡") : worst
+  const status = warnings.length ? (warnings.some((w) => /PAUSED|^RED:/.test(w)) ? "🔴" : "🟡") : worst
   const capTotal = SENDERS.reduce((a, s) => a + senderCap(s), 0)
-  const snapshot = { ...m, warnings, sender: SENDERS.map((s) => s.email).join(","), cap: capTotal, senders: senderSnap, recorded_at: now.toISOString() }
+  const snapshot = { ...m, catch_all_sent: catchAllSent, t1_remaining: supply.remaining, t1_supply_days: supply.days, auto_touches: [...AUTO_SEND.touches], warnings, sender: SENDERS.map((s) => s.email).join(","), cap: capTotal, senders: senderSnap, recorded_at: now.toISOString() }
   if (!rehearsal) await sb.from("campaign_settings").upsert({ key: `health:${day}`, value: snapshot, updated_at: now.toISOString() })
   const rampNote = senderLines.length ? `\n\n${senderLines.join("\n")}` : ""
   if (m.sent === 0 && !warnings.length && !rehearsal) { log("health: no sends today, snapshot stored, no card"); return }
@@ -1267,13 +1673,34 @@ async function healthPass() {
   const card =
     (stallLines.length ? `${stallLines.join("\n")}\n\n` : "") +
     `🩺 <b>Campaign health ${status} — ${wd} ${day.slice(5)}</b>\n` +
-      `📤 ${m.sent} sent (caps ${capTotal}) · ↩️ ${m.bounces} bounced (${pct(m.bounces, m.sent)}) · 💬 ${m.replies} replies · 🚫 ${m.unsubs} removes · 🤖 ${m.autoReplies} auto-replies · ⚠️ ${m.failed} failed · 🧹 ${m.lint_rejected} lint-rejected` +
+      `📤 ${m.sent} sent (caps ${capTotal}) · 🪣 ${catchAllSent} catch-all · ↩️ ${m.bounces} bounced (${pct(m.bounces, m.sent)}) · 💬 ${m.replies} replies · 🚫 ${m.unsubs} removes · 🤖 ${m.autoReplies} auto-replies · ⚠️ ${m.failed} failed · 🧹 ${m.lint_rejected} lint-rejected · 🌐 ${m.dns_no_mx} no-MX` +
+      (m.verified ? ` · 🔎 ${m.verified} verified (${m.verify_undeliverable} invalid)` : "") +
       (canaryNote ? ` · 🐤 canary ${escHtml(canaryNote)} sent` : "") +
       `\n📈 7-day: ${agg.sent} sent, bounces ${pct(agg.bounces, agg.sent)}, replies ${pct(agg.replies, agg.sent)}, ${agg.unsubs} removes` +
+      `\n📚 ${escHtml(describeT1Supply(supply))} · 🔁 auto: ${AUTO_SEND.touches.size ? [...AUTO_SEND.touches].map((t) => `T${t}`).join("/") : "none"}${AUTO_SEND.pinned ? ` (pinned ${escHtml(AUTO_SEND.pinned)})` : ""}` +
       (warnings.length ? `\n\n${warnings.map((w) => `• ${escHtml(w)}`).join("\n")}` : "\n\nAll clear.") + rampNote
-  if (rehearsal) { log(`health rehearsal — card that WOULD post (nothing saved, nothing sent):\n${card}`); return }
+  if (rehearsal) { log(`health rehearsal — card that WOULD post (nothing saved, nothing sent):\n${card}`); await canary2Reminder(supply); return }
   await telegram(card)
   log(`health card sent: ${status} ${warnings.join("; ")}`)
+  await canary2Reminder(supply)
+}
+
+/**
+ * Task 7: when T1 supply drops under 7 weekdays at current caps, tell Ryan
+ * it is time to prep canary two — once, then weekly until the T1 queue is
+ * done. Bookkeeping in campaign_settings `canary2_reminder_sent_at`. The
+ * `canary2 …` command itself is a later brief (Telegram answers "noted").
+ */
+async function canary2Reminder(supply) {
+  const { data } = await sb.from("campaign_settings").select("value").eq("key", CANARY2_REMINDER_KEY).maybeSingle()
+  const state = data?.value ?? null
+  const due = canary2ReminderDue({ supply, state })
+  if (!due.due) { log(`canary2 reminder: not due (${due.why})`); return }
+  const text = canary2ReminderText(supply)
+  if (dryRun) { log(`would telegram (${due.why}): ${text}`); return }
+  await telegram(escHtml(text))
+  await sb.from("campaign_settings").upsert({ key: CANARY2_REMINDER_KEY, value: withCanary2Reminder(state, supply), updated_at: new Date().toISOString() })
+  log(`canary2 reminder sent (${due.why}): ${supply.remaining} T1 left, ~${supply.days} weekdays`)
 }
 
 // ---------- Friday send-time scorecard ----------
@@ -1386,13 +1813,16 @@ const rampOk = await runPass("ramp", loadRamp)
 // would send/draft at the wrong volume; observation passes still run.
 // --judge-now / --judge-backfill are judge-only runs: ramp (for the sender
 // states) + judge, nothing else — so a manual backfill never drafts or sends.
-if (rampOk && !digestOnly && !judgeOnly && doDraft) await runPass("draft", draftPass)
-if (rampOk && !digestOnly && !judgeOnly && doSend) await runPass("send", sendPass)
-if (!judgeOnly) await runPass("digest", digestPass)
-if (rampOk && !digestOnly && !judgeOnly && doSend) await runPass("canary", canaryPass)
-if (rampOk && !digestOnly) await runPass("judge", judgePass)
-if (!judgeOnly) await runPass("health", healthPass)
-if (!judgeOnly) await runPass("scorecard", scorecardPass)
+// --verify-all / --verify-domains are verify-only runs the same way.
+const manualOnly = judgeOnly || verifyOnly
+if (rampOk && !digestOnly && !judgeOnly && (verifyOnly || doDraft)) await runPass("verify", verifyPass)
+if (rampOk && !digestOnly && !manualOnly && doDraft) await runPass("draft", draftPass)
+if (rampOk && !digestOnly && !manualOnly && doSend) await runPass("send", sendPass)
+if (!manualOnly) await runPass("digest", digestPass)
+if (rampOk && !digestOnly && !manualOnly && doSend) await runPass("canary", canaryPass)
+if (rampOk && !digestOnly && !verifyOnly) await runPass("judge", judgePass)
+if (!manualOnly) await runPass("health", healthPass)
+if (!manualOnly) await runPass("scorecard", scorecardPass)
 if (passFailures.length) {
   await telegram(`🔥 Campaign engine: ${passFailures.length} pass(es) failed — ${passFailures.join(" · ")}`)
   process.exit(1)

@@ -168,6 +168,23 @@ Per sender, per PT day, evaluated every engine cycle (not just at 5:15 PM):
 
 ### 5. Kickbox verification module (`lib/verify.ts` + engine pass)
 
+> **Vendor change 2026-10-15:** Kickbox refused Ryan's account under its
+> Acceptable Use Policy (a public-record / directory-sourced B2B list is not
+> "opt-in" to them; the $5 was refunded). The verifier is **MillionVerifier**
+> instead — its terms explicitly permit third-party and publicly available
+> data used lawfully (CAN-SPAM-compliant B2B, which this campaign is).
+> 100 free credits on signup, ~$37 for 10k, credits never expire. Endpoint
+> `GET https://api.millionverifier.com/api/v3/?api=&email=&timeout=10`
+> (trailing slash required; `timeout` in seconds); env var
+> `MILLIONVERIFIER_API_KEY` in `.env.local` only (the engine reads
+> `.env.local` itself — the launchd plist carries no `EnvironmentVariables`).
+> The engine contract below (result vocabulary, `accept_all`, the action
+> table, columns, pass, CLI) is unchanged: MillionVerifier `ok` →
+> deliverable, `catch_all` → risky + accept_all, `invalid` / `disposable` →
+> undeliverable, `unknown` → unknown. Test keys are `API_KEY_FOR_OK` /
+> `API_KEY_FOR_INVALID` / `API_KEY_FOR_DISPOSABLE` / … (not `test_…`).
+> The rest of this task is left as written.
+
 - `lib/verify.ts`: `verifyEmail(email) → { result: "deliverable" | "undeliverable" | "risky" | "unknown", reason, accept_all: boolean, sendex, checked_at }`
   using Kickbox `GET https://api.kickbox.com/v2/verify?email=&apikey=&timeout=10000`.
   Batch via sequential single calls with a small concurrency (≤ 5) — the list

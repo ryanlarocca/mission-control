@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server"
 import { getLeadsClient } from "@/lib/leads"
-import { randomSendSlot } from "@/lib/campaignSlots"
+import { ensureFreshSlot, randomSendSlot } from "@/lib/campaignSlots"
 import { createHash } from "node:crypto"
 
 // Mirrors bodyHash() in scripts/campaign-compose.mjs (unique-body guard).
@@ -73,15 +73,17 @@ export async function PATCH(
       patch.status = "approved"
       patch.approved_at = new Date().toISOString()
       // Optional "don't send before" time; default = a random send-time-
-      // experiment slot (next weekday, 7a-5p PT — Ryan 2026-07-31).
+      // experiment slot (next weekday, 7a-5p PT — Ryan 2026-07-31). A time
+      // already past at approval is respread into the next window ahead
+      // (autopilot brief, Task 8) instead of bursting at the next pass.
       if (typeof body.scheduled_for === "string" && body.scheduled_for.trim()) {
         const d = new Date(body.scheduled_for)
         if (Number.isNaN(d.getTime())) {
           return NextResponse.json({ error: "scheduled_for is not a valid time" }, { status: 400 })
         }
-        patch.scheduled_for = d.toISOString()
+        patch.scheduled_for = ensureFreshSlot(d.toISOString())
       } else {
-        patch.scheduled_for = randomSendSlot()
+        patch.scheduled_for = ensureFreshSlot(randomSendSlot())
       }
     } else if (body.action === "skip") {
       patch.status = "skipped"

@@ -3,6 +3,7 @@ import { findPlannerDraftByTgMessage, redraftFromTelegram, sendPlannerDraft, dis
 import { getLeadsClient, lookupLeadName, normalizeE164, sendLeadSms } from "@/lib/leads"
 import { approveBatch, setPaused, campaignStatusLine } from "@/lib/campaignBatch"
 import { resolveSender, setSenderPaused, recordCanaryVerdict, recordPostmaster } from "@/lib/campaignSenders"
+import { autoSendStatusLine, describeAutoSend, setAutoTouch } from "@/lib/campaignAutoSend"
 import { waitUntil } from "@vercel/functions"
 import { sendAgentsLineText, startAgentsLineRelayCall } from "@/lib/campaignSms"
 import { contactPhoneByName, sendCampaignEmailReply } from "@/lib/campaignEmail"
@@ -548,6 +549,39 @@ export async function POST(request: Request) {
   if (/^campaign status\b/i.test(body)) {
     const line = await campaignStatusLine()
     await tg("sendMessage", { chat_id: chatId, text: `📊 ${line}`, reply_to_message_id: msg.message_id })
+    return NextResponse.json({ ok: true })
+  }
+
+  // Auto-approve switch (autopilot brief 2026-10-15, Task 1): "auto T1 on",
+  // "auto T2 off", "auto status". `on` re-pins the touch to the current
+  // PROMPT_VERSION; a later prompt change re-gates it until the next "on".
+  if (/^auto\s+status\b/i.test(body)) {
+    await tg("sendMessage", { chat_id: chatId, text: `🔁 ${await autoSendStatusLine()}`, reply_to_message_id: msg.message_id })
+    return NextResponse.json({ ok: true })
+  }
+  // "canary2 <address> <app password>" — the second-canary enrolment is a
+  // later brief (autopilot brief, Task 7: out of scope here). Acknowledge so
+  // the credentials never fall through to a send path.
+  if (/^canary2\b/i.test(body)) {
+    await tg("sendMessage", { chat_id: chatId, text: "noted — build pending. Canary two (enrolled-contact canary for T2) is the next brief; T2 stays gated until it clears.", reply_to_message_id: msg.message_id })
+    return NextResponse.json({ ok: true })
+  }
+  const autoCmd = /^auto\s+t\s*(\d{1,2})\s+(on|off)\b/i.exec(body)
+  if (autoCmd) {
+    const touch = Number(autoCmd[1])
+    const on = autoCmd[2].toLowerCase() === "on"
+    try {
+      const row = await setAutoTouch(touch, on, "ryan")
+      await tg("sendMessage", {
+        chat_id: chatId,
+        text: on
+          ? `✅ T${touch} is auto — new T${touch} drafts go straight to approved (pinned to prompt ${row.pinned_prompt_version ?? "?"}; a prompt change re-gates it).\n${describeAutoSend(row)}`
+          : `🔒 T${touch} is gated — new T${touch} drafts wait for your ✅ at the daily mint.\n${describeAutoSend(row)}`,
+        reply_to_message_id: msg.message_id,
+      })
+    } catch (e) {
+      await tg("sendMessage", { chat_id: chatId, text: `⚠️ auto T${touch} ${on ? "on" : "off"} failed — ${e instanceof Error ? e.message : String(e)}`, reply_to_message_id: msg.message_id })
+    }
     return NextResponse.json({ ok: true })
   }
 

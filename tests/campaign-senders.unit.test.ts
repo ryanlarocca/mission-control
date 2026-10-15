@@ -22,13 +22,19 @@ describe("per-sender pause (item 3)", () => {
     expect(resumed.paused_reason).toBeNull()
   })
 
-  it("a red bounce day recommends an auto-pause and drops a rung; a pause alone only holds", () => {
+  it("a red bounce day (breaker ≥ 5% at ≥ 10 sent) recommends an auto-pause and drops a rung; a pause alone only holds", () => {
     const st = { ...freshState(), step: 2, entered_step: "2026-10-01", healthy_days: 2 }
-    const red = evaluateSenderDay({ sender: buys, state: st, day: "2026-10-06", metrics: { ...greenDay(20), bounces: 1 }, trailing: { sent: 60, bounces: 0, replies: 2 }, gates })
+    const red = evaluateSenderDay({ sender: buys, state: st, day: "2026-10-06", metrics: { ...greenDay(20), bounces: 2 }, trailing: { sent: 60, bounces: 0, replies: 2 }, gates })
     expect(red.status).toBe("🔴")
     expect(red.decision).toBe("drop")
-    expect(red.autoPause?.reason).toMatch(/bounce rate/)
+    expect(red.autoPause?.reason).toMatch(/bounce rate 10.0% \(2\/20\) ≥ 5%/)
     expect(red.state.step).toBe(1)
+    // one bounce on 20 is the watch line, never a trip (autopilot brief: the 1st bounce only stamps the contact)
+    const one = evaluateSenderDay({ sender: buys, state: st, day: "2026-10-06", metrics: { ...greenDay(20), bounces: 1 }, trailing: { sent: 60, bounces: 0, replies: 2 }, gates })
+    expect(one.status).toBe("🟡")
+    expect(one.breaker.level).toBe("none")
+    expect(one.autoPause).toBeNull()
+    expect(one.state.step).toBe(2)
     const held = evaluateSenderDay({ sender: buys, state: st, day: "2026-10-06", metrics: greenDay(20), trailing: { sent: 60, bounces: 0, replies: 2 }, gates, extra: { paused: "manual (ryan)" } })
     expect(held.status).toBe("🟡")
     expect(held.decision).toBe("hold")
@@ -36,14 +42,50 @@ describe("per-sender pause (item 3)", () => {
     expect(held.state.step).toBe(2)
   })
 
-  it("below 10 sends, two bounces is red but one is not", () => {
+  it("below 10 sends, two bounces is a day-stop (yellow, hold) and one is only the watch line", () => {
     const st = { ...freshState(), entered_step: "2026-10-01" }
     const one = evaluateSenderDay({ sender: buys, state: st, day: "2026-10-02", metrics: { ...greenDay(5), bounces: 1 }, trailing: {}, gates })
     expect(one.status).toBe("🟡")
     expect(one.autoPause).toBeNull()
     const two = evaluateSenderDay({ sender: buys, state: st, day: "2026-10-02", metrics: { ...greenDay(5), bounces: 2 }, trailing: {}, gates })
-    expect(two.status).toBe("🔴")
-    expect(two.autoPause?.hours).toBe(gates.autoPauseHours)
+    expect(two.status).toBe("🟡")
+    expect(two.breaker.level).toBe("day_stop")
+    expect(two.warnings.join()).toMatch(/day-stopped/)
+    expect(two.decision).toBe("hold")
+    expect(two.autoPause).toBeNull()
+    // 3 bounces inside the first hour is red at any volume
+    const burst = evaluateSenderDay({ sender: buys, state: st, day: "2026-10-02", metrics: { ...greenDay(5), bounces: 3, bouncesFirstHour: 3 }, trailing: {}, gates })
+    expect(burst.status).toBe("🔴")
+    expect(burst.autoPause?.hours).toBe(gates.autoPauseHours)
+  })
+
+  it("removes never hold the rung by themselves; the floored copy tripwire does (autopilot brief, Task 2)", () => {
+    const st = { ...freshState(), entered_step: "2026-10-01", healthy_days: 0 }
+    const twoRemoves = evaluateSenderDay({ sender: buys, state: st, day: "2026-10-02", metrics: { ...greenDay(8), unsubs: 2 }, trailing: {}, gates })
+    expect(twoRemoves.status).toBe("🟢")
+    expect(twoRemoves.removeTrip.level).toBe("none")
+    expect(twoRemoves.state.healthy_days).toBe(1)
+    const yellow = evaluateSenderDay({ sender: buys, state: { ...st, step: 2 }, day: "2026-10-02", metrics: { ...greenDay(20), unsubs: 3 }, trailing: {}, gates })
+    expect(yellow.status).toBe("🟡")
+    expect(yellow.removeTrip.level).toBe("yellow")
+    expect(yellow.decision).toBe("hold")
+    expect(yellow.warnings.join()).toMatch(/copy tripwire: 3 removes \(15.0% of 20 sent\)/)
+    const red = evaluateSenderDay({ sender: buys, state: { ...st, step: 2 }, day: "2026-10-02", metrics: { ...greenDay(30), unsubs: 5 }, trailing: {}, gates })
+    expect(red.removeTrip.level).toBe("red")
+    expect(red.status).toBe("🟡") // a copy problem holds; it never drops a rung
+    expect(red.decision).toBe("hold")
+    expect(red.state.step).toBe(2)
+  })
+
+  it("a day-stop recorded on the sender state reads as yellow at the health pass", () => {
+    const st = { ...freshState(), step: 1, entered_step: "2026-10-01", day_stop: { day: "2026-10-02", reason: "2 bounces on 8 sent", at: "2026-10-02T17:00:00Z" } }
+    const ev = evaluateSenderDay({ sender: buys, state: st, day: "2026-10-02", metrics: greenDay(8), trailing: {}, gates })
+    expect(ev.status).toBe("🟡")
+    expect(ev.decision).toBe("hold")
+    expect(ev.warnings.join()).toMatch(/day-stopped: 2 bounces on 8 sent/)
+    // yesterday's day-stop says nothing about today
+    const next = evaluateSenderDay({ sender: buys, state: st, day: "2026-10-03", metrics: greenDay(8), trailing: {}, gates })
+    expect(next.status).toBe("🟢")
   })
 })
 
