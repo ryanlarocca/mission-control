@@ -59,12 +59,29 @@ const scoreWeek = score(weekRows), scoreAll = score(sent)
 const pct = (n, d) => (d ? `${Math.round((100 * n) / d)}%` : "–")
 
 // ── 2. new whys ────────────────────────────────────────────────────────────
-const whys = await all(sb.from("reply_drafts").select("id, surface, moment, why_text, created_at, lead_id, relationship_id").not("why_text", "is", null).is("reviewed_at", null).neq("surface", "eval").order("created_at", { ascending: true }))
+// Coached gists (BRIEF_COACHED_DRAFT_2026-10-15.md §F2) join the same pending
+// list for their moment, prefixed "coach:". A gist is what Ryan wanted said;
+// a why is what was wrong. Both are questions, never rules — Ryan approves
+// any principle. Own query so a database without the coach columns still
+// reviews the whys.
+async function coachGists(unreviewedOnly) {
+  try {
+    let q = sb.from("reply_drafts").select("id, surface, moment, gist, created_at, lead_id, relationship_id").eq("mode", "coach").not("gist", "is", null).neq("surface", "eval").order("created_at", { ascending: true })
+    if (unreviewedOnly) q = q.is("reviewed_at", null)
+    return (await all(q)).filter((g) => (g.gist || "").trim()).map((g) => ({ ...g, why_text: `coach: ${g.gist.trim()}` }))
+  } catch (e) {
+    console.warn("[review] coached gists unavailable (migration not applied?):", e.message)
+    return []
+  }
+}
+const whysOnly = await all(sb.from("reply_drafts").select("id, surface, moment, why_text, created_at, lead_id, relationship_id").not("why_text", "is", null).is("reviewed_at", null).neq("surface", "eval").order("created_at", { ascending: true }))
+const whys = [...whysOnly, ...(await coachGists(true))].sort((a, b) => a.created_at.localeCompare(b.created_at))
 const whysByMoment = {}
 for (const w of whys) (whysByMoment[w.moment || "?"] ??= []).push(w)
 
 // ── 3. candidate principles (all unreviewed + reviewed whys per moment, so ≥3 accumulates across weeks) ──
-const allWhys = await all(sb.from("reply_drafts").select("moment, why_text, created_at").not("why_text", "is", null).neq("surface", "eval").order("created_at", { ascending: true }))
+const allWhysOnly = await all(sb.from("reply_drafts").select("moment, why_text, created_at").not("why_text", "is", null).neq("surface", "eval").order("created_at", { ascending: true }))
+const allWhys = [...allWhysOnly, ...(await coachGists(false))]
 const allByMoment = {}
 for (const w of allWhys) (allByMoment[w.moment || "?"] ??= []).push(w.why_text)
 const candidates = []
@@ -72,7 +89,7 @@ if (process.env.ANTHROPIC_API_KEY) {
   const client = new Anthropic()
   for (const [moment, list] of Object.entries(allByMoment)) {
     if (list.length < 3) continue
-    const prompt = `These are Ryan's one-sentence notes on why an AI-drafted reply was wrong, all for the same kind of moment ("${moment}"). Group them into themes. For each theme give a short name, the count, the indices of the notes in it, and — only when the count is 3 or more — a one-sentence principle, phrased as a rule for how to write (never as an example sentence).
+    const prompt = `These are Ryan's one-sentence notes on AI-drafted replies, all for the same kind of moment ("${moment}"). A plain note says why a draft was wrong; a note starting "coach:" is the gist he dictated for a reply he wanted written his way. Group them into themes. For each theme give a short name, the count, the indices of the notes in it, and — only when the count is 3 or more — a one-sentence principle, phrased as a rule for how to write (never as an example sentence).
 
 NOTES
 ${list.map((t, i) => `${i + 1}. ${t}`).join("\n")}
