@@ -1,5 +1,6 @@
 import type { SupabaseClient } from "@supabase/supabase-js"
 import { formatUsPhone, isPlaceholderName, last10, toE164, type OfficeCaller } from "./office-inbound"
+import { relationshipsByAnyPhone } from "./relationships"
 
 // Agents line (650) 910-4007 + agent email-campaign replies → Relationships.
 //
@@ -53,8 +54,8 @@ function stampDay(): string {
   return new Date().toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric", timeZone: "America/Los_Angeles" })
 }
 
-type RelRow = { id: string; name: string | null; category: string | null; tier: string | null; status: string | null; phone: string | null; email: string | null }
-const REL_COLS = "id, name, category, tier, status, phone, email"
+type RelRow = { id: string; name: string | null; category: string | null; tier: string | null; status: string | null; phone: string | null; email: string | null; alt_phones: string[] | null }
+const REL_COLS = "id, name, category, tier, status, phone, email, alt_phones"
 
 async function relById(sb: SupabaseClient, id: string): Promise<RelRow | null> {
   const { data } = await sb.from("relationships").select(REL_COLS).eq("id", id).limit(1)
@@ -63,13 +64,9 @@ async function relById(sb: SupabaseClient, id: string): Promise<RelRow | null> {
 async function relByPhone(sb: SupabaseClient, phone: string): Promise<RelRow | null> {
   const d = last10(phone)
   if (d.length !== 10) return null
-  const { data } = await sb
-    .from("relationships")
-    .select(REL_COLS)
-    .like("phone", `%${d}`)
-    .order("status", { ascending: true }) // "active" < "do_not_contact"
-    .limit(5)
-  return (data?.[0] as RelRow) ?? null
+  // Main number OR an extra (alt_phones) — active rows first.
+  const rows = await relationshipsByAnyPhone<RelRow>(sb, d, REL_COLS)
+  return rows[0] ?? null
 }
 async function relByEmail(sb: SupabaseClient, email: string): Promise<RelRow | null> {
   const e = email.trim().toLowerCase()

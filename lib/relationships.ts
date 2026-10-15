@@ -18,7 +18,7 @@ export const RELATIONSHIP_TYPES: readonly RelationshipCategory[] = [
 
 // Column list for `select()` against the relationships table.
 export const REL_COLUMNS =
-  "id, name, phone, email, source, category, tier, notes, enriched_at, last_contacted_at, snooze_until, source_lead_id, status, cleanup_verdict, cleanup_reviewed_at"
+  "id, name, phone, email, alt_phones, source, category, tier, notes, enriched_at, last_contacted_at, snooze_until, source_lead_id, status, cleanup_verdict, cleanup_reviewed_at"
 
 // Cleanup-mode triage verdicts (2026-07-16): keep = leave as-is, vague =
 // demoted to tier D, never = status set to do_not_contact.
@@ -30,6 +30,9 @@ export interface RelationshipRow {
   name: string
   phone: string | null
   email: string | null
+  // Other numbers they reach us from (E.164) — matched on inbound, shown as
+  // "also:" on the card, never dialed (2026-10-15).
+  alt_phones: string[]
   source: string | null
   category: string
   tier: string
@@ -50,6 +53,8 @@ export interface ApiContact {
   name: string
   phone: string
   email: string | null
+  // 10-digit extras, display only.
+  altPhones: string[]
   tier: string
   type: RelationshipCategory
   category: RelationshipCategory
@@ -79,6 +84,73 @@ export function to10Digit(phone: string | null): string {
   return d.length >= 10 ? d.slice(-10) : d
 }
 
+// 10 digits → E.164 ("+1" + digits); null when it isn't a 10-digit US number.
+export function toE164Phone(phone: string | null | undefined): string | null {
+  const d = to10Digit(phone ?? null)
+  return d.length === 10 ? `+1${d}` : null
+}
+
+// The alt_phones list as stored: E.164, de-duplicated (by last 10 digits),
+// never equal to the card's main `phone`. Order is preserved, first wins.
+export function normalizeAltPhones(alt: readonly (string | null)[] | null | undefined, mainPhone: string | null): string[] {
+  const main = to10Digit(mainPhone)
+  const seen = new Set<string>()
+  const out: string[] = []
+  for (const raw of alt ?? []) {
+    const e164 = toE164Phone(raw)
+    if (!e164) continue
+    const d = e164.slice(2)
+    if (d === main || seen.has(d)) continue
+    seen.add(d)
+    out.push(e164)
+  }
+  return out
+}
+
+// A typed-in phone → exactly 10 US digits (a leading "1" country code is
+// fine); null for anything else. Stricter than to10Digit on purpose — this
+// gates what Ryan types into the card.
+export function parseUsPhone10(input: string | null | undefined): string | null {
+  let d = String(input ?? "").replace(/\D/g, "")
+  if (d.length === 11 && d.startsWith("1")) d = d.slice(1)
+  return d.length === 10 ? d : null
+}
+
+// Make `newPhone10` the number the Call/Text buttons dial. The old main
+// number is kept as an extra so a call from it still lands on this card;
+// the new number leaves the extras if it was one ("promote an extra").
+export function planPhoneChange(
+  row: { phone: string | null; alt_phones: readonly string[] | null },
+  newPhone10: string,
+): { phone: string; alt_phones: string[] } | null {
+  const phone = toE164Phone(newPhone10)
+  if (!phone) return null
+  return { phone, alt_phones: normalizeAltPhones([...(row.alt_phones ?? []), row.phone], phone) }
+}
+
+// Relationships rows that know a number — as `phone` OR in `alt_phones`.
+// Phones are stored E.164, so a last-10 LIKE covers any legacy formatting;
+// the array containment needs the exact "+1…" form. Active rows sort before
+// do_not_contact ("active" < "do_not_contact") so a live card always wins.
+// Every inbound phone → card lookup goes through here (2026-10-15).
+export async function relationshipsByAnyPhone<T = Record<string, unknown>>(
+  sb: SupabaseClient,
+  phone10: string,
+  cols: string,
+  limit = 5,
+): Promise<T[]> {
+  const d = to10Digit(phone10)
+  if (d.length !== 10) return []
+  const { data, error } = await sb
+    .from("relationships")
+    .select(cols)
+    .or(`phone.like.%${d},alt_phones.cs.{+1${d}}`)
+    .order("status", { ascending: true })
+    .limit(limit)
+  if (error) throw error
+  return (data ?? []) as unknown as T[]
+}
+
 function humanDate(d: Date): string {
   return d.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })
 }
@@ -103,6 +175,7 @@ export function toApiContact(row: RelationshipRow): ApiContact {
     name: row.name,
     phone: to10Digit(row.phone),
     email: row.email,
+    altPhones: (row.alt_phones ?? []).map(to10Digit).filter((p) => p.length === 10),
     tier,
     type,
     category: type,

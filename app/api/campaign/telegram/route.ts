@@ -26,9 +26,13 @@ import {
 import {
   extractContactFromImage,
   findDuplicates,
+  formatMergedMessage,
   formatPending,
   insertRelationship,
+  isMainCommand,
+  makeMainPhone,
   parseCaptionHints,
+  parseMergedMessage,
   parsePending,
   parseRenameCommand,
   renameRelationshipByPhone,
@@ -673,9 +677,18 @@ export async function POST(request: Request) {
     const out = await renameRelationshipByPhone(phone10, rename, { force: rename.verb === "rename" })
     const fmt = `(${phone10.slice(0, 3)}) ${phone10.slice(3, 6)}-${phone10.slice(6)}`
     let text: string
-    if (out.success) {
+    if (out.success && out.merged) {
+      // The name already had a card → the placeholder folded into it
+      // (2026-10-15). The 🔗 message is what a "main" reply parses.
+      text = formatMergedMessage(out)
+    } else if (out.success) {
       const meta = [out.category, out.tier ? `tier ${out.tier}` : null].filter(Boolean).join(", ")
       text = `✏️ ${out.previous && out.previous !== fmt ? out.previous : fmt} → <b>${out.name}</b>${meta ? ` (${meta})` : ""} — Relationships card updated.`
+    } else if (out.reason === "ambiguous") {
+      const cards = out.candidates
+        .map((c) => `${c.phone ? fmtPhone(c.phone.replace(/\D/g, "").slice(-10)) : "no phone"} · ${c.category ?? "—"}/${c.tier ?? "—"}`)
+        .join(", ")
+      text = `⚠️ ${out.candidates.length} cards are named ${rename.name} — ${cards}. Rename it from the Relationships tab.`
     } else if (out.reason === "has_name") {
       text = `⚠️ ${fmt} is already <b>${out.current}</b>. Reply "rename: ${rename.name}" to overwrite.`
     } else if (out.reason === "not_found") {
@@ -684,6 +697,26 @@ export async function POST(request: Request) {
       text = `⚠️ Rename failed — ${out.error}`
     }
     await tg("sendMessage", { chat_id: chatId, text, parse_mode: "HTML", reply_to_message_id: msg.message_id })
+    return NextResponse.json({ ok: true })
+  }
+
+  // "main" in reply to the bot's 🔗 merged message → the added number
+  // becomes the one the Call button dials; the old main is kept as an
+  // extra (2026-10-15). Both numbers come back out of the replied text.
+  // Stays above the send paths like the rename branch — a bare "main"
+  // must never go out as a text.
+  if (isMainCommand(body)) {
+    const merged = parseMergedMessage(repliedText)
+    let text: string
+    if (!merged) {
+      text = "⚠️ Reply \"main\" to a 🔗 merged message — that's the one that knows which number to swap in."
+    } else {
+      const out = await makeMainPhone(merged.mainPhone, merged.addedPhone)
+      text = out.success
+        ? `📞 Call button now dials ${fmtPhone(out.phone)} for ${out.name}; ${fmtPhone(out.kept)} kept as an extra.`
+        : `⚠️ Couldn't change the main number — ${out.error}`
+    }
+    await tg("sendMessage", { chat_id: chatId, text, reply_to_message_id: msg.message_id })
     return NextResponse.json({ ok: true })
   }
 

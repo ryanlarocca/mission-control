@@ -11,6 +11,7 @@
 
 import type { SupabaseClient } from "@supabase/supabase-js"
 import { OFFICE_NUMBERS } from "./leads"
+import { relationshipsByAnyPhone } from "./relationships"
 
 export type OfficeCaller =
   | { kind: "lead" }
@@ -66,15 +67,12 @@ export async function resolveOfficeCaller(sb: SupabaseClient, phone: string): Pr
   const norm = last10(phone)
   if (norm.length < 10) return { kind: "lead" }
   try {
-    // 1. Relationships — phones are stored E.164; last-10 LIKE covers any
-    //    legacy formatting. Prefer an active row over do_not_contact.
-    const { data: rels } = await sb
-      .from("relationships")
-      .select("id, name, category, tier, status")
-      .like("phone", `%${norm}`)
-      .order("status", { ascending: true }) // "active" < "do_not_contact"
-      .limit(5)
-    const rel = rels?.[0]
+    // 1. Relationships — their main number or one of their extras
+    //    (alt_phones). Prefer an active row over do_not_contact.
+    const rels = await relationshipsByAnyPhone<{ id: string; name: string | null; category: string | null; tier: string | null; status: string | null }>(
+      sb, norm, "id, name, category, tier, status"
+    )
+    const rel = rels[0]
     if (rel?.id) {
       return {
         kind: "relationship",

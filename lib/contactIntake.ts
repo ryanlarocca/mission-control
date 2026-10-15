@@ -1,7 +1,8 @@
 import Anthropic from "@anthropic-ai/sdk"
 import { getLeadsClient } from "@/lib/leads"
 import { normalizeCategory } from "@/lib/crms"
-import { fetchAllRelationships, to10Digit } from "@/lib/relationships"
+import { fetchAllRelationships, normalizeAltPhones, planPhoneChange, relationshipsByAnyPhone, to10Digit } from "@/lib/relationships"
+import { formatUsPhone } from "@/lib/office-inbound"
 
 // Screenshot → Relationships contact, commanded from Telegram (2026-08-20).
 //
@@ -170,6 +171,7 @@ export async function findDuplicates(c: { name: string | null; phone: string | n
     const rPhone = to10Digit(r.phone)
     if (qName && rName === qName) fields.push("name")
     if (c.phone && rPhone === c.phone) fields.push("phone")
+    else if (c.phone && (r.alt_phones ?? []).some((p) => to10Digit(p) === c.phone)) fields.push("phone")
     if (c.email && String(r.email ?? "").toLowerCase().trim() === c.email) fields.push("email")
     // Near-miss: same last name + same phone prefix (first 7 digits) — catches
     // "Jim Morelan 464-4436" vs on-file "James Morelan 464-4449" (2026-08-20).
@@ -265,37 +267,125 @@ export function parseRenameCommand(body: string): RenameCommand | null {
 }
 
 export type RenameOutcome =
-  | { success: true; id: string; previous: string; name: string; category: string | null; tier: string | null; phone: string }
+  | { success: true; merged: false; id: string; previous: string; name: string; category: string | null; tier: string | null; phone: string }
+  | {
+      success: true
+      merged: true
+      id: string
+      name: string
+      category: string | null
+      tier: string | null
+      /** 10 digits — the number the Call button dials after the merge */
+      mainPhone: string
+      /** 10 digits — the placeholder's number, now on the target card */
+      addedPhone: string
+      /** where the placeholder's number landed on the target */
+      placement: "phone" | "alt_phones"
+      movedTouches: number
+    }
   | { success: false; reason: "not_found" | "has_name" | "error"; error?: string; current?: string; phone: string }
+  | { success: false; reason: "ambiguous"; candidates: MergeCandidate[]; phone: string }
+
+// A card that already carries the name Ryan typed — the merge target.
+export interface MergeCandidate {
+  id: string
+  name: string
+  phone: string | null
+  alt_phones: string[] | null
+  email: string | null
+  category: string | null
+  tier: string | null
+}
+
+export type MergePlan =
+  | { kind: "rename" }
+  | { kind: "merge"; target: MergeCandidate; placement: "phone" | "alt_phones"; altPhones: string[] }
+  | { kind: "ambiguous"; candidates: MergeCandidate[] }
+
+/** Decide what "name: X" does to a placeholder card when other cards are
+ * named X too (2026-10-15 — Vlad called from his cell before his email reply
+ * made his real card). Zero matches → plain rename. Exactly one → merge the
+ * placeholder into it: its number becomes the target's `phone` when the
+ * target has none, else an extra in `alt_phones`. Two or more → do nothing
+ * and ask Ryan. Pure; the DB writes live in renameRelationshipByPhone. */
+export function planNameMerge(placeholder: { id: string; phone: string | null }, candidates: MergeCandidate[]): MergePlan {
+  const others = candidates.filter((c) => c.id !== placeholder.id)
+  if (others.length === 0) return { kind: "rename" }
+  if (others.length > 1) return { kind: "ambiguous", candidates: others }
+  const target = others[0]
+  if (!target.phone) {
+    return { kind: "merge", target, placement: "phone", altPhones: normalizeAltPhones(target.alt_phones, placeholder.phone) }
+  }
+  return {
+    kind: "merge",
+    target,
+    placement: "alt_phones",
+    altPhones: normalizeAltPhones([...(target.alt_phones ?? []), placeholder.phone], target.phone),
+  }
+}
+
+const RENAME_COLS = "id, name, phone, alt_phones, email, source, category, tier, notes, status"
+type RenameRow = MergeCandidate & { source: string | null; notes: string | null; status: string | null }
+
+function stampDay(): string {
+  return new Date().toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric", timeZone: "America/Los_Angeles" })
+}
+
+// "650-279-7880" — the dashed form the note lines use.
+function dashedPhone(phone10: string): string {
+  return `${phone10.slice(0, 3)}-${phone10.slice(3, 6)}-${phone10.slice(6)}`
+}
+
+// Escape ILIKE wildcards so "name: X" matches the name literally.
+function ilikeLiteral(s: string): string {
+  return s.replace(/[\\%_]/g, (ch) => `\\${ch}`)
+}
 
 /** Rename the Relationships contact whose phone ends in `phone10`. A real
- * (non-placeholder) name is only overwritten when `force` is set. */
+ * (non-placeholder) name is only overwritten when `force` is set. When the
+ * card is still a placeholder and exactly one other card already carries
+ * the name, the placeholder is merged into that card instead (see
+ * planNameMerge). */
 export async function renameRelationshipByPhone(
   phone10: string,
   cmd: { name: string; category: Category | null; tier: Tier | null },
   opts: { force: boolean }
 ): Promise<RenameOutcome> {
   const sb = getLeadsClient()
-  const { data: rows, error } = await sb
-    .from("relationships")
-    .select("id, name, phone, category, tier, notes, status")
-    .like("phone", `%${phone10}`)
-    .order("status", { ascending: true }) // "active" < "do_not_contact"
-    .limit(5)
-  if (error) return { success: false, reason: "error", error: error.message, phone: phone10 }
-  const row = rows?.[0]
+  let rows: RenameRow[]
+  try {
+    rows = await relationshipsByAnyPhone<RenameRow>(sb, phone10, RENAME_COLS)
+  } catch (e) {
+    return { success: false, reason: "error", error: e instanceof Error ? e.message : String(e), phone: phone10 }
+  }
+  const row = rows[0]
   if (!row?.id) return { success: false, reason: "not_found", phone: phone10 }
-  const previous = (row.name as string | null) ?? ""
+  const previous = row.name ?? ""
   const placeholder = !previous.trim() || to10Digit(previous) === phone10
   if (!placeholder && !opts.force && previous.trim() !== cmd.name) {
     return { success: false, reason: "has_name", current: previous, phone: phone10 }
   }
-  const day = new Date().toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric", timeZone: "America/Los_Angeles" })
+  const day = stampDay()
+
+  // A placeholder whose real name is already a card → merge, not a twin.
+  if (placeholder) {
+    const { data: same, error: sameErr } = await sb
+      .from("relationships")
+      .select(RENAME_COLS)
+      .ilike("name", ilikeLiteral(cmd.name.trim()))
+      .neq("id", row.id)
+      .limit(10)
+    if (sameErr) return { success: false, reason: "error", error: sameErr.message, phone: phone10 }
+    const plan = planNameMerge(row, (same ?? []) as unknown as MergeCandidate[])
+    if (plan.kind === "ambiguous") return { success: false, reason: "ambiguous", candidates: plan.candidates, phone: phone10 }
+    if (plan.kind === "merge") return mergePlaceholderInto(sb, row, plan, cmd, day)
+  }
+
   const bits = [`"${previous || "(blank)"}" → "${cmd.name}"`]
   if (cmd.category && cmd.category !== row.category) bits.push(`category ${row.category ?? "—"} → ${cmd.category}`)
   if (cmd.tier && cmd.tier !== row.tier) bits.push(`tier ${row.tier ?? "—"} → ${cmd.tier}`)
   const line = `Renamed via Telegram ${day}: ${bits.join("; ")}.`
-  const prevNotes = (row.notes as string | null) ?? ""
+  const prevNotes = row.notes ?? ""
   const patch: Record<string, string> = { name: cmd.name, notes: prevNotes ? `${prevNotes}\n\n${line}` : line }
   if (cmd.category) patch.category = cmd.category
   if (cmd.tier) patch.tier = cmd.tier
@@ -303,13 +393,140 @@ export async function renameRelationshipByPhone(
   if (upErr) return { success: false, reason: "error", error: upErr.message, phone: phone10 }
   return {
     success: true,
-    id: row.id as string,
+    merged: false,
+    id: row.id,
     previous,
     name: cmd.name,
-    category: cmd.category ?? ((row.category as string | null) ?? null),
-    tier: cmd.tier ?? ((row.tier as string | null) ?? null),
-    phone: (row.phone as string | null) ?? phone10,
+    category: cmd.category ?? (row.category ?? null),
+    tier: cmd.tier ?? (row.tier ?? null),
+    phone: row.phone ?? phone10,
   }
+}
+
+/** Fold a placeholder card into the card that already has its name: the
+ * number moves over (main or extra), its touches re-point, its email fills
+ * a blank, and the placeholder row is deleted LAST — only once the touches
+ * are safely on the target. */
+async function mergePlaceholderInto(
+  sb: ReturnType<typeof getLeadsClient>,
+  placeholder: RenameRow,
+  plan: Extract<MergePlan, { kind: "merge" }>,
+  cmd: { name: string; category: Category | null; tier: Tier | null },
+  day: string
+): Promise<RenameOutcome> {
+  const { target } = plan
+  const phone10 = to10Digit(placeholder.phone)
+  const addedPhone = phone10.length === 10 ? phone10 : ""
+  const fail = (error: string): RenameOutcome => ({ success: false, reason: "error", error, phone: phone10 })
+
+  const placed =
+    plan.placement === "phone"
+      ? `${dashedPhone(addedPhone)} set as the main number (the card had none)`
+      : `${dashedPhone(addedPhone)} added as an extra number`
+  const bits = [`"${placeholder.name || "(blank)"}"${placeholder.source ? ` (${placeholder.source})` : ""} → this card; ${placed}`]
+  if (cmd.category && cmd.category !== target.category) bits.push(`category ${target.category ?? "—"} → ${cmd.category}`)
+  if (cmd.tier && cmd.tier !== target.tier) bits.push(`tier ${target.tier ?? "—"} → ${cmd.tier}`)
+  const line = `Merged via Telegram ${day}: ${bits.join("; ")}.`
+
+  const { data: cur, error: curErr } = await sb.from("relationships").select("notes").eq("id", target.id).single()
+  if (curErr) return fail(curErr.message)
+  const prevNotes = String(cur?.notes ?? "").trim()
+  const patch: Record<string, unknown> = { alt_phones: plan.altPhones, notes: prevNotes ? `${prevNotes}\n\n${line}` : line }
+  if (plan.placement === "phone" && placeholder.phone) patch.phone = placeholder.phone
+  if (placeholder.email && !target.email) patch.email = placeholder.email
+  if (cmd.category) patch.category = cmd.category
+  if (cmd.tier) patch.tier = cmd.tier
+  const { error: upErr } = await sb.from("relationships").update(patch).eq("id", target.id)
+  if (upErr) return fail(upErr.message)
+
+  const { data: moved, error: mvErr } = await sb
+    .from("relationship_touches")
+    .update({ relationship_id: target.id })
+    .eq("relationship_id", placeholder.id)
+    .select("id")
+  if (mvErr) return fail(`touches not moved — ${mvErr.message}; placeholder card left in place`)
+
+  const { error: delErr } = await sb.from("relationships").delete().eq("id", placeholder.id)
+  if (delErr) return fail(`placeholder not deleted — ${delErr.message}`)
+
+  const mainPhone = plan.placement === "phone" ? addedPhone : to10Digit(target.phone)
+  return {
+    success: true,
+    merged: true,
+    id: target.id,
+    name: target.name,
+    category: cmd.category ?? (target.category ?? null),
+    tier: cmd.tier ?? (target.tier ?? null),
+    mainPhone,
+    addedPhone,
+    placement: plan.placement,
+    movedTouches: moved?.length ?? 0,
+  }
+}
+
+// ---- "main" reply to the 🔗 merged message (2026-10-15) ----------------
+// After a merge the bot offers: reply "main" to make the added number the
+// one the Call button dials. Stateless like the pending-contact flow: both
+// numbers are parsed back out of the bot's own message text.
+
+export const MERGED_MARKER = "🔗"
+
+export function formatMergedMessage(out: Extract<RenameOutcome, { merged: true }>): string {
+  const meta = [out.category, out.tier ? `tier ${out.tier}` : null].filter(Boolean).join(", ")
+  const moved = out.movedTouches ? ` ${out.movedTouches} ${out.movedTouches === 1 ? "call" : "calls"} moved.` : ""
+  const who = `<b>${out.name}</b>${meta ? ` (${meta})` : ""}`
+  if (out.placement === "phone") {
+    return `${MERGED_MARKER} ${formatUsPhone(out.addedPhone)} merged into ${who}. Main number is now ${formatUsPhone(out.addedPhone)}.${moved}`
+  }
+  return `${MERGED_MARKER} ${formatUsPhone(out.addedPhone)} merged into ${who}. Main number stays ${formatUsPhone(out.mainPhone)}; ${out.addedPhone.slice(6)} added as an extra.${moved} Reply "main" to make ${out.addedPhone.slice(6)} the number the Call button dials.`
+}
+
+export function isMainCommand(body: string): boolean {
+  return /^main\.?$/i.test(body.trim())
+}
+
+/** The two numbers from a 🔗 merged message: the added extra and the
+ * current main. Null unless the message is one with a "main" offer. */
+export function parseMergedMessage(text: string): { addedPhone: string; mainPhone: string; name: string } | null {
+  const t = text.trim()
+  if (!t.startsWith(MERGED_MARKER)) return null
+  const head = /^🔗\s*\((\d{3})\)\s*(\d{3})-(\d{4}) merged into (.+?)(?: \([^)]*\))?\. Main number/.exec(t)
+  const main = /Main number stays \((\d{3})\)\s*(\d{3})-(\d{4})/.exec(t)
+  if (!head || !main) return null
+  return { addedPhone: `${head[1]}${head[2]}${head[3]}`, mainPhone: `${main[1]}${main[2]}${main[3]}`, name: head[4].trim() }
+}
+
+export type MakeMainOutcome =
+  | { success: true; name: string; phone: string; kept: string }
+  | { success: false; error: string }
+
+/** Swap a card's main number with one of its extras: `newMain10` becomes
+ * `phone`, the old main goes into alt_phones. The card is found by its
+ * current main number. */
+export async function makeMainPhone(mainPhone10: string, newMain10: string): Promise<MakeMainOutcome> {
+  const sb = getLeadsClient()
+  type Row = { id: string; name: string | null; phone: string | null; alt_phones: string[] | null; notes: string | null }
+  let rows: Row[]
+  try {
+    rows = await relationshipsByAnyPhone<Row>(sb, mainPhone10, "id, name, phone, alt_phones, notes, status")
+  } catch (e) {
+    return { success: false, error: e instanceof Error ? e.message : String(e) }
+  }
+  const row = rows.find((r) => to10Digit(r.phone) === mainPhone10) ?? rows[0]
+  if (!row) return { success: false, error: `no card with ${formatUsPhone(mainPhone10)}` }
+  if (to10Digit(row.phone) === newMain10) {
+    return { success: true, name: row.name ?? formatUsPhone(newMain10), phone: newMain10, kept: mainPhone10 }
+  }
+  const next = planPhoneChange(row, newMain10)
+  if (!next) return { success: false, error: `${newMain10} is not a 10-digit number` }
+  const line = `Main number changed via Telegram ${stampDay()}: ${mainPhone10.slice(6)} → ${newMain10.slice(6)}.`
+  const prevNotes = (row.notes ?? "").trim()
+  const { error } = await sb
+    .from("relationships")
+    .update({ ...next, notes: prevNotes ? `${prevNotes}\n\n${line}` : line })
+    .eq("id", row.id)
+  if (error) return { success: false, error: error.message }
+  return { success: true, name: row.name ?? formatUsPhone(newMain10), phone: newMain10, kept: mainPhone10 }
 }
 
 // ---- Stateless Telegram round-trip -----------------------------------

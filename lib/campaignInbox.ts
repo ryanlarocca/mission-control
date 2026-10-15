@@ -5,6 +5,7 @@ import { sendCampaignAlert, sendCampaignDocument } from "@/lib/campaignAlerts"
 import { buildEmailMime, toGmailRaw } from "@/lib/emailMime"
 import { addSuppression } from "@/lib/suppression"
 import { completeText, extractJsonObject, hasLlmKey, HAIKU } from "@/lib/llm"
+import { normalizeAltPhones, parseUsPhone10, to10Digit } from "@/lib/relationships"
 import {
   type AgentContact,
   type CampaignContactLite,
@@ -505,14 +506,17 @@ async function handleContactMessage(
     throw new Error(`reply event insert: ${evErr.message}`)
   }
 
-  // The agent lands on a Relationships card (created tier B if nobody has
-  // them) and the reply becomes an inbound email touch there (2026-10-01).
-  const card = await cardForReply(sb, contact, sender, fresh, subject)
-
   // AI triage. Remove-style replies the regex missed ("I'm retired", "not
   // working with investors", "wrong Steve") auto-DNC — Ryan 2026-10-01:
   // fully automatic, no confirm step. Everything else just tags the alert.
+  // Runs before the card step so the phone numbers it pulled out of the
+  // reply can land on the card in the same pass (2026-10-15).
   const triage = await triageAgentReply({ name: contact.name, subject, body: fresh })
+
+  // The agent lands on a Relationships card (created tier B if nobody has
+  // them) and the reply becomes an inbound email touch there (2026-10-01).
+  const card = await cardForReply(sb, contact, sender, fresh, subject, true, triage)
+
   if (triage && (triage.label === "remove" || triage.label === "retired_or_wrong_person")) {
     const why = triage.label === "retired_or_wrong_person" ? "retired / wrong person" : "asked to be removed"
     await addSuppression(sb, {
@@ -555,9 +559,10 @@ async function handleContactMessage(
       : `📇 On their Relationships card${card.category ? ` (${esc(card.category)}${card.tier ? ` · ${esc(card.tier)}` : ""})` : ""}.`
     : ""
   const headline = [tag && `${tag}${triage?.address ? ` — ${esc(triage.address)}` : ""}`, cardLine].filter(Boolean).join("  ")
+  const phonesLine = card?.phonesLine ? esc(card.phonesLine) : ""
   const files = listAttachments(payload)
   const alertId = await sendCampaignAlert(sb,
-    `✉️ <b>AGENT REPLY</b> — <b>${esc(contact.name ?? contact.email ?? "")}</b> (after T${contact.touch_number})${headline ? `\n${headline}` : ""}\n"${esc(alertBody)}"${truncated ? "\n… [message truncated — full email in Gmail]" : ""}${files.length ? `\n📎 ${files.length} attachment${files.length === 1 ? "" : "s"} below` : ""}\n\nDrip continues as scheduled. Reply to this message to send it as a threaded email from ${esc(mailbox)}, or "draft: your guidance" for a Claude draft first.`
+    `✉️ <b>AGENT REPLY</b> — <b>${esc(contact.name ?? contact.email ?? "")}</b> (after T${contact.touch_number})${headline ? `\n${headline}` : ""}${phonesLine ? `\n${phonesLine}` : ""}\n"${esc(alertBody)}"${truncated ? "\n… [message truncated — full email in Gmail]" : ""}${files.length ? `\n📎 ${files.length} attachment${files.length === 1 ? "" : "s"} below` : ""}\n\nDrip continues as scheduled. Reply to this message to send it as a threaded email from ${esc(mailbox)}, or "draft: your guidance" for a Claude draft first.`
   )
   if (files.length) await forwardAttachments(sb, gmail, { gmailId, payload, who: contact.name ?? contact.email ?? "agent", replyTo: alertId })
 }
@@ -574,6 +579,89 @@ type ReplyTriage = {
   label: "deal" | "interested" | "question" | "not_now" | "remove" | "retired_or_wrong_person" | "other"
   address: string | null
   summary: string
+  // Phone numbers written in the reply (2026-10-15): "self" = a number to
+  // reach the sender at, "other" = someone else they named. Max 3.
+  phones: ReplyPhone[]
+}
+
+export type ReplyPhone = { number: string; whose: "self" | "other"; label: string }
+
+const MAX_REPLY_PHONES = 3
+
+/** The model's "phones" array → clean entries only: a number that is 10 US
+ * digits, whose ∈ {self, other}, label trimmed. Anything malformed is
+ * dropped; the list is capped at 3. */
+export function parseTriagePhones(raw: unknown): ReplyPhone[] {
+  if (!Array.isArray(raw)) return []
+  const out: ReplyPhone[] = []
+  const seen = new Set<string>()
+  for (const item of raw) {
+    if (out.length >= MAX_REPLY_PHONES) break
+    if (!item || typeof item !== "object") continue
+    const o = item as Record<string, unknown>
+    const number = parseUsPhone10(typeof o.number === "string" || typeof o.number === "number" ? String(o.number) : "")
+    if (!number || seen.has(number)) continue
+    if (o.whose !== "self" && o.whose !== "other") continue
+    const label = typeof o.label === "string" ? o.label.trim().slice(0, 60) : ""
+    seen.add(number)
+    out.push({ number, whose: o.whose, label })
+  }
+  return out
+}
+
+export type ReplyPhonePlan = {
+  /** 10-digit "self" numbers that are new to the card, in reply order */
+  added: string[]
+  /** the card's alt_phones after the adds (E.164) */
+  altPhones: string[]
+}
+
+/** Which "self" numbers from a reply go onto the card as extras: not the
+ * card's own `phone` (last-10), not already in alt_phones. `phone` itself
+ * is never touched — the Call button keeps dialing what Ryan chose. */
+export function planReplyPhones(card: { phone: string | null; alt_phones: readonly string[] | null }, phones: ReplyPhone[]): ReplyPhonePlan {
+  const main = to10Digit(card.phone)
+  const existing = new Set((card.alt_phones ?? []).map(to10Digit))
+  const added: string[] = []
+  for (const p of phones) {
+    if (p.whose !== "self" || p.number === main || existing.has(p.number) || added.includes(p.number)) continue
+    added.push(p.number)
+  }
+  return { added, altPhones: normalizeAltPhones([...(card.alt_phones ?? []), ...added], card.phone) }
+}
+
+function dashedPhone(phone10: string): string {
+  return `${phone10.slice(0, 3)}-${phone10.slice(3, 6)}-${phone10.slice(6)}`
+}
+
+/** The card note + the Telegram line for a reply's numbers. Null when the
+ * reply named none. `day` is the "Mon D, YYYY" stamp. */
+export function describeReplyPhones(
+  card: { phone: string | null; alt_phones: readonly string[] | null },
+  phones: ReplyPhone[],
+  plan: ReplyPhonePlan,
+  day: string
+): { note: string; alert: string } | null {
+  if (!phones.length) return null
+  const main = to10Digit(card.phone)
+  const existing = new Set((card.alt_phones ?? []).map(to10Digit))
+  const parts = phones.map((p) => {
+    const what =
+      p.whose === "other" ? "noted only"
+      : plan.added.includes(p.number) ? "added as an extra"
+      : p.number === main ? "already the main number"
+      : existing.has(p.number) ? "already an extra"
+      : "noted only"
+    return `${dashedPhone(p.number)} (${p.label ? `${p.label}, ` : ""}${what})`
+  })
+  const note = `Numbers from their ${day} email: ${parts.join(" · ")}.`
+  const alertBits: string[] = []
+  if (plan.added.length) alertBits.push(`Added ${plan.added.map(dashedPhone).join(", ")} to the card`)
+  for (const p of phones) {
+    if (p.whose === "other") alertBits.push(`${p.label || "Other number"}: ${dashedPhone(p.number)}`)
+    else if (!plan.added.includes(p.number)) alertBits.push(`${dashedPhone(p.number)} already on the card`)
+  }
+  return { note, alert: `📱 ${alertBits.join(" · ")}` }
 }
 
 const TRIAGE_LABELS = new Set(["deal", "interested", "question", "not_now", "remove", "retired_or_wrong_person", "other"])
@@ -597,34 +685,44 @@ Labels:
 
 Be strict with remove and retired_or_wrong_person: only when the reply clearly means stop contacting me or I'm not the right person. A joke, a maybe, or "not right now" is not_now.
 
-Reply with ONLY a JSON object: {"label": "<one label>", "address": "<property address or short property description if a deal, else null>", "summary": "<one sentence, plain, what they said and want>"}
+Also pull out any phone numbers written in the reply (not in a signature block unless the reply points to it): "self" = a number the sender says to reach THEM at ("call my cell", "you can reach me @"), "other" = someone else they name ("call Alex at …"). Label each in a few words (cell, office, "Alex (partner)"). At most 3; [] when there are none.
+
+Reply with ONLY a JSON object: {"label": "<one label>", "address": "<property address or short property description if a deal, else null>", "summary": "<one sentence, plain, what they said and want>", "phones": [{"number": "<10 digits>", "whose": "self" | "other", "label": "<e.g. cell, office, Alex (partner)>"}]}
 
 SUBJECT: ${args.subject}
 REPLY:
 "${text}"`
   try {
     const out = await completeText({ model: HAIKU, prompt, maxTokens: 300, tag: "[campaign-inbox triage]" })
-    const j = JSON.parse(extractJsonObject(out.text)) as { label?: unknown; address?: unknown; summary?: unknown }
+    const j = JSON.parse(extractJsonObject(out.text)) as { label?: unknown; address?: unknown; summary?: unknown; phones?: unknown }
     const label = typeof j.label === "string" && TRIAGE_LABELS.has(j.label) ? (j.label as ReplyTriage["label"]) : "other"
     const address = typeof j.address === "string" && j.address.trim() && j.address.trim().toLowerCase() !== "null" ? j.address.trim().slice(0, 160) : null
     const summary = typeof j.summary === "string" && j.summary.trim() ? j.summary.trim().slice(0, 300) : text.slice(0, 160)
-    return { label, address, summary }
+    return { label, address, summary, phones: parseTriagePhones(j.phones) }
   } catch (e) {
     console.warn("[campaign-inbox] triage failed:", e instanceof Error ? e.message : String(e))
     return null
   }
 }
 
+type ReplyCard = Extract<AgentContact, { kind: "relationship" }> & {
+  /** the 📱 line for the alert when the reply carried phone numbers */
+  phonesLine: string | null
+}
+
 /** Resolve the replying agent to a Relationships card and log the reply as
- * an inbound email touch. Never throws — the alert must go out regardless. */
+ * an inbound email touch. Numbers the triage pulled out of the reply land
+ * on the card as extras (never as `phone`) with one note line (2026-10-15).
+ * Never throws — the alert must go out regardless. */
 async function cardForReply(
   sb: SupabaseClient,
   contact: CampaignContact,
   sender: string,
   body: string,
   subject: string,
-  reactivate = true
-): Promise<Extract<AgentContact, { kind: "relationship" }> | null> {
+  reactivate = true,
+  triage: ReplyTriage | null = null
+): Promise<ReplyCard | null> {
   try {
     const lite: CampaignContactLite = {
       id: contact.id,
@@ -637,12 +735,39 @@ async function cardForReply(
     }
     const who = await resolveAgentContact(sb, { email: sender || contact.email, campaign: lite, channel: "email", reactivate })
     if (who.kind !== "relationship") return null
-    await logInboundEmailTouch(sb, who, body, subject)
-    return who
+    const logged = await logInboundEmailTouch(sb, who, body, subject)
+    const phonesLine = logged && triage?.phones.length ? await addReplyPhonesToCard(sb, who.id, triage.phones) : null
+    return { ...who, phonesLine }
   } catch (e) {
     console.error("[campaign-inbox] card link failed:", e instanceof Error ? e.message : String(e))
     return null
   }
+}
+
+async function addReplyPhonesToCard(sb: SupabaseClient, relationshipId: string, phones: ReplyPhone[]): Promise<string | null> {
+  const { data: row, error } = await sb
+    .from("relationships")
+    .select("phone, alt_phones, notes")
+    .eq("id", relationshipId)
+    .single()
+  if (error || !row) {
+    console.error("[campaign-inbox] card phones read failed:", error?.message)
+    return null
+  }
+  const plan = planReplyPhones(row, phones)
+  const day = new Date().toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric", timeZone: "America/Los_Angeles" })
+  const described = describeReplyPhones(row, phones, plan, day)
+  if (!described) return null
+  const prev = String(row.notes ?? "").trim()
+  const { error: upErr } = await sb
+    .from("relationships")
+    .update({ alt_phones: plan.altPhones, notes: prev ? `${prev}\n\n${described.note}` : described.note })
+    .eq("id", relationshipId)
+  if (upErr) {
+    console.error("[campaign-inbox] card phones update failed:", upErr.message)
+    return null
+  }
+  return described.alert
 }
 
 /**

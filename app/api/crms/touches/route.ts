@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server"
 import { getLeadsClient } from "@/lib/leads"
 import { findLatestEmailThread } from "@/lib/relationshipEmail"
+import { relationshipsByAnyPhone } from "@/lib/relationships"
 
 export const dynamic = "force-dynamic"
 export const revalidate = 0
@@ -26,9 +27,9 @@ export async function GET(request: Request) {
 
   try {
     const sb = getLeadsClient()
-    // Phones are stored E.164; a last-10-digit LIKE matches the row.
-    const { data: rels } = await sb.from("relationships").select("id").like("phone", `%${norm}`).limit(5)
-    const ids = (rels ?? []).map(r => r.id)
+    // Main number or an extra (alt_phones); active rows first.
+    const rels = await relationshipsByAnyPhone<{ id: string }>(sb, norm, "id")
+    const ids = rels.map(r => r.id)
     if (ids.length === 0) return NextResponse.json(empty)
 
     // The campaign Gmail thread a "Reply in thread" email would land in

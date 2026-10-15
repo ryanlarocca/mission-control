@@ -42,7 +42,7 @@ function fakeSb(tables: { relationships?: unknown[]; leads?: unknown[] }, insert
     const rows = (tables as Record<string, unknown[] | undefined>)[table] ?? []
     const chain: Record<string, unknown> = {}
     const self = () => chain
-    for (const m of ["select", "like", "order", "limit", "eq", "not", "is"]) chain[m] = self
+    for (const m of ["select", "like", "or", "order", "limit", "eq", "not", "is"]) chain[m] = self
     chain.insert = (row: Record<string, unknown>) => {
       inserted.push({ table, ...row })
       return { select: () => ({ single: async () => ({ data: { id: `new-${table}` }, error: null }) }) }

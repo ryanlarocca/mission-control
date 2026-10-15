@@ -2,11 +2,12 @@
 
 import { useEffect, useRef, useState } from "react"
 import {
-  X, Loader2, Send, Save, Phone, PhoneCall, Mail, MessageSquare,
+  X, Loader2, Send, Save, PhoneCall, Mail, MessageSquare,
   UserCheck, User, Wrench, TrendingUp, Building2, Banknote,
 } from "lucide-react"
 import type { LucideIcon } from "lucide-react"
 import { RelationshipThread, invalidateRelationshipThread } from "./RelationshipThread"
+import { RelationshipPhone } from "./RelationshipPhone"
 import { useRelationshipCall, CallButton, CallStatusLine } from "./RelationshipCall"
 import { ReplyPlanner } from "./ReplyPlanner"
 import { type Plan, type CoachTurn, requestDraft, requestCoach } from "@/lib/reply-client"
@@ -42,6 +43,8 @@ export interface ContactDetailContact {
   tier: string
   phone: string
   email?: string | null
+  // Extra numbers (10 digits) — shown as "also:", matched on inbound, never dialed.
+  altPhones?: string[]
   lastContacted: string
   notes: string
   hasNotes: boolean
@@ -54,6 +57,9 @@ interface Props {
   onNotesSaved: (id: string, notes: string) => void
   onCategoryChanged?: (id: string, category: string) => void
   onTierChanged?: (id: string, tier: string) => void
+  // The parent owns the contact + the phone-keyed caches; it patches the
+  // contact so this modal re-renders (and refetches history) under the new number.
+  onPhoneChanged?: (id: string, phone: string, altPhones: string[]) => void
 }
 
 const CATEGORY_OPTIONS = ["Agent", "Vendor", "Personal", "PM", "Investor", "PrivateMoney"] as const
@@ -117,7 +123,7 @@ function formatDateTime(iso: string): string {
   })
 }
 
-export function ContactDetailModal({ contact, onClose, onSendToast, onNotesSaved, onCategoryChanged, onTierChanged }: Props) {
+export function ContactDetailModal({ contact, onClose, onSendToast, onNotesSaved, onCategoryChanged, onTierChanged, onPhoneChanged }: Props) {
   const [history, setHistory] = useState<InteractionEntry[]>([])
   const [loadingHistory, setLoadingHistory] = useState(true)
   const [notes, setNotes] = useState(contact.notes)
@@ -525,10 +531,19 @@ export function ContactDetailModal({ contact, onClose, onSendToast, onNotesSaved
             <p className="text-xs text-zinc-600 mb-2">Contact</p>
             <div className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-xs">
               <span className="text-zinc-600">Phone</span>
-              <span className="text-zinc-300 font-mono flex items-center gap-1.5">
-                <Phone className="w-3 h-3 text-zinc-600" />
-                {contact.phone || "—"}
-              </span>
+              <div className="text-zinc-300 font-mono">
+                <RelationshipPhone
+                  id={contact.id}
+                  phone={contact.phone}
+                  altPhones={contact.altPhones ?? []}
+                  withIcon
+                  onChanged={(phone, altPhones) => {
+                    invalidateRelationshipThread(contact.phone)
+                    invalidateRelationshipThread(phone)
+                    onPhoneChanged?.(contact.id, phone, altPhones)
+                  }}
+                />
+              </div>
               <span className="text-zinc-600">Email</span>
               <span className="text-zinc-300 font-mono flex items-center gap-1.5 min-w-0">
                 <Mail className="w-3 h-3 text-zinc-600 shrink-0" />

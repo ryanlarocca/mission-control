@@ -11,6 +11,7 @@ import type { LucideIcon } from "lucide-react"
 import { ContactDetailModal } from "./ContactDetailModal"
 import type { TouchesSummary } from "./ContactDetailModal"
 import { RelationshipThread, invalidateRelationshipThread } from "./RelationshipThread"
+import { RelationshipPhone } from "./RelationshipPhone"
 import { useRelationshipCall, CallButton, CallStatusLine } from "./RelationshipCall"
 import { CleanupMode } from "./CleanupMode"
 import { ReplyPlanner } from "./ReplyPlanner"
@@ -155,6 +156,7 @@ interface CRMSContact {
   tier:          Tier
   phone:         string
   email?:        string | null
+  altPhones?:    string[]   // extra numbers (10 digits) — "also:", never dialed
   lastContact:   string
   lastContacted: string
   daysOverdue:   number
@@ -414,10 +416,10 @@ function CRMSTabInner() {
     toastTimerRef.current = setTimeout(() => setSendToast(null), 5000)
   }
 
-  async function fetchTouches(phone: string): Promise<TouchesSummary | null> {
+  async function fetchTouches(phone: string, force = false): Promise<TouchesSummary | null> {
     if (!phone) return null
-    if (touchesRef.current[phone]) return touchesRef.current[phone]
-    if (touchesByPhone[phone]) return touchesByPhone[phone]
+    if (!force && touchesRef.current[phone]) return touchesRef.current[phone]
+    if (!force && touchesByPhone[phone]) return touchesByPhone[phone]
     try {
       const res = await fetch(`/api/crms/touches?phone=${encodeURIComponent(phone)}`, { cache: "no-store" })
       const data = await res.json()
@@ -762,6 +764,24 @@ function CRMSTabInner() {
     } finally {
       setTierChangingFor(null)
     }
+  }
+
+  // ── Phone change (2026-10-15): patch the contact, then refetch the
+  // touch summary + thread under the new number. Nothing moves server-side
+  // (touches hang off relationship_id); only the phone-keyed caches change.
+  function handlePhoneChanged(id: string, oldPhone: string, phone: string, altPhones: string[]) {
+    const patch = (c: CRMSContact) => c.id === id ? { ...c, phone, altPhones } : c
+    setContacts(prev => prev.map(patch))
+    setAllContacts(prev => prev.map(patch))
+    delete touchesRef.current[oldPhone]
+    setTouchesByPhone(prev => {
+      const next = { ...prev }
+      delete next[oldPhone]
+      return next
+    })
+    invalidateRelationshipThread(oldPhone)
+    invalidateRelationshipThread(phone)
+    fetchTouches(phone, true)
   }
 
   // ── Send: advance UI immediately; fire API calls in background ──
@@ -1482,6 +1502,15 @@ function CRMSTabInner() {
 
                 {/* Structured fields */}
                 <div className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 mb-3 text-xs">
+                  <span className="text-zinc-600">Phone</span>
+                  <div className="text-zinc-300">
+                    <RelationshipPhone
+                      id={selectedContact.id}
+                      phone={selectedContact.phone}
+                      altPhones={selectedContact.altPhones ?? []}
+                      onChanged={(phone, altPhones) => handlePhoneChanged(selectedContact.id, selectedContact.phone, phone, altPhones)}
+                    />
+                  </div>
                   <span className="text-zinc-600">Last contacted</span>
                   <span className="text-zinc-300">
                     {formatAbsoluteDate(selectedContact.lastContacted || null)}
@@ -1883,6 +1912,10 @@ function CRMSTabInner() {
                 : c
             setContacts(prev => prev.map(patch))
             setAllContacts(prev => prev.map(patch))
+          }}
+          onPhoneChanged={(id, phone, altPhones) => {
+            const cur = contacts.find(c => c.id === id) ?? allContacts.find(c => c.id === id)
+            handlePhoneChanged(id, cur?.phone ?? "", phone, altPhones)
           }}
           onCategoryChanged={(id, newCategory) => {
             const next = coerceType(newCategory)
