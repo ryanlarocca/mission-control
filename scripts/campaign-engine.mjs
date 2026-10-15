@@ -233,7 +233,16 @@ const verifyDomainsArg = (() => {
   return i >= 0 && args[i + 1] && !args[i + 1].startsWith("--") ? args[i + 1] : null
 })()
 const verifyDomains = verifyDomainsArg ? verifyDomainsArg.split(",").map((d) => d.trim().toLowerCase()).filter(Boolean) : null
-const verifyOnly = verifyAll || Boolean(verifyDomains) // manual verify runs never draft/send
+// --verify-unknowns[=timeoutS]: re-check every active contact whose last verdict
+// is "unknown" with a longer vendor timeout (the first pass used 10 s; most
+// unknowns are slow servers, greylisting, or a Yahoo/Comcast stall, not dead
+// mailboxes). Ryan 2026-10-15: unknowns stay in the queue either way — this only
+// refreshes their verdicts. A fresh "unknown" today never suppresses (the
+// 7-day rule needs the previous unknown to be ≥ 7 days old).
+const verifyUnknownsArg = args.find((a) => a === "--verify-unknowns" || a.startsWith("--verify-unknowns="))
+const verifyUnknowns = Boolean(verifyUnknownsArg)
+const verifyUnknownsTimeoutS = Math.min(60, Math.max(2, Number(verifyUnknownsArg?.split("=")[1] ?? 30) || 30))
+const verifyOnly = verifyAll || Boolean(verifyDomains) || verifyUnknowns // manual verify runs never draft/send
 const VERIFY_DAILY_MAX = Number(process.env.VERIFY_DAILY_MAX || VERIFY_DAILY_MAX_DEFAULT)
 
 // ---------- helpers ----------
@@ -1100,6 +1109,7 @@ async function verifyPass() {
   }
   const keyNote = isSandboxKey(apiKey) ? " (SANDBOX key — canned results, no credits)" : ""
   if (verifyDomains) return verifyDomainsRun(apiKey, keyNote)
+  if (verifyUnknowns) return verifyUnknownsRun(apiKey, keyNote)
   if (!verifyAll) {
     const wd = laWeekdayNow()
     if (!args.includes("--verify-now")) {
@@ -1183,6 +1193,34 @@ async function verifyDomainsRun(apiKey, keyNote) {
       await applyVerdict(c, v)
     },
   })
+}
+
+/** --verify-unknowns[=timeoutS]: every active "unknown" again, slower vendor timeout, verdicts refreshed in place. */
+async function verifyUnknownsRun(apiKey, keyNote) {
+  const sets = await fetchSuppressionSets()
+  const pool = (await fetchVerifyPool()).filter((c) => c.verify_result === "unknown" && !sets.emails.has(String(c.email).trim().toLowerCase()))
+  const picks = limit !== null ? pool.slice(0, limit) : pool
+  log(`verify --verify-unknowns${keyNote}: ${picks.length} unknown${picks.length === 1 ? "" : "s"} to re-check at timeout ${verifyUnknownsTimeoutS}s${dryRun ? " — DRY RUN, nothing written" : ""}`)
+  if (!picks.length) return
+  const rows = []
+  const before = {}
+  for (const c of picks) before[c.verify_reason ?? "unknown"] = (before[c.verify_reason ?? "unknown"] || 0) + 1
+  let balance = null
+  await verifyMany(picks, {
+    apiKey,
+    timeoutS: verifyUnknownsTimeoutS,
+    onResult: async (c, v) => {
+      rows.push({ email: c.email, verdict: v })
+      if (v.balance !== null && v.balance !== undefined) balance = v.balance
+      await applyVerdict(c, v)
+    },
+  })
+  const summary = summarizeVerification(rows)
+  const stillUnknown = rows.filter((r) => r.verdict.result === "unknown").length
+  const text = `🔎 MillionVerifier unknowns re-run (timeout ${verifyUnknownsTimeoutS}s)${keyNote}: ${rows.length} re-checked → ${summaryLine(summary)}. Still unknown: ${stillUnknown} (was ${rows.length}; previous reasons ${Object.entries(before).map(([k, v]) => `${k} ${v}`).join(", ")}).${balance !== null ? ` Credits left: ${balance}` : ""}`
+  log(text)
+  if (dryRun) log(`would telegram: ${text}`)
+  else await telegram(escHtml(text))
 }
 
 // ---------- DIGEST pass ----------
