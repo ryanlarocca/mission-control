@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server"
 import { FORWARD_TO, getLeadsClient, isOwnedNumber, parseTwilioBody } from "@/lib/leads"
 import { sendCampaignAlert } from "@/lib/campaignAlerts"
 import { openInboundCallTouch } from "@/lib/office-inbound"
-import { PROD_BASE } from "@/lib/relationship-calls"
+import { PROD_BASE, twimlAttr } from "@/lib/relationship-calls"
 import { AGENTS_LINE, describeAgent, findCampaignContactByPhone, resolveAgentContact } from "@/lib/agentsLineInbound"
 
 // Agents line (650) 910-4007 — inbound call webhook (Phase 5b of
@@ -65,7 +65,7 @@ function plainDialTwiml(): string {
 // id through to the status + recording callbacks. campaignContactId lets the
 // recording pipeline mirror the summary onto the campaign timeline.
 function cardDialTwiml(touchId: string, campaignContactId: string | null): string {
-  const q = `?touchId=${encodeURIComponent(touchId)}&line=agents${campaignContactId ? `&campaignContactId=${encodeURIComponent(campaignContactId)}` : ""}`
+  const q = twimlAttr(`?touchId=${encodeURIComponent(touchId)}&line=agents${campaignContactId ? `&campaignContactId=${encodeURIComponent(campaignContactId)}` : ""}`)
   return `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
   <Dial timeout="20" action="/api/campaign/voice/status${q}" method="POST" callerId="${AGENTS_LINE}" record="record-from-answer" recordingStatusCallback="${PROD_BASE}/api/crms/call/recording${q}" recordingStatusCallbackMethod="POST">

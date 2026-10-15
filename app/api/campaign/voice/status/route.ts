@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server"
 import { getLeadsClient, parseTwilioBody } from "@/lib/leads"
 import { sendCampaignAlert } from "@/lib/campaignAlerts"
-import { PROD_BASE, callOutcomeMessage } from "@/lib/relationship-calls"
+import { PROD_BASE, callOutcomeMessage, twimlAttr } from "@/lib/relationship-calls"
 
 // Agents line — post-<Dial> action.
 //
@@ -27,7 +27,7 @@ function xml(body: string): NextResponse {
 }
 
 function cardVoicemailTwiml(touchId: string, campaignContactId: string | null): string {
-  const q = `?touchId=${encodeURIComponent(touchId)}&voicemail=1&line=agents${campaignContactId ? `&campaignContactId=${encodeURIComponent(campaignContactId)}` : ""}`
+  const q = twimlAttr(`?touchId=${encodeURIComponent(touchId)}&voicemail=1&line=agents${campaignContactId ? `&campaignContactId=${encodeURIComponent(campaignContactId)}` : ""}`)
   return `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
   <Play>${GREETING_URL}</Play>

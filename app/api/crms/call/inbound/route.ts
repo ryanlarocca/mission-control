@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server"
 import { waitUntil } from "@vercel/functions"
 import { getLeadsClient, parseTwilioBody } from "@/lib/leads"
-import { PROD_BASE, callOutcomeMessage } from "@/lib/relationship-calls"
+import { PROD_BASE, callOutcomeMessage, twimlAttr } from "@/lib/relationship-calls"
 
 // <Dial action> for INBOUND calls on the office lines that resolved to a
 // Relationships contact (brief: BRIEF_OFFICE_LINE_INBOUND_2026-09-24). The
@@ -24,7 +24,7 @@ function xml(body: string): NextResponse {
 const HANGUP = `<?xml version="1.0" encoding="UTF-8"?>\n<Response><Hangup /></Response>`
 
 function voicemailTwiml(touchId: string): string {
-  const action = `${PROD_BASE}/api/crms/call/recording?touchId=${encodeURIComponent(touchId)}&voicemail=1`
+  const action = twimlAttr(`${PROD_BASE}/api/crms/call/recording?touchId=${encodeURIComponent(touchId)}&voicemail=1`)
   return `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
   <Play>${GREETING_URL}</Play>

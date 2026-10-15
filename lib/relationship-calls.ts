@@ -18,6 +18,18 @@ import { isValidCategory } from "./crms"
 
 export const PROD_BASE = "https://mission-control-three-chi.vercel.app"
 
+// Escape a string for use inside a TwiML attribute value. Query strings
+// with more than one param carry a raw "&", which the XML parser rejects
+// (Twilio 12100 "reference to entity must end with ';'") — the agents-line
+// card relay silently never rang Ryan's cell from 2026-10-01 to 10-14.
+export function twimlAttr(value: string): string {
+  return value
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+}
+
 // The number the contact sees. Must be a Twilio Verified Caller ID (Ryan's
 // cell +14085006293 is, checked 2026-09-23) — Twilio rejects the <Dial>
 // otherwise. Env override for the day that changes.
