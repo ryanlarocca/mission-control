@@ -9,6 +9,9 @@ import Anthropic from "@anthropic-ai/sdk"
 
 export const HAIKU = "claude-haiku-4-5"
 export const SONNET = "claude-sonnet-5"
+// Coach mode (briefs/BRIEF_COACHED_DRAFT_2026-10-15.md §B): Opus reads the
+// whole history plus Ryan's gist. Auto keeps Haiku + Sonnet.
+export const OPUS = "claude-opus-5-5"
 
 export function hasLlmKey(): boolean {
   return !!process.env.ANTHROPIC_API_KEY
@@ -22,7 +25,14 @@ export interface CompleteTextArgs {
   // Sonnet 5 runs adaptive thinking by default and it shares max_tokens with
   // the answer. Short, interactive outputs (the CRMS composer) turn it off;
   // Haiku 4.5 never thinks unless asked, so the flag is a no-op there.
+  // Opus 5.5 is the same as Sonnet for the budget (thinking shares
+  // max_tokens, so coach calls pass >= 8192) but it cannot be switched off:
+  // the API rejects thinking:disabled on that model, so the flag is ignored
+  // there and the call simply runs with thinking on.
   thinking?: boolean
+  // Opus 5.5 only: how hard to think. Its default is "medium"; coach calls
+  // ask for "high". Ignored on the other models.
+  effort?: "low" | "medium" | "high" | "xhigh" | "max"
   // When the model hits max_tokens, retry once with triple the budget instead
   // of returning a clipped answer. Default on — a truncated JSON blob fails
   // the parse and a truncated paragraph loses the details Ryan cares about.
@@ -50,6 +60,7 @@ export async function completeText(args: CompleteTextArgs): Promise<CompleteText
   const tag = args.tag ?? "[llm]"
   const retry = args.retryOnTruncate ?? true
   const disableThinking = model === SONNET && args.thinking === false
+  const effort = model === OPUS ? args.effort : undefined
 
   const run = async (maxTokens: number) => {
     const response = await getClient().messages.create({
@@ -57,6 +68,7 @@ export async function completeText(args: CompleteTextArgs): Promise<CompleteText
       max_tokens: maxTokens,
       ...(args.system ? { system: args.system } : {}),
       ...(disableThinking ? { thinking: { type: "disabled" as const } } : {}),
+      ...(effort ? { output_config: { effort } } : {}),
       messages: [{ role: "user", content: args.prompt }],
     })
     if (response.stop_reason === "refusal") throw new Error(`${tag} model declined the request`)
