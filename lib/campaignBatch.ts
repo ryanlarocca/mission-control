@@ -1,5 +1,5 @@
 import { getLeadsClient } from "@/lib/leads"
-import { randomSendSlot } from "@/lib/campaignSlots"
+import { ensureFreshSlot, randomSendSlot } from "@/lib/campaignSlots"
 import { senderStatusLines, listSenders, getSenderState, capFor, isSenderPaused } from "@/lib/campaignSenders"
 import { autoSendStatusLine } from "@/lib/campaignAutoSend"
 import * as gates from "../scripts/campaign-gates.mjs"
@@ -57,7 +57,7 @@ export async function approveBatch(batchDate: string): Promise<{ success: boolea
   for (const r of rows) {
     const { error: uErr } = await sb
       .from("campaign_sends")
-      .update({ status: "approved", approved_at: now.toISOString(), scheduled_for: randomSendSlot() })
+      .update({ status: "approved", approved_at: now.toISOString(), scheduled_for: ensureFreshSlot(randomSendSlot(now), now) }) // Task 8: never a stale minute
       .eq("id", r.id)
       .eq("status", "draft")
     if (!uErr) approved++

@@ -198,6 +198,79 @@ export function withCanary2Reminder(state, supply, now = new Date()) {
   return { sent_at: now.toISOString(), count: Number(state?.count ?? 0) + 1, remaining: supply.remaining, days: supply.days, first_sent_at: state?.first_sent_at ?? now.toISOString() }
 }
 
+// ---------- Task 8: respread late approvals ----------
+//
+// 2026-10-14: Ryan approved the 11 AM mint at 6:18 PM; the rows kept that
+// day's (now past) scheduled_for and would have burst at 7:00–7:20 the next
+// morning. A stale slot (before today's 07:00 PT, or already past at
+// approval) is reassigned to a random minute in the next window ahead:
+// today's remaining window while it is still open on a weekday, else the
+// next weekday's 7:00a–4:59p. Used by every approve path and as a safety
+// net at the top of sendPass.
+const PT = "America/Los_Angeles"
+export const SEND_WINDOW = { startHour: 7, endHour: 17 } // keep in sync with WINDOW in campaign-engine.mjs
+
+function ptParts(date) {
+  const fmt = new Intl.DateTimeFormat("en-CA", { timeZone: PT, year: "numeric", month: "2-digit", day: "2-digit", weekday: "short", hour: "numeric", minute: "numeric", hour12: false })
+  const p = Object.fromEntries(fmt.formatToParts(date).map((x) => [x.type, x.value]))
+  return { y: Number(p.year), m: Number(p.month), d: Number(p.day), weekday: p.weekday, hour: Number(p.hour) % 24, minute: Number(p.minute) }
+}
+
+function ptSlotToUtcIso(y, m, d, hour, minute) {
+  for (const off of [7, 8]) {
+    const t = new Date(Date.UTC(y, m - 1, d, hour + off, minute))
+    const got = Number(new Intl.DateTimeFormat("en-US", { timeZone: PT, hour: "numeric", hour12: false }).format(t)) % 24
+    if (got === hour) return t.toISOString()
+  }
+  return new Date(Date.UTC(y, m - 1, d, hour + 7, minute)).toISOString()
+}
+
+/** Today's 07:00 PT (the window start) as ISO. */
+export function windowStartIso(now = new Date()) {
+  const p = ptParts(now)
+  return ptSlotToUtcIso(p.y, p.m, p.d, SEND_WINDOW.startHour, 0)
+}
+
+/** A slot before today's 07:00 PT is stale: it belongs to a window that already closed. Null is never stale. */
+export function isStaleSlot(scheduledFor, now = new Date()) {
+  if (!scheduledFor) return false
+  const t = new Date(scheduledFor).getTime()
+  return Number.isFinite(t) && t < new Date(windowStartIso(now)).getTime()
+}
+
+/** Random minute in the NEXT weekday's window (the send-time experiment slot). */
+export function nextWeekdaySlot(now = new Date(), rng = Math.random) {
+  for (let add = 1; add <= 4; add++) {
+    const p = ptParts(new Date(now.getTime() + add * 86_400_000))
+    if (p.weekday === "Sat" || p.weekday === "Sun") continue
+    const minuteOfDay = SEND_WINDOW.startHour * 60 + Math.floor(rng() * (SEND_WINDOW.endHour - SEND_WINDOW.startHour) * 60)
+    return ptSlotToUtcIso(p.y, p.m, p.d, Math.floor(minuteOfDay / 60), minuteOfDay % 60)
+  }
+  return null
+}
+
+/** The next window ahead: the rest of today's (weekday, still open), else the next weekday's. */
+export function respreadSlot(now = new Date(), rng = Math.random) {
+  const p = ptParts(now)
+  const end = SEND_WINDOW.endHour * 60 - 1 // 16:59
+  const minuteNow = p.hour * 60 + p.minute
+  if (p.weekday !== "Sat" && p.weekday !== "Sun" && minuteNow < end) {
+    const start = Math.max(SEND_WINDOW.startHour * 60, minuteNow + 1)
+    const minute = start + Math.floor(rng() * (end - start + 1))
+    return ptSlotToUtcIso(p.y, p.m, p.d, Math.floor(minute / 60), minute % 60)
+  }
+  return nextWeekdaySlot(now, rng)
+}
+
+/** Keep a future slot; respread a stale or already-past one. Null stays null (sends in the next in-window pass). */
+export function ensureFreshSlot(scheduledFor, now = new Date(), rng = Math.random) {
+  if (!scheduledFor) return scheduledFor ?? null
+  const t = new Date(scheduledFor).getTime()
+  if (!Number.isFinite(t)) return respreadSlot(now, rng)
+  if (isStaleSlot(scheduledFor, now) || t < now.getTime()) return respreadSlot(now, rng)
+  return scheduledFor
+}
+
 /** "auto T1 on|off" from Telegram. `on` re-pins to the prompt version given. */
 export function withTouchAuto(row, touch, on, { promptVersion, by = "ryan", now = new Date() } = {}) {
   const cur = toTouchList(row?.touches)

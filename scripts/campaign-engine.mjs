@@ -65,7 +65,7 @@ import { createClient } from "@supabase/supabase-js"
 import { TOUCHES, renderTouch, nextOffsetDays } from "./campaign-touches.mjs"
 import { loadSenderConfig, loadSenderStates, saveSenderState, capFor, evaluateSenderDay, fetchRelationshipEmails, fetchReplierIds, fetchLastSenderByContact, fetchLastSendByContact, assignSender, priorityOf, isSenderPaused, pauseLabel, withPause, withResume, withCanaryVerdict } from "./campaign-senders.mjs"
 import { judgeConfigured, connectJudge, disconnectJudge, readCanaryMessages, newestCanary, describePlacement, decideVerdict, canaryOldEnough, planBackfill, stallReason, verdictWord, isJudgeAuthError, judgeErrorText, JUDGE_SEARCH_DAYS, BACKFILL_SEARCH_DAYS } from "./canary-judge.mjs"
-import { AUTO_SEND_KEY, resolveAutoSend, withTouchRegated, removeTripwire, describeRemovedSends, touchesOfRemoves, bounceBreaker, isDayStopped, withDayStop, partitionTouchOne, t1Supply, describeT1Supply, CANARY2_REMINDER_KEY, canary2ReminderDue, canary2ReminderText, withCanary2Reminder } from "./campaign-gates.mjs"
+import { AUTO_SEND_KEY, resolveAutoSend, withTouchRegated, removeTripwire, describeRemovedSends, touchesOfRemoves, bounceBreaker, isDayStopped, withDayStop, partitionTouchOne, t1Supply, describeT1Supply, CANARY2_REMINDER_KEY, canary2ReminderDue, canary2ReminderText, withCanary2Reminder, windowStartIso, respreadSlot } from "./campaign-gates.mjs"
 import { checkRecipientDomain, dnsBlocks, readDnsCache } from "./campaign-dns.mjs"
 import { verifyMany, verifyAction, isDraftEligible, unknownTwice, selectVerifyCandidates, summarizeVerification, summaryLine, isSandboxKey, KickboxAuthError, VERIFY_DAILY_MAX_DEFAULT } from "./campaign-verify.mjs"
 
@@ -813,6 +813,7 @@ async function sendPass() {
     log(`PAUSED (${pause.reason ?? "manual"}${pause.until ? ` until ${pause.until}` : ""}) — no sends`)
     return
   }
+  await respreadStaleApprovals()
   const sentToday = await countToday("campaign_sends", "sent_at", { status: ["sent"] })
   // Per-sender guardrails before any send (item 3 + autopilot brief Tasks
   // 2/3): today's bounces and removes are attributed to the mailbox that
@@ -997,6 +998,27 @@ async function sendPass() {
   log(`send pass done: ${sent} sent, ${failed} failed${noMx ? ` (${noMx} no_mx — suppressed)` : ""}`)
   if (noMx && !dryRun) bumpHealthCounter("dns_no_mx", noMx)
   if (failed > noMx) await telegram(`⚠️ Campaign: <b>${failed - noMx}</b> send failures this pass — check campaign_sends.error`)
+}
+
+/**
+ * Safety net (autopilot brief, Task 8): approved rows whose scheduled_for is
+ * before today's 07:00 PT (an approval after the window kept that day's
+ * minute, or the engine was down) get a fresh random minute in the next
+ * window ahead instead of bursting at 7:00–7:20. Runs at the top of every
+ * send pass; dry runs only count.
+ */
+async function respreadStaleApprovals() {
+  const now = new Date()
+  const { data: stale, error } = await sb.from("campaign_sends").select("id, scheduled_for").eq("status", "approved").lt("scheduled_for", windowStartIso(now)).order("scheduled_for", { ascending: true }).limit(500)
+  if (error) throw new Error(`stale approvals fetch: ${error.message}`)
+  if (!stale?.length) return 0
+  if (dryRun) { log(`would respread ${stale.length} approved row(s) with a stale scheduled_for (oldest ${stale[0].scheduled_for}) into the next window ahead`); return stale.length }
+  for (const r of stale) {
+    const slot = respreadSlot(now)
+    await sb.from("campaign_sends").update({ scheduled_for: slot }).eq("id", r.id).eq("status", "approved")
+  }
+  log(`respread ${stale.length} approved row(s) with a stale scheduled_for (oldest ${stale[0].scheduled_for}) into the next window ahead`)
+  return stale.length
 }
 
 async function markFailed(row, err) {
