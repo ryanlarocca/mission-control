@@ -171,6 +171,33 @@ export function describeT1Supply(s) {
   return `T1 remaining: ${s.remaining}${s.days === null ? " (no cap — supply unknown)" : ` · ~${s.days} weekday${s.days === 1 ? "" : "s"} of supply at ${s.capTotal}/day`}`
 }
 
+// ---------- Task 7: the canary-two reminder ----------
+//
+// Touch two stays gated until a second canary (a fresh consumer Gmail that is
+// enrolled like a contact) clears it. The canary itself is a later brief;
+// this is the nudge: once T1 supply drops under 7 weekdays at current caps,
+// tell Ryan once, then weekly, until the T1 queue is done.
+export const CANARY2_REMINDER_KEY = "canary2_reminder_sent_at"
+export const CANARY2_SUPPLY_DAYS = 7
+export const CANARY2_REPEAT_DAYS = 7
+
+/** state: campaign_settings `canary2_reminder_sent_at` value ({ sent_at, count } or null). */
+export function canary2ReminderDue({ supply, state, now = new Date() }) {
+  if (!supply || supply.days === null || supply.remaining <= 0) return { due: false, why: supply?.remaining <= 0 ? "T1 queue done" : "supply unknown" }
+  if (supply.days >= CANARY2_SUPPLY_DAYS) return { due: false, why: `${supply.days} weekdays of T1 left (reminder under ${CANARY2_SUPPLY_DAYS})` }
+  const last = state?.sent_at ? new Date(state.sent_at).getTime() : null
+  if (last !== null && now.getTime() - last < CANARY2_REPEAT_DAYS * 86_400_000) return { due: false, why: `reminded ${state.sent_at.slice(0, 10)}, weekly` }
+  return { due: true, why: last === null ? "first reminder" : "weekly reminder" }
+}
+
+export function canary2ReminderText(supply) {
+  return `📣 Touch one runs out in ~${supply.days} days. Time to prep canary two: (1) create a fresh consumer Gmail, (2) make an app password, (3) reply \`canary2 <address> <app password>\`. T2 stays gated until it clears.`
+}
+
+export function withCanary2Reminder(state, supply, now = new Date()) {
+  return { sent_at: now.toISOString(), count: Number(state?.count ?? 0) + 1, remaining: supply.remaining, days: supply.days, first_sent_at: state?.first_sent_at ?? now.toISOString() }
+}
+
 /** "auto T1 on|off" from Telegram. `on` re-pins to the prompt version given. */
 export function withTouchAuto(row, touch, on, { promptVersion, by = "ryan", now = new Date() } = {}) {
   const cur = toTouchList(row?.touches)

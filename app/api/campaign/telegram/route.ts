@@ -559,6 +559,13 @@ export async function POST(request: Request) {
     await tg("sendMessage", { chat_id: chatId, text: `🔁 ${await autoSendStatusLine()}`, reply_to_message_id: msg.message_id })
     return NextResponse.json({ ok: true })
   }
+  // "canary2 <address> <app password>" — the second-canary enrolment is a
+  // later brief (autopilot brief, Task 7: out of scope here). Acknowledge so
+  // the credentials never fall through to a send path.
+  if (/^canary2\b/i.test(body)) {
+    await tg("sendMessage", { chat_id: chatId, text: "noted — build pending. Canary two (enrolled-contact canary for T2) is the next brief; T2 stays gated until it clears.", reply_to_message_id: msg.message_id })
+    return NextResponse.json({ ok: true })
+  }
   const autoCmd = /^auto\s+t\s*(\d{1,2})\s+(on|off)\b/i.exec(body)
   if (autoCmd) {
     const touch = Number(autoCmd[1])

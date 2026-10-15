@@ -185,3 +185,25 @@ describe("Task 6 — touch one takes the budget first", () => {
     expect(describeT1Supply(t1Supply({ remaining: 10, capTotal: 0 }))).toBe("T1 remaining: 10 (no cap — supply unknown)")
   })
 })
+
+describe("Task 7 — canary-two reminder cadence", () => {
+  const { canary2ReminderDue, canary2ReminderText, withCanary2Reminder, t1Supply } = gatesModule as unknown as Record<string, any>
+  const supply = (remaining: number, capTotal = 8) => t1Supply({ remaining, capTotal })
+  it("fires the first time supply drops under 7 weekdays, then weekly, until the T1 queue is done", () => {
+    expect(canary2ReminderDue({ supply: supply(100), state: null, now })).toMatchObject({ due: false })
+    expect(canary2ReminderDue({ supply: supply(56), state: null, now })).toMatchObject({ due: false }) // exactly 7 days
+    expect(canary2ReminderDue({ supply: supply(48), state: null, now })).toMatchObject({ due: true, why: "first reminder" })
+    const sent = withCanary2Reminder(null, supply(48), now)
+    expect(sent).toMatchObject({ sent_at: now.toISOString(), count: 1, remaining: 48, days: 6, first_sent_at: now.toISOString() })
+    const twoDays = new Date(now.getTime() + 2 * 86_400_000)
+    expect(canary2ReminderDue({ supply: supply(32), state: sent, now: twoDays })).toMatchObject({ due: false })
+    const eightDays = new Date(now.getTime() + 8 * 86_400_000)
+    expect(canary2ReminderDue({ supply: supply(8), state: sent, now: eightDays })).toMatchObject({ due: true, why: "weekly reminder" })
+    expect(withCanary2Reminder(sent, supply(8), eightDays)).toMatchObject({ count: 2, first_sent_at: now.toISOString(), remaining: 8, days: 1 })
+    expect(canary2ReminderDue({ supply: supply(0), state: sent, now: eightDays })).toMatchObject({ due: false, why: "T1 queue done" })
+    expect(canary2ReminderDue({ supply: supply(10, 0), state: null, now })).toMatchObject({ due: false, why: "supply unknown" })
+  })
+  it("says exactly what Ryan asked for", () => {
+    expect(canary2ReminderText(supply(48))).toBe("📣 Touch one runs out in ~6 days. Time to prep canary two: (1) create a fresh consumer Gmail, (2) make an app password, (3) reply `canary2 <address> <app password>`. T2 stays gated until it clears.")
+  })
+})

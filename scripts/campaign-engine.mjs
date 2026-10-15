@@ -65,7 +65,7 @@ import { createClient } from "@supabase/supabase-js"
 import { TOUCHES, renderTouch, nextOffsetDays } from "./campaign-touches.mjs"
 import { loadSenderConfig, loadSenderStates, saveSenderState, capFor, evaluateSenderDay, fetchRelationshipEmails, fetchReplierIds, fetchLastSenderByContact, fetchLastSendByContact, assignSender, priorityOf, isSenderPaused, pauseLabel, withPause, withResume, withCanaryVerdict } from "./campaign-senders.mjs"
 import { judgeConfigured, connectJudge, disconnectJudge, readCanaryMessages, newestCanary, describePlacement, decideVerdict, canaryOldEnough, planBackfill, stallReason, verdictWord, isJudgeAuthError, judgeErrorText, JUDGE_SEARCH_DAYS, BACKFILL_SEARCH_DAYS } from "./canary-judge.mjs"
-import { AUTO_SEND_KEY, resolveAutoSend, withTouchRegated, removeTripwire, describeRemovedSends, touchesOfRemoves, bounceBreaker, isDayStopped, withDayStop, partitionTouchOne, t1Supply, describeT1Supply } from "./campaign-gates.mjs"
+import { AUTO_SEND_KEY, resolveAutoSend, withTouchRegated, removeTripwire, describeRemovedSends, touchesOfRemoves, bounceBreaker, isDayStopped, withDayStop, partitionTouchOne, t1Supply, describeT1Supply, CANARY2_REMINDER_KEY, canary2ReminderDue, canary2ReminderText, withCanary2Reminder } from "./campaign-gates.mjs"
 import { checkRecipientDomain, dnsBlocks, readDnsCache } from "./campaign-dns.mjs"
 import { verifyMany, verifyAction, isDraftEligible, unknownTwice, selectVerifyCandidates, summarizeVerification, summaryLine, isSandboxKey, KickboxAuthError, VERIFY_DAILY_MAX_DEFAULT } from "./campaign-verify.mjs"
 
@@ -1635,9 +1635,28 @@ async function healthPass() {
       `\n📈 7-day: ${agg.sent} sent, bounces ${pct(agg.bounces, agg.sent)}, replies ${pct(agg.replies, agg.sent)}, ${agg.unsubs} removes` +
       `\n📚 ${escHtml(describeT1Supply(supply))} · 🔁 auto: ${AUTO_SEND.touches.size ? [...AUTO_SEND.touches].map((t) => `T${t}`).join("/") : "none"}${AUTO_SEND.pinned ? ` (pinned ${escHtml(AUTO_SEND.pinned)})` : ""}` +
       (warnings.length ? `\n\n${warnings.map((w) => `• ${escHtml(w)}`).join("\n")}` : "\n\nAll clear.") + rampNote
-  if (rehearsal) { log(`health rehearsal — card that WOULD post (nothing saved, nothing sent):\n${card}`); return }
+  if (rehearsal) { log(`health rehearsal — card that WOULD post (nothing saved, nothing sent):\n${card}`); await canary2Reminder(supply); return }
   await telegram(card)
   log(`health card sent: ${status} ${warnings.join("; ")}`)
+  await canary2Reminder(supply)
+}
+
+/**
+ * Task 7: when T1 supply drops under 7 weekdays at current caps, tell Ryan
+ * it is time to prep canary two — once, then weekly until the T1 queue is
+ * done. Bookkeeping in campaign_settings `canary2_reminder_sent_at`. The
+ * `canary2 …` command itself is a later brief (Telegram answers "noted").
+ */
+async function canary2Reminder(supply) {
+  const { data } = await sb.from("campaign_settings").select("value").eq("key", CANARY2_REMINDER_KEY).maybeSingle()
+  const state = data?.value ?? null
+  const due = canary2ReminderDue({ supply, state })
+  if (!due.due) { log(`canary2 reminder: not due (${due.why})`); return }
+  const text = canary2ReminderText(supply)
+  if (dryRun) { log(`would telegram (${due.why}): ${text}`); return }
+  await telegram(escHtml(text))
+  await sb.from("campaign_settings").upsert({ key: CANARY2_REMINDER_KEY, value: withCanary2Reminder(state, supply), updated_at: new Date().toISOString() })
+  log(`canary2 reminder sent (${due.why}): ${supply.remaining} T1 left, ~${supply.days} weekdays`)
 }
 
 // ---------- Friday send-time scorecard ----------

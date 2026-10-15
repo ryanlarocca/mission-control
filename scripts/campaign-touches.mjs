@@ -41,7 +41,7 @@ If you've got a listing that fits, especially one that's rough, stuck, or gettin
     dayOffset: 30,
     label: "Why agents send me deals",
     subject: "The buyer who actually closes",
-    body: `Hi {{first_name}}, quick follow-up on my note last month. When I say I make it easy, here's what I mean: no financing contingencies to sweat, proof of funds ready whenever you need it, and if it's your listing you're welcome to both sides. I close what I put under contract. That's the whole reputation I'm trying to keep.
+    body: `Hi {{first_name}}, quick follow-up on my note from a while back. When I say I make it easy, here's what I mean: no financing contingencies to sweat, proof of funds ready whenever you need it, and if it's your listing you're welcome to both sides. I close what I put under contract. That's the whole reputation I'm trying to keep.
 
 One relationship, multiple closings. Keep me in mind next time something fits.`,
   },
