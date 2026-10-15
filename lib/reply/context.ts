@@ -9,9 +9,15 @@ import { fetchThread } from "@/lib/relationship-messages"
 
 export interface ThreadItem {
   at: string          // ISO
-  from: "them" | "ryan" | "ryan(drip)"
+  // "call" = a recorded live conversation, both voices in one transcript
+  // (coached-draft brief, 2026-10-15). Before that an outbound call row was
+  // tagged "ryan" because it has no twilio_number, so the seller's half of
+  // the call read as Ryan speaking. Voicemails stay "them".
+  from: "them" | "ryan" | "ryan(drip)" | "call"
   channel: string | null
   text: string
+  // Calls only: who placed it. Outbound = Ryan dialled from the card.
+  direction?: "inbound" | "outbound"
 }
 
 export interface LeadContext {
@@ -30,6 +36,11 @@ export interface LeadContext {
   campaign_label: string | null
   ai_summary: string | null
   notes: string | null
+  // The card's own money facts (coached-draft brief, 2026-10-15): the offer
+  // Ryan last verbalized, so a drafter sees "Offer 1.1" before it writes a
+  // new number.
+  offer_amount: number | null
+  offer_verbalized_at: string | null
   drip_campaign_type: string | null
   recommended_followup_date: string | null
   followup_reason: string | null
@@ -59,7 +70,14 @@ export type ReplyContext = LeadContext | RelationshipContext
 const APPLE_EPOCH_OFFSET_MS = 978307200000
 const SIDECAR_TIMEOUT_MS = 12000
 const MAX_THREAD = 24
-const MAX_TEXT = 4000
+// Texts and emails are clipped per item. Call transcripts are not: a
+// 20-minute seller call runs 7-8k chars and the sentences that matter (the
+// floor they named, the number Ryan promised to text) sit past 4,000. The
+// whole thread has a character budget instead; past it the OLDEST items are
+// dropped whole, never the middle of a transcript.
+export const MAX_TEXT = 4000
+export const MAX_CALL_TEXT = 20000
+export const MAX_THREAD_CHARS = 60000
 
 function sidecarUrl(): string | null {
   return process.env.SIDECAR_URL?.replace(/\/+$/, "") || null
@@ -120,16 +138,33 @@ async function fetchLiveLeadMessages(anchor: {
   return out
 }
 
-function mergeThread(items: ThreadItem[]): ThreadItem[] {
+/** Sort, dedupe, clip per item (calls get the generous cap), keep the newest
+ *  MAX_THREAD, then drop whole items from the oldest end until the thread
+ *  fits MAX_THREAD_CHARS. Exported for the context unit test. */
+export function mergeThread(items: ThreadItem[]): ThreadItem[] {
   const seen = new Set<string>()
   const out: ThreadItem[] = []
   for (const it of [...items].sort((a, b) => a.at.localeCompare(b.at))) {
     const key = it.text.toLowerCase().replace(/\s+/g, " ").slice(0, 120)
     if (seen.has(key)) continue
     seen.add(key)
-    out.push({ ...it, text: it.text.slice(0, MAX_TEXT) })
+    const cap = it.from === "call" || it.channel === "call" ? MAX_CALL_TEXT : MAX_TEXT
+    out.push({ ...it, text: it.text.slice(0, cap) })
   }
-  return out.slice(-MAX_THREAD)
+  let kept = out.slice(-MAX_THREAD)
+  let total = kept.reduce((n, t) => n + t.text.length, 0)
+  while (kept.length > 1 && total > MAX_THREAD_CHARS) {
+    total -= kept[0].text.length
+    kept = kept.slice(1)
+  }
+  return kept
+}
+
+/** Is this thread item the contact speaking (their text, their voicemail,
+ *  or a call they phoned in)? The planner's "last inbound" and the
+ *  relationship side's everContacted both use it. */
+export function isFromThem(t: ThreadItem): boolean {
+  return t.from === "them" || (t.from === "call" && t.direction === "inbound")
 }
 
 interface LeadRow {
@@ -151,13 +186,38 @@ interface LeadRow {
   lead_type: string | null
   twilio_number: string | null
   message: string | null
+  offer_amount: number | null
+  offer_verbalized_at: string | null
   drip_campaign_type: string | null
   recommended_followup_date: string | null
   followup_reason: string | null
 }
+export type LeadThreadRow = Pick<LeadRow, "created_at" | "lead_type" | "twilio_number" | "message">
 
 const LEAD_COLS =
-  "id, created_at, name, email, caller_phone, gmail_thread_id, source, campaign_label, property_address, property_details, status, temperature, moment, ai_summary, notes, lead_type, twilio_number, message, drip_campaign_type, recommended_followup_date, followup_reason"
+  "id, created_at, name, email, caller_phone, gmail_thread_id, source, campaign_label, property_address, property_details, status, temperature, moment, ai_summary, notes, lead_type, twilio_number, message, offer_amount, offer_verbalized_at, drip_campaign_type, recommended_followup_date, followup_reason"
+
+/** Supabase lead rows → thread items. Exported for the context unit test.
+ *  A "call" row (lead_type call, drip or not) is a recorded live conversation
+ *  with both voices in it, so it is tagged "call" with its direction rather
+ *  than attributed to whoever placed it. A voicemail is the contact alone. */
+export function leadRowsToThread(rows: LeadThreadRow[]): ThreadItem[] {
+  return rows
+    .filter((r) => (r.message || "").trim())
+    .map((r) => {
+      const channel = r.lead_type?.replace(/^drip_/, "") ?? null
+      const text = (r.message || "").trim()
+      if (channel === "call") {
+        return { at: r.created_at, from: "call" as const, channel, text, direction: r.twilio_number ? "inbound" as const : "outbound" as const }
+      }
+      return {
+        at: r.created_at,
+        from: r.twilio_number ? "them" as const : r.lead_type?.startsWith("drip_") ? "ryan(drip)" as const : "ryan" as const,
+        channel,
+        text,
+      }
+    })
+}
 
 export async function buildLeadContext(leadId: string, opts: { live?: boolean } = {}): Promise<LeadContext | null> {
   const sb = getLeadsClient()
@@ -176,21 +236,14 @@ export async function buildLeadContext(leadId: string, opts: { live?: boolean } 
   const pick = <K extends keyof LeadRow>(k: K): LeadRow[K] =>
     (anchor[k] ?? [...rows].reverse().find((r) => r[k] != null)?.[k] ?? null) as LeadRow[K]
 
-  const supaItems: ThreadItem[] = rows
-    .filter((r) => (r.message || "").trim())
-    .map((r) => ({
-      at: r.created_at,
-      from: r.twilio_number ? "them" : r.lead_type?.startsWith("drip_") ? "ryan(drip)" : "ryan",
-      channel: r.lead_type?.replace(/^drip_/, "") ?? null,
-      text: (r.message || "").trim(),
-    }))
+  const supaItems = leadRowsToThread(rows)
   const live = opts.live === false ? [] : await fetchLiveLeadMessages({
     caller_phone: anchor.caller_phone,
     gmail_thread_id: pick("gmail_thread_id"),
     source: pick("source"),
   })
   const thread = mergeThread([...supaItems, ...live])
-  const lastInbound = [...thread].reverse().find((t) => t.from === "them") ?? null
+  const lastInbound = [...thread].reverse().find(isFromThem) ?? null
   const lastInboundRow = [...rows].reverse().find((r) => r.twilio_number)
   const inboundChannel = lastInboundRow?.lead_type === "email" ? "email"
     : lastInboundRow?.lead_type === "sms" ? "sms"
@@ -212,6 +265,8 @@ export async function buildLeadContext(leadId: string, opts: { live?: boolean } 
     campaign_label: pick("campaign_label"),
     ai_summary: pick("ai_summary"),
     notes: rows.map((r) => (r.notes || "").trim()).filter(Boolean).join("\n") || null,
+    offer_amount: pick("offer_amount"),
+    offer_verbalized_at: pick("offer_verbalized_at"),
     drip_campaign_type: pick("drip_campaign_type"),
     recommended_followup_date: pick("recommended_followup_date"),
     followup_reason: pick("followup_reason"),
@@ -268,8 +323,16 @@ export async function buildRelationshipContext(relationshipId: string): Promise<
     last_contacted_at: r.last_contacted_at,
     everContacted: !!r.last_contacted_at || thread.some((t) => t.from === "ryan"),
     thread,
-    lastInbound: [...thread].reverse().find((t) => t.from === "them") ?? null,
+    lastInbound: [...thread].reverse().find(isFromThem) ?? null,
   }
+}
+
+/** Prompt label for a thread item's speaker. */
+export function speakerLabel(t: ThreadItem): string {
+  if (t.from === "call") {
+    return t.direction === "inbound" ? "inbound call transcript" : "call transcript, both voices — Ryan placed this call"
+  }
+  return `${t.from}${t.channel ? ` (${t.channel})` : ""}`
 }
 
 /** Compact, labelled transcript for prompts. */
@@ -277,8 +340,12 @@ export function formatThread(ctx: ReplyContext, limit = 16): string {
   const items = ctx.thread.slice(-limit)
   if (!items.length) return "(no prior messages)"
   return items
-    .map((t) => `[${t.at.slice(0, 10)}] ${t.from}${t.channel ? ` (${t.channel})` : ""}: ${t.text}`)
+    .map((t) => `[${t.at.slice(0, 10)}] ${speakerLabel(t)}: ${t.text}`)
     .join("\n")
+}
+
+function formatMoney(n: number): string {
+  return `$${Math.round(n).toLocaleString("en-US")}`
 }
 
 export function describeContact(ctx: ReplyContext): string {
@@ -290,9 +357,13 @@ export function describeContact(ctx: ReplyContext): string {
       pd ? `Property details: ${pd}` : null,
       `Lead status: ${ctx.status || "(none)"} · temperature: ${ctx.temperature || "(none)"}`,
       `Source: ${ctx.campaign_label || ctx.source || "(unknown)"}`,
+      ctx.offer_amount != null
+        ? `Offer on file (Ryan's last verbalized number to them): ${formatMoney(ctx.offer_amount)}${ctx.offer_verbalized_at ? ` on ${ctx.offer_verbalized_at.slice(0, 10)}` : ""}`
+        : null,
       ctx.drip_campaign_type ? `Current drip track: ${ctx.drip_campaign_type}` : null,
       ctx.recommended_followup_date ? `Follow-up on file: ${ctx.recommended_followup_date} (${ctx.followup_reason || "no reason"})` : null,
       ctx.ai_summary ? `Summary so far: ${ctx.ai_summary}` : null,
+      ctx.notes ? `Ryan's notes on this card (his shorthand; history lines like "Offer 1.1" are prior offers):\n${ctx.notes}` : null,
     ].filter(Boolean).join("\n")
   }
   return [

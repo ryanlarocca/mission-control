@@ -101,7 +101,7 @@ ${principles || "(no written principles yet for this moment — use judgment and
 CONTACT
 ${describeContact(ctx)}
 ${ctx.kind === "relationship" && ctx.notes ? `Notes on this contact:\n${ctx.notes.slice(0, 1500)}\n` : ""}
-CONVERSATION (oldest → newest; "them" is the contact, "ryan" is Ryan, "ryan(drip)" is an automated touch)
+CONVERSATION (oldest → newest; "them" is the contact, "ryan" is Ryan, "ryan(drip)" is an automated touch; a "call transcript" row is a recorded live call with BOTH voices in it — read who says what from the words, not the label)
 ${formatThread(ctx, 16)}
 
 RYAN'S PAST REPLIES IN THIS KIND OF MOMENT (register and length only)

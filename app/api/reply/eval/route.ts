@@ -47,7 +47,8 @@ function ctxFromItem(it: EvalItem): ReplyContext {
     kind: "lead", leadId: `eval:${it.id}`, clusterIds: [], name: c.name ?? null, email: null, phone: null,
     property_address: c.property_address ?? null, property_details: null, status: null,
     temperature: c.temperature ?? null, moment: it.moment, source: c.source ?? null, campaign_label: null,
-    ai_summary: null, notes: null, drip_campaign_type: null, recommended_followup_date: null, followup_reason: null,
+    ai_summary: null, notes: null, offer_amount: null, offer_verbalized_at: null,
+    drip_campaign_type: null, recommended_followup_date: null, followup_reason: null,
     gmail_thread_id: null, inboundChannel: it.channel === "email" ? "email" : "sms",
     thread, lastInbound: [...thread].reverse().find((t) => t.from === "them") ?? null,
   }

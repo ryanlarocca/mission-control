@@ -35,7 +35,7 @@ ${principles || "(none written yet — judge on the questions below only)"}
 CONTACT DETAILS (facts the draft may use)
 ${describeContact(ctx)}
 
-CONVERSATION (oldest → newest)
+CONVERSATION (oldest → newest; a "call transcript" row is a recorded live call with BOTH voices in it)
 ${formatThread(ctx, 12)}
 
 RYAN'S PAST REPLIES that were given as register examples (the draft may match their tone but must not copy their lines):

@@ -35,7 +35,7 @@ TODAY IS ${today}.
 CONTACT
 ${describeContact(ctx)}
 
-CONVERSATION (oldest → newest)
+CONVERSATION (oldest → newest; a "call transcript" row is a recorded live call with BOTH voices in it)
 ${formatThread(ctx, 20)}
 
 Respond in JSON only:
