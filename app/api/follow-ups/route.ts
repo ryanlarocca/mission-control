@@ -3,6 +3,7 @@ import { getLeadsClient, clusterKeyOrId, isAnonymousCaller, fetchRelationshipCon
 import {
   resolveNextTouch,
   touchSortKey,
+  isOwedReason,
   type NextTouch,
   type NextTouchInput,
   type QueuedDrip,
@@ -124,6 +125,22 @@ function resolveName(
 }
 
 const ISO_MAX = "9999-12-31"
+const DAY_MS = 86_400_000
+
+// Worklist order: soonest-first, but within the same day an "Owed:" follow-up
+// (Ryan promised the seller a deliverable — see clampOwedFollowup) sorts
+// ahead of everything else due that day. Day is floored from the same
+// millisecond key the primary order uses, so the comparator stays a total
+// order. The client re-sorts within its urgency buckets with the same rule.
+function compareWorklist(a: NextTouch, b: NextTouch): number {
+  const ka = touchSortKey(a)
+  const kb = touchSortKey(b)
+  const dayDiff = Math.floor(ka / DAY_MS) - Math.floor(kb / DAY_MS)
+  if (dayDiff !== 0) return dayDiff
+  const owed = Number(isOwedReason(b.reason)) - Number(isOwedReason(a.reason))
+  if (owed !== 0) return owed
+  return ka - kb
+}
 
 // Among the stamped leads in a cluster, pick the one whose drip forecast
 // fires soonest — that's the touch the engine will act on next.
@@ -388,9 +405,10 @@ export async function GET(_request: NextRequest) {
       })
     })
 
-    // Soonest-first. The client re-sorts within buckets (calls before
-    // drips, by temperature) per the Follow Ups tab spec.
-    rows.sort((a, b) => touchSortKey(a.primary) - touchSortKey(b.primary))
+    // Soonest-first, owed follow-ups first within a day. The client re-sorts
+    // within buckets (calls before drips, owed, by temperature) per the
+    // Follow Ups tab spec.
+    rows.sort((a, b) => compareWorklist(a.primary, b.primary))
 
     // 6. Collapsed sections — failed + recently sent drips.
     const failed: DripCard[] = []

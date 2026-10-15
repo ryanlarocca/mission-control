@@ -29,6 +29,23 @@ export type NextTouchKind = "call" | "drip"
 export type NextTouchChannel = "imessage" | "email"
 export type NextTouchUrgency = "overdue" | "today" | "soon" | "future"
 
+// "Owed" follow-ups (BRIEF_OWED_FOLLOWUP_NEXT_DAY_2026-10-14). When Ryan
+// promised the seller a deliverable (a number, comps, a text) the analyzer
+// is told to set the follow-up for tomorrow, and clampOwedFollowup in
+// lib/leads enforces it in code, prefixing followup_reason with this marker.
+// No new column — the prefix on the stored reason IS the flag. Both the
+// Follow Ups worklist and the lead card read it through these helpers so the
+// chip shows and the raw "Owed: " never reaches the screen.
+export const OWED_PREFIX = "Owed: "
+
+export function isOwedReason(reason: string | null | undefined): boolean {
+  return typeof reason === "string" && reason.startsWith(OWED_PREFIX)
+}
+
+export function stripOwedPrefix(reason: string): string {
+  return isOwedReason(reason) ? reason.slice(OWED_PREFIX.length) : reason
+}
+
 export interface NextTouch {
   kind: NextTouchKind
   // call  → bare calendar date "YYYY-MM-DD" (no time; bucket in local TZ)

@@ -11,7 +11,7 @@ import { handleSessionExpired } from "@/lib/session-expired"
 import { ReplyPlanner } from "./ReplyPlanner"
 import { type Plan, requestDraft, executePlan, sendSuffixFor } from "@/lib/reply-client"
 import {
-  classifyUrgency, describeTouchWhen, touchSortKey,
+  classifyUrgency, describeTouchWhen, touchSortKey, isOwedReason, stripOwedPrefix,
   type NextTouch, type NextTouchUrgency,
 } from "@/lib/next-touch"
 
@@ -76,8 +76,10 @@ const TEMP_BADGE: Record<"hot" | "warm" | "cold", { emoji: string; cls: string }
   cold: { emoji: "❄️", cls: "text-sky-300" },
 }
 
-// Worklist sort within a bucket: calls before drips, then hot→warm→cold,
-// then soonest-due. (Ryan's call: order the day's work by temperature.)
+// Worklist sort within a bucket: calls before drips, owed follow-ups (Ryan
+// promised the seller a deliverable — "Owed:" reason) ahead of the rest,
+// then hot→warm→cold, then soonest-due. (Ryan's call: order the day's work
+// by temperature; a promise he made outranks temperature.)
 const TEMP_RANK: Record<string, number> = { hot: 0, warm: 1, cold: 2 }
 function tempRank(t: string | null): number {
   return t ? TEMP_RANK[t] ?? 3 : 3
@@ -86,6 +88,8 @@ function sortWorklist(rows: ContactRow[]): ContactRow[] {
   return [...rows].sort((a, b) => {
     const k = (a.primary.kind === "call" ? 0 : 1) - (b.primary.kind === "call" ? 0 : 1)
     if (k !== 0) return k
+    const owed = Number(isOwedReason(b.primary.reason)) - Number(isOwedReason(a.primary.reason))
+    if (owed !== 0) return owed
     const t = tempRank(a.temperature) - tempRank(b.temperature)
     if (t !== 0) return t
     return touchSortKey(a.primary) - touchSortKey(b.primary)
@@ -1329,8 +1333,16 @@ function CallBlock({
         <span className="text-zinc-300 font-medium">{byEmail ? "Follow-up email" : "Follow-up call"}</span>
         <span className="text-zinc-600">·</span>
         <span className={overdue ? "text-red-300" : "text-amber-300"}>{describeTouchWhen(touch)}</span>
+        {isOwedReason(touch.reason) && (
+          <span
+            className="px-1.5 py-0.5 text-[9px] font-semibold rounded uppercase tracking-wider bg-amber-950 text-amber-300 border border-amber-900 shrink-0"
+            title="Ryan promised this seller a deliverable — due the next day"
+          >
+            Owed
+          </span>
+        )}
       </div>
-      {touch.reason && <div className="mt-1 text-xs text-zinc-400 italic">{touch.reason}</div>}
+      {touch.reason && <div className="mt-1 text-xs text-zinc-400 italic">{stripOwedPrefix(touch.reason)}</div>}
       <div className="mt-2 flex items-center gap-1.5 flex-wrap justify-end">
         {row.phone && (
           <button

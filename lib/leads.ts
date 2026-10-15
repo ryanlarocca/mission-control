@@ -5,6 +5,7 @@ import { isAnonymousCaller } from "./anonymous"
 import { LEAD_MOMENT_RUBRIC, isLeadMoment } from "@/lib/reply/moments"
 import { completeText, extractJsonObject, hasLlmKey, HAIKU } from "./llm"
 import { autoLinkMailRecord } from "./mailMatch"
+import { OWED_PREFIX } from "./next-touch"
 
 export const CAMPAIGN_MAP: Record<string, string> = {
   "+16504364279": "MFM-A",
@@ -2320,6 +2321,15 @@ ${TEMPERATURE_RUBRIC}
 - recommended_followup_date: ISO date YYYY-MM-DD ≥ today. Reason the follow-up
     timing from what was actually said — EVERY genuine seller lead gets a date.
 
+    0. If RYAN committed to send or do something (a number, offer, price,
+       comps, a text, an email, info, "I'll get back to you", "let me look
+       and I'll text you"), recommended_followup_date = TOMORROW (today + 1),
+       regardless of any timing he or the seller mentioned. Ryan's promise
+       wins over any seller timeline in the same conversation. The follow-up
+       IS the deliverable: followup_reason names the deliverable first, then
+       quotes Ryan. Never add days "to confirm receipt" / "to confirm the text
+       was received". Weekends count — tomorrow is the next calendar day.
+
     1. If the seller stated an explicit timeline, map it:
          "now" / "ASAP" / "this week"            → 3-7 days
          "next week" / "a week or two"            → 7-14 days
@@ -2354,6 +2364,10 @@ ${TEMPERATURE_RUBRIC}
         voicemail, etc.).
     (2) States the resulting follow-up timing in plain words.
     Examples:
+      "Text Herb a ballpark offer on 409 Center St — Ryan said 'in the next
+        couple of days I can text you an offer' — due tomorrow."
+      "Send the comps Ryan promised — 'I'll pull the comps and email them
+        over' — due tomorrow."
       "Seller said 'maybe in a year or two' — follow up ~1 year out."
       "Caller asked Ryan to 'call me back next week' — follow up in 7 days."
       "Wants 1.9M, Ryan offered 1.5M — price gap, revisit in ~6 months."
@@ -2467,6 +2481,25 @@ ${historyBlock}FRESH TRANSCRIPT (this is the current call):
     if (!parsed.summary || typeof parsed.summary !== "string" || !parsed.summary.trim()) {
       return null
     }
+    // Follow-up guards run here, where `today` (the string the prompt saw)
+    // is in scope: long-horizon first, then the owed-deliverable clamp
+    // (2026-10-14). The apply* persisters re-run the long-horizon guard on
+    // this result — a no-op after this, kept so they stay safe on their own.
+    const rawDate =
+      typeof parsed.recommended_followup_date === "string" &&
+      /^\d{4}-\d{2}-\d{2}$/.test(parsed.recommended_followup_date)
+        ? parsed.recommended_followup_date
+        : null
+    const rawReason =
+      typeof parsed.followup_reason === "string" && parsed.followup_reason.trim()
+        ? parsed.followup_reason.trim()
+        : null
+    const guarded = validateFollowupAgainstReason(rawDate, rawReason)
+    const { date: followupDate, reason: followupReason } = clampOwedFollowup(
+      guarded.date,
+      guarded.reason,
+      today
+    )
     return {
       temperature: parsed.temperature as Temperature,
       moment: isLeadMoment(parsed.moment) ? parsed.moment : null,
@@ -2483,15 +2516,8 @@ ${historyBlock}FRESH TRANSCRIPT (this is the current call):
         typeof parsed.email === "string" && /\S+@\S+\.\S+/.test(parsed.email.trim())
           ? parsed.email.trim().toLowerCase()
           : null,
-      recommended_followup_date:
-        typeof parsed.recommended_followup_date === "string" &&
-        /^\d{4}-\d{2}-\d{2}$/.test(parsed.recommended_followup_date)
-          ? parsed.recommended_followup_date
-          : null,
-      followup_reason:
-        typeof parsed.followup_reason === "string" && parsed.followup_reason.trim()
-          ? parsed.followup_reason.trim()
-          : null,
+      recommended_followup_date: followupDate,
+      followup_reason: followupReason,
       is_dnc: parsed.is_dnc === true,
       offer_amount:
         typeof parsed.offer_amount === "number" && Number.isFinite(parsed.offer_amount) && parsed.offer_amount > 0
@@ -2530,6 +2556,89 @@ function validateFollowupAgainstReason(
     return { date: null, reason: null }
   }
   return { date, reason }
+}
+
+// Owed-deliverable clamp (BRIEF_OWED_FOLLOWUP_NEXT_DAY_2026-10-14). Ryan's
+// rule: "when I promise to give someone a number, the system should set the
+// follow-up for the next day." The Herb Bivens call (2026-10-12) is the real
+// case — Ryan said "in the next couple of days I can text you an offer", the
+// analyzer mapped that through the seller-timeline table and padded it "to
+// confirm the text was received", and the task came due AFTER the promise
+// was supposed to be kept.
+//
+// The prompts now carry rule 0 (Ryan's promise → tomorrow); this is the hard
+// guard behind them. If the reason contains first-person commitment language
+// (Ryan quoted: "I'll text you", "I can send", "I'll get back to you") or a
+// third-person report of it ("Ryan committed to texting an offer", "Ryan
+// said he'd email comps") and the date is later than today + 1, the date
+// becomes today + 1 and the reason is prefixed "Owed: " so the worklist can
+// badge it. Tomorrow = next CALENDAR day — weekends are fine, Ryan's call.
+//
+// `today` is the same YYYY-MM-DD string the prompt was given, so the result
+// is deterministic (no Date.now() in here) and the three paths — call,
+// email, card notes — agree. Runs AFTER validateFollowupAgainstReason.
+//
+// First-person matches inside a quote attributed to the SELLER ("Seller said
+// 'I'll get back to you next week'") are skipped: the analyzer's reasons
+// quote the seller's exact phrase, and that is a seller timeline, not Ryan's
+// promise. Attribution to Ryan ("Ryan said 'I'll text you'") still counts.
+const OWED_DELIVERABLE =
+  "(?:send(?:ing|s)?|sent|text(?:ing|s|ed)?|e-?mail(?:ing|s|ed)?|get(?:ting|s)? back|put(?:ting|s)? together|" +
+  "look(?:ing|s|ed)? (?:at|into|over)|run(?:ning|s)?|pull(?:ing|s|ed)?|giv(?:e|es|ing) (?:you|him|her|them)|" +
+  "shoot(?:ing|s)? (?:you|him|her|them)|follow(?:ing|s)? up with|call(?:ing|s)? (?:you|him|her|them) back)"
+const OWED_FIRST_PERSON = new RegExp(
+  `\\bI(?:'ll| will| can| am going to|'m going to| could| was going to|'d)\\b.{0,40}?\\b${OWED_DELIVERABLE}\\b`,
+  "gi"
+)
+const OWED_RYAN_REPORTED = new RegExp(
+  `\\bRyan\\b (?:(?:has |had )?(?:committed|promised|agreed|offered|owes|needs? to)|said (?:(?:that )?he(?:'d| would| will| is going to| was going to|'s going to))|` +
+  `told (?:him|her|them) (?:that )?he(?:'d| would| will)|will|would|is going to|was going to)\\b.{0,40}?\\b${OWED_DELIVERABLE}\\b`,
+  "i"
+)
+// Text just before a first-person match that attributes the quote to the
+// seller: "Seller said '", "Herb mentioned he", "Caller asked Ryan to '".
+const OWED_SELLER_ATTRIBUTION =
+  /\b(seller|caller|owner|he|she|they|[A-Z][a-z]+)\s+(?:said|says|asked|mentioned|told|wrote|texted|emailed|wants|replied|stated)\b[^.;—]*$/
+
+export function mentionsOwedCommitment(reason: string): boolean {
+  const text = reason.replace(/[‘’]/g, "'")
+  if (OWED_RYAN_REPORTED.test(text)) return true
+  OWED_FIRST_PERSON.lastIndex = 0
+  let m: RegExpExecArray | null
+  while ((m = OWED_FIRST_PERSON.exec(text)) !== null) {
+    const before = text.slice(Math.max(0, m.index - 80), m.index)
+    const attributed = OWED_SELLER_ATTRIBUTION.exec(before)
+    if (!attributed || attributed[1] === "Ryan") {
+      OWED_FIRST_PERSON.lastIndex = 0
+      return true
+    }
+  }
+  return false
+}
+
+function addDaysIso(isoDate: string, days: number): string {
+  const d = new Date(isoDate + "T00:00:00Z")
+  d.setUTCDate(d.getUTCDate() + days)
+  return d.toISOString().slice(0, 10)
+}
+
+export function clampOwedFollowup(
+  date: string | null,
+  reason: string | null,
+  today: string
+): { date: string | null; reason: string | null } {
+  if (!date || !reason) return { date, reason }
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(today)) return { date, reason }
+  const tomorrow = addDaysIso(today, 1)
+  // ISO dates compare lexically. Already tomorrow (or today) → untouched, no
+  // prefix: the model followed rule 0 and there is nothing to correct.
+  if (date <= tomorrow) return { date, reason }
+  if (!mentionsOwedCommitment(reason)) return { date, reason }
+  const prefixed = reason.startsWith(OWED_PREFIX) ? reason : OWED_PREFIX + reason
+  console.warn(
+    `[followup] owed clamp: Ryan promised a deliverable but date was ${date} — set to ${tomorrow}. reason="${reason}"`
+  )
+  return { date: tomorrow, reason: prefixed }
 }
 
 // Outbound variant: persist follow-up fields + opportunistically fill
@@ -3007,6 +3116,14 @@ FOLLOW-UP DATE
     YYYY-MM-DD, derived from what the SENDER actually wrote. Resolve relative
     wording against TODAY ("tomorrow", "next week", "after the first of the
     month", "in the spring").
+- Rule 0 — Ryan's promise wins. If the thread shows RYAN committed to send
+    or do something ("I'll get you a number this week", "I'll pull comps and
+    email them", "let me look and I'll get back to you"), then
+    recommended_followup_date = TOMORROW (today + 1), regardless of any
+    timing he or the sender mentioned. followup_reason names the deliverable
+    first, then quotes Ryan ("Email the number Ryan promised — 'I'll get you
+    a number this week'"). Never add days "to confirm receipt". Tomorrow is
+    the next calendar day, weekends included.
 - Set a date whenever the sender invites contact or names a timeframe, even
     loosely. These all warrant one:
       • an explicit invitation — "give me a call", "call me at 408-...",
@@ -3073,9 +3190,16 @@ PROPERTY ADDRESS
       typeof parsed.followup_reason === "string" && parsed.followup_reason.trim()
         ? parsed.followup_reason.trim()
         : null
-    const { date: followupDate, reason: followupReason } = validateFollowupAgainstReason(
+    const guarded = validateFollowupAgainstReason(
       rawDate && rawReason ? rawDate : null,
       rawDate && rawReason ? rawReason : null
+    )
+    // Owed clamp after the long-horizon guard — Ryan's "I'll get you a
+    // number this week" comes due tomorrow, not at the end of the week.
+    const { date: followupDate, reason: followupReason } = clampOwedFollowup(
+      guarded.date,
+      guarded.reason,
+      today
     )
 
     return {

@@ -9,7 +9,7 @@ import {
   Maximize2, Hourglass, Smartphone, Copy,
 } from "lucide-react"
 import {
-  resolveNextTouch, describeTouchWhen, classifyUrgency,
+  resolveNextTouch, describeTouchWhen, classifyUrgency, isOwedReason, stripOwedPrefix,
   type NextTouch, type NextTouchSummary,
 } from "@/lib/next-touch"
 import { isAnonymousCaller } from "@/lib/anonymous"
@@ -2006,13 +2006,26 @@ function TouchLabel({ touch }: { touch: NextTouch }) {
   const label = touch.kind === "call"
     ? (followupByEmail ? "Email" : "Call")
     : `Drip #${touch.touchNumber}${touch.channel === "email" ? " email" : ""}`
+  // "Owed:" reason = Ryan promised the seller a deliverable (clampOwedFollowup
+  // in lib/leads). Show it as a chip beside the date, never as raw text.
+  const owed = touch.kind === "call" && isOwedReason(touch.reason)
   return (
     <span className="inline-flex items-center gap-1 min-w-0">
       <Icon className="w-3 h-3 shrink-0" />
-      <span className="truncate">
+      <span className="shrink-0 whitespace-nowrap">
         {label} · {describeTouchWhen(touch)}
-        {touch.kind === "call" && touch.reason ? ` — ${touch.reason}` : ""}
       </span>
+      {owed && (
+        <span
+          className="px-1.5 py-0.5 text-[9px] font-semibold rounded uppercase tracking-wider bg-amber-950 text-amber-300 border border-amber-900 shrink-0"
+          title="Ryan promised this seller a deliverable — due the next day"
+        >
+          Owed
+        </span>
+      )}
+      {touch.kind === "call" && touch.reason && (
+        <span className="truncate min-w-0">— {stripOwedPrefix(touch.reason)}</span>
+      )}
     </span>
   )
 }

@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server"
-import { getLeadsClient } from "@/lib/leads"
+import { getLeadsClient, clampOwedFollowup } from "@/lib/leads"
 import { completeText, extractJsonObject, hasLlmKey, HAIKU } from "@/lib/llm"
 
 export async function POST(
@@ -28,6 +28,8 @@ export async function POST(
 
 Extract a recommended follow-up date and reason if the notes mention a specific timeframe or cadence (e.g. "every 6 months", "call next week", "follow up in 3 months", "check back in spring").
 
+Rule 0 — the agent's own promise wins. If the notes say the agent committed to send or do something for the lead ("told him I'd send a price", "I'll text her an offer", "need to get him comps", "said I'd get back to them this week"), the date is TOMORROW (today + 1) regardless of any other timing in the notes, and the reason names the deliverable first, then quotes the note ("Send him the price — 'told him I'd send a price'"). Never add days "to confirm receipt". Tomorrow is the next calendar day, weekends included.
+
 Respond with ONLY a JSON object — no markdown, no explanation:
 { "date": "YYYY-MM-DD", "reason": "short reason phrase" }
 
@@ -53,6 +55,13 @@ If no follow-up timeframe is mentioned, respond with:
   }
 
   if (!date) return NextResponse.json({ date: null, reason: null })
+
+  // Owed clamp (BRIEF_OWED_FOLLOWUP_NEXT_DAY_2026-10-14) — same hard guard
+  // as the call + email paths, keyed to the `today` the prompt saw. "told him
+  // I'd send a price" comes due tomorrow even if the model padded it.
+  const clamped = clampOwedFollowup(date, reason, today)
+  date = clamped.date
+  reason = clamped.reason
 
   const sb = getLeadsClient()
   const { error } = await sb.from("leads").update({
