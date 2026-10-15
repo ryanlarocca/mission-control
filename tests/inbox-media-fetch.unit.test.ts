@@ -157,15 +157,18 @@ describe("parseDownloadJson", () => {
   it("filenames = basename of name, imageId = the UUID in path, same id for the web and print copy", () => {
     const web = parseDownloadJson(WEB, "MLS")
     const print = parseDownloadJson(PRINT, "Print")
-    expect(web.map((e) => e.filename)).toEqual(["1-001_F8_5764 Halleck Dr.JPG", "2-002_F8_5764 Halleck Dr.JPG", "3-003_F8_5764 Halleck Dr.JPG"])
-    expect(web.map((e) => e.imageId)).toEqual(["01a13f27-25f0-70c7-afe3-f20f1c3a52fa", "01a13f27-26b3-7126-9e0a-5d38caa4adba", "01a13f27-2740-71e8-9c8f-ec33d78b63b0"])
+    // The checked-in fixtures are the real 36-entry responses (bridge session, 2026-10-15); the first three are asserted exactly.
+    expect(web).toHaveLength(36)
+    expect(print).toHaveLength(36)
+    expect(web.slice(0, 3).map((e) => e.filename)).toEqual(["1-001_F8_5764 Halleck Dr.JPG", "2-002_F8_5764 Halleck Dr.JPG", "3-003_F8_5764 Halleck Dr.JPG"])
+    expect(web.slice(0, 3).map((e) => e.imageId)).toEqual(["01a13f27-25f0-70c7-afe3-f20f1c3a52fa", "01a13f27-26b3-7126-9e0a-5d38caa4adba", "01a13f27-2740-71e8-9c8f-ec33d78b63b0"])
     expect(print.map((e) => e.imageId)).toEqual(web.map((e) => e.imageId))
     expect(print.map((e) => e.filename)).toEqual(web.map((e) => e.filename))
     expect(web[0].url).toBe("https://cdn.aryeo.com/listings/5764-halleck-dr-san-jose-ca-95123-29967112/resized/large/large-01a13f27-25f0-70c7-afe3-f20f1c3a52fa.jpeg")
     expect(print[0].url).toBe("https://cdn.aryeo.com/listings/5764-halleck-dr-san-jose-ca-95123-29967112/01a13f27-25f0-70c7-afe3-f20f1c3a52fa.jpeg")
     expect(web.every((e) => e.set === "MLS")).toBe(true)
   })
-  it("synthesizes 36 entries from the 3-entry pattern", () => {
+  it("synth() keeps the id/filename pattern when growing or trimming a fixture", () => {
     const entries = parseDownloadJson(synth(WEB, 36), "MLS")
     expect(entries).toHaveLength(36)
     expect(new Set(entries.map((e) => e.imageId)).size).toBe(36)
