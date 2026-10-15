@@ -26,6 +26,24 @@ export interface DraftResponse {
   exemplarCount: number
 }
 
+// Coach mode (briefs/BRIEF_COACHED_DRAFT_2026-10-15.md): one turn = the gist
+// Ryan gave and the draft it produced; refinements carry the prior turns.
+export interface CoachTurn {
+  gist: string
+  body: string
+}
+
+export interface CoachResponse extends DraftResponse {
+  read: string
+}
+
+/** Auto drafts that could not produce a number leave a bracketed placeholder;
+ *  the card nudges Ryan to Coach it. */
+export const PLACEHOLDER_RE = /\[[A-Z][A-Z ]+\]/
+export function needsCoach(body: string | null | undefined): boolean {
+  return !!body && PLACEHOLDER_RE.test(body)
+}
+
 export const MOMENT_LABELS: Record<string, string> = {
   soft_no: "Soft no",
   hard_no_optout: "Hard no",
@@ -110,6 +128,33 @@ export async function requestDraft(args: {
   const data = await res.json().catch(() => ({}))
   if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`)
   return data as DraftResponse
+}
+
+/** Coach mode: draft from Ryan's gist (first turn) or refine the last coached
+ *  draft (turns carry the prior gists + bodies). Mirrors requestDraft. */
+export async function requestCoach(args: {
+  leadId?: string
+  relationshipId?: string
+  channel: "email" | "sms" | "imessage"
+  surface: "leads_card" | "followups" | "relationships" | "telegram" | "drip"
+  gist: string
+  turns?: CoachTurn[] | null
+  plan?: Plan | null
+  parentDraftId?: string | null
+  dripQueueId?: string | null
+}): Promise<CoachResponse & { item?: { message?: string; subject?: string | null } }> {
+  const res = await fetch("/api/reply/coach", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      leadId: args.leadId, relationshipId: args.relationshipId, channel: args.channel, surface: args.surface,
+      gist: args.gist, turns: args.turns ?? undefined, plan: args.plan ?? undefined,
+      parentDraftId: args.parentDraftId ?? undefined, dripQueueId: args.dripQueueId ?? undefined,
+    }),
+  })
+  const data = await res.json().catch(() => ({}))
+  if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`)
+  return data as CoachResponse
 }
 
 /** "Send executes the plan": after a successful send, move status / drip / follow-up to match. */

@@ -11,6 +11,7 @@ const nextConfig = {
       "/api/campaign/regenerate-batch": ["./briefs/CAMPAIGN_VOICE.md", "./scripts/campaign-compose.mjs"],
       // Reply Planner (2026-09-24): playbook + graded eval set are runtime-read.
       "/api/reply/draft": ["./briefs/REPLY_PLAYBOOK.md", "./briefs/tests/reply-eval-set.json"],
+      "/api/reply/coach": ["./briefs/REPLY_PLAYBOOK.md", "./briefs/tests/reply-eval-set.json"],
       "/api/reply/eval": ["./briefs/REPLY_PLAYBOOK.md", "./briefs/tests/reply-eval-set.json"],
     },
   },
