@@ -6,6 +6,10 @@
 // An expired link makes the flow click SEND NEW LINK (DocuSign emails ryan@ a
 // fresh one) and exit with `needs: new_link`; --no-new-link only looks.
 //
+// f8 photo deliveries (no browser, plain fetch — briefs/BRIEF_INBOX_MEDIA_DELIVERY_2026-10-15.md):
+//   node scripts/inbox-agent/fetch/cli.mjs --url "<download-center url>" --out /tmp/halleck-photos
+// writes MLS/ and Print/ under --out with the photographer's filenames and prints the counts.
+//
 // One-time login (Phase 1b — Ryan runs this once on the mini over screen share):
 //   node scripts/inbox-agent/fetch/cli.mjs --login --headed
 // Opens https://account.docusign.com in the agent's persistent Chrome profile
@@ -67,6 +71,21 @@ if (!r.ok) {
   process.exit(1)
 }
 fs.mkdirSync(out, { recursive: true })
+if (r.sets) {
+  // Media provider: one subdir per set, photographer filenames kept.
+  for (const s of r.sets) {
+    const dir = path.join(out, s.set)
+    fs.mkdirSync(dir, { recursive: true })
+    let bytes = 0
+    for (const f of s.files) {
+      fs.writeFileSync(path.join(dir, f.filename.replace(/[\\/:*?"<>|]/g, "-")), f.bytes)
+      bytes += f.bytes.length
+    }
+    log(`  ${s.set}: ${s.files.length} file(s) · ${(bytes / 1024 / 1024).toFixed(1)} MB → ${dir}`)
+  }
+  log(`done: page says ${r.counts.page} images · MLS ${r.counts.mls} · Print ${r.counts.print} · groups ${r.groups.join(", ")} · steps ${r.steps.join(" → ")}`)
+  process.exit(0)
+}
 for (const f of r.files) {
   const file = path.join(out, f.filename.replace(/[\\/:*?"<>|]/g, "-"))
   fs.writeFileSync(file, f.bytes)

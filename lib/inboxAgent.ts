@@ -290,7 +290,7 @@ async function enqueueManualUrl(url: string): Promise<string> {
   }
   return `📥 Queued — pulling the documents from ${providerLabel(provider)} on the next pass (≤5 min).`
 }
-const FETCH_STATUS_ICON: Record<string, string> = { queued: "⏳", running: "🏃", done: "✅", failed: "⚠️", needs_code: "🔐", needs_login: "🔑", expired: "⌛", duplicate: "♻️", awaiting_new_link: "📨", resolved_by_new_link: "✅" }
+const FETCH_STATUS_ICON: Record<string, string> = { queued: "⏳", running: "🏃", done: "✅", failed: "⚠️", needs_code: "🔐", needs_login: "🔑", expired: "⌛", duplicate: "♻️", awaiting_new_link: "📨", resolved_by_new_link: "✅", needs_property: "❓", skipped: "⏭" }
 async function listFetches(): Promise<string> {
   const sb = getLeadsClient()
   const { data } = await sb.from("inbox_fetches").select("id, status, provider, kind, url, error, attempts, next_try_at, created_at, files, inbox_messages(subject)").order("created_at", { ascending: false }).limit(10)

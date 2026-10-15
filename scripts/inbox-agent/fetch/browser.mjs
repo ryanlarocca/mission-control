@@ -215,11 +215,14 @@ export async function captureDownload(page, trigger, { timeout = 30_000 } = {}) 
   return { filename, mime: mimeFor(filename, bytes), bytes }
 }
 
-/** MIME from the extension, with a magic-byte check for PDFs and ZIPs. */
+/** MIME from the extension, with a magic-byte check for PDFs, ZIPs, JPEGs and PNGs
+ *  (the f8 photo fetch trusts the bytes, not the CDN's Content-Type). */
 export function mimeFor(filename, bytes) {
   const head = bytes ? Buffer.from(bytes.subarray(0, 4)).toString("latin1") : ""
   if (head.startsWith("%PDF")) return "application/pdf"
   if (head.startsWith("PK\u0003\u0004")) return "application/zip"
+  if (head.startsWith("\u00ff\u00d8\u00ff")) return "image/jpeg"
+  if (head.startsWith("\u0089PNG")) return "image/png"
   const ext = (/\.([a-z0-9]{1,6})$/i.exec(filename || "") || [])[1]?.toLowerCase()
   return { pdf: "application/pdf", zip: "application/zip", docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document", doc: "application/msword", xlsx: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", csv: "text/csv", png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg" }[ext] || "application/octet-stream"
 }
