@@ -1,28 +1,34 @@
 import { describe, it, expect } from "vitest"
 import * as verifyModule from "../scripts/campaign-verify.mjs"
-import { verifyAction as tsVerifyAction, isDraftEligible as tsIsDraftEligible, mapKickbox as tsMapKickbox } from "../lib/verify"
+import { verifyAction as tsVerifyAction, isDraftEligible as tsIsDraftEligible, mapVerifier as tsMapVerifier } from "../lib/verify"
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-const { mapKickbox, verifyAction, isDraftEligible, unknownTwice, selectVerifyCandidates, verifyEmail, verifyMany, summarizeVerification, summaryLine, isSandboxKey, KickboxAuthError } = verifyModule as unknown as Record<string, any>
+const { mapVerifier, verifyAction, isDraftEligible, unknownTwice, selectVerifyCandidates, verifyEmail, verifyMany, summarizeVerification, summaryLine, isSandboxKey, classifyVendorError, VerifierAuthError, VERIFIER_URL } = verifyModule as unknown as Record<string, any>
 
 const now = new Date("2026-10-15T15:00:00Z")
-// Kickbox's documented single-verify response shape.
-const kb = (over: Record<string, unknown> = {}) => ({
-  result: "deliverable", reason: "accepted_email", role: false, free: false, disposable: false, accept_all: false,
-  did_you_mean: null, sendex: 0.92, email: "agent@kw.com", user: "agent", domain: "kw.com", success: true, message: null, ...over,
+// MillionVerifier's documented (and live-confirmed, 2026-10-15) single-verify
+// response shape. HTTP 200 even on failures: `error` is "" on success.
+const mv = (over: Record<string, unknown> = {}) => ({
+  email: "agent@kw.com", quality: "good", result: "ok", resultcode: 1, subresult: "ok", free: false, role: false,
+  didyoumean: "", credits: 500, executiontime: 1121, error: "", livemode: true, ...over,
 })
 
-describe("Task 5 — Kickbox mapping (documented response shape, never live)", () => {
-  it("maps the four results and carries reason / accept_all / sendex", () => {
-    expect(mapKickbox(kb(), now)).toMatchObject({ result: "deliverable", reason: "accepted_email", accept_all: false, sendex: 0.92, checked_at: now.toISOString(), domain: "kw.com" })
-    expect(mapKickbox(kb({ result: "undeliverable", reason: "rejected_email", sendex: 0 }), now)).toMatchObject({ result: "undeliverable", reason: "rejected_email" })
-    expect(mapKickbox(kb({ result: "risky", reason: "low_quality", accept_all: true }), now)).toMatchObject({ result: "risky", reason: "low_quality", accept_all: true })
-    expect(mapKickbox(kb({ result: "unknown", reason: "timeout" }), now)).toMatchObject({ result: "unknown", reason: "timeout" })
-    expect(tsMapKickbox(kb(), now).result).toBe("deliverable")
+describe("Task 5 — verifier mapping (MillionVerifier documented response shape, never live)", () => {
+  it("maps ok / catch_all / invalid / disposable / unknown onto the vendor-neutral vocabulary", () => {
+    expect(mapVerifier(mv(), now)).toMatchObject({ result: "deliverable", reason: "ok", accept_all: false, sendex: null, checked_at: now.toISOString(), domain: "kw.com", balance: 500, did_you_mean: null })
+    expect(mapVerifier(mv({ quality: "risky", result: "catch_all", resultcode: 2, subresult: "ok" }), now)).toMatchObject({ result: "risky", accept_all: true, reason: "ok" })
+    expect(mapVerifier(mv({ quality: "bad", result: "invalid", resultcode: 6, subresult: "mailbox_not_found" }), now)).toMatchObject({ result: "undeliverable", reason: "mailbox_not_found", accept_all: false })
+    expect(mapVerifier(mv({ quality: "bad", result: "disposable", resultcode: 5, subresult: "" }), now)).toMatchObject({ result: "undeliverable", reason: "disposable", disposable: true })
+    expect(mapVerifier(mv({ quality: "risky", result: "unknown", resultcode: 4, subresult: "timeout" }), now)).toMatchObject({ result: "unknown", reason: "timeout" })
+    expect(mapVerifier(mv({ result: "OK", subresult: "" }), now)).toMatchObject({ result: "deliverable", reason: "ok" }) // case-insensitive, reason falls back to the vendor result
+    expect(mapVerifier(mv({ didyoumean: "agent@kw.com" }), now).did_you_mean).toBe("agent@kw.com")
+    expect(tsMapVerifier(mv(), now).result).toBe("deliverable")
   })
-  it("off-shape or failed responses are unknown — a bad day at Kickbox never suppresses anyone", () => {
-    expect(mapKickbox({ success: false, message: "Insufficient balance" }, now)).toMatchObject({ result: "unknown", reason: "api_error:Insufficient balance" })
-    expect(mapKickbox(null, now)).toMatchObject({ result: "unknown", reason: "bad_response", accept_all: false, sendex: null })
-    expect(mapKickbox({ result: "weird" }, now).result).toBe("unknown")
+  it("a non-empty `error`, an off-shape body, or a missing result is unknown — a bad day at the vendor never suppresses anyone", () => {
+    expect(mapVerifier(mv({ result: "ok", error: "something odd" }), now)).toMatchObject({ result: "unknown", reason: "api_error:something odd", accept_all: false })
+    expect(mapVerifier(mv({ result: "catch_all", error: "temporary failure" }), now).accept_all).toBe(false)
+    expect(mapVerifier(null, now)).toMatchObject({ result: "unknown", reason: "bad_response", accept_all: false, sendex: null, balance: null })
+    expect(mapVerifier({ result: "weird" }, now)).toMatchObject({ result: "unknown", reason: "bad_response" })
+    expect(mapVerifier({}, now)).toMatchObject({ result: "unknown", reason: "bad_response", domain: null })
   })
   it("verdict → action: deliverable eligible; accept_all eligible as catch-all; risky eligible; unknown hold; undeliverable suppress as 'invalid'", () => {
     expect(verifyAction({ result: "deliverable", accept_all: false })).toEqual({ action: "eligible", bucket: "deliverable" })
@@ -31,12 +37,25 @@ describe("Task 5 — Kickbox mapping (documented response shape, never live)", (
     expect(verifyAction({ result: "risky", accept_all: false })).toEqual({ action: "eligible", bucket: "risky" })
     expect(verifyAction({ result: "unknown", accept_all: false })).toEqual({ action: "hold", bucket: "unknown" })
     expect(verifyAction({ result: "undeliverable", accept_all: false })).toEqual({ action: "suppress", bucket: "undeliverable", source: "verify_undeliverable", status: "invalid" })
+    // the vendor's catch_all goes through the mapping as risky + accept_all → still eligible, counted as catch-all
+    expect(verifyAction(mapVerifier(mv({ result: "catch_all" }), now))).toEqual({ action: "eligible", bucket: "catch_all" })
+    expect(verifyAction(mapVerifier(mv({ result: "disposable" }), now)).bucket).toBe("undeliverable")
     expect(tsVerifyAction({ result: "deliverable", accept_all: true }).bucket).toBe("catch_all")
   })
-  it("sandbox keys are recognised", () => {
-    expect(isSandboxKey("test_abc123")).toBe(true)
-    expect(isSandboxKey("live_abc123")).toBe(false)
+  it("test keys are recognised; key / credit error strings classify as 401 / 403", () => {
+    expect(isSandboxKey("API_KEY_FOR_TEST")).toBe(true)
+    expect(isSandboxKey("API_KEY_FOR_OK")).toBe(true)
+    expect(isSandboxKey("API_KEY_FOR_DISPOSABLE")).toBe(true)
+    expect(isSandboxKey("MV12345abcdef")).toBe(false)
+    expect(isSandboxKey("test_abc123")).toBe(false)
     expect(isSandboxKey(undefined)).toBe(false)
+    expect(classifyVendorError("api key is not valid")).toBe(401)
+    expect(classifyVendorError("Invalid key")).toBe(401)
+    expect(classifyVendorError("insufficient credits")).toBe(403)
+    expect(classifyVendorError("Not enough balance")).toBe(403)
+    expect(classifyVendorError("something odd")).toBeNull()
+    expect(classifyVendorError("")).toBeNull()
+    expect(classifyVendorError(undefined)).toBeNull()
   })
 })
 
@@ -50,6 +69,7 @@ describe("Task 5 — the send rule (verify_required gate)", () => {
   it("when required: fresh + eligible result only; catch-all is never filtered", () => {
     expect(isDraftEligible({ verified_at: fresh, verify_result: "deliverable", verify_accept_all: false }, { required: true, now })).toMatchObject({ eligible: true, bucket: "deliverable" })
     expect(isDraftEligible({ verified_at: fresh, verify_result: "deliverable", verify_accept_all: true }, { required: true, now })).toMatchObject({ eligible: true, bucket: "catch_all" })
+    expect(isDraftEligible({ verified_at: fresh, verify_result: "risky", verify_accept_all: true }, { required: true, now })).toMatchObject({ eligible: true, bucket: "catch_all" })
     expect(isDraftEligible({ verified_at: fresh, verify_result: "risky", verify_accept_all: false }, { required: true, now })).toMatchObject({ eligible: true, bucket: "risky" })
     expect(isDraftEligible({ verified_at: fresh, verify_result: "unknown" }, { required: true, now })).toMatchObject({ eligible: false, bucket: "unknown" })
     expect(isDraftEligible({ verified_at: fresh, verify_result: "undeliverable" }, { required: true, now })).toMatchObject({ eligible: false, bucket: "undeliverable" })
@@ -84,36 +104,47 @@ describe("Task 5 — the send rule (verify_required gate)", () => {
   })
 })
 
-describe("Task 5 — Kickbox client (fake fetch)", () => {
-  const response = (status: number, body: unknown, headers: Record<string, string> = {}) => ({
+describe("Task 5 — verifier client (fake fetch)", () => {
+  const response = (status: number, body: unknown) => ({
     status,
-    headers: { get: (k: string) => headers[k.toLowerCase()] ?? null },
+    headers: { get: () => null },
     json: async () => body,
   })
-  it("calls the documented endpoint with email, apikey and timeout and maps the body", async () => {
+  it("calls the documented endpoint (trailing slash, api + email + timeout in seconds) and maps the body", async () => {
     const calls: string[] = []
-    const fetchImpl = async (url: string) => { calls.push(url); return response(200, kb(), { "x-kickbox-balance": "97" }) }
-    const v = await verifyEmail("agent@kw.com", { apiKey: "test_key", fetchImpl })
-    expect(calls[0]).toBe("https://api.kickbox.com/v2/verify?email=agent%40kw.com&apikey=test_key&timeout=10000")
+    const fetchImpl = async (url: string) => { calls.push(url); return response(200, mv({ credits: 97 })) }
+    const v = await verifyEmail("agent@kw.com", { apiKey: "API_KEY_FOR_OK", fetchImpl })
+    expect(VERIFIER_URL).toBe("https://api.millionverifier.com/api/v3/")
+    expect(calls[0]).toBe("https://api.millionverifier.com/api/v3/?api=API_KEY_FOR_OK&email=agent%40kw.com&timeout=10")
     expect(v).toMatchObject({ result: "deliverable", balance: 97 })
   })
-  it("backs off on 429 and gives up to unknown; 401/403 abort with KickboxAuthError", async () => {
+  it("backs off on 429 and gives up to unknown; HTTP 401/403 abort with VerifierAuthError", async () => {
     const waits: number[] = []
     let n = 0
-    const flaky = async () => (n++ < 2 ? response(429, {}) : response(200, kb({ result: "risky", reason: "low_deliverability" })))
-    const v = await verifyEmail("a@b.com", { apiKey: "test_k", fetchImpl: flaky, sleep: async (ms: number) => { waits.push(ms) } })
-    expect(v.result).toBe("risky")
+    const flaky = async () => (n++ < 2 ? response(429, {}) : response(200, mv({ quality: "risky", result: "catch_all", subresult: "ok" })))
+    const v = await verifyEmail("a@b.com", { apiKey: "k", fetchImpl: flaky, sleep: async (ms: number) => { waits.push(ms) } })
+    expect(v).toMatchObject({ result: "risky", accept_all: true })
     expect(waits).toEqual([1000, 2000])
     const always429 = async () => response(429, {})
-    const gaveUp = await verifyEmail("a@b.com", { apiKey: "test_k", fetchImpl: always429, sleep: async () => {}, maxRetries: 2 })
+    const gaveUp = await verifyEmail("a@b.com", { apiKey: "k", fetchImpl: always429, sleep: async () => {}, maxRetries: 2 })
     expect(gaveUp).toMatchObject({ result: "unknown", reason: "http_429" })
-    await expect(verifyEmail("a@b.com", { apiKey: "bad", fetchImpl: async () => response(401, { success: false, message: "Invalid API key" }) })).rejects.toBeInstanceOf(KickboxAuthError)
-    await expect(verifyEmail("a@b.com", { apiKey: "k", fetchImpl: async () => response(403, { success: false, message: "Insufficient balance" }) })).rejects.toThrow(/Insufficient balance/)
-    await expect(verifyEmail("a@b.com", { apiKey: "" })).rejects.toThrow(/KICKBOX_API_KEY/)
+    await expect(verifyEmail("a@b.com", { apiKey: "bad", fetchImpl: async () => response(401, { error: "api key is not valid" }) })).rejects.toBeInstanceOf(VerifierAuthError)
+    await expect(verifyEmail("a@b.com", { apiKey: "k", fetchImpl: async () => response(403, { error: "insufficient credits" }) })).rejects.toThrow(/insufficient credits/)
+    await expect(verifyEmail("a@b.com", { apiKey: "" })).rejects.toThrow(/MILLIONVERIFIER_API_KEY/)
     const down = await verifyEmail("a@b.com", { apiKey: "k", fetchImpl: async () => { throw new Error("ECONNRESET") } })
     expect(down).toMatchObject({ result: "unknown", reason: "fetch_error" })
     const five = await verifyEmail("a@b.com", { apiKey: "k", fetchImpl: async () => response(500, {}) })
     expect(five).toMatchObject({ result: "unknown", reason: "http_500" })
+  })
+  it("the vendor's HTTP-200 error strings: key problems abort as 401, missing credits as 403, anything else is unknown", async () => {
+    let err: unknown
+    try { await verifyEmail("a@b.com", { apiKey: "k", fetchImpl: async () => response(200, mv({ result: "", error: "api key is not valid" })) }) } catch (e) { err = e }
+    expect(err).toBeInstanceOf(VerifierAuthError)
+    expect((err as { status: number }).status).toBe(401)
+    try { await verifyEmail("a@b.com", { apiKey: "k", fetchImpl: async () => response(200, mv({ result: "", error: "insufficient credits" })) }) } catch (e) { err = e }
+    expect((err as { status: number }).status).toBe(403)
+    const odd = await verifyEmail("a@b.com", { apiKey: "k", fetchImpl: async () => response(200, mv({ error: "temporary failure" })) })
+    expect(odd).toMatchObject({ result: "unknown", reason: "api_error:temporary failure" })
   })
   it("verifyMany keeps ≤ 5 in flight, returns results in order and fires onResult per item", async () => {
     let inFlight = 0
@@ -124,11 +155,12 @@ describe("Task 5 — Kickbox client (fake fetch)", () => {
       await new Promise((r) => setTimeout(r, 5))
       inFlight--
       const email = decodeURIComponent(/email=([^&]+)/.exec(url)![1])
-      return response(200, kb({ email, domain: email.split("@")[1], result: email.startsWith("bad") ? "undeliverable" : "deliverable", accept_all: email.endsWith("catch.com") }))
+      const domain = email.split("@")[1]
+      return response(200, mv({ email, result: email.startsWith("bad") ? "invalid" : domain === "catch.com" ? "catch_all" : "ok", subresult: email.startsWith("bad") ? "mailbox_not_found" : "ok" }))
     }
     const items = Array.from({ length: 12 }, (_, i) => ({ id: String(i), email: `${i === 3 ? "bad" : "ok"}${i}@${i % 2 ? "catch.com" : "kw.com"}` }))
     const seen: string[] = []
-    const results = await verifyMany(items, { fetchImpl, apiKey: "test_k", onResult: async (c: { id: string }) => { seen.push(c.id) } })
+    const results = await verifyMany(items, { fetchImpl, apiKey: "k", onResult: async (c: { id: string }) => { seen.push(c.id) } })
     expect(peak).toBeLessThanOrEqual(5)
     expect(peak).toBeGreaterThan(1)
     expect(results).toHaveLength(12)
@@ -139,8 +171,13 @@ describe("Task 5 — Kickbox client (fake fetch)", () => {
     expect(summary).toEqual({ total: 12, counts: { deliverable: 6, catch_all: 5, risky: 0, unknown: 0, undeliverable: 1 }, topCatchAll: [{ domain: "catch.com", n: 5 }] })
     expect(summaryLine(summary)).toBe("verified 12: 6 deliverable (50.0%) · 5 catch-all (41.7%) · 0 risky (0.0%) · 0 unknown (0.0%) · 1 undeliverable (8.3%)\nTop catch-all domains: catch.com (5)")
   })
-  it("verifyMany aborts the batch on an auth error", async () => {
-    const fetchImpl = async () => response(403, { success: false, message: "Insufficient balance" })
-    await expect(verifyMany([{ email: "a@b.com" }, { email: "c@d.com" }], { fetchImpl, apiKey: "k" })).rejects.toBeInstanceOf(KickboxAuthError)
+  it("verifyMany aborts the batch on an auth error, from an HTTP status or from the vendor's error string", async () => {
+    await expect(verifyMany([{ email: "a@b.com" }, { email: "c@d.com" }], { fetchImpl: async () => response(403, { error: "insufficient credits" }), apiKey: "k" })).rejects.toBeInstanceOf(VerifierAuthError)
+    let err: unknown
+    try { await verifyMany([{ email: "a@b.com" }, { email: "c@d.com" }], { fetchImpl: async () => response(200, mv({ error: "insufficient credits" })), apiKey: "k" }) } catch (e) { err = e }
+    expect(err).toBeInstanceOf(VerifierAuthError)
+    expect((err as { status: number }).status).toBe(403)
+    try { await verifyMany([{ email: "a@b.com" }], { fetchImpl: async () => response(200, mv({ error: "api key is not valid" })), apiKey: "k" }) } catch (e) { err = e }
+    expect((err as { status: number }).status).toBe(401)
   })
 })

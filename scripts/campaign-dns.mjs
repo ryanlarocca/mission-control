@@ -6,7 +6,7 @@
 // card counts it. DNS latency never blocks a send: anything slower than
 // `timeoutMs` (2 s) or any resolver error other than "does not exist" is
 // treated as a PASS — this is a backstop for dead domains, not a verifier
-// (Kickbox is, scripts/campaign-verify.mjs). Results are cached per domain
+// (MillionVerifier is, scripts/campaign-verify.mjs). Results are cached per domain
 // per PT day in scripts/.campaign-dns-cache.json (gitignored).
 //
 // `resolver` is injected so the decision logic is unit-tested without the

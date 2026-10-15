@@ -44,10 +44,11 @@
  *                        none (--dry-run prints the table, writes nothing)
  *
  * VERIFY pass (2026-10-15, briefs/BRIEF_CAMPAIGN_AUTOPILOT_GATES_2026-10-14.md
- *   Task 5): Kickbox-verifies, once per weekday morning before the mint,
- *   everything due in the next 7 days whose verdict is missing, > 30 days
- *   old, or "unknown" ≥ 7 days old — up to VERIFY_DAILY_MAX (500) a day.
- *   Needs KICKBOX_API_KEY. Verify-only runs (ramp + verify, nothing else):
+ *   Task 5): verifies (MillionVerifier), once per weekday morning before the
+ *   mint, everything due in the next 7 days whose verdict is missing, > 30
+ *   days old, or "unknown" ≥ 7 days old — up to VERIFY_DAILY_MAX (500) a day.
+ *   Needs MILLIONVERIFIER_API_KEY in .env.local. Verify-only runs (ramp +
+ *   verify, nothing else):
  *     --verify-all                   the one-time first pass over the whole active
  *                                    queue; Telegram summary + top 15 catch-all domains
  *     --verify-domains a.com,b.com   one address per listed domain, prints accept_all
@@ -67,7 +68,7 @@ import { loadSenderConfig, loadSenderStates, saveSenderState, capFor, evaluateSe
 import { judgeConfigured, connectJudge, disconnectJudge, readCanaryMessages, newestCanary, describePlacement, decideVerdict, canaryOldEnough, planBackfill, stallReason, verdictWord, isJudgeAuthError, judgeErrorText, JUDGE_SEARCH_DAYS, BACKFILL_SEARCH_DAYS } from "./canary-judge.mjs"
 import { AUTO_SEND_KEY, resolveAutoSend, withTouchRegated, removeTripwire, describeRemovedSends, touchesOfRemoves, bounceBreaker, isDayStopped, withDayStop, partitionTouchOne, t1Supply, describeT1Supply, CANARY2_REMINDER_KEY, canary2ReminderDue, canary2ReminderText, withCanary2Reminder, windowStartIso, respreadSlot } from "./campaign-gates.mjs"
 import { checkRecipientDomain, dnsBlocks, readDnsCache } from "./campaign-dns.mjs"
-import { verifyMany, verifyAction, isDraftEligible, unknownTwice, selectVerifyCandidates, summarizeVerification, summaryLine, isSandboxKey, KickboxAuthError, VERIFY_DAILY_MAX_DEFAULT } from "./campaign-verify.mjs"
+import { verifyMany, verifyAction, isDraftEligible, unknownTwice, selectVerifyCandidates, summarizeVerification, summaryLine, isSandboxKey, VerifierAuthError, VERIFIER_ENV, VERIFY_DAILY_MAX_DEFAULT } from "./campaign-verify.mjs"
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const REPO_ROOT = path.resolve(__dirname, "..")
@@ -308,7 +309,7 @@ function isSuppressed(contact, sets) {
  * Engine-side twin of lib/suppression.ts addSuppression (check-then-insert
  * on (source, source_ref); a duplicate-key race reads as "already there")
  * plus the contact status flip. Used by the DNS backstop (Task 4,
- * source "dns_no_mx") and the Kickbox verdicts (Task 5, "verify_undeliverable"
+ * source "dns_no_mx") and the verifier verdicts (Task 5, "verify_undeliverable"
  * / "verify_unknown"). Dry runs log and write nothing.
  */
 async function suppressContact(contact, { source, reason, status = "suppressed" }) {
@@ -1026,7 +1027,7 @@ async function markFailed(row, err) {
   if (!dryRun) await sb.from("campaign_sends").update({ status: "failed", error: err }).eq("id", row.id)
 }
 
-// ---------- VERIFY pass (Kickbox, autopilot brief Task 5) ----------
+// ---------- VERIFY pass (MillionVerifier, autopilot brief Task 5) ----------
 // Once per weekday morning BEFORE the mint (so the day's drafts come from a
 // verified pool): every active, non-suppressed contact due within 7 days
 // whose verdict is missing, > 30 days old, or "unknown" ≥ 7 days old —
@@ -1035,8 +1036,9 @@ async function markFailed(row, err) {
 // verify_reason / verify_accept_all); undeliverable → suppressed as
 // "verify_undeliverable" with status "invalid"; a second "unknown" →
 // "verify_unknown". Catch-all is a property of the domain and never filters.
-// Needs KICKBOX_API_KEY (.env.local + the launchd plist); without it the
-// pass logs one line and the draft rule simply sees no verdicts.
+// Needs MILLIONVERIFIER_API_KEY in .env.local (the engine reads it itself;
+// the launchd plist carries no EnvironmentVariables); without it the pass
+// logs one line and the draft rule simply sees no verdicts.
 const VERIFY_STATE = path.join(__dirname, ".campaign-verify-state.json")
 
 async function getVerifyRequired() {
@@ -1073,21 +1075,21 @@ async function applyVerdict(c, v) {
   const { error } = await sb.from("campaign_contacts").update(patch).eq("id", c.id)
   if (error) throw new Error(`verify write (${c.email}): ${error.message}`)
   if (act.action === "suppress") {
-    await suppressContact(c, { source: act.source, reason: `Kickbox ${v.result}: ${v.reason}`, status: act.status })
+    await suppressContact(c, { source: act.source, reason: `verifier ${v.result}: ${v.reason}`, status: act.status })
     return act.bucket
   }
   if (act.action === "hold" && unknownTwice(c, v)) {
-    await suppressContact(c, { source: "verify_unknown", reason: `Kickbox unknown twice (${c.verify_reason ?? "?"} then ${v.reason})` })
+    await suppressContact(c, { source: "verify_unknown", reason: `verifier unknown twice (${c.verify_reason ?? "?"} then ${v.reason})` })
     return "unknown_suppressed"
   }
   return act.bucket
 }
 
 async function verifyPass() {
-  const apiKey = process.env.KICKBOX_API_KEY
+  const apiKey = process.env[VERIFIER_ENV]
   if (!apiKey) {
-    if (verifyOnly) throw new Error("KICKBOX_API_KEY is not set — add it to .env.local (and the launchd plist for the scheduled pass)")
-    log("verify: KICKBOX_API_KEY unset — pass skipped (the draft rule sees no verdicts)")
+    if (verifyOnly) throw new Error(`${VERIFIER_ENV} is not set — add it to .env.local`)
+    log(`verify: ${VERIFIER_ENV} unset — pass skipped (the draft rule sees no verdicts)`)
     return
   }
   const keyNote = isSandboxKey(apiKey) ? " (SANDBOX key — canned results, no credits)" : ""
@@ -1122,15 +1124,15 @@ async function verifyPass() {
       },
     })
   } catch (e) {
-    if (e instanceof KickboxAuthError) {
-      const text = `⚠️ Kickbox stopped the verify pass after ${rows.length}: ${e.message}. ${e.status === 403 ? "Top up the credit pack, then rerun." : "Check KICKBOX_API_KEY in .env.local + the plist."}`
+    if (e instanceof VerifierAuthError) {
+      const text = `⚠️ MillionVerifier stopped the verify pass after ${rows.length}: ${e.message}. ${e.status === 403 ? "Top up the credit pack, then rerun." : `Check ${VERIFIER_ENV} in .env.local.`}`
       if (dryRun) log(`would telegram: ${text}`)
       else await telegram(escHtml(text))
     }
     throw e
   }
   const summary = summarizeVerification(rows)
-  const text = `🔎 Kickbox ${verifyAll ? "first pass" : "morning pass"}${keyNote}: ${summaryLine(summary)}${deferred ? `\n${deferred} more deferred to the next pass.` : ""}${balance !== null ? `\nCredits left: ${balance}` : ""}${tally.unknown_suppressed ? `\n${tally.unknown_suppressed} suppressed after a second unknown.` : ""}`
+  const text = `🔎 MillionVerifier ${verifyAll ? "first pass" : "morning pass"}${keyNote}: ${summaryLine(summary)}${deferred ? `\n${deferred} more deferred to the next pass.` : ""}${balance !== null ? `\nCredits left: ${balance}` : ""}${tally.unknown_suppressed ? `\n${tally.unknown_suppressed} suppressed after a second unknown.` : ""}`
   log(text.replace(/\n/g, " · "))
   if (!dryRun) {
     bumpHealthCounter("verified", rows.length)

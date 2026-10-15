@@ -21,20 +21,21 @@ values (
 )
 on conflict (key) do nothing;
 
--- Task 5 — Kickbox verification columns on campaign_contacts.
+-- Task 5 — email-verification columns on campaign_contacts (vendor-neutral;
+-- the verifier behind lib/verify.ts is MillionVerifier as of 2026-10-15).
 alter table campaign_contacts add column if not exists verified_at timestamptz;
-comment on column campaign_contacts.verified_at is 'When Kickbox last verified this address (lib/verify.ts). Null = never; draft-eligible only when within 30 days once verify_required is on';
+comment on column campaign_contacts.verified_at is 'When the verifier last checked this address (lib/verify.ts). Null = never; draft-eligible only when within 30 days once verify_required is on';
 alter table campaign_contacts add column if not exists verify_result text;
-comment on column campaign_contacts.verify_result is 'Kickbox result: deliverable | undeliverable | risky | unknown';
+comment on column campaign_contacts.verify_result is 'verifier result: deliverable | undeliverable | risky | unknown';
 alter table campaign_contacts add column if not exists verify_reason text;
-comment on column campaign_contacts.verify_reason is 'Kickbox reason (accepted_email, rejected_email, low_quality, timeout, …)';
+comment on column campaign_contacts.verify_reason is 'verifier reason / sub-result (ok, disposable, timeout, api_error:…, …)';
 alter table campaign_contacts add column if not exists verify_accept_all boolean;
-comment on column campaign_contacts.verify_accept_all is 'Kickbox accept_all: the DOMAIN is catch-all. Never a filter — counted on the daily card as "catch-all"';
+comment on column campaign_contacts.verify_accept_all is 'verify_accept_all: the DOMAIN is catch-all. Never a filter — counted on the daily card as "catch-all"';
 
 create index if not exists campaign_contacts_verify_idx
   on campaign_contacts (verified_at) where status = 'active';
 
--- Task 5 — a Kickbox "undeliverable" verdict parks the contact as 'invalid'
+-- Task 5 — a verifier "undeliverable" verdict parks the contact as 'invalid'
 -- (NOT 'bounced', so the July bounce wave stays distinguishable). The
 -- original inline check constraint is rebuilt with the new value.
 alter table campaign_contacts drop constraint if exists campaign_contacts_status_check;
