@@ -126,6 +126,9 @@ export function bounceBreaker(metrics, gates = {}) {
   // autopilot brief that line is the day-stop, and red moved to bounceBreakerRate.
   const g = { ...BOUNCE_BREAKER, dayStopRate: gates.bounceRedRate ?? BOUNCE_BREAKER.dayStopRate, redRate: gates.bounceBreakerRate ?? BOUNCE_BREAKER.redRate, ...(gates.bounceBreaker ?? {}) }
   const pct = sent ? `${((100 * bounces) / sent).toFixed(1)}%` : "—"
+  // Bounces are attributed to the day their SEND went out (senderMetricsRange);
+  // with nothing sent today there is nothing for the breaker to protect.
+  if (sent === 0) return { level: "none", bounces, sent, text: null }
   if (firstHour >= g.firstHourBounces) return { level: "red", bounces, sent, text: `${firstHour} bounces inside the first hour of sending (${bounces}/${sent} today)` }
   if (bounces < 2) return { level: "none", bounces, sent, text: null }
   const rate = sent ? bounces / sent : 0

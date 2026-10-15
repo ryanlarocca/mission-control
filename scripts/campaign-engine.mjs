@@ -322,8 +322,10 @@ async function suppressContact(contact, { source, reason, status = "suppressed" 
     const { error } = await sb.from("suppression").insert({ email, phone: null, name: contact.name ?? null, reason, source, source_ref, channel: "email", audience: "agent" })
     if (error && !/duplicate key/i.test(error.message)) throw new Error(`suppression insert (${email}): ${error.message}`)
   }
-  await sb.from("campaign_contacts").update({ status, next_touch_at: null, updated_at: new Date().toISOString() }).eq("id", contact.id)
-  await sb.from("campaign_sends").update({ status: "skipped", error: source }).eq("contact_id", contact.id).in("status", ["draft", "approved"])
+  const { error: cErr } = await sb.from("campaign_contacts").update({ status, next_touch_at: null, updated_at: new Date().toISOString() }).eq("id", contact.id)
+  if (cErr) throw new Error(`suppress ${email}: contact status → ${status} failed (${cErr.message}) — suppression row written, contact still ${contact.status ?? "active"}`)
+  const { error: sErr } = await sb.from("campaign_sends").update({ status: "skipped", error: source }).eq("contact_id", contact.id).in("status", ["draft", "approved"])
+  if (sErr) log(`suppress ${email}: open sends not skipped (${sErr.message}) — the send pass re-checks suppression anyway`)
   log(`suppressed ${email} (${source}: ${reason}) → status ${status}`)
   return true
 }
@@ -1010,7 +1012,11 @@ async function sendPass() {
  */
 async function respreadStaleApprovals() {
   const now = new Date()
-  const { data: stale, error } = await sb.from("campaign_sends").select("id, scheduled_for").eq("status", "approved").lt("scheduled_for", windowStartIso(now)).order("scheduled_for", { ascending: true }).limit(500)
+  // Stale = scheduled before today's PT midnight (a window that already
+  // closed). A slot earlier today but before 07:00 is an explicit choice
+  // (sendPass: "an explicit choice beats the default") and is left alone.
+  const ptMidnightIso = new Date(new Date(windowStartIso(now)).getTime() - WINDOW.startHour * 3_600_000).toISOString()
+  const { data: stale, error } = await sb.from("campaign_sends").select("id, scheduled_for").eq("status", "approved").lt("scheduled_for", ptMidnightIso).order("scheduled_for", { ascending: true }).limit(500)
   if (error) throw new Error(`stale approvals fetch: ${error.message}`)
   if (!stale?.length) return 0
   if (dryRun) { log(`would respread ${stale.length} approved row(s) with a stale scheduled_for (oldest ${stale[0].scheduled_for}) into the next window ahead`); return stale.length }
@@ -1128,6 +1134,14 @@ async function verifyPass() {
       const text = `⚠️ MillionVerifier stopped the verify pass after ${rows.length}: ${e.message}. ${e.status === 403 ? "Top up the credit pack, then rerun." : `Check ${VERIFIER_ENV} in .env.local.`}`
       if (dryRun) log(`would telegram: ${text}`)
       else await telegram(escHtml(text))
+      // The scheduled pass must not retry (and re-alert) every 20-minute
+      // cycle until the mint hour: mark today as run and stop quietly. The
+      // CLI runs (--verify-all / --verify-now) still surface the error.
+      if (!verifyAll && !verifyOnly && !args.includes("--verify-now")) {
+        if (!dryRun) fs.writeFileSync(VERIFY_STATE, JSON.stringify({ last: ptToday(), verified: rows.length, error: e.message }))
+        log(`verify: stopped by the vendor (${e.message}) — pass marked done for today`)
+        return
+      }
     }
     throw e
   }
@@ -1323,6 +1337,12 @@ async function senderMetricsRange(startIso, endIso) {
     const m = owner ? out.get(owner.email) : null
     if (!m) continue
     if (e.kind === "bounce") {
+      // A DSN can land hours or days after the send (greylisting, deferred
+      // 4.x.x retries). Charge it to the day the send went out, not the day
+      // the inbox pass read it — else overnight bounces day-stop a sender
+      // before it has sent anything.
+      const sentAt = last?.sent_at ? new Date(last.sent_at).getTime() : NaN
+      if (!(sentAt >= new Date(startIso).getTime() && sentAt <= new Date(endIso).getTime())) continue
       m.bounces++
       if (m.firstSentAt && new Date(e.occurred_at).getTime() - new Date(m.firstSentAt).getTime() <= 3_600_000) m.bouncesFirstHour++
     } else if (e.triage === null) m.replies++

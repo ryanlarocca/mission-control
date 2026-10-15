@@ -122,6 +122,8 @@ describe("Task 2 — floored remove tripwire (removes never hold the ramp on the
 describe("Task 3 — intraday bounce circuit breaker", () => {
   it("1/3 → nothing; 2/8 → day-stop; 1/40 → nothing; 3/40 → red", () => {
     expect(bounceBreaker({ sent: 3, bounces: 1 }).level).toBe("none")
+    expect(bounceBreaker({ sent: 0, bounces: 2 }).level).toBe("none") // overnight DSNs for yesterday's sends: nothing sent today, nothing to stop
+    expect(bounceBreaker({ sent: 0, bounces: 3, bouncesFirstHour: 3 }).level).toBe("none")
     expect(bounceBreaker({ sent: 8, bounces: 2 })).toMatchObject({ level: "day_stop", text: "2 bounces on 8 sent (2nd bounce below 10)" })
     expect(bounceBreaker({ sent: 40, bounces: 1 }).level).toBe("none")
     expect(bounceBreaker({ sent: 40, bounces: 3 })).toMatchObject({ level: "red", text: "bounce rate 7.5% (3/40) ≥ 5%" })
@@ -133,7 +135,7 @@ describe("Task 3 — intraday bounce circuit breaker", () => {
     expect(bounceBreaker({ sent: 100, bounces: 5 }).level).toBe("red") // 5% exactly
     expect(bounceBreaker({ sent: 9, bounces: 2 }).level).toBe("day_stop")
     expect(bounceBreaker({ sent: 0, bounces: 0 }).level).toBe("none")
-    expect(bounceBreaker({ sent: 0, bounces: 2 }).level).toBe("day_stop")
+    expect(bounceBreaker({ sent: 0, bounces: 2 }).level).toBe("none") // bounces are charged to the send day; nothing sent today = nothing to stop
   })
   it("3 bounces inside the first hour of sending is red at any volume", () => {
     expect(bounceBreaker({ sent: 5, bounces: 3, bouncesFirstHour: 3 })).toMatchObject({ level: "red" })

@@ -36,7 +36,11 @@ export async function setAutoTouch(touch: number, on: boolean, by = "ryan"): Pro
   if (!Number.isInteger(touch) || touch < 1 || touch > 11) throw new Error(`touch must be 1..11, got ${touch}`)
   const sb = getLeadsClient()
   const cur = await getAutoSend()
-  const next = withTouchAuto(cur, touch, on, { promptVersion: PROMPT_VERSION, by }) as AutoSendRow
+  // Pin to the version the ENGINE last reported, not this bundle's constant:
+  // Vercel and the Mac mini checkout can be on different commits, and the
+  // engine is the one that compares. Fall back to our own constant only when
+  // the engine has never written the row.
+  const next = withTouchAuto(cur, touch, on, { promptVersion: cur?.engine_prompt_version ?? PROMPT_VERSION, by }) as AutoSendRow
   const { error } = await sb.from("campaign_settings").upsert({ key: AUTO_SEND_KEY, value: next, updated_at: new Date().toISOString() })
   if (error) throw new Error(`save ${AUTO_SEND_KEY}: ${error.message}`)
   return next

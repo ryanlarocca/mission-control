@@ -83,6 +83,11 @@ describe("Task 5 — the send rule (verify_required gate)", () => {
     expect(unknownTwice({ ...first, verified_at: new Date(now.getTime() - 2 * 86_400_000).toISOString() }, { result: "unknown" }, now)).toBe(false)
     expect(unknownTwice(first, { result: "deliverable" }, now)).toBe(false)
     expect(unknownTwice({ verify_result: null, verified_at: null }, { result: "unknown" }, now)).toBe(false)
+    // a vendor outage on either side is not a verdict on the mailbox
+    expect(unknownTwice(first, { result: "unknown", reason: "http_503" }, now)).toBe(false)
+    expect(unknownTwice(first, { result: "unknown", reason: "fetch_error" }, now)).toBe(false)
+    expect(unknownTwice({ ...first, verify_reason: "api_error:timeout" }, { result: "unknown", reason: "greylisted" }, now)).toBe(false)
+    expect(unknownTwice({ ...first, verify_reason: "greylisted" }, { result: "unknown", reason: "unknown" }, now)).toBe(true)
   })
   it("picks the morning pass candidates: due within 7 days and never / stale / unknown-7d verified, skipping suppressed", () => {
     const d = (days: number) => new Date(now.getTime() + days * 86_400_000).toISOString()

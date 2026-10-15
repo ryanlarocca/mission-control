@@ -117,10 +117,20 @@ export function verifyAction(v) {
   return { action: "hold", bucket: "unknown" }
 }
 
-/** Second consecutive "unknown" (the first was ≥ 7 days ago) → suppress "verify_unknown". */
+/** A reason the verifier could not answer at all (network, HTTP, key/credit error, off-shape body) — never a verdict on the mailbox. */
+export function isTransportReason(reason) {
+  return /^(fetch_error|http_\d+|api_error:|bad_response)/.test(String(reason ?? ""))
+}
+
+/**
+ * Second consecutive VENDOR "unknown" (the first was ≥ 7 days ago) → suppress
+ * "verify_unknown". A transport failure on either side (fetch_error, http_5xx,
+ * api_error, bad_response) is not a verdict: a bad day at the vendor never
+ * suppresses anyone.
+ */
 export function unknownTwice(previous, next, now = new Date()) {
-  if (next?.result !== "unknown") return false
-  if (previous?.verify_result !== "unknown" || !previous?.verified_at) return false
+  if (next?.result !== "unknown" || isTransportReason(next?.reason)) return false
+  if (previous?.verify_result !== "unknown" || !previous?.verified_at || isTransportReason(previous?.verify_reason)) return false
   return ageDays(previous.verified_at, now) >= VERIFY_UNKNOWN_RETRY_DAYS
 }
 
