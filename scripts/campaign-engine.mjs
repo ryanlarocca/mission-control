@@ -51,9 +51,9 @@ import path from "node:path"
 import { fileURLToPath } from "node:url"
 import { createClient } from "@supabase/supabase-js"
 import { TOUCHES, renderTouch, nextOffsetDays } from "./campaign-touches.mjs"
-import { loadSenderConfig, loadSenderStates, saveSenderState, capFor, evaluateSenderDay, fetchRelationshipEmails, fetchReplierIds, fetchLastSenderByContact, assignSender, priorityOf, isSenderPaused, pauseLabel, withPause, withResume, withCanaryVerdict } from "./campaign-senders.mjs"
+import { loadSenderConfig, loadSenderStates, saveSenderState, capFor, evaluateSenderDay, fetchRelationshipEmails, fetchReplierIds, fetchLastSenderByContact, fetchLastSendByContact, assignSender, priorityOf, isSenderPaused, pauseLabel, withPause, withResume, withCanaryVerdict } from "./campaign-senders.mjs"
 import { judgeConfigured, connectJudge, disconnectJudge, readCanaryMessages, newestCanary, describePlacement, decideVerdict, canaryOldEnough, planBackfill, stallReason, verdictWord, isJudgeAuthError, judgeErrorText, JUDGE_SEARCH_DAYS, BACKFILL_SEARCH_DAYS } from "./canary-judge.mjs"
-import { AUTO_SEND_KEY, resolveAutoSend, withTouchRegated } from "./campaign-gates.mjs"
+import { AUTO_SEND_KEY, resolveAutoSend, withTouchRegated, removeTripwire, describeRemovedSends, touchesOfRemoves, bounceBreaker, isDayStopped, withDayStop } from "./campaign-gates.mjs"
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const REPO_ROOT = path.resolve(__dirname, "..")
@@ -95,7 +95,6 @@ const COHORT = process.env.CAMPAIGN_COHORT || null
 // batch is Monday's). CAMPAIGN_MINT_HOUR=11 since 2026-09-30 (Ryan reviews
 // during work hours); the 18 default is the original evening mint.
 const MINT_HOUR = Number(process.env.CAMPAIGN_MINT_HOUR || 18)
-const BOUNCE_PAUSE_RATE = 0.02
 const REVIEW_URL = "https://mission-control-three-chi.vercel.app/email-campaign"
 // Per-touch training wheels (Ryan 2026-07-31: "I don't need to approve the
 // 200 batch each day, at least for touch one"). Touches listed here are
@@ -662,6 +661,67 @@ async function pauseSender(s, reason, { hours = SENDER_CFG.gates.autoPauseHours 
   )
   return st
 }
+/**
+ * Day-stop (autopilot brief, Task 3): this sender sends nothing more today
+ * and resumes by itself on the next weekday — a softer brake than the 48 h
+ * pause, for the 2nd-bounce / ≥ 2% line. The health pass reads it as yellow
+ * (hold), never red. Dry runs log the decision and touch nothing.
+ */
+async function dayStopSender(s, reason) {
+  const day = ptToday()
+  let st = withDayStop(SENDER_STATE.get(s.email), { day, reason })
+  if (dryRun) {
+    log(`would DAY-STOP ${s.email} (${day}): ${reason}`)
+    SENDER_STATE.set(s.email, st)
+    return st
+  }
+  st = await saveSenderState(sb, s.email, st)
+  SENDER_STATE.set(s.email, st)
+  log(`DAY-STOPPED ${s.email} (${day}): ${reason}`)
+  await telegram(`🛑 <b>${escHtml(s.label)}</b> ${escHtml(s.email)} day-stopped: ${escHtml(reason)}. Nothing more from it today; it resumes on the next weekday. Its approved emails stay queued.`)
+  return st
+}
+
+/**
+ * Every-cycle guardrails for one sender (autopilot brief, Tasks 2 + 3):
+ * the bounce breaker (day-stop / red) and the floored remove tripwire
+ * (yellow "check the copy" / red day-stop + re-gate). `tm` is today's
+ * per-sender metrics from senderMetricsRange(). Each level alerts once per
+ * day (sender state `copy_trip`); red escalates after a yellow. Returns the
+ * (possibly updated) sender state.
+ */
+async function guardSender(s, tm) {
+  const today = ptToday()
+  let st = SENDER_STATE.get(s.email)
+  const brk = bounceBreaker(tm, SENDER_CFG.gates)
+  if (brk.level === "red" && !isSenderPaused(st)) {
+    st = await pauseSender(s, brk.text, { why: "Check the list before resuming — July died on day-one bounces." })
+  } else if (brk.level === "day_stop" && !isDayStopped(st, today) && !isSenderPaused(st)) {
+    st = await dayStopSender(s, brk.text)
+  }
+  const rt = removeTripwire(tm, SENDER_CFG.gates)
+  const already = st?.copy_trip?.day === today ? st.copy_trip.level : "none"
+  const rank = { none: 0, yellow: 1, red: 2 }
+  if (rank[rt.level] > rank[already]) {
+    const copy = describeRemovedSends(tm.unsubDetails)
+    const touches = touchesOfRemoves(tm.unsubDetails)
+    if (rt.level === "red") {
+      if (!isDayStopped(st, today) && !isSenderPaused(st)) st = await dayStopSender(s, `copy tripwire: ${rt.text}`)
+      for (const t of touches.length ? touches : [1]) await regateTouch(t, `${s.label}: ${rt.text}`)
+      const text = `🧯 <b>${escHtml(s.label)}</b> copy tripwire RED — ${escHtml(rt.text)}. Day-stopped and ${escHtml((touches.length ? touches : [1]).map((t) => `T${t}`).join("/"))} re-gated. Removed sends: ${escHtml(copy || "—")}`
+      if (dryRun) log(`would telegram: ${text.replace(/<[^>]+>/g, "")}`)
+      else await telegram(text)
+    } else {
+      const text = `🟡 <b>${escHtml(s.label)}</b> check the copy — ${escHtml(rt.text)}. Rung held today. Removed sends: ${escHtml(copy || "—")}`
+      if (dryRun) log(`would telegram: ${text.replace(/<[^>]+>/g, "")}`)
+      else await telegram(text)
+    }
+    st = { ...st, copy_trip: { day: today, level: rt.level, touches } }
+    if (!dryRun) st = await saveSenderState(sb, s.email, st)
+    SENDER_STATE.set(s.email, st)
+  }
+  return st
+}
 const THROTTLE_RE = /\b429\b|rate ?limit|quota|too many|user-rate|backend error|temporarily/i
 // A DWD/OAuth failure means no mail can leave this mailbox at all (the
 // Aug-28 token death failed every approved row, one by one, for four days).
@@ -690,11 +750,12 @@ async function sendPass() {
     return
   }
   const sentToday = await countToday("campaign_sends", "sent_at", { status: ["sent"] })
-  // Per-sender health check before any send (item 3): today's bounces are
-  // attributed to the mailbox that sent the contact's latest touch, and a
-  // red bounce day pauses THAT sender only — the other domain keeps its
-  // streak. Same red line as the health pass (≥2% at ≥10 sends, or 2
-  // bounces below that), so intraday and end-of-day agree.
+  // Per-sender guardrails before any send (item 3 + autopilot brief Tasks
+  // 2/3): today's bounces and removes are attributed to the mailbox that
+  // sent the contact's latest touch. The bounce breaker day-stops or pauses
+  // THAT sender only; the remove tripwire holds / day-stops + re-gates. The
+  // same functions run at the 5:15 PM health pass, so intraday and
+  // end-of-day agree.
   const todayStart = new Date(`${ptToday()}T00:00:00-07:00`).toISOString()
   const todayBySender = await senderMetricsRange(todayStart, new Date().toISOString())
   // Per-sender budgets: each mailbox sends up to ITS ramp cap for the day.
@@ -710,16 +771,13 @@ async function sendPass() {
       budgets.set(s.email, 0)
       continue
     }
-    let st = SENDER_STATE.get(s.email)
-    const tm = todayBySender.get(s.email) ?? { sent: 0, bounces: 0 }
-    const red = tm.sent >= 10 ? tm.bounces / tm.sent >= BOUNCE_PAUSE_RATE : tm.bounces >= 2
-    if (red && !isSenderPaused(st)) {
-      st = await pauseSender(s, `bounce rate ${((100 * tm.bounces) / Math.max(tm.sent, 1)).toFixed(1)}% (${tm.bounces}/${tm.sent}) today ≥ ${BOUNCE_PAUSE_RATE * 100}%`, { why: "Check the list before resuming — July died on day-one bounces." })
-    }
+    const tm = todayBySender.get(s.email) ?? { sent: 0, bounces: 0, unsubs: 0, bouncesFirstHour: 0, unsubDetails: [] }
+    const st = await guardSender(s, tm)
     if (isSenderPaused(st)) { budgets.set(s.email, 0); notes.push(`${s.label} PAUSED (${pauseLabel(st)})`); continue }
+    if (isDayStopped(st, ptToday())) { budgets.set(s.email, 0); notes.push(`${s.label} DAY-STOP (${st.day_stop?.reason ?? ""})`); continue }
     const cap = senderCap(s)
     budgets.set(s.email, Math.max(0, cap - tm.sent))
-    notes.push(`${s.label} ${tm.sent}/${cap}${tm.bounces ? ` (${tm.bounces} bounced)` : ""}`)
+    notes.push(`${s.label} ${tm.sent}/${cap}${tm.bounces ? ` (${tm.bounces} bounced)` : ""}${tm.unsubs ? ` (${tm.unsubs} removes)` : ""}`)
   }
   let budget = Math.max(0, Math.min(TOTAL_SEND_CEILING - sentToday, [...budgets.values()].reduce((a, b) => a + b, 0)))
   if (limit !== null) budget = Math.min(budget, limit)
@@ -965,31 +1023,44 @@ async function dayMetrics(dayStr) {
 // sender column; bounces/replies/unsubs are keyed by contact, so they are
 // attributed to the mailbox that sent that contact's most recent touch
 // (null = pre-multi-sender → workhorse). One fetch, tallied per sender.
+// Also (autopilot brief): `bouncesFirstHour` (bounces within an hour of the
+// sender's first send in the range — the breaker's 3-in-the-first-hour line)
+// and `unsubDetails` (the copy behind each remove: touch / prompt_version /
+// variant / subject, from the remove event's raw.send stamp or the
+// contact's latest sent row), so the tripwire can say which copy to check.
 async function senderMetricsRange(startIso, endIso) {
-  const out = new Map(SENDERS.map((s) => [s.email, { sent: 0, failed: 0, bounces: 0, replies: 0, unsubs: 0, autoReplies: 0 }]))
+  const out = new Map(SENDERS.map((s) => [s.email, { sent: 0, failed: 0, bounces: 0, bouncesFirstHour: 0, replies: 0, unsubs: 0, autoReplies: 0, unsubDetails: [], firstSentAt: null }]))
   for (const s of SENDERS) {
     const m = out.get(s.email)
     const { count: sent } = await senderFilter(sb.from("campaign_sends").select("id", { count: "exact", head: true }).eq("status", "sent").gte("sent_at", startIso).lte("sent_at", endIso), s)
     const { count: failed } = await senderFilter(sb.from("campaign_sends").select("id", { count: "exact", head: true }).eq("status", "failed").gte("created_at", startIso).lte("created_at", endIso), s)
+    const { data: first } = await senderFilter(sb.from("campaign_sends").select("sent_at").eq("status", "sent").gte("sent_at", startIso).lte("sent_at", endIso).order("sent_at", { ascending: true }).limit(1), s)
     m.sent = sent ?? 0
     m.failed = failed ?? 0
+    m.firstSentAt = first?.[0]?.sent_at ?? null
   }
   const events = []
   for (let from = 0; ; from += 1000) {
-    const { data, error } = await sb.from("campaign_events").select("contact_id, kind, triage").in("kind", ["bounce", "email_reply"]).gte("occurred_at", startIso).lte("occurred_at", endIso).order("id", { ascending: true }).range(from, from + 999)
+    const { data, error } = await sb.from("campaign_events").select("contact_id, kind, triage, occurred_at, raw").in("kind", ["bounce", "email_reply"]).gte("occurred_at", startIso).lte("occurred_at", endIso).order("id", { ascending: true }).range(from, from + 999)
     if (error) throw new Error(`sender events: ${error.message}`)
     events.push(...(data ?? []))
     if (!data || data.length < 1000) break
   }
-  const lastSender = await fetchLastSenderByContact(sb, events.map((e) => e.contact_id))
+  const lastSend = await fetchLastSendByContact(sb, events.map((e) => e.contact_id))
   for (const e of events) {
-    const owner = ownerOf(lastSender.get(e.contact_id))
+    const last = lastSend.get(e.contact_id) ?? null
+    const owner = ownerOf(last?.sender ?? null)
     const m = owner ? out.get(owner.email) : null
     if (!m) continue
-    if (e.kind === "bounce") m.bounces++
-    else if (e.triage === null) m.replies++
-    else if (e.triage === "unsubscribe") m.unsubs++
-    else if (e.triage === "auto_reply" || e.triage === "dead_mailbox") m.autoReplies++
+    if (e.kind === "bounce") {
+      m.bounces++
+      if (m.firstSentAt && new Date(e.occurred_at).getTime() - new Date(m.firstSentAt).getTime() <= 3_600_000) m.bouncesFirstHour++
+    } else if (e.triage === null) m.replies++
+    else if (e.triage === "unsubscribe") {
+      m.unsubs++
+      const send = e.raw?.send ?? (last ? { touch_number: last.touch_number, prompt_version: last.prompt_version, variant: last.variant, subject: last.subject } : null)
+      m.unsubDetails.push(send)
+    } else if (e.triage === "auto_reply" || e.triage === "dead_mailbox") m.autoReplies++
   }
   return out
 }
@@ -1229,8 +1300,12 @@ async function healthPass() {
   const pause = await getPause()
   const pct = (n, d) => (d ? `${((n / d) * 100).toFixed(1)}%` : "—")
   const warnings = []
-  if (m.sent && m.bounces / m.sent >= 0.01) warnings.push(`bounce rate ${pct(m.bounces, m.sent)} (watch line 1%, auto-pause 2%)`)
-  if (m.unsubs >= 2) warnings.push(`${m.unsubs} removes in one day`)
+  // Removes stay on the card as a count only (autopilot brief, Task 2) — the
+  // per-sender copy tripwire below decides whether they mean anything.
+  const globalBreaker = bounceBreaker(m, SENDER_CFG.gates)
+  if (globalBreaker.level === "red") warnings.push(`RED: ${globalBreaker.text}`)
+  else if (globalBreaker.level === "day_stop") warnings.push(`bounce rate ${pct(m.bounces, m.sent)} — day-stop line (2nd bounce, or 2% at ≥ 10 sent; breaker red at 5%)`)
+  else if (m.sent && m.bounces / m.sent >= 0.01) warnings.push(`bounce rate ${pct(m.bounces, m.sent)} (watch line 1%; day-stop at 2nd bounce / 2%, breaker red at 5%)`)
   if (m.failed) warnings.push(`${m.failed} send failures`)
   if (m.lint_rejected >= 3) warnings.push(`${m.lint_rejected} drafts rejected by lint`)
   if (agg.sent >= 40 && agg.replies / agg.sent < 0.01) warnings.push(`7-day reply rate ${pct(agg.replies, agg.sent)} — below 1%`)
@@ -1251,8 +1326,10 @@ async function healthPass() {
   const canaryToday = typeof m.canary === "object" && m.canary ? m.canary : {}
   if (SENDER_CFG.gates.requireCanaryVerdict && !process.env.CAMPAIGN_CANARY_TO) warnings.push("CAMPAIGN_CANARY_TO is unset — no canary goes out, so the canary gate can never clear and every sender holds its rung")
   for (const s of SENDERS) {
-    let state = SENDER_STATE.get(s.email)
     const sm = perSender.get(s.email)
+    // End-of-day pass of the same guardrails the send pass runs every cycle
+    // (bounces / removes that landed after the last send still count).
+    let state = sm.sent || sm.bounces || sm.unsubs ? await guardSender(s, sm) : SENDER_STATE.get(s.email)
     if (sm.sent === 0 && !state?.entered_step) { senderSnap[s.email] = { ...sm, cap: senderCap(s), step: state?.step ?? 0, decision: "idle" }; continue }
     const ev = evaluateSenderDay({ sender: s, state, day, metrics: sm, trailing: trailing.get(s.email), gates: SENDER_CFG.gates, extra: { paused: pause.paused ? `campaign: ${pause.reason ?? "manual"}` : isSenderPaused(state) ? pauseLabel(state) : null } })
     // The day's evidence says stop (red bounces, canary in Spam two days
@@ -1292,9 +1369,9 @@ async function healthPass() {
     const canaryLine = needVerdict
       ? ` · 🐤 ${canaryToday[s.email]} sent — where did it land? reply "canary ${s.label} primary|promotions|spam"`
       : ev.canary.today ? ` · 🐤 ${ev.canary.today}` : ""
-    senderLines.push(`${ev.status} <b>${escHtml(s.label)}</b> ${escHtml(s.email)}: ${sm.sent}/${ev.cap} sent · ${sm.bounces} bounced (${pct(sm.bounces, sm.sent)}) · ${sm.replies} replies · ${sm.failed} failed · healthy ${ev.state.healthy_days}/${SENDER_CFG.gates.minHealthyDays}${isSenderPaused(saved) ? ` · ⏸ PAUSED ${escHtml(pauseLabel(saved))}` : ""}${escHtml(canaryLine)} → ${escHtml(verdict)}`)
+    senderLines.push(`${ev.status} <b>${escHtml(s.label)}</b> ${escHtml(s.email)}: ${sm.sent}/${ev.cap} sent · ${sm.bounces} bounced (${pct(sm.bounces, sm.sent)}) · ${sm.replies} replies · ${sm.unsubs} removes · ${sm.failed} failed · healthy ${ev.state.healthy_days}/${SENDER_CFG.gates.minHealthyDays}${isSenderPaused(saved) ? ` · ⏸ PAUSED ${escHtml(pauseLabel(saved))}` : ""}${isDayStopped(saved, day) ? ` · 🛑 DAY-STOP ${escHtml(saved.day_stop?.reason ?? "")}` : ""}${escHtml(canaryLine)} → ${escHtml(verdict)}`)
   }
-  const status = warnings.length ? (warnings.some((w) => /PAUSED|2%/.test(w)) ? "🔴" : "🟡") : worst
+  const status = warnings.length ? (warnings.some((w) => /PAUSED|^RED:/.test(w)) ? "🔴" : "🟡") : worst
   const capTotal = SENDERS.reduce((a, s) => a + senderCap(s), 0)
   const snapshot = { ...m, warnings, sender: SENDERS.map((s) => s.email).join(","), cap: capTotal, senders: senderSnap, recorded_at: now.toISOString() }
   if (!rehearsal) await sb.from("campaign_settings").upsert({ key: `health:${day}`, value: snapshot, updated_at: now.toISOString() })

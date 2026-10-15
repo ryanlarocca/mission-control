@@ -65,6 +65,85 @@ export function withTouchRegated(row, touch, reason, now = new Date()) {
   return { row: { ...(row ?? {}), touches: cur.filter((t) => t !== touch), regated_touches: [...new Set([...(row?.regated_touches ?? []), touch])], changed_by: "engine", changed_at: now.toISOString(), reason }, changed: true }
 }
 
+// ---------- Task 2: removes stop holding the ramp; a floored copy tripwire replaces them ----------
+//
+// Ryan 2026-10-14: a "remove" reply is not a reputation signal ("hold more
+// weight to a bounce than to somebody saying remove"), but an ABNORMAL remove
+// day is a copy problem. Both floors must clear — the absolute count keeps a
+// 1-of-3 day from tripping, the share keeps a 3-of-100 day from tripping.
+export const REMOVE_TRIPWIRE = { yellowMin: 3, yellowRate: 0.1, redMin: 5, redRate: 0.15 }
+
+/**
+ * Per sender, per PT day. metrics: { sent, unsubs } (unsubs = removes today).
+ *   yellow  removes ≥ 3 AND ≥ 10% of sent → hold the rung, "check the copy"
+ *   red     removes ≥ 5 AND ≥ 15%          → day-stop the sender + re-gate the touch that produced them
+ */
+export function removeTripwire(metrics, gates = {}) {
+  const sent = Number(metrics?.sent ?? 0)
+  const removes = Number(metrics?.unsubs ?? metrics?.removes ?? 0)
+  const g = { ...REMOVE_TRIPWIRE, ...(gates.removeTripwire ?? {}) }
+  const pct = sent ? `${((100 * removes) / sent).toFixed(1)}%` : "—"
+  if (removes >= g.redMin && removes >= g.redRate * sent) return { level: "red", removes, sent, text: `${removes} removes (${pct} of ${sent} sent) ≥ ${g.redMin} and ≥ ${g.redRate * 100}%` }
+  if (removes >= g.yellowMin && removes >= g.yellowRate * sent) return { level: "yellow", removes, sent, text: `${removes} removes (${pct} of ${sent} sent) ≥ ${g.yellowMin} and ≥ ${g.yellowRate * 100}%` }
+  return { level: "none", removes, sent, text: null }
+}
+
+/** Group today's removes by the copy that produced them: "T1 v5-2026-10-02/D ×3: subject a; subject b". */
+export function describeRemovedSends(details = []) {
+  const groups = new Map()
+  for (const d of details ?? []) {
+    if (!d) continue
+    const key = `T${d.touch_number ?? "?"} ${d.prompt_version ?? "template"}${d.variant ? `/${d.variant}` : ""}`
+    const g = groups.get(key) ?? { n: 0, subjects: new Set() }
+    g.n++
+    if (d.subject) g.subjects.add(String(d.subject).trim())
+    groups.set(key, g)
+  }
+  return [...groups.entries()].sort((a, b) => b[1].n - a[1].n).map(([k, g]) => `${k} ×${g.n}${g.subjects.size ? `: ${[...g.subjects].slice(0, 5).map((s) => `"${s}"`).join(", ")}` : ""}`).join(" · ")
+}
+
+/** The touch numbers behind today's removes (for the Task 2 red → re-gate step). */
+export function touchesOfRemoves(details = []) {
+  return [...new Set((details ?? []).map((d) => Number(d?.touch_number)).filter((n) => Number.isFinite(n) && n > 0))].sort((a, b) => a - b)
+}
+
+// ---------- Task 3: intraday bounce circuit breaker ----------
+//
+// Per sender, per PT day, evaluated every engine cycle (not just at 5:15 PM):
+//   1st bounce                                              → nothing (the contact is already stamped)
+//   2nd bounce (below 10 sent) / rate ≥ 2% (at ≥ 10 sent)   → DAY-STOP: nothing more today, resumes next weekday
+//   rate ≥ 5% at ≥ 10 sent, or 3 bounces in the first hour  → RED: the existing 48 h pauseSender + drop a rung
+// Percentage conditions only apply at ≥ 10 sent, so a 1-of-3 day never
+// trips; below 10 only the absolute counts apply. One bounce is never a trip.
+export const BOUNCE_BREAKER = { dayStopRate: 0.02, redRate: 0.05, firstHourBounces: 3, minSentForRate: 10 }
+
+/** metrics: { sent, bounces, bouncesFirstHour? }. Returns { level: "none"|"day_stop"|"red", text }. */
+export function bounceBreaker(metrics, gates = {}) {
+  const sent = Number(metrics?.sent ?? 0)
+  const bounces = Number(metrics?.bounces ?? 0)
+  const firstHour = Number(metrics?.bouncesFirstHour ?? 0)
+  // config/campaign-senders.json still names the 2% line `bounceRedRate`; since the
+  // autopilot brief that line is the day-stop, and red moved to bounceBreakerRate.
+  const g = { ...BOUNCE_BREAKER, dayStopRate: gates.bounceRedRate ?? BOUNCE_BREAKER.dayStopRate, redRate: gates.bounceBreakerRate ?? BOUNCE_BREAKER.redRate, ...(gates.bounceBreaker ?? {}) }
+  const pct = sent ? `${((100 * bounces) / sent).toFixed(1)}%` : "—"
+  if (firstHour >= g.firstHourBounces) return { level: "red", bounces, sent, text: `${firstHour} bounces inside the first hour of sending (${bounces}/${sent} today)` }
+  if (bounces < 2) return { level: "none", bounces, sent, text: null }
+  const rate = sent ? bounces / sent : 0
+  if (sent >= g.minSentForRate && rate >= g.redRate) return { level: "red", bounces, sent, text: `bounce rate ${pct} (${bounces}/${sent}) ≥ ${g.redRate * 100}%` }
+  const stop = sent >= g.minSentForRate ? rate >= g.dayStopRate : true
+  if (stop) return { level: "day_stop", bounces, sent, text: sent >= g.minSentForRate ? `bounce rate ${pct} (${bounces}/${sent}) ≥ ${g.dayStopRate * 100}%` : `${bounces} bounces on ${sent} sent (2nd bounce below ${g.minSentForRate})` }
+  return { level: "none", bounces, sent, text: null }
+}
+
+/** Day-stop is a per-sender state: { day, reason, at }. It expires by the calendar — the next weekday sends again. */
+export function isDayStopped(state, day) {
+  return Boolean(state?.day_stop?.day) && state.day_stop.day === day
+}
+
+export function withDayStop(state, { day, reason, now = new Date() }) {
+  return { ...(state ?? {}), day_stop: { day, reason: reason ?? null, at: now.toISOString() } }
+}
+
 /** "auto T1 on|off" from Telegram. `on` re-pins to the prompt version given. */
 export function withTouchAuto(row, touch, on, { promptVersion, by = "ryan", now = new Date() } = {}) {
   const cur = toTouchList(row?.touches)

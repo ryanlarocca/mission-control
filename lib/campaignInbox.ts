@@ -322,6 +322,26 @@ async function findContactByThread(sb: SupabaseClient, threadId: string): Promis
   return (byId?.[0] as CampaignContact) ?? null
 }
 
+/** The copy that produced a remove (autopilot brief 2026-10-15, Task 2): the
+ * contact's latest SENT row — touch, prompt version, variant, subject —
+ * stamped into the remove event's raw.send so the tripwire and later
+ * analysis can group removes by copy, not by day. Never throws. */
+export type RemovedSendRef = { id: string; touch_number: number; prompt_version: string | null; variant: string | null; subject: string | null; sender: string | null }
+async function latestSentRow(sb: SupabaseClient, contactId: string): Promise<RemovedSendRef | null> {
+  try {
+    const { data } = await sb
+      .from("campaign_sends")
+      .select("id, touch_number, prompt_version, variant, subject, sender")
+      .eq("contact_id", contactId)
+      .eq("status", "sent")
+      .order("sent_at", { ascending: false })
+      .limit(1)
+    return (data?.[0] as RemovedSendRef | undefined) ?? null
+  } catch {
+    return null
+  }
+}
+
 async function cancelQueuedSends(sb: SupabaseClient, contactId: string, why: string): Promise<void> {
   await sb
     .from("campaign_sends")
@@ -402,12 +422,13 @@ async function handleContactMessage(
     // is what alreadyProcessed() checks. Without it, the message re-processed
     // on every Pub/Sub notification for its whole 1h scan-window life and
     // re-alerted each time (Tony Ventura / Nicole Wallace loop, 2026-07-28).
+    const removedSend = await latestSentRow(sb, contact.id)
     const { error: unsubEvErr } = await sb.from("campaign_events").insert({
       contact_id: contact.id,
       kind: "email_reply",
       triage: "unsubscribe",
       body: fresh.slice(0, 500),
-      raw: { gmail_id: gmailId, thread_id: threadId, mailbox },
+      raw: { gmail_id: gmailId, thread_id: threadId, mailbox, send: removedSend },
     })
     if (unsubEvErr) {
       if (/duplicate key/i.test(unsubEvErr.message)) return // concurrent notification already handled it
@@ -508,7 +529,7 @@ async function handleContactMessage(
       .update({ status: "unsubscribed", next_touch_at: null, updated_at: nowIso })
       .eq("id", contact.id)
     await cancelQueuedSends(sb, contact.id, `AI triage: ${why}`)
-    if (ev?.id) await sb.from("campaign_events").update({ triage: "unsubscribe", ai_summary: triage.summary }).eq("id", ev.id)
+    if (ev?.id) await sb.from("campaign_events").update({ triage: "unsubscribe", ai_summary: triage.summary, raw: { gmail_id: gmailId, thread_id: threadId, subject, mailbox, send: await latestSentRow(sb, contact.id) } }).eq("id", ev.id)
     if (card) await markRelationshipDoNotContact(sb, card.id, `${why} — replied "${fresh.slice(0, 80)}"`)
     const confirmed = await sendRemoveConfirmation(sb, gmail, contact, { gmailId, threadId, mailbox, sender })
     await sendCampaignAlert(sb,
