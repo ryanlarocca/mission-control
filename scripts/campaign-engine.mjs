@@ -53,6 +53,7 @@ import { createClient } from "@supabase/supabase-js"
 import { TOUCHES, renderTouch, nextOffsetDays } from "./campaign-touches.mjs"
 import { loadSenderConfig, loadSenderStates, saveSenderState, capFor, evaluateSenderDay, fetchRelationshipEmails, fetchReplierIds, fetchLastSenderByContact, assignSender, priorityOf, isSenderPaused, pauseLabel, withPause, withResume, withCanaryVerdict } from "./campaign-senders.mjs"
 import { judgeConfigured, connectJudge, disconnectJudge, readCanaryMessages, newestCanary, describePlacement, decideVerdict, canaryOldEnough, planBackfill, stallReason, verdictWord, isJudgeAuthError, judgeErrorText, JUDGE_SEARCH_DAYS, BACKFILL_SEARCH_DAYS } from "./canary-judge.mjs"
+import { AUTO_SEND_KEY, resolveAutoSend, withTouchRegated } from "./campaign-gates.mjs"
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const REPO_ROOT = path.resolve(__dirname, "..")
@@ -100,13 +101,48 @@ const REVIEW_URL = "https://mission-control-three-chi.vercel.app/email-campaign"
 // 200 batch each day, at least for touch one"). Touches listed here are
 // drafted straight to 'approved' — no review stop. Everything else still
 // waits for Ryan. Send-time safety checks (suppression, status, cap,
-// window) are unchanged and never bypassable. Extend later: "1,2,3".
-const AUTO_SEND_TOUCHES = new Set(
-  (process.env.CAMPAIGN_AUTO_SEND_TOUCHES || "")
-    .split(",")
-    .map((s) => Number.parseInt(s.trim(), 10))
-    .filter(Number.isFinite)
-)
+// window) are unchanged and never bypassable.
+//
+// 2026-10-15 (autopilot brief, Task 1): the list lives in campaign_settings
+// `auto_send_touches` — { touches, pinned_prompt_version, changed_by,
+// changed_at, reason } — read every pass by loadAutoSend() (ramp pass). The
+// env var CAMPAIGN_AUTO_SEND_TOUCHES is only the fallback when the row is
+// absent (the engine then writes the row, retiring the env var). A touch is
+// auto ONLY while PROMPT_VERSION equals the pinned version: a prompt change
+// re-gates it until Ryan replies "auto T1 on" (which re-pins). Tripwires
+// (Task 2/3) re-gate through regateTouch() and leave their reason on the row.
+const AUTO_SEND = { touches: new Set(), row: null, pinned: null, source: null }
+async function loadAutoSend() {
+  const { data, error } = await sb.from("campaign_settings").select("value").eq("key", AUTO_SEND_KEY).maybeSingle()
+  if (error) throw new Error(`auto_send_touches: ${error.message}`)
+  const r = resolveAutoSend({ row: data?.value ?? null, envValue: process.env.CAMPAIGN_AUTO_SEND_TOUCHES, promptVersion: PROMPT_VERSION })
+  AUTO_SEND.touches = r.touches
+  AUTO_SEND.row = r.write ?? data?.value ?? null
+  AUTO_SEND.pinned = r.write?.pinned_prompt_version ?? r.pinned
+  AUTO_SEND.source = r.source
+  log(r.logLine)
+  if (r.write) {
+    if (dryRun) log(`would write ${AUTO_SEND_KEY}: ${JSON.stringify(r.write)}`)
+    else await sb.from("campaign_settings").upsert({ key: AUTO_SEND_KEY, value: r.write, updated_at: new Date().toISOString() })
+  }
+  if (r.alert) {
+    if (dryRun) log(`would telegram: ${r.alert}`)
+    else await telegram(`🔒 ${escHtml(r.alert)}`)
+  }
+}
+/** A tripwire re-gates one touch: the row keeps the reason, Telegram says so. Dry runs only log. */
+async function regateTouch(touch, reason) {
+  if (!AUTO_SEND.touches.has(touch)) return false
+  const { row, changed } = withTouchRegated(AUTO_SEND.row ?? { touches: [...AUTO_SEND.touches], pinned_prompt_version: AUTO_SEND.pinned }, touch, reason)
+  if (!changed) return false
+  AUTO_SEND.touches.delete(touch)
+  AUTO_SEND.row = row
+  if (dryRun) { log(`would RE-GATE T${touch}: ${reason}`); return true }
+  await sb.from("campaign_settings").upsert({ key: AUTO_SEND_KEY, value: row, updated_at: new Date().toISOString() })
+  log(`RE-GATED T${touch}: ${reason}`)
+  await telegram(`🔒 T${touch} re-gated: ${escHtml(reason)}. New T${touch} drafts wait for your ✅ until you reply "auto T${touch} on".`)
+  return true
+}
 const WINDOW = { startHour: 7, endHour: 17 } // America/Los_Angeles, Mon-Fri (widened for the send-time experiment, Ryan 2026-07-31)
 
 // ---- Send-time experiment (Ryan 2026-07-31) ----
@@ -446,7 +482,7 @@ async function draftPass() {
       log(`touch ${touch} is a placeholder (${rendered.label}) — skipping ${c.email} until copy is written`)
       continue
     }
-    const auto = AUTO_SEND_TOUCHES.has(touch)
+    const auto = AUTO_SEND.touches.has(touch)
     if (!auto && !gatedAllowed) continue // gated touches mint once daily, first pass after MINT_HOUR PT
     // Which mailbox carries this contact: sticky to the thread's mailbox,
     // else the understudy's segment claim, else the workhorse, else (once the
@@ -573,6 +609,7 @@ async function gmailClient(sender) {
 
 async function loadRamp() {
   if (!SENDERS.length) throw new Error("no enabled sender — populate config/campaign-senders.json (CAMPAIGN_SENDERS can only narrow it)")
+  await loadAutoSend()
   const states = await loadSenderStates(sb, SENDERS)
   for (const s of SENDERS) {
     let st = states.get(s.email)
