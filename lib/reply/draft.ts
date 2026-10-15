@@ -55,7 +55,7 @@ How Ryan writes:
 - Emails: a few short paragraphs at most, "Ryan" alone on the last line.
 - Register examples are for tone and length only. Do not reuse their sentences or their specifics.`
 
-function channelRules(channel: DraftChannel): string {
+export function channelRules(channel: DraftChannel): string {
   return channel === "email"
     ? `Reply channel: EMAIL. Return JSON { "subject": "...", "body": "..." }. Subject short and specific (a reply in an existing thread keeps the thread's subject, prefixed "Re: " if it is not already). Body ends with "Ryan" on its own line.`
     : `Reply channel: TEXT MESSAGE. Return JSON { "subject": null, "body": "..." }. One to three sentences. No greeting line needed if the thread is active. No sign-off.`

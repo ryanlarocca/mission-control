@@ -21,8 +21,13 @@ export async function critique(args: {
   subject: string | null
   body: string
   exemplars: string
+  // Coach mode: Ryan's dictated gist. Figures and decisions in it are his,
+  // not invented — question 4 must not fail them. Another contact's numbers
+  // or phrases (from the register examples) still fail.
+  gist?: string | null
 }): Promise<{ verdict: CriticVerdict; subject: string | null; body: string }> {
   const { ctx, plan, principles, subject, body } = args
+  const gist = args.gist?.trim() || null
   const prompt = `You are checking a reply before it is shown to Ryan (a cash home buyer in the Bay Area). Answer the questions honestly; most drafts should pass.
 
 THE PLAN this reply must serve:
@@ -34,7 +39,10 @@ ${principles || "(none written yet — judge on the questions below only)"}
 
 CONTACT DETAILS (facts the draft may use)
 ${describeContact(ctx)}
-
+${gist ? `
+RYAN'S GIST FOR THIS REPLY (he dictated it; every number, decision and promise in it is his and counts as a given fact, not an invention)
+"${gist}"
+` : ""}
 CONVERSATION (oldest → newest; a "call transcript" row is a recorded live call with BOTH voices in it)
 ${formatThread(ctx, 12)}
 
@@ -48,7 +56,7 @@ QUESTIONS (a draft fails only when the answer is clearly yes)
 1. If they declined, does the draft re-pitch, argue, reframe their answer, or offer a valuation/number they did not ask for?
 2. Does it promise or set up something the plan's next action rules out (a call after close_dead, a quote after a soft no)? Asking for a call when the next action is schedule_call, or when they asked for an offer, is fine.
 3. Does it contradict something already said in the conversation, or re-ask a question they already answered?
-4. Does it assert a figure, date, address detail, or personal fact that appears nowhere in the conversation or the contact details? A bracketed placeholder like [OFFER PRICE] is intentional and never a failure.
+4. Does it assert a figure, date, address detail, or personal fact that appears nowhere in the conversation, the contact details${gist ? ", or Ryan's gist" : ""}? A bracketed placeholder like [OFFER PRICE] is intentional and never a failure.${gist ? " A number from Ryan's gist is a given fact; a number from another contact's register example is a failure." : ""}
 5. Does it lift a whole sentence from the register examples word for word? Sharing their tone, shape, or a common phrase is expected and is NOT a failure.
 6. Does it clearly break a written principle above?
 

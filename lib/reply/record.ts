@@ -22,6 +22,11 @@ export interface DraftRecord {
   why_text?: string | null
   parent_draft_id?: string | null
   critic_json?: unknown
+  // Coach mode (migration 2026-10-15_reply_drafts_coach.sql): "auto" | "coach",
+  // Ryan's dictated gist, and the 2-3 line read the coach returned.
+  mode?: "auto" | "coach"
+  gist?: string | null
+  read_text?: string | null
 }
 
 export async function recordDraft(rec: DraftRecord): Promise<string | null> {

@@ -109,6 +109,29 @@ moment:
   }
 }
 
+/** Ryan's chips from a request body → a Plan, or null when the moment is not
+ *  one this side of the house knows (the caller then proposes fresh). Shared
+ *  by /api/reply/draft and /api/reply/coach so both validate the same way. */
+export function coercePlan(ctx: ReplyContext, p: {
+  moment?: unknown; temperature?: unknown; next_action?: unknown; reason?: unknown; familiarity?: unknown; intent?: unknown
+} | null | undefined): Plan | null {
+  if (!p) return null
+  const momentOk = ctx.kind === "lead" ? isLeadMoment(p.moment) : isRelationshipMoment(p.moment)
+  if (!momentOk) return null
+  const actions: readonly string[] = ctx.kind === "lead" ? LEAD_NEXT_ACTIONS : RELATIONSHIP_NEXT_ACTIONS
+  return {
+    moment: p.moment as string,
+    temperature: ctx.kind === "lead" && typeof p.temperature === "string" && (VALID_TEMPERATURES as readonly string[]).includes(p.temperature) ? p.temperature : ctx.kind === "lead" ? ctx.temperature : null,
+    next_action: typeof p.next_action === "string" && actions.includes(p.next_action) ? p.next_action : ctx.kind === "lead" ? "reply_only" : "send",
+    reason: typeof p.reason === "string" ? p.reason : "",
+    source: "ryan",
+    ...(ctx.kind === "relationship" ? {
+      familiarity: p.familiarity === "Knows" || p.familiarity === "Reintro" ? p.familiarity : ctx.everContacted ? "Knows" as const : "Reintro" as const,
+      intent: p.intent === "CatchUp" || p.intent === "Deal" || p.intent === "Referral" || p.intent === "Portfolio" ? p.intent : null,
+    } : {}),
+  }
+}
+
 /** Stamp the moment on every row of the lead's cluster so worklists and the drip engine see it. */
 export async function stampLeadMoment(clusterIds: string[], moment: string): Promise<void> {
   if (!clusterIds.length) return
