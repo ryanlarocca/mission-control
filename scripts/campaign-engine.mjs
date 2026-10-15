@@ -65,7 +65,7 @@ import { createClient } from "@supabase/supabase-js"
 import { TOUCHES, renderTouch, nextOffsetDays } from "./campaign-touches.mjs"
 import { loadSenderConfig, loadSenderStates, saveSenderState, capFor, evaluateSenderDay, fetchRelationshipEmails, fetchReplierIds, fetchLastSenderByContact, fetchLastSendByContact, assignSender, priorityOf, isSenderPaused, pauseLabel, withPause, withResume, withCanaryVerdict } from "./campaign-senders.mjs"
 import { judgeConfigured, connectJudge, disconnectJudge, readCanaryMessages, newestCanary, describePlacement, decideVerdict, canaryOldEnough, planBackfill, stallReason, verdictWord, isJudgeAuthError, judgeErrorText, JUDGE_SEARCH_DAYS, BACKFILL_SEARCH_DAYS } from "./canary-judge.mjs"
-import { AUTO_SEND_KEY, resolveAutoSend, withTouchRegated, removeTripwire, describeRemovedSends, touchesOfRemoves, bounceBreaker, isDayStopped, withDayStop } from "./campaign-gates.mjs"
+import { AUTO_SEND_KEY, resolveAutoSend, withTouchRegated, removeTripwire, describeRemovedSends, touchesOfRemoves, bounceBreaker, isDayStopped, withDayStop, partitionTouchOne, t1Supply, describeT1Supply } from "./campaign-gates.mjs"
 import { checkRecipientDomain, dnsBlocks, readDnsCache } from "./campaign-dns.mjs"
 import { verifyMany, verifyAction, isDraftEligible, unknownTwice, selectVerifyCandidates, summarizeVerification, summaryLine, isSandboxKey, KickboxAuthError, VERIFY_DAILY_MAX_DEFAULT } from "./campaign-verify.mjs"
 
@@ -477,6 +477,15 @@ async function draftPass() {
   const replierIds = await fetchReplierIds(sb)
   const lastSender = await fetchLastSenderByContact(sb, dueList.filter((c) => c.touch_number > 0).map((c) => c.id))
   dueList.sort((a, b) => priorityOf(a, { replierIds, relEmails }) - priorityOf(b, { replierIds, relEmails }) || (a.next_touch_at < b.next_touch_at ? -1 : a.next_touch_at > b.next_touch_at ? 1 : 0))
+  // Event-based touches (Task 6): every T1-due contact precedes every T2+
+  // contact regardless of next_touch_at — T2 never mints while any T1 is
+  // due; the day the T1 queue is empty, T2 starts by itself, oldest first.
+  const t1Due = dueList.filter((c) => Number(c.touch_number) === 0).length
+  const laterDue = dueList.length - t1Due
+  const ordered = partitionTouchOne(dueList)
+  dueList.length = 0
+  dueList.push(...ordered)
+  log(`draft order: T1 first — ${t1Due} T1 due, then ${laterDue} T2+ due${t1Due && laterDue ? " (T2+ waits until the T1 queue is empty)" : ""}`)
   const perSender = new Map(SENDERS.map((s) => [s.email, 0]))
   // One open row per contact. A contact's touch clock only advances at send
   // time, so at an 11 AM mint everyone slotted for this afternoon is still
@@ -1231,6 +1240,14 @@ async function dayMetrics(dayStr) {
   return { day: dayStr, sent, failed, bounces, replies, unsubs, autoReplies, lint_rejected: local.lint_rejected || 0, dns_no_mx: local.dns_no_mx || 0, verified: local.verified || 0, verify_undeliverable: local.verify_undeliverable || 0, canary: local.canary || null }
 }
 
+/** T1 remaining (active contacts with an email still at touch 0) and days of supply at today's caps (Task 6). */
+async function t1SupplyNow() {
+  const { count, error } = await sb.from("campaign_contacts").select("id", { count: "exact", head: true }).eq("status", "active").eq("touch_number", 0).not("email", "is", null)
+  if (error) throw new Error(`T1 remaining count: ${error.message}`)
+  const capTotal = SENDERS.filter((s) => !isSenderPaused(SENDER_STATE.get(s.email))).reduce((a, s) => a + senderCap(s), 0)
+  return t1Supply({ remaining: count ?? 0, capTotal })
+}
+
 /** Sends today whose contact is on a catch-all domain (verify_accept_all) — counted, never filtered (Task 5). */
 async function catchAllSentCount(startIso, endIso) {
   const ids = []
@@ -1547,6 +1564,7 @@ async function healthPass() {
   const dayStart = new Date(`${day}T00:00:00-07:00`).toISOString()
   const dayEnd = new Date(`${day}T23:59:59-07:00`).toISOString()
   const catchAllSent = await catchAllSentCount(dayStart, dayEnd)
+  const supply = await t1SupplyNow()
   const perSender = await senderMetricsRange(dayStart, dayEnd)
   const trailing = await senderMetricsRange(new Date(new Date(dayStart).getTime() - 7 * 86_400_000).toISOString(), new Date(new Date(dayStart).getTime() - 1000).toISOString())
   const senderLines = []
@@ -1603,7 +1621,7 @@ async function healthPass() {
   }
   const status = warnings.length ? (warnings.some((w) => /PAUSED|^RED:/.test(w)) ? "🔴" : "🟡") : worst
   const capTotal = SENDERS.reduce((a, s) => a + senderCap(s), 0)
-  const snapshot = { ...m, catch_all_sent: catchAllSent, warnings, sender: SENDERS.map((s) => s.email).join(","), cap: capTotal, senders: senderSnap, recorded_at: now.toISOString() }
+  const snapshot = { ...m, catch_all_sent: catchAllSent, t1_remaining: supply.remaining, t1_supply_days: supply.days, auto_touches: [...AUTO_SEND.touches], warnings, sender: SENDERS.map((s) => s.email).join(","), cap: capTotal, senders: senderSnap, recorded_at: now.toISOString() }
   if (!rehearsal) await sb.from("campaign_settings").upsert({ key: `health:${day}`, value: snapshot, updated_at: now.toISOString() })
   const rampNote = senderLines.length ? `\n\n${senderLines.join("\n")}` : ""
   if (m.sent === 0 && !warnings.length && !rehearsal) { log("health: no sends today, snapshot stored, no card"); return }
@@ -1615,6 +1633,7 @@ async function healthPass() {
       (m.verified ? ` · 🔎 ${m.verified} verified (${m.verify_undeliverable} invalid)` : "") +
       (canaryNote ? ` · 🐤 canary ${escHtml(canaryNote)} sent` : "") +
       `\n📈 7-day: ${agg.sent} sent, bounces ${pct(agg.bounces, agg.sent)}, replies ${pct(agg.replies, agg.sent)}, ${agg.unsubs} removes` +
+      `\n📚 ${escHtml(describeT1Supply(supply))} · 🔁 auto: ${AUTO_SEND.touches.size ? [...AUTO_SEND.touches].map((t) => `T${t}`).join("/") : "none"}${AUTO_SEND.pinned ? ` (pinned ${escHtml(AUTO_SEND.pinned)})` : ""}` +
       (warnings.length ? `\n\n${warnings.map((w) => `• ${escHtml(w)}`).join("\n")}` : "\n\nAll clear.") + rampNote
   if (rehearsal) { log(`health rehearsal — card that WOULD post (nothing saved, nothing sent):\n${card}`); return }
   await telegram(card)

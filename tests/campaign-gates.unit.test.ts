@@ -153,3 +153,35 @@ describe("Task 3 — intraday bounce circuit breaker", () => {
     expect(isDayStopped({ day_stop: null }, "2026-10-15")).toBe(false)
   })
 })
+
+describe("Task 6 — touch one takes the budget first", () => {
+  const { partitionTouchOne, t1Supply, describeT1Supply } = gatesModule as unknown as Record<string, any>
+  it("stable-partitions T1-due ahead of T2+ regardless of next_touch_at, keeping priority order within each half", () => {
+    // already sorted by priority (repliers → Relationships → everyone else), then due date
+    const sorted = [
+      { id: "replier-t2", touch_number: 1, next_touch_at: "2026-09-01" },
+      { id: "rel-t1", touch_number: 0, next_touch_at: "2026-10-10" },
+      { id: "stranger-t2-old", touch_number: 1, next_touch_at: "2026-09-15" },
+      { id: "stranger-t1-a", touch_number: 0, next_touch_at: "2026-10-01" },
+      { id: "stranger-t1-b", touch_number: 0, next_touch_at: "2026-10-12" },
+      { id: "stranger-t3", touch_number: 2, next_touch_at: "2026-09-20" },
+    ]
+    expect(partitionTouchOne(sorted).map((c: { id: string }) => c.id)).toEqual(["rel-t1", "stranger-t1-a", "stranger-t1-b", "replier-t2", "stranger-t2-old", "stranger-t3"])
+    // the day the T1 queue is empty, T2 simply comes through oldest first — no mode switch
+    const noT1 = sorted.filter((c) => c.touch_number > 0)
+    expect(partitionTouchOne(noT1)).toEqual(noT1)
+    expect(partitionTouchOne([])).toEqual([])
+    expect(partitionTouchOne(undefined)).toEqual([])
+    expect(partitionTouchOne([{ id: "x" }]).map((c: { id: string }) => c.id)).toEqual(["x"]) // missing touch_number reads as 0
+  })
+  it("days of T1 supply at current caps rounds up and copes with no cap", () => {
+    expect(t1Supply({ remaining: 2255, capTotal: 8 })).toEqual({ remaining: 2255, capTotal: 8, days: 282 })
+    expect(t1Supply({ remaining: 40, capTotal: 8 })).toEqual({ remaining: 40, capTotal: 8, days: 5 })
+    expect(t1Supply({ remaining: 41, capTotal: 8 }).days).toBe(6)
+    expect(t1Supply({ remaining: 0, capTotal: 8 }).days).toBe(0)
+    expect(t1Supply({ remaining: 10, capTotal: 0 })).toEqual({ remaining: 10, capTotal: 0, days: null })
+    expect(describeT1Supply(t1Supply({ remaining: 41, capTotal: 8 }))).toBe("T1 remaining: 41 · ~6 weekdays of supply at 8/day")
+    expect(describeT1Supply(t1Supply({ remaining: 8, capTotal: 8 }))).toBe("T1 remaining: 8 · ~1 weekday of supply at 8/day")
+    expect(describeT1Supply(t1Supply({ remaining: 10, capTotal: 0 }))).toBe("T1 remaining: 10 (no cap — supply unknown)")
+  })
+})

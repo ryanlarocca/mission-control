@@ -144,6 +144,33 @@ export function withDayStop(state, { day, reason, now = new Date() }) {
   return { ...(state ?? {}), day_stop: { day, reason: reason ?? null, at: now.toISOString() } }
 }
 
+// ---------- Task 6: touch one takes the budget first (event-based touches) ----------
+//
+// Ryan 2026-10-14: "finish touch one for the whole list before anyone gets
+// touch two. Just to be simple." Stable partition AFTER the existing
+// priority sort, so repliers / Relationships matches still lead within each
+// half. The day the T1 queue is empty, T2 starts by itself, oldest due first.
+
+/** Every touch_number === 0 contact precedes every touch_number >= 1 contact; order within each half is preserved. */
+export function partitionTouchOne(list) {
+  const first = []
+  const rest = []
+  for (const c of list ?? []) (Number(c?.touch_number ?? 0) === 0 ? first : rest).push(c)
+  return [...first, ...rest]
+}
+
+/** "T1 remaining" + "days of T1 supply at current caps" (weekdays; null when no cap). */
+export function t1Supply({ remaining, capTotal }) {
+  const r = Math.max(0, Number(remaining) || 0)
+  const cap = Math.max(0, Number(capTotal) || 0)
+  return { remaining: r, capTotal: cap, days: cap > 0 ? Math.ceil(r / cap) : null }
+}
+
+export function describeT1Supply(s) {
+  if (!s) return "T1 remaining: ?"
+  return `T1 remaining: ${s.remaining}${s.days === null ? " (no cap — supply unknown)" : ` · ~${s.days} weekday${s.days === 1 ? "" : "s"} of supply at ${s.capTotal}/day`}`
+}
+
 /** "auto T1 on|off" from Telegram. `on` re-pins to the prompt version given. */
 export function withTouchAuto(row, touch, on, { promptVersion, by = "ryan", now = new Date() } = {}) {
   const cur = toTouchList(row?.touches)
