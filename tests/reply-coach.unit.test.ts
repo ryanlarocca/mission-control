@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest"
 import { buildCoachPrompt, coachChannelRules, COACH_SYSTEM } from "@/lib/reply/coach"
+import { coachNoteLine, appendNote } from "@/lib/reply/facts"
 import { channelRules } from "@/lib/reply/draft"
 import { leadRowsToThread, mergeThread } from "@/lib/reply/context"
 import type { Plan } from "@/lib/reply/plan"
@@ -62,6 +63,13 @@ describe("coach prompt assembly — Herb", () => {
     expect(p).toContain(`Ryan's follow-up: "make it 925"`)
     expect(p.lastIndexOf(`Ryan's follow-up: "make it 925"`)).toBeGreaterThan(p.indexOf(`Ryan's follow-up: "shorter"`))
     expect(p).toContain("The original gist still governs the numbers and the intent unless a follow-up changes them.")
+  })
+
+  it("writes the dated facts line the brief shows, appended under existing notes", () => {
+    const line = coachNoteLine("2026-10-15", "At $950K; renovated comps $1.2–1.3M; he is at $1.6M.")
+    expect(line).toBe("[Coach 2026-10-15] At $950K; renovated comps $1.2–1.3M; he is at $1.6M.")
+    expect(appendNote("Offer 1.1", line)).toBe(`Offer 1.1\n${line}`)
+    expect(appendNote(null, line)).toBe(line)
   })
 
   it("asks for an email subject on the email channel", () => {

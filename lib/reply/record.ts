@@ -60,4 +60,12 @@ export async function markDraftSent(draftId: string, sent: { subject?: string | 
   } catch (e) {
     console.error("[reply/record] markSent threw:", e instanceof Error ? e.message : String(e))
   }
+  // Coached send → facts land on the card (offer_amount + a dated notes
+  // line). No-op for Auto drafts; never throws.
+  try {
+    const { landCoachFacts } = await import("./facts")
+    await landCoachFacts(draftId, sent.body)
+  } catch (e) {
+    console.error("[reply/record] coach facts threw:", e instanceof Error ? e.message : String(e))
+  }
 }
