@@ -54,6 +54,7 @@ import { TOUCHES, renderTouch, nextOffsetDays } from "./campaign-touches.mjs"
 import { loadSenderConfig, loadSenderStates, saveSenderState, capFor, evaluateSenderDay, fetchRelationshipEmails, fetchReplierIds, fetchLastSenderByContact, fetchLastSendByContact, assignSender, priorityOf, isSenderPaused, pauseLabel, withPause, withResume, withCanaryVerdict } from "./campaign-senders.mjs"
 import { judgeConfigured, connectJudge, disconnectJudge, readCanaryMessages, newestCanary, describePlacement, decideVerdict, canaryOldEnough, planBackfill, stallReason, verdictWord, isJudgeAuthError, judgeErrorText, JUDGE_SEARCH_DAYS, BACKFILL_SEARCH_DAYS } from "./canary-judge.mjs"
 import { AUTO_SEND_KEY, resolveAutoSend, withTouchRegated, removeTripwire, describeRemovedSends, touchesOfRemoves, bounceBreaker, isDayStopped, withDayStop } from "./campaign-gates.mjs"
+import { checkRecipientDomain, dnsBlocks, readDnsCache } from "./campaign-dns.mjs"
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const REPO_ROOT = path.resolve(__dirname, "..")
@@ -278,6 +279,29 @@ async function fetchSuppressionSets() {
 
 function isSuppressed(contact, sets) {
   return (contact.email && sets.emails.has(contact.email)) || (contact.phone && sets.phones.has(contact.phone))
+}
+
+/**
+ * Engine-side twin of lib/suppression.ts addSuppression (check-then-insert
+ * on (source, source_ref); a duplicate-key race reads as "already there")
+ * plus the contact status flip. Used by the DNS backstop (Task 4,
+ * source "dns_no_mx") and the Kickbox verdicts (Task 5, "verify_undeliverable"
+ * / "verify_unknown"). Dry runs log and write nothing.
+ */
+async function suppressContact(contact, { source, reason, status = "suppressed" }) {
+  const email = String(contact.email ?? "").trim().toLowerCase()
+  if (!email) return false
+  if (dryRun) { log(`would suppress ${email} (${source}: ${reason}) → status ${status}`); return true }
+  const source_ref = `campaign_contact:${contact.id}`
+  const { data: existing } = await sb.from("suppression").select("id").eq("source", source).eq("source_ref", source_ref).limit(1)
+  if (!existing?.length) {
+    const { error } = await sb.from("suppression").insert({ email, phone: null, name: contact.name ?? null, reason, source, source_ref, channel: "email", audience: "agent" })
+    if (error && !/duplicate key/i.test(error.message)) throw new Error(`suppression insert (${email}): ${error.message}`)
+  }
+  await sb.from("campaign_contacts").update({ status, next_touch_at: null, updated_at: new Date().toISOString() }).eq("id", contact.id)
+  await sb.from("campaign_sends").update({ status: "skipped", error: source }).eq("contact_id", contact.id).in("status", ["draft", "approved"])
+  log(`suppressed ${email} (${source}: ${reason}) → status ${status}`)
+  return true
 }
 
 async function countToday(table, tsCol, filters) {
@@ -822,8 +846,13 @@ async function sendPass() {
   if ([...budgets.values()].every((b) => b <= 0)) { log("every sender is paused or out of budget — nothing to send"); return }
 
   const sets = await fetchSuppressionSets()
+  // Free DNS backstop (Task 4): MX / A for the recipient domain, cached per
+  // domain per PT day; no_mx fails the row and suppresses the contact. A
+  // 2 s timeout or resolver trouble is a pass — never block on DNS latency.
+  const dnsCache = readDnsCache(ptToday())
   let sent = 0
   let failed = 0
+  let noMx = 0
   for (const row of approved) {
     if (sent >= budget) break
     // A row minted for a mailbox that is no longer enabled waits (stays
@@ -847,9 +876,17 @@ async function sendPass() {
       log(`skipped ${contact.email}: ${contact.status}/suppression at send time`)
       continue
     }
+    const dnsCheck = await checkRecipientDomain(contact.email, { cache: dnsCache, persist: !dryRun })
+    if (dnsBlocks(dnsCheck.status)) {
+      await markFailed(row, "no_mx")
+      await suppressContact(contact, { source: "dns_no_mx", reason: `no MX and no A record for ${dnsCheck.domain}` })
+      failed++
+      noMx++
+      continue
+    }
     const to = redirectTo ?? contact.email
     if (dryRun) {
-      log(`would send T${row.touch_number} from ${sender.email}${sender.replyTo ? ` (reply-to ${sender.replyTo})` : ""} → ${to} "${row.subject}"`)
+      log(`would send T${row.touch_number} from ${sender.email}${sender.replyTo ? ` (reply-to ${sender.replyTo})` : ""} → ${to} "${row.subject}"${dnsCheck.status === "unknown" ? " (dns unknown → pass)" : ""}`)
       sent++
       budgets.set(sender.email, budgets.get(sender.email) - 1)
       continue
@@ -917,8 +954,9 @@ async function sendPass() {
     }
     await sleep(3000 + Math.random() * 7000)
   }
-  log(`send pass done: ${sent} sent, ${failed} failed`)
-  if (failed > 0) await telegram(`⚠️ Campaign: <b>${failed}</b> send failures this pass — check campaign_sends.error`)
+  log(`send pass done: ${sent} sent, ${failed} failed${noMx ? ` (${noMx} no_mx — suppressed)` : ""}`)
+  if (noMx && !dryRun) bumpHealthCounter("dns_no_mx", noMx)
+  if (failed > noMx) await telegram(`⚠️ Campaign: <b>${failed - noMx}</b> send failures this pass — check campaign_sends.error`)
 }
 
 async function markFailed(row, err) {
@@ -1016,7 +1054,7 @@ async function dayMetrics(dayStr) {
   const unsubs = await cnt("campaign_events", "occurred_at", { kind: "email_reply", triage: "unsubscribe" })
   const autoReplies = await cnt("campaign_events", "occurred_at", { kind: "email_reply", triage: ["auto_reply", "dead_mailbox"] })
   const local = readHealthState()[dayStr] || {}
-  return { day: dayStr, sent, failed, bounces, replies, unsubs, autoReplies, lint_rejected: local.lint_rejected || 0, canary: local.canary || null }
+  return { day: dayStr, sent, failed, bounces, replies, unsubs, autoReplies, lint_rejected: local.lint_rejected || 0, dns_no_mx: local.dns_no_mx || 0, canary: local.canary || null }
 }
 
 // Per-sender metrics over [startIso, endIso]. Sends/failures carry the
@@ -1381,7 +1419,7 @@ async function healthPass() {
   const card =
     (stallLines.length ? `${stallLines.join("\n")}\n\n` : "") +
     `🩺 <b>Campaign health ${status} — ${wd} ${day.slice(5)}</b>\n` +
-      `📤 ${m.sent} sent (caps ${capTotal}) · ↩️ ${m.bounces} bounced (${pct(m.bounces, m.sent)}) · 💬 ${m.replies} replies · 🚫 ${m.unsubs} removes · 🤖 ${m.autoReplies} auto-replies · ⚠️ ${m.failed} failed · 🧹 ${m.lint_rejected} lint-rejected` +
+      `📤 ${m.sent} sent (caps ${capTotal}) · ↩️ ${m.bounces} bounced (${pct(m.bounces, m.sent)}) · 💬 ${m.replies} replies · 🚫 ${m.unsubs} removes · 🤖 ${m.autoReplies} auto-replies · ⚠️ ${m.failed} failed · 🧹 ${m.lint_rejected} lint-rejected · 🌐 ${m.dns_no_mx} no-MX` +
       (canaryNote ? ` · 🐤 canary ${escHtml(canaryNote)} sent` : "") +
       `\n📈 7-day: ${agg.sent} sent, bounces ${pct(agg.bounces, agg.sent)}, replies ${pct(agg.replies, agg.sent)}, ${agg.unsubs} removes` +
       (warnings.length ? `\n\n${warnings.map((w) => `• ${escHtml(w)}`).join("\n")}` : "\n\nAll clear.") + rampNote
