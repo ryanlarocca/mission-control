@@ -1,4 +1,4 @@
-Status: built 2026-10-16 — branch inbox-vendor-filing-tapinspect, awaiting migration + live replay on the mini (see HANDOFF)
+Status: LIVE 2026-10-16 (evening) — migration applied, merged to main, Halleck report + ITI invoice 243496 filed by the watcher; next live tests = South Bay termite PDF, Juan's exemption form / signed proofs, 💸 Paid after the wire, Quito awaiting_payment cycle
 
 You are building a self-contained change to the Inbox Agent (the ryan@lrghomes.com Gmail watcher) in this Next.js repo. Work on a new branch `inbox-vendor-filing-tapinspect` off `main`, commit in small conventional commits, and push the branch with `git push -u origin inbox-vendor-filing-tapinspect`. Do NOT open a PR, do NOT touch `main`, never `git add -A`. You have no access to the production Supabase, Gmail, Drive or Telegram: everything you ship must be covered by vitest unit tests with fixtures (`npm test` = `vitest run`) and `npx tsc --noEmit` must pass. Live replays and the migration will be run by the operator on the Mac mini afterwards, from your HANDOFF section.
 
