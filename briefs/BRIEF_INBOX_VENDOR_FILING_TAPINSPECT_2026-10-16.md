@@ -1,4 +1,4 @@
-Status: building 2026-10-16
+Status: built 2026-10-16 — branch inbox-vendor-filing-tapinspect, awaiting migration + live replay on the mini (see HANDOFF)
 
 You are building a self-contained change to the Inbox Agent (the ryan@lrghomes.com Gmail watcher) in this Next.js repo. Work on a new branch `inbox-vendor-filing-tapinspect` off `main`, commit in small conventional commits, and push the branch with `git push -u origin inbox-vendor-filing-tapinspect`. Do NOT open a PR, do NOT touch `main`, never `git add -A`. You have no access to the production Supabase, Gmail, Drive or Telegram: everything you ship must be covered by vitest unit tests with fixtures (`npm test` = `vitest run`) and `npx tsc --noEmit` must pass. Live replays and the migration will be run by the operator on the Mac mini afterwards, from your HANDOFF section.
 
@@ -70,3 +70,64 @@ Run `npm test` and `npx tsc --noEmit`; both must be green before you push.
 
 # Don'ts
 No new npm dependencies. Do not change behaviour for non-vendor senders or any property filing path beyond Parts B/C. Do not touch anything about `93 Ridgeview`. Do not run migrations or hit any live service. Do not refactor unrelated code.
+
+---
+
+## HANDOFF (for the operator on the Mac mini)
+
+Built on branch `inbox-vendor-filing-tapinspect` (cloud session, 2026-10-16). `npm test` = 488 passing (33 new across `tests/inbox-vendor-filing.unit.test.ts` + `tests/inbox-tapinspect.unit.test.ts`), `npx tsc --noEmit` clean. Nothing live was touched: no migration run, no Gmail / Drive / Supabase / Telegram / tapinspect calls.
+
+### 1. Migration (apply first, once)
+
+```
+node scripts/run-migration.mjs supabase/migrations/2026-10-16_campaign_drive_folder.sql
+```
+
+Idempotent. It adds `campaigns.drive_folder_id` (seeded `14qk007vZ5iHMPLU3lAjiOB-_o_Go0N--` on `5b71ff54-14f9-4c83-a14d-8d1eed6325f2`), upserts `inbox_settings.vendors` (the ITI rule), adds `inbox_files.meta jsonb`, and rewrites the `inbox_fetches.status` column comment. Check: `select id, name, drive_folder_id from campaigns where drive_folder_id is not null;` → one row (NOO Q4 2026). The worker falls back to the same ITI rule from `DEFAULT_VENDORS` in `scripts/inbox-agent/vendors.mjs` if the settings row is missing, but `campaigns.drive_folder_id` must exist or every ITI document gets a ❓ card.
+
+### 2. Dry runs (no DB writes, no Drive upload, no Telegram; link fetches still open Chrome and write to `/tmp/inbox-fetch/<job>/`)
+
+| Gmail id | What | Command | Expected log lines |
+|---|---|---|---|
+| `1a13c59abc37044f` | ITI invoice 243481 | `node scripts/inbox-agent/index.mjs --dry-run --message=1a13c59abc37044f` | `vendor ITI Direct Mail: filed 243481_… → Marketing/2026/NOO October2026/3 - MAIL HOUSE (quote, invoice, proofs)/ITI invoice 243481 - <date> - $<total>.pdf`; a dry-run Telegram card `🗂 Filed 1 document from ITI Direct Mail` with `📣 NOO Q4 2026`, buttons `↩️ Undo` + `💸 Paid`. If the folder already holds an unpaid `ITI invoice …` file you will also see `would rename "…" → "… SUPERSEDED.pdf"`. |
+| `1a14686438fae4d0` | ITI invoice 243496 (the revision) | `node scripts/inbox-agent/index.mjs --dry-run --message=1a14686438fae4d0` | Same shape, name `ITI invoice 243496 - 2026-10-15 - $10,385.57.pdf` (if the body carries `Total :$10,385.57`); diff lines only once 243481 is live-filed (they come from `inbox_files.meta` of the previous invoice in the same folder). |
+| `19de0808960889dc` | PandaDoc signed proof sample | `node scripts/inbox-agent/index.mjs --dry-run --message=19de0808960889dc` | `vendor ITI Direct Mail: filed RE-Proof3 … → …/3 - MAIL HOUSE (…)/ITI proof RE-Proof3 for order #240069 - signed - 2026-04-30.pdf`. If the classifier gives this email a system kind, the vendor filing still runs (it is wired before the automated-return). An unsigned "sent you Proof …" email logs `ignored (unsigned proof)` instead. |
+| `1a14056ab449524c` | HomeSentry Halleck, first results | `node scripts/inbox-agent/index.mjs --dry-run --message=1a14056ab449524c` | `fetch dry-1a14056ab449524c: HomeSentry (Tap Inspect) attempt 1 …` then either `awaiting_payment (try 1/14)` (report still gated) or `[fetch] tapinspect: share → report → download(button) → <file>.pdf` and a would-file line `Properties/5764 Halleck Dr/Inspections/5764 Halleck Dr Inspection Report 2026-10-13 (HomeSentry).pdf` (date = the email's PT date). Screenshots in `/tmp/inbox-fetch/dry-1a14056ab449524c/`. |
+| `1a146754b76d30a8` | Halleck results updated (same share URL) | `node scripts/inbox-agent/index.mjs --dry-run --message=1a146754b76d30a8` | Dry run fetches inline (same as above, dated 2026-10-16). Live, this email requeues the existing row instead of inserting (`fetch requeued: tapinspect · was <status>`). |
+| `1a14674c084ab8c7` | Halleck payment thanks | `node scripts/inbox-agent/index.mjs --dry-run --message=1a14674c084ab8c7` | No link to fetch; if a Halleck row is parked you see `fetch <id>: would requeue (HomeSentry email “Thank you …”)`. Otherwise nothing fetch-related. |
+| `198ec7d2d2920eab` | South Bay Kirkland termite report | `node scripts/inbox-agent/index.mjs --dry-run --message=198ec7d2d2920eab` | `Report 674.pdf` refined to `inspection` → would file `Properties/2025/674 Kirkland Dr/Inspections/Report 674.pdf` (year-bucket property folders are part of the candidate list, so the closed deal's folder matches; a ❓ "New property?" card means the PDF's first page named a different property — the existing ask path, not new). |
+
+Fetch CLI (no DB at all), useful to probe the gate first:
+
+```
+node scripts/inbox-agent/fetch/cli.mjs --url "https://app.tapinspect.com/shares/<uuid from 1a14056ab449524c>" --out /tmp/halleck-report
+```
+Expected: `provider tapinspect`, then either `FAILED: report not viewable yet (payment/agreement pending) (needs: payment)` with the last screenshot path, or `done: 1 file(s) · steps share → report → download(button)` and the PDF in `/tmp/halleck-report/`. Add `--headed` to watch it.
+
+### 3. Live replays (in this order)
+
+```
+node scripts/inbox-agent/index.mjs --message=1a13c59abc37044f      # 243481 → filed, card with Undo + Paid
+node scripts/inbox-agent/index.mjs --message=1a14686438fae4d0      # 243496 → filed; 243481 renamed "… SUPERSEDED.pdf"; card shows the Subtotal/Discount/Tax/Total diff
+node scripts/inbox-agent/index.mjs --message=19de0808960889dc      # signed proof → filed
+node scripts/inbox-agent/index.mjs --message=1a14056ab449524c      # queues the Halleck fetch (status queued)
+node scripts/inbox-agent/index.mjs                                 # the pass runs the fetch: done + filed, or awaiting_payment (next_try_at = +24 h, no card)
+node scripts/inbox-agent/index.mjs --message=1a146754b76d30a8      # same URL → the row is requeued (attempts 0) and the next pass fetches again
+node scripts/inbox-agent/index.mjs --message=198ec7d2d2920eab      # Kirkland → Inspections
+```
+Note `--message=<id>` re-runs an email even if `inbox_messages` already has it, so the ITI rows from the earlier (ignored) runs get a second `inbox_files` row; the sha dedupe only trips once a copy is actually `filed`. Tapping 💸 Paid on the 243496 card → next pass renames the file `… PAID.pdf`, sets `campaigns.total_cost = 10385.57` on NOO Q4 2026 and rewrites the card.
+
+### 4. Drive folders involved
+
+- Campaign folder `14qk007vZ5iHMPLU3lAjiOB-_o_Go0N--` (My Hard Drive / Marketing / 2026 / NOO October2026) — must be visible to `ryan@lrghomes.com` (it is under the shared Marketing root). The agent reads it by id, never by path.
+- `3 - MAIL HOUSE (quote, invoice, proofs)` id `1xBrFye93LmOZ81s2UHsJ6vS1LUVupXrI` — matched by the prefix `3 - MAIL HOUSE`; only created (bare, as `3 - MAIL HOUSE`) if no child starts with that prefix.
+- Halleck `Inspections` id `1deox4lOmxaEWan6nnXbfL8GQplnP0oIG` (currently empty) — resolved by the normal `Properties/5764 Halleck Dr/Inspections` path, not by id.
+- `inbox_files.final_folder` for vendor files is the walked path, e.g. `Marketing/2026/NOO October2026/3 - MAIL HOUSE (quote, invoice, proofs)` (the walk stops at the shared Marketing root; if that root is not cached in `inbox_settings.drive.extra_roots` the path starts further up, e.g. `My Hard Drive/Marketing/…` — cosmetic).
+
+### 5. Not verifiable from the cloud session
+
+- The tapinspect report view itself: whether the report opens in the same tab or a new one (both handled), whether the download control is a button, a link to a `.pdf` URL (fetched in-session) or the ⋮ menu, and what the gated view says. The `SELECTORS` object at the top of `scripts/inbox-agent/fetch/tapinspect.mjs` is the one-line fix point; screenshots land in `/tmp/inbox-fetch/<job>/` (and `<job>-view/` when the report opened in a new tab).
+- The exact ITI body text (the parser expects `Subtotal / Shipping Charges / Discount / Tax / Total` on their own lines, `Label :$1,234.56`, `-$`/`($…)` for negatives). If the total is missing from the name, check `inbox_files.meta` for what was parsed.
+- Whether the DWD service account (as `ryan@lrghomes.com`) can see and rename files inside the campaign folder; a `⚠️ Couldn't file …` card names the reason.
+- The campaigns table has no archived/finished column: resolution rule (2) treats a campaign as current when its `drop_date` is null, in the future, or within 180 days (`CAMPAIGN_CURRENT_DAYS`). ITI is pinned to NOO Q4 2026 anyway.
+- `classification.property.label` for the HomeSentry emails (the wake rule falls back to the address in the subject).
