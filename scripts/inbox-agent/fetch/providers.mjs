@@ -16,7 +16,14 @@
 // is the one that matters; portal / property-website / app-store links on the
 // same email are not documents.
 
-/** @typedef {"docusign"|"f8"} Provider */
+// Ryan 2026-10-16: HomeSentry Inspections delivers home-inspection reports as
+// a public share link (https://app.tapinspect.com/shares/<uuid>) with no PDF
+// attached. Only the share page is a document link; the rest of tapinspect.com
+// (login, marketing, agreements) is noise. The report is gated until the
+// invoice is paid and the agreement signed — the worker parks the job as
+// `awaiting_payment` and never pays anything.
+
+/** @typedef {"docusign"|"f8"|"tapinspect"} Provider */
 /** @typedef {"document"|"media"} ProviderKind */
 
 const URL_RE = /https?:\/\/[^\s<>"'()\[\]]+/gi
@@ -40,6 +47,9 @@ const F8_SITE_RE = /^\/sites\/([^/?#]+)\/(branded|unbranded)\/?$/i
 // https://track.pstmrk.it/3ts/<urlencoded target>/<junk>. The target keeps
 // its scheme only sometimes ("f8.f8re.com/listings/…" came through bare).
 const POSTMARK_HOST_RE = /^track\.pstmrk\.it$/i
+// HomeSentry / Tap Inspect: https://app.tapinspect.com/shares/<uuid> — public, no login.
+const TAPINSPECT_HOST_RE = /^app\.tapinspect\.com$/i
+const TAPINSPECT_SHARE_RE = /^\/shares\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\/?$/i
 
 /**
  * "docusign" when the URL opens an envelope, null for everything else
@@ -65,12 +75,36 @@ export function detectProvider(url) {
   if (DOCUSIGN_APP_HOST_RE.test(host) && /^\/(documents|envelopes|signing)\b/i.test(u.pathname)) return "docusign"
   // f8 Download Center (photos). Everything else on f8re.com is null.
   if (F8_HOST_RE.test(host) && F8_DOWNLOAD_CENTER_RE.test(u.pathname)) return "f8"
+  // HomeSentry inspection report share page. Everything else on tapinspect.com is null.
+  if (TAPINSPECT_HOST_RE.test(host) && TAPINSPECT_SHARE_RE.test(u.pathname)) return "tapinspect"
   return null
+}
+
+/** The share uuid in a tapinspect link (HomeSentry reuses the SAME share URL for "results updated"), else null. */
+export function tapinspectShareId(url) {
+  let u
+  try {
+    u = new URL(String(url || "").trim())
+  } catch {
+    return null
+  }
+  if (!TAPINSPECT_HOST_RE.test(u.hostname)) return null
+  const m = TAPINSPECT_SHARE_RE.exec(u.pathname)
+  return m ? m[1].toLowerCase() : null
 }
 
 /** "document" providers go through the PDF filing pipeline; "media" providers (photos) go to Photos/. */
 export function providerKind(provider) {
   return provider === "f8" ? "media" : "document"
+}
+
+/**
+ * Providers whose links queue even on a system ("automated") email: the f8
+ * delivery and HomeSentry's results notice are both machine-sent, and the
+ * link is the only thing that matters. DocuSign keeps its kind-based gate.
+ */
+export function queuesOnSystemEmail(provider) {
+  return provider === "f8" || provider === "tapinspect"
 }
 
 /**
@@ -142,7 +176,7 @@ export function documentLinks(msg, extra = []) {
 
 /** Human label for cards. */
 export function providerLabel(provider) {
-  return provider === "docusign" ? "DocuSign" : provider === "f8" ? "f8" : provider || "the link"
+  return provider === "docusign" ? "DocuSign" : provider === "f8" ? "f8" : provider === "tapinspect" ? "HomeSentry (Tap Inspect)" : provider || "the link"
 }
 
 /**

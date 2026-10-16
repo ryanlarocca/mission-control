@@ -16,11 +16,14 @@ import { unzipSync } from "fflate"
 import { JOB_TIMEOUT_MS, mimeFor, pruneScreenshots, withTimeout } from "./browser.mjs"
 import { fetchDocuSign } from "./docusign.mjs"
 import { F8_JOB_TIMEOUT_MS, fetchF8 } from "./f8.mjs"
-import { detectProvider } from "./providers.mjs"
+import { TAPINSPECT_JOB_TIMEOUT_MS, fetchTapInspect } from "./tapinspect.mjs"
+import { detectProvider, documentLinks, tapinspectShareId } from "./providers.mjs"
 import { envelopeMatches } from "../loops.mjs"
+import { keysMatch, propertyKey } from "../env.mjs"
 
-export { detectProvider, documentLinks, extractUrls, propertyWebsiteLinks, providerKind, providerLabel, unwrapTrackingUrl } from "./providers.mjs"
+export { detectProvider, documentLinks, extractUrls, propertyWebsiteLinks, providerKind, providerLabel, queuesOnSystemEmail, tapinspectShareId, unwrapTrackingUrl } from "./providers.mjs"
 export { fetchF8, parseDownloadCenter, parseDownloadJson } from "./f8.mjs"
+export { SELECTORS as TAPINSPECT_SELECTORS, fetchTapInspect, gateFromReportText, tapClickAllowed } from "./tapinspect.mjs"
 
 /** Media jobs (f8: ~255 MB over 72 CDN downloads) get 10 min; document jobs keep the 90 s browser cap. */
 export const MEDIA_JOB_TIMEOUT_MS = F8_JOB_TIMEOUT_MS
@@ -80,6 +83,77 @@ export function waitsClosedBy(done, rows) {
 /** The `awaiting_new_link` rows that have waited more than 2 h (or carry no start time at all). */
 export function waitsTimedOut(rows, now = Date.now()) {
   return (rows || []).filter((r) => r.status === "awaiting_new_link" && !(ms(r.started_at) > now - NEW_LINK_WAIT_MS))
+}
+
+// ---------------------------------------------------------------- Part B4/B5: HomeSentry's payment gate
+// HomeSentry's flow is invoice → signed agreement → report viewable. When the
+// fetch finds the report not viewable yet, the job parks as `awaiting_payment`
+// (no card — the email already runs the "sign / pay" loop) and retries daily
+// via next_try_at; each daily retry is one attempt, 14 attempts = 14 days,
+// then `expired` with one card. A wake (a new HomeSentry email carrying the
+// same share uuid, or a payment/updated/results subject for the same property;
+// a `fetch` reply; 🔁 Retry) puts the row back on the queue with attempts 0.
+// HomeSentry reuses the SAME share URL for "results have been updated", and
+// `inbox_fetches_url_once` is unique on url_sha256 — so a link that already
+// has a row is requeued (never inserted twice) when its job is finished or
+// parked, and left alone while it is queued/running. Statuses are free text.
+export const AWAITING_PAYMENT_ERROR = "report not viewable yet (payment/agreement pending)"
+export const AWAITING_PAYMENT_RETRY_MS = 24 * 60 * 60_000
+export const AWAITING_PAYMENT_MAX_TRIES = 14
+export const TAPINSPECT_SENDER_RE = /@tapinspect\.com$/i
+export const TAPINSPECT_WAKE_SUBJECT_RE = /payment|updated|results/i
+const REQUEUE_FROM = new Set(["done", "awaiting_payment", "failed", "expired"])
+
+/**
+ * After a gated run: park for another day, or give up after 14 tries.
+ * `attempts` = the attempt that just ran (the worker increments before running).
+ * @returns {{ status: "awaiting_payment", next_try_at: string, attempts: number, error: string } | { status: "expired", attempts: number, error: string }}
+ */
+export function awaitingPaymentNext(attempts, now = Date.now()) {
+  const n = Math.max(1, Number(attempts) || 1)
+  if (n >= AWAITING_PAYMENT_MAX_TRIES) return { status: "expired", attempts: n, error: `${AWAITING_PAYMENT_ERROR} — report never released in ${AWAITING_PAYMENT_MAX_TRIES} days` }
+  return { status: "awaiting_payment", next_try_at: new Date(now + AWAITING_PAYMENT_RETRY_MS).toISOString(), attempts: n, error: AWAITING_PAYMENT_ERROR }
+}
+
+/** B5: what to do when a link's url_sha256 already has a row. */
+export function requeueDecision(existing, provider) {
+  if (!existing) return "insert"
+  if (provider === "tapinspect" && REQUEUE_FROM.has(existing.status)) return "requeue"
+  return "leave"
+}
+
+/**
+ * B4 wake rule (a): the parked `awaiting_payment` rows a new email wakes —
+ * from a tapinspect sender, carrying the same share uuid (body or classifier
+ * links), or a payment / updated / results subject for the same property.
+ * `rows` carry the parked job's own email folded in (`subject`,
+ * `property_label` from its classification). Pure.
+ * @param {{ from?: {email?: string}, subject?: string, text?: string }} msg
+ * @param {{ document_links?: string[], property?: {label?: string}|null }|null} cls
+ * @param {Array<{ id: string, status: string, provider: string, url: string, subject?: string|null, property_label?: string|null }>} rows
+ */
+export function paymentWakeTargets(msg, cls, rows) {
+  const parked = (rows || []).filter((r) => r.status === "awaiting_payment" && r.provider === "tapinspect")
+  if (!parked.length) return []
+  const sender = String(msg?.from?.email || "").toLowerCase()
+  if (!TAPINSPECT_SENDER_RE.test(sender)) return []
+  const ids = new Set(documentLinks(msg, Array.isArray(cls?.document_links) ? cls.document_links : []).map((l) => tapinspectShareId(l.url)).filter(Boolean))
+  const subjectHit = TAPINSPECT_WAKE_SUBJECT_RE.test(String(msg?.subject || ""))
+  const key = propertyKey(cls?.property?.label || addressIn(msg?.subject) || "")
+  return parked.filter((r) => {
+    const share = tapinspectShareId(r.url)
+    if (share && ids.has(share)) return true
+    if (!subjectHit || !key) return false
+    const rk = propertyKey(r.property_label || addressIn(r.subject) || "")
+    return !!rk && keysMatch(rk, key)
+  })
+}
+
+const ADDRESS_RE = /\b(\d{1,6}[a-z]?)\s+([A-Za-z][A-Za-z0-9.' -]{0,40}?)\s+(ave|avenue|dr|drive|st|street|rd|road|ct|court|ln|lane|blvd|boulevard|way|pl|place|cir|circle|ter|terrace|hwy|highway)\b\.?/i
+/** "Inspection results for 5764 Halleck Dr, San Jose, CA 95123" → "5764 Halleck Dr" (number + street, anywhere in the text), else null. */
+export function addressIn(text) {
+  const m = ADDRESS_RE.exec(String(text || ""))
+  return m ? `${m[1]} ${m[2].trim()} ${m[3]}` : null
 }
 
 // ---------------------------------------------------------------- zip
@@ -160,14 +234,15 @@ export async function fetchDocuments({ url, provider = null, accessCode = null, 
     if (r.ok) log(`[fetch] ${p}: ${r.steps.join(" → ")} → ${r.sets.map((s) => `${s.set} ${s.files.length}`).join(" · ")}`)
     return { ...r, screenshots: [] }
   }
-  if (p !== "docusign") return { ok: false, error: `no fetcher for ${p || "that link"}`, needs: null, screenshots: [], steps: [] }
-  timeoutMs = timeoutMs ?? JOB_TIMEOUT_MS
+  if (p !== "docusign" && p !== "tapinspect") return { ok: false, error: `no fetcher for ${p || "that link"}`, needs: null, screenshots: [], steps: [] }
+  timeoutMs = timeoutMs ?? (p === "tapinspect" ? TAPINSPECT_JOB_TIMEOUT_MS : JOB_TIMEOUT_MS)
   try {
     pruneScreenshots()
   } catch {}
   let r
   try {
-    r = await withTimeout(fetchDocuSign({ url, accessCode, jobId, log, headed, sendNewLink }), timeoutMs, `fetch ${jobId}`)
+    const flow = p === "tapinspect" ? fetchTapInspect({ url, jobId, log, headed }) : fetchDocuSign({ url, accessCode, jobId, log, headed, sendNewLink })
+    r = await withTimeout(flow, timeoutMs, `fetch ${jobId}`)
   } catch (e) {
     return { ok: false, error: e?.message || String(e), needs: null, screenshots: [], steps: [] }
   }
