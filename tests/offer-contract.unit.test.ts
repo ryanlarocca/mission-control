@@ -287,6 +287,31 @@ describe("fillOfferPdf — pdf-lib fixture", () => {
     expect(Buffer.from(template).toString("latin1")).toBe(before)
   })
 
+  it("clears a template /MaxLen instead of throwing (real template: special_stipulations MaxLen 100)", async () => {
+    const doc = await PDFDocument.create()
+    const page = doc.addPage([612, 792])
+    const font = await doc.embedFont(StandardFonts.Helvetica)
+    const form = doc.getForm()
+    const name = form.createTextField("seller_name")
+    name.setMaxLength(10)
+    name.addToPage(page, { x: 50, y: 700, width: 300, height: 18, font })
+    const stips = form.createTextField("special_stipulations")
+    stips.setMaxLength(10)
+    stips.enableMultiline()
+    stips.addToPage(page, { x: 50, y: 500, width: 491, height: 60, font })
+    const template = await doc.save({ useObjectStreams: false })
+
+    const thirty = "Seller may leave the furniture" // 30 chars
+    expect(thirty).toHaveLength(30)
+    const out = await fillOfferPdf(template, full({ seller_name: thirty, special_stipulations: [thirty, thirty] }))
+    const reloaded = await PDFDocument.load(out.bytes)
+    const f = reloaded.getForm()
+    expect(f.getTextField("seller_name").getText()).toBe(thirty)
+    expect(f.getTextField("seller_name").getMaxLength()).toBeUndefined()
+    expect(f.getTextField("special_stipulations").getText()).toBe(`${thirty}\n${thirty}`)
+    expect(f.getTextField("special_stipulations").getMaxLength()).toBeUndefined()
+  })
+
   it("auto-sizes a long stipulation block instead of truncating", async () => {
     const template = await fixture()
     const many = Array.from({ length: 9 }, (_, i) => `Stipulation number ${i + 1} is a full sentence of contract language that runs on.`)

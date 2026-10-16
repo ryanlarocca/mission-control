@@ -449,6 +449,11 @@ export async function fillOfferPdf(
       absent.push(name)
       continue
     }
+    // The real template's special_stipulations carries /MaxLen 100 (found on
+    // the first live fill, 2026-10-16): pdf-lib's setText throws
+    // ExceededMaxLengthError past it. Clear the limit on every text field of
+    // the in-memory copy so a future template tweak can't break generation.
+    if (field.getMaxLength() !== undefined) field.setMaxLength(undefined)
     if (name === "special_stipulations") {
       field.enableMultiline()
       const lines = value ? value.split("\n").length : 0
