@@ -34,6 +34,9 @@ export const SELECTORS = {
   downloadButtonLoose: /download\s*(report|pdf)/i,
   moreMenu: /^(more|more options|options|menu|more_vert)$/i,
   moreMenuItem: /^download(\s+(report|pdf))?$/i,
+  /** Live 2026-10-16 (Halleck): "Download Report" is a dropdown — "Download Full Report" /
+   *  "Download Report Summary Only". Always the full report. */
+  downloadMenuItem: /^download full report$/i,
   /** On the report view (not the share page): the "not viewable yet" messages. */
   gate: /not (?:yet )?(?:viewable|available|released)|results? (?:are|is|will) not (?:be )?viewable|(?:make|made|pending|awaiting|require[sd]?|outstanding|unpaid) (?:a )?payment|payment (?:is )?(?:required|pending|due|outstanding)|balance due|invoice (?:is )?(?:unpaid|outstanding|due)|(?:sign|signed) (?:the )?(?:pre-?inspection )?agreement|agreement (?:is )?(?:required|pending|unsigned)/i,
   /** The share page's static instructions — recognised only so they are never read as a gate. */
@@ -43,7 +46,7 @@ export const SELECTORS = {
 }
 
 /** Labels the tapinspect flow may click; anything matching SELECTORS.forbidden is refused first. */
-export const TAP_CLICK_ALLOW = [SELECTORS.reportEntry, SELECTORS.reportEntryLoose, SELECTORS.downloadButton, SELECTORS.downloadButtonLoose, SELECTORS.moreMenu, SELECTORS.moreMenuItem, /^(close|ok|got it)$/i]
+export const TAP_CLICK_ALLOW = [SELECTORS.reportEntry, SELECTORS.reportEntryLoose, SELECTORS.downloadButton, SELECTORS.downloadButtonLoose, SELECTORS.moreMenu, SELECTORS.moreMenuItem, SELECTORS.downloadMenuItem, /^(close|ok|got it)$/i]
 
 function cleanLabel(label) {
   return String(label || "").replace(/[……]+$/g, "").replace(/[^\p{L}\p{N}&\s_]/gu, " ").replace(/\s+/g, " ").trim()
@@ -216,7 +219,23 @@ export async function fetchTapInspect({ url, jobId = "job", log = () => {}, head
     }
     steps.push(`download(${how})`)
     let file = await fetchHrefPdf(view, control)
-    if (!file) file = await captureDownload(view, () => safeTapClick(control, { expect: "Download report", log, noWaitAfter: true }), { timeout: 45_000 })
+    if (!file) {
+      // The control may be a dropdown toggle ("Download Report ▾" → "Download Full
+      // Report" / "… Summary Only"); when the submenu shows, pick the full report.
+      file = await captureDownload(view, async () => {
+        if (!(await safeTapClick(control, { expect: "Download report", log, noWaitAfter: true }))) return false
+        await view.waitForTimeout(400)
+        const item = await firstVisible(view, [
+          (p) => p.getByRole("menuitem", { name: SELECTORS.downloadMenuItem }),
+          (p) => p.getByRole("link", { name: SELECTORS.downloadMenuItem }),
+          (p) => p.getByRole("button", { name: SELECTORS.downloadMenuItem }),
+          (p) => p.getByText(SELECTORS.downloadMenuItem),
+        ], 2_000)
+        if (!item) return true
+        steps.push("full-report")
+        return safeTapClick(item, { expect: "Download Full Report", log, noWaitAfter: true })
+      }, { timeout: 45_000 })
+    }
     if (!file) {
       await viewShooter.shot("no-download")
       return fail(null, "the download control produced no file")

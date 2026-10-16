@@ -63,6 +63,10 @@ describe("tapinspect flow — clicks and the gate", () => {
     for (const l of ["Home Inspection Report", "HOME INSPECTION REPORT", "Download Report", "download report", "Download", "Download PDF", "More", "more_vert", "Close"]) expect(tapClickAllowed(l).ok, l).toBe(true)
     for (const l of ["Invoice 11275718", "New Ca Agreement", "Home Maintenance Manual ( Download )", "Agreements and Invoice", "Pay Invoice", "Make Payment", "Sign Agreement", "Log in", "View Invoice"]) expect(tapClickAllowed(l).ok, l).toBe(false)
     expect(tapClickAllowed(["download-report-button", "Download Report"]).ok).toBe(true)
+    // Live 2026-10-16 (Halleck): "Download Report" is a dropdown — the full report is the only item the flow picks.
+    expect(tapClickAllowed("Download Full Report").ok).toBe(true)
+    expect(SELECTORS.downloadMenuItem.test("Download Full Report")).toBe(true)
+    expect(SELECTORS.downloadMenuItem.test("Download Report Summary Only")).toBe(false)
     expect(tapClickAllowed(["Download", "invoice-download"]).ok).toBe(false) // a forbidden candidate wins
     expect(tapClickAllowed([]).ok).toBe(false)
     expect(TAP_CLICK_ALLOW.length).toBeGreaterThan(4)
