@@ -35,6 +35,7 @@ import { detectProvider, documentLinks, providerLabel } from "@/scripts/inbox-ag
 //   ix:sr:<scr>   draft a reply to the deal email (slow → route runs it in waitUntil)
 //   ix:ds:<draft> send   ix:de:<draft> edit (reply expected)   ix:dd:<draft> dismiss
 //   ix:fr:<fetch> retry a link fetch (requeue; the worker opens the browser)
+//   ix:ed:<event> done   ix:ec:<event> add to calendar (worker runs gog)   ix:en:<event> not interested
 
 export const INBOX_CB_PREFIX = "ix:"
 const UUID = "[0-9a-f-]{36}"
@@ -431,6 +432,23 @@ export async function handleInboxCallback(data: string): Promise<InboxCallbackRe
   if ((m = new RegExp(`^ix:la:(${UUID})$`).exec(data))) {
     const how = await acknowledgeLoop(sb, m[1])
     return { toast: how === "muted" ? "Got it — muted" : "Got it — back before it's due", clearButtons: true }
+  }
+  // Networking events (briefs/BRIEF_EVENT_WATCHER_2026-10-15.md). Ryan 2026-10-15: "the same
+  // way I need to go through Telegram and click done" — no learning from Not interested.
+  if ((m = new RegExp(`^ix:ed:(${UUID})$`).exec(data))) {
+    await sb.from("inbox_events").update({ status: "acknowledged", resolved_at: now, updated_at: now }).eq("id", m[1]).in("status", ["new", "alerted"])
+    return { toast: "Done", clearButtons: true }
+  }
+  if ((m = new RegExp(`^ix:ec:(${UUID})$`).exec(data))) {
+    const { data: ev } = await sb.from("inbox_events").select("status, name").eq("id", m[1]).maybeSingle()
+    if (!ev) return { toast: "Event not found", clearButtons: false }
+    if (ev.status === "added") return { toast: "Already on your calendar", clearButtons: true }
+    await sb.from("inbox_events").update({ status: "add_requested", updated_at: now }).eq("id", m[1])
+    return { toast: "Adding to your calendar…", clearButtons: true, text: `📅 Adding “${ev.name}” to your calendar — I'll confirm with the link within a few minutes.` }
+  }
+  if ((m = new RegExp(`^ix:en:(${UUID})$`).exec(data))) {
+    await sb.from("inbox_events").update({ status: "dismissed", resolved_at: now, updated_at: now }).eq("id", m[1]).in("status", ["new", "alerted"])
+    return { toast: "Not interested", clearButtons: true }
   }
   if ((m = new RegExp(`^ix:sl:(${UUID})$`).exec(data))) {
     await sb.from("inbox_deal_screens").update({ ryan_verdict: "look" }).eq("id", m[1])

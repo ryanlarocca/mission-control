@@ -104,6 +104,7 @@ export async function getMessage(gmail, id) {
     inReplyTo: header(headers, "In-Reply-To"),
     snippet: data.snippet || "",
     text,
+    html: acc.html,
     attachments: acc.attachments,
   }
 }

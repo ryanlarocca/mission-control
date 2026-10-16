@@ -14,6 +14,9 @@
 //                        deliveries (f8) are pulled with plain fetch and filed
 //                        into Properties/<address>/Photos/{MLS,Print}
 //                        (briefs/BRIEF_INBOX_MEDIA_DELIVERY_2026-10-15.md).
+//   2c. scanEvents     — networking-event watcher: new mail on ryan@ + the personal
+//                        Gmail (IMAP) → one inbox_events row per real event; surfaced
+//                        only in the brief + cards (briefs/BRIEF_EVENT_WATCHER_2026-10-15.md).
 //   3. resolveLoops    — close loops Ryan answered (sent mail) or that expired.
 //   4. interviewStep   — before any filing: ask Ryan one document at a time
 //                        where it goes, then write + approve the convention.
@@ -29,6 +32,7 @@
 //   node scripts/inbox-agent/index.mjs --drive-check  # prove the Drive share + DWD scope
 //   node scripts/inbox-agent/index.mjs --status       # counts
 //   node scripts/inbox-agent/index.mjs --pause | --resume
+//   node scripts/inbox-agent/index.mjs --events-only --events-backfill=60d --dry-run  # event watcher preview, writes nothing
 //   flags: --dry-run (no Telegram, no Drive writes, no DB writes for new rows; link fetches
 //          still run in the browser and land in /tmp/inbox-fetch), --limit=N, --message=<gmail id>
 import crypto from "node:crypto"
@@ -51,6 +55,7 @@ import { destinationFor, filingDecision, isPurchaseDoc, nextSequence, refineDocT
 import { MAX_FETCH_ATTEMPTS, NEW_LINK_ERROR, NEW_LINK_GUARD_MS, documentLinks, fetchDocuments, newLinkGuard, nextTryAt, propertyWebsiteLinks, providerKind, providerLabel, readFetchedBytes, saveFetchedBytes, waitsClosedBy, waitsTimedOut } from "./fetch/index.mjs"
 import { DUP_STATUSES, gmailLink, photoDedupeVerdict, propertyFolderFromReply, propertyLabelFromSubject, suffixedFilename } from "./photos.mjs"
 import { envelopeMatches, loopEligible, normalizeEnvelope } from "./loops.mjs"
+import { applyEventDecisions, eventBrief, postEventCards, scanEvents } from "./events-run.mjs"
 
 // ------------------------------------------------------------------ args
 const argv = process.argv.slice(2)
@@ -63,6 +68,9 @@ const DRY = flag("dry-run")
 const LIMIT = Number(opt("limit", 25))
 const BACKFILL = opt("backfill", null) // e.g. "3d"
 const MESSAGE = opt("message", null) // one gmail id, for testing
+const EVENTS_BACKFILL = opt("events-backfill", null) // e.g. "30d" — widen the event watcher's window (first run / testing)
+const EVENTS_SOURCES = opt("events-source", "all") // all | gmail | personal (testing)
+const EVENTS_MESSAGE = opt("events-message", null) // one ryan@ gmail id through the event watcher (pair with --dry-run)
 
 // The interview set — real emails from the 2026-09-24 survey of ryan@'s inbox,
 // one per document type Ryan sees every week. Re-seeding is idempotent.
@@ -1759,6 +1767,9 @@ async function maybeDigest(ctx, force = false) {
     if (shown.length) lines.push(`\n<b>Deals screened:</b>\n` + shown.map((s) => `• ${esc(s.address || "?")} — ${s.verdict === "pass" ? "pass" : s.verdict === "look_further" ? "look further" : "unclear"}${s.summary ? `: ${esc(s.summary)}` : ""}`).join("\n"))
     if (held) log(`digest: ${held} hidden blasts not mentioned (Ryan 2026-10-02: no tally)`)
   }
+  // Networking events (briefs/BRIEF_EVENT_WATCHER_2026-10-15.md): new ones only, then one card each after the brief.
+  const events = await eventBrief({ dry: DRY }).catch((e) => (warn("digest: event section failed:", e.message), { lines: [], newRows: [] }))
+  if (events.lines.length) lines.push("", ...events.lines)
   if (rules.status !== "approved") {
     if (interview.count) lines.push(`\n🗂 A filing setup question is waiting on your answer above.`)
     else if (rules.status === "draft") lines.push(`\n📐 The filing convention is waiting for your 👍 (or changes).`)
@@ -1767,6 +1778,7 @@ async function maybeDigest(ctx, force = false) {
   if (ctx.driveErr) lines.push(`\n⚠️ Drive isn't reachable yet: ${esc(ctx.driveErr)}`)
   const briefRows = looseEnds.length ? [[{ text: "🧹 Clear unanswered", data: `ix:uc:${date}` }]] : []
   await tgSend(lines.join("\n"), { rows: briefRows, dryRun: DRY })
+  await postEventCards(events.newRows, DRY).catch((e) => warn("digest: event cards failed:", e.message))
   if (!DRY) {
     await setSetting("agent", { last_digest_date: date, last_unanswered_threads: looseEnds.slice(0, 8).map((m) => m.thread_id), last_unanswered_date: date })
     // Ryan 2026-09-27: "the same thing over and over every day … a way to check
@@ -1837,7 +1849,7 @@ async function driveCheck(ctx) {
 }
 async function status() {
   const counts = {}
-  for (const [t, col] of [["inbox_messages", "kind"], ["inbox_files", "status"], ["inbox_fetches", "status"], ["inbox_loops", "status"], ["inbox_interview", "status"], ["inbox_rules", "mode"], ["inbox_deal_screens", "verdict"]]) {
+  for (const [t, col] of [["inbox_messages", "kind"], ["inbox_files", "status"], ["inbox_fetches", "status"], ["inbox_loops", "status"], ["inbox_events", "status"], ["inbox_interview", "status"], ["inbox_rules", "mode"], ["inbox_deal_screens", "verdict"]]) {
     const rows = await fetchAll(t, col)
     counts[t] = rows.reduce((m, r) => ((m[r[col] || "null"] = (m[r[col] || "null"] || 0) + 1), m), {})
   }
@@ -1868,15 +1880,23 @@ async function main() {
   if (agent.paused) return log("paused — skipping pass")
   const ctx = await buildContext()
   if (flag("drive-check")) return driveCheck(ctx)
+  if (flag("events-only")) {
+    await scanEvents(ctx, { dry: DRY, backfillDays: EVENTS_BACKFILL ? parseDays(EVENTS_BACKFILL) : null, sources: EVENTS_SOURCES, only: EVENTS_MESSAGE })
+    const preview = await eventBrief({ dry: true })
+    console.log("---- BRIEF SECTION (preview, from rows already in inbox_events) ----\n" + (preview.lines.join("\n") || "(nothing new)"))
+    return
+  }
   const t0 = Date.now()
   QUIET = { ...QUIET, ...((agent.quiet_hours && typeof agent.quiet_hours === "object") ? agent.quiet_hours : {}) }
   await alertDriveOnce(ctx)
   await noteDriveConnected(ctx)
   await applyAskAnswers(ctx)
   await applyDecisions(ctx)
+  await applyEventDecisions({ dry: DRY })
   await postDeferred(ctx)
   if (flag("interview")) await seedInterview(ctx)
   if (!flag("no-poll")) await pollInbox(ctx)
+  if (!flag("no-events")) await scanEvents(ctx, { dry: DRY, backfillDays: EVENTS_BACKFILL ? parseDays(EVENTS_BACKFILL) : null })
   await runFetches(ctx)
   await resolveLoops(ctx)
   await interviewStep(ctx)
