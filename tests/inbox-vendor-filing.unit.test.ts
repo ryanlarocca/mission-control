@@ -68,14 +68,20 @@ describe("regression — the whitelist is unchanged for every non-vendor sender"
     expect(DOC_TYPES).toContain("proof")
     expect(DOC_TYPES).toContain("tax_form")
   })
-  it("refineDocType: proof / tax form by filename, but never 'proof of funds' or an address starting with 1541", () => {
-    expect(refineDocType("RE-Proof3 for order #240069.pdf", "other", "juan@letterprinting.net", "")).toBe("proof")
-    expect(refineDocType("proof.pdf", "invoice", "juan@letterprinting.net", "")).toBe("proof")
+  it("refineDocType never turns a filename into a vendor doc type — that is vendorDocType's job on a vendor email", () => {
+    // Live review 2026-10-16: an unanchored /exempt|proof/ here misrouted a seller's
+    // "Exempt Seller Disclosure" (CAR ESD) and an "Insurance Proof" PDF into ignored vendor types.
+    expect(refineDocType("ESD - Exempt Seller Disclosure.pdf", "disclosure", "agent@x.com", "")).toBe("disclosure")
+    expect(refineDocType("Insurance Proof.pdf", "evidence_of_insurance", "agent@x.com", "")).toBe("evidence_of_insurance")
     expect(refineDocType("Proof of Funds - Chase.pdf", "other", "agent@x.com", "")).toBe("other")
-    expect(refineDocType("Proof of Insurance.pdf", "evidence_of_insurance", "agent@x.com", "")).toBe("evidence_of_insurance")
-    expect(refineDocType("CDTFA-230 Exemption Certificate.pdf", "other", "juan@letterprinting.net", "")).toBe("tax_form")
-    expect(refineDocType("Reg 1541.5 resale exempt - signed.pdf", "other", "juan@letterprinting.net", "")).toBe("tax_form")
     expect(refineDocType("1541 Foo Ave Addendum.pdf", "addendum", "agent@x.com", "")).toBe("addendum")
+    expect(refineDocType("RE-Proof3 for order #240069.pdf", "other", "juan@letterprinting.net", "")).not.toBe("proof")
+    expect(refineDocType("CDTFA-230 Exemption Certificate.pdf", "other", "juan@letterprinting.net", "")).not.toBe("tax_form")
+    // The vendor path still recognises them.
+    const iti = { id: "iti", doc_types: ["invoice", "proof", "quote", "tax_form"] }
+    const juan = { from: { email: "juan@letterprinting.net" }, subject: "RE: NOO Absentee Q4" }
+    expect(vendorDocType(iti, { filename: "RE-Proof3 for order #240069.pdf", doc_type: "other" }, juan)).toBe("proof")
+    expect(vendorDocType(iti, { filename: "CDTFA-230 Exemption Certificate.pdf", doc_type: "other" }, juan)).toBe("tax_form")
     expect(PROOF_FILE_RE.test("proof")).toBe(true)
     expect(TAX_FORM_FILE_RE.test("1541 Foo Ave")).toBe(false)
   })

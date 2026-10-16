@@ -55,8 +55,7 @@ import { advisorSummary, fixRlsDisabled, isSupabaseSecurityAlert } from "./supab
 import {
   CLASSIFY_SYSTEM, FILING_SYSTEM, HAIKU, RULES_SYSTEM, SCREEN_SYSTEM, SONNET, VERIFY_SYSTEM,
   BAY_AREA_RE, CONDO_RE, blastSignalsPass,
-  changePrompt, classifyPrompt, complete, completeJson, filingPrompt, rulesPrompt, screenPrompt, verifyPrompt,
-} from "./llm.mjs"
+  changePrompt, classifyPrompt, complete, completeJson, filingPrompt, rulesPrompt, screenPrompt, verifyPrompt, WHITELIST } from "./llm.mjs"
 import { destinationFor, filingDecision, isPurchaseDoc, nextSequence, refineDocType, stageOf, vendorFilename, withTimeSuffix } from "./filing.mjs"
 import { AWAITING_PAYMENT_MAX_TRIES, MAX_FETCH_ATTEMPTS, NEW_LINK_ERROR, NEW_LINK_GUARD_MS, awaitingPaymentNext, documentLinks, fetchDocuments, newLinkGuard, nextTryAt, paymentWakeTargets, propertyWebsiteLinks, providerKind, providerLabel, queuesOnSystemEmail, readFetchedBytes, requeueDecision, saveFetchedBytes, waitsClosedBy, waitsTimedOut } from "./fetch/index.mjs"
 import { invoiceDiffLines, matchVendor, money, paidName, parentCampaignOf, pickCampaign, supersedeRenames, vendorFilingDecision, vendorRules } from "./vendors.mjs"
@@ -382,7 +381,7 @@ async function insertMessage(msg, kind, cls) {
   if (error) throw new Error(`inbox_messages upsert: ${error.message}`)
 }
 
-function relevantAttachments(msg, cls) {
+function relevantAttachments(msg, cls, { ignoreRelevance = false } = {}) {
   const byName = new Map((cls?.attachments || []).map((a) => [a.filename, a]))
   const out = []
   for (const a of msg.attachments) {
@@ -391,7 +390,7 @@ function relevantAttachments(msg, cls) {
     if (/^(image\d{3}|~WRD\d+|front-composer-)/i.test(a.filename)) continue
     if ((a.size || 0) > MAX_ATTACHMENT_BYTES) continue
     const c = byName.get(a.filename)
-    if (c && c.relevant === false) continue
+    if (!ignoreRelevance && c && c.relevant === false) continue
     if (!c && !/\.(pdf|docx?|xlsx?|csv|zip|jpe?g|png)$/i.test(a.filename)) continue
     const cleanName = a.filename.replace(/^\.+/, "")
     const docType = refineDocType(cleanName, c?.doc_type || (/\.pdf$/i.test(a.filename) ? "other" : /\.(csv|xlsx?)$/i.test(a.filename) ? "marketing_list" : "photos"), msg.from.email, msg.subject)
@@ -1045,7 +1044,7 @@ async function previousInvoiceMeta(folderId, exceptRowId) {
 async function fileVendorDocuments(ctx, msg, cls, rule) {
   const handled = new Set()
   const rules = await getSetting("rules")
-  const atts = relevantAttachments(msg, cls)
+  const atts = relevantAttachments(msg, cls, { ignoreRelevance: true }) // an ITI invoice Haiku calls irrelevant is still the invoice
   const filed = []
   let dest = null
   for (const att of atts) {
@@ -1127,6 +1126,7 @@ async function postVendorConfirmation(ctx, msg, rule, dest, filed) {
 
 /** 💸 Paid (recorded by the webhook as paid_requested): rename … PAID in Drive, set the parent campaign's total_cost, rewrite the card. */
 async function applyPaidRequests(ctx) {
+  if (DRY) return // renames + total_cost are live writes; a dry run never applies them
   const { data: rows } = await sb().from("inbox_files").select("*").eq("status", "paid_requested").limit(10)
   for (const row of rows || []) {
     try {
@@ -1350,7 +1350,7 @@ async function runFetchJob(ctx, job, msg, cls) {
   const r = await fetchDocuments({ url: job.url, provider: job.provider, accessCode: job.access_code || null, jobId: job.id, log, sendNewLink: !guard })
   const shot = r.screenshots?.at(-1) || null
   const openBtn = { text: `${job.kind === "docusign_request" ? "🖊 " : ""}Open in ${label}`, url: job.url }
-  if (!r.ok && (r.needs === "payment" || (job.status === "awaiting_payment" && !r.needs))) {
+  if (!r.ok && (r.needs === "payment" || (job.status === "awaiting_payment" && !r.needs && !/share page is gone/i.test(r.error || "")))) {
     // Part B4: HomeSentry's report is behind the invoice + agreement. Park the
     // job (no card — the email already runs the "sign / pay" loop) and retry
     // daily; a transient error while parked keeps it parked rather than
@@ -1631,6 +1631,16 @@ async function handleMessage(ctx, msg) {
     const links = systemLinks(msg, cls)
     if (links.length) await enqueueFetches(ctx, msg, cls, links.some((l) => providerKind(l.provider) === "media") ? "media_delivery" : kind)
     await wakePaymentWaits(msg, cls)
+    // 2026-10-16 (South Bay Termite "Termite Report & Receipt | <address>" came
+    // back as "automated"): a system-looking email can still carry a whitelisted
+    // transaction document on a known property. File those — nothing else runs.
+    if (kind !== "media_delivery") {
+      const docs = relevantAttachments(msg, cls).filter((a) => !vendorHandled.has(a.filename) && WHITELIST.has(a.doc_type))
+      if (docs.length) {
+        const { filed } = await fileDocuments(ctx, msg, cls, docs, { source: "attachment" })
+        await postFiledConfirmation(ctx, msg, filed)
+      }
+    }
     return
   }
 

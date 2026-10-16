@@ -158,6 +158,11 @@ async function pageAfterClick(context, page, trigger) {
 async function fetchHrefPdf(page, control) {
   const href = await control.getAttribute("href").catch(() => null)
   if (!href || !/\.pdf(\?|$)|\/pdf\b/i.test(href)) return null
+  // The Invoice / Agreement / Maintenance Manual attachments are hrefs too: judge the
+  // control's label and the href itself the way a click would be judged.
+  const labels = await labelsOf(control)
+  if (!tapClickAllowed(labels.length ? labels : ["Download report"]).ok) return null
+  if (SELECTORS.forbidden.test(decodeURIComponent(href))) return null
   const abs = new URL(href, page.url()).href
   const res = await page.request.get(abs, { timeout: 30_000 }).catch(() => null)
   if (!res || !res.ok()) return null
@@ -201,6 +206,15 @@ export async function fetchTapInspect({ url, jobId = "job", log = () => {}, head
     const viewShooter = view === page ? shooter : makeShooter(view, `${jobId}-view`)
     await viewShooter.shot("report")
     steps.push("report")
+    // Still looking at the share page (the click did not open the report)? Its
+    // Attachments section has Download links of its own — never search it for a
+    // download control. Treat as not viewable yet.
+    if (SELECTORS.instructions.test(await bodyText(view))) {
+      await viewShooter.shot("still-share")
+      steps.push("still-share")
+      log(`[fetch] tapinspect: ${steps.join(" → ")} — the report did not open (still the share page)`)
+      return fail("payment", NEEDS_WHY.payment)
+    }
 
     // The gate: no download control on the report view → not viewable yet.
     let control = await downloadControl(view)

@@ -44,8 +44,9 @@ export function refineDocType(filename, docType, senderEmail, subject = "") {
   if (TERMITE_SUBJECT_RE.test(String(subject || "")) && !TERMITE_NOT_REPORT_RE.test(f) && (!docType || docType === "invoice" || docType === "other")) return "inspection"
   if (/\bBPA\b|business purpose/i.test(f)) return "loan_application"
   if (/\bEOI\b|evidence of insurance|binder/i.test(f)) return "evidence_of_insurance"
-  if (TAX_FORM_FILE_RE.test(f)) return "tax_form"
-  if (PROOF_FILE_RE.test(f) && !PROOF_OF_FUNDS_RE.test(f)) return "proof"
+  // proof / tax_form are vendor doc types and are decided only on a vendor email
+  // (vendors.mjs vendorDocType). Applying them here would turn a seller's
+  // "Exempt Seller Disclosure" or an "Insurance Proof" PDF into an ignored vendor doc.
   if (/invoice/i.test(f)) return "invoice"
   if (/\b(quote|RCE|replacement cost|proposal)\b/i.test(f) && INSURER_RE.test(sender + " " + f)) return "insurance_quote"
   if (/natural hazard|\bNHD\b|JCP|disclosure report/i.test(f)) return "nhd"

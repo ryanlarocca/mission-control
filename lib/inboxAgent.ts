@@ -240,8 +240,16 @@ async function enqueueFetch(sb: FetchSb, args: { gmail_id: string; thread_id: st
   const provider = detectProvider(args.url)
   if (!provider) return "unknown"
   const url_sha256 = urlSha256(args.url)
-  const { data: existing } = await sb.from("inbox_fetches").select("id").eq("url_sha256", url_sha256).maybeSingle()
-  if (existing) return "duplicate"
+  const { data: existing } = await sb.from("inbox_fetches").select("id, status").eq("url_sha256", url_sha256).maybeSingle()
+  if (existing) {
+    // HomeSentry reuses one share URL for the whole inspection: a `fetch` reply on the
+    // card re-opens a parked / finished / failed tapinspect row instead of saying duplicate.
+    if (provider === "tapinspect" && ["done", "awaiting_payment", "failed", "expired"].includes(String(existing.status))) {
+      await requeueFetch(sb, existing.id)
+      return "queued"
+    }
+    return "duplicate"
+  }
   const { error } = await sb.from("inbox_fetches").insert({ gmail_id: args.gmail_id, thread_id: args.thread_id, url: args.url, url_sha256, provider, kind: args.kind, status: "queued" })
   if (error) throw new Error(`inbox_fetches insert: ${error.message}`)
   return "queued"
@@ -507,6 +515,7 @@ export async function handleInboxCallback(data: string): Promise<InboxCallbackRe
     if (!row || row.status !== "filed") return { toast: row ? `Already ${row.status}` : "Not found", clearButtons: true }
     if (row.doc_type !== "invoice") return { toast: "Not an invoice", clearButtons: true }
     if (/ PAID(\.[a-z0-9]+)?$/i.test(String(row.final_name || ""))) return { toast: "Already marked paid", clearButtons: true }
+    if (/ SUPERSEDED(\.[a-z0-9]+)?$/i.test(String(row.final_name || ""))) return { toast: "Superseded — tap Paid on the newer invoice", clearButtons: true }
     await sb.from("inbox_files").update({ status: "paid_requested" }).eq("id", m[1])
     const total = (row.meta as { total?: number | null } | null)?.total
     return { toast: "Marking paid", text: `💸 Marking “${row.final_name}” paid — renaming it in Drive${total != null ? ` and setting the campaign's total cost to $${Number(total).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : ""} on the next pass (≤5 min).` }
