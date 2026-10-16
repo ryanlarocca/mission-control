@@ -18,7 +18,7 @@ import {
 import { scoreLeadSpam, spamAlertLines, spamReviewColumns, type SpamScore } from "@/lib/lead-spam"
 import { isAnonymousCaller } from "@/lib/anonymous"
 import { describeContact, isOfficeLine, logInboundTextTouch, resolveOfficeCaller } from "@/lib/office-inbound"
-import { handleVendorMarketingText, isVendorMarketingText } from "@/lib/vendorMarketing"
+import { handleInboundVendorText } from "@/lib/vendorMarketing"
 
 // Twilio fires this when a lead texts any of our lead-facing lines (the
 // campaign lines, the ported mailer lines, the Google Ads line, the office
@@ -94,19 +94,26 @@ export async function POST(request: Request) {
     }
   }
 
-  // Vendor marketing blasts (Thumbtack & co., 2026-10-16): STOP back from the
-  // line they hit, own Telegram alert with the full message, nothing in
-  // `leads`. Runs before the office-line and DNC paths so the "Reply STOP to
-  // opt out" boilerplate never reaches isDncMessage. See lib/vendorMarketing.
-  if (from && isVendorMarketingText(from, bodyText)) {
+  // Vendor texts (Thumbtack & co., 2026-10-16): a marketing blast gets a STOP
+  // back from the line it hit + its own Telegram alert with the full message;
+  // the vendor's opt-out confirmation gets a ✅; anything further from a
+  // number we've STOPped is dropped. Nothing in `leads`. Runs before the
+  // office-line and DNC paths so "Reply STOP to opt out" boilerplate never
+  // reaches isDncMessage. See lib/vendorMarketing.
+  if (from) {
     try {
-      await handleVendorMarketingText(getLeadsClient(), { from, to, body: bodyText })
+      const outcome = await handleInboundVendorText(getLeadsClient(), { from, to, body: bodyText })
+      if (outcome !== "not_vendor") {
+        return new NextResponse(EMPTY_TWIML, { status: 200, headers: { "Content-Type": "text/xml" } })
+      }
     } catch (e) {
+      // Classification never throws; only the STOP/alert leg can. Don't let
+      // a vendor-handling hiccup turn a vendor into a lead — alert + return.
       const msg = e instanceof Error ? e.message : String(e)
-      console.error("[sms] vendor-marketing handler threw:", msg)
-      await alertWriteFailure("vendor-marketing STOP/alert", from, getCampaignSource(to) || to, msg)
+      console.error("[sms] vendor handler threw:", msg)
+      await alertWriteFailure("vendor-text STOP/alert", from, getCampaignSource(to) || to, msg)
+      return new NextResponse(EMPTY_TWIML, { status: 200, headers: { "Content-Type": "text/xml" } })
     }
-    return new NextResponse(EMPTY_TWIML, { status: 200, headers: { "Content-Type": "text/xml" } })
   }
 
   const source = getCampaignSource(to)
