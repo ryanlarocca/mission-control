@@ -96,10 +96,23 @@ async function clusterIdentity(toPhone) {
   return data?.[0] ?? null
 }
 
+// Vendor numbers we auto-STOPped (lib/vendorMarketing.ts, 2026-10-16) are
+// never leads — but our STOP is an outbound Twilio message, and if the
+// vendor's confirmation ever slipped in as a row, the cluster lookup would
+// mirror the STOP onto it (it did, once: Thumbtack 10/16). Skip them.
+const vendorPhones = new Set()
+{
+  const { data, error } = await sb.from("suppression").select("phone").eq("source", "vendor_marketing")
+  if (error) console.warn(`suppression lookup failed (continuing): ${error.message}`)
+  for (const r of data ?? []) if (r.phone) vendorPhones.add(r.phone)
+}
+const last10 = p => String(p ?? "").replace(/\D/g, "").slice(-10)
+
 const plan = []
 const skipped = []
 for (const m of outbound) {
   if (!m.to || !m.body) { skipped.push({ m, reason: "no to/body" }); continue }
+  if (vendorPhones.has(last10(m.to))) { skipped.push({ m, reason: "vendor number (auto-STOPped marketing sender)" }); continue }
   const bodyPrefix200 = m.body.slice(0, 200)
   const dateSentMs = new Date(m.date_sent || m.date_created).getTime()
   const existing = await existingOutboundRow(m.to, bodyPrefix200, dateSentMs)
