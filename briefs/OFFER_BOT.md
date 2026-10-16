@@ -1,0 +1,211 @@
+# Offer bot — `/offer` in Telegram → filled Purchase & Sale Agreement PDF
+
+**Owner:** Ryan (LRG Homes). **Spec date:** 2026-10-15. **Build:** cloud session on
+branch `offer-bot`; merge + live test from the Mac mini bridge session.
+
+Ryan texts the Marketing bot the deal terms in plain English, the bot fills a copy
+of his 2-page fillable purchase-contract PDF, sends the PDF back to him in
+Telegram, files it in Drive, and replies with the Drive link. A Telegram Mini
+App form lets him tap into the fields and fix them before generating.
+
+## Hard rules
+
+- **Only Ryan.** The webhook already gates on `TELEGRAM_CHAT_ID`; every new
+  path (webhook branch, Mini App API) must enforce the same identity. The Mini
+  App validates Telegram `initData` (HMAC) and requires `user.id ===
+  TELEGRAM_CHAT_ID`.
+- **The PDF only ever goes to Ryan.** No seller/agent email, SMS, or share.
+  Drive upload is into Ryan's own folder; do not call `permissions.create`.
+- **Never modify the template.** Download its bytes each run, fill in memory,
+  upload a new file.
+- **Never guess a required field.** Missing/unclear → ask about that one only.
+- **Never invent terms.** Stipulations are rewritten for clarity only. The
+  model prompt must say so; code must also drop any stipulation the model
+  returns that doesn't trace to Ryan's words (keep it simple: pass the
+  original text back in the card so he can see it, and keep the model's
+  temperature-free, no examples that could leak).
+- Fields stay fillable (no flatten). Ryan edits the PDF afterwards.
+- `tsc --noEmit` is the gate. `npm test` (vitest unit) must pass. No `git add
+  -A`. Don't create CHANGELOG/PROJECT_MEMO files in this repo.
+
+## Existing plumbing to reuse (read these first)
+
+- `app/api/campaign/telegram/route.ts` — the Marketing-bot webhook
+  (`@Marketing6677bot`, token `CAMPAIGN_BOT_TOKEN`, secret `CAMPAIGN_TG_SECRET`).
+  Has `tg()` helper, dedup, chat gate, `callback_query` dispatch at the top,
+  text dispatch below, `waitUntil` for slow jobs, `maxDuration = 60`.
+  Pattern to copy: the inbox-agent command branch (`handleInboxCommand`) and
+  the `ix:` callback branch (`handleInboxCallback`).
+- `lib/llm.ts` — `completeText({ prompt, system, model, maxTokens, thinking,
+  tag })`, `SONNET`, `HAIKU`, `extractJsonObject()`. Anthropic only.
+- `lib/campaignAlerts.ts` → `sendCampaignDocument(sb, {filename, mime, bytes},
+  caption, {replyTo})` — Telegram `sendDocument` via multipart. You may write a
+  local variant that returns the `message_id`.
+- `lib/inboxAgent.ts` — `getSetting/setSetting` (private) read/write the
+  `inbox_settings` key/value jsonb table. **Reuse that table** for draft
+  state under key `offer` (no migration needed). Add exported helpers or
+  duplicate the 8 lines in the new module.
+- `scripts/inbox-agent/drive.mjs` — Drive via DWD. Port the relevant bits to
+  TypeScript in `lib/drive.ts`: `google.auth.JWT({ email, key, scopes:
+  ["https://www.googleapis.com/auth/drive"], subject: "ryan@lrghomes.com" })`
+  from `GOOGLE_SERVICE_ACCOUNT_KEY` (JSON string env), `files.get(alt=media)`,
+  `files.list` children, `resolvePath(create)`, `files.create` upload with
+  `supportsAllDrives: true`, `fields: "id, webViewLink, name"`.
+- `middleware.ts` — `PUBLIC_PATHS` allowlist. Add `/offer` (Mini App page) and
+  `/api/offer` (Mini App API). Both authenticate with Telegram initData, not
+  the session cookie.
+- `lib/leads.ts` → `getLeadsClient()` = Supabase service client.
+
+## Constants / env
+
+| name | value | note |
+|---|---|---|
+| `OFFER_TEMPLATE_FILE_ID` | default `1ACbeyT4mC4u_fUCBZ1YnhVs-tpEFBR2F` | `Real_Estate_Purchase_Sale_Agreement.pdf` in Business Operations |
+| `OFFER_DRIVE_ROOT_ID` | default `1FOKTLfIP1cLW3HStneb2IWEvWSfOIzA5` | the shared "Business Operations" folder |
+| `OFFER_MINIAPP_URL` | default `https://mission-control-three-chi.vercel.app/offer` | |
+| `CAMPAIGN_BOT_TOKEN`, `TELEGRAM_CHAT_ID`, `GOOGLE_SERVICE_ACCOUNT_KEY`, `ANTHROPIC_API_KEY` | already on Vercel prod | |
+
+Defaults live in code with env override; no new env vars are required.
+
+## PDF fields (verified against the template 2026-10-15)
+
+All 13 are `/Tx` text fields, Helvetica 9pt. `special_stipulations` is
+multiline (491×60 pt ≈ 5 lines; longer → let pdf-lib auto-size, don't
+truncate). `governing_state` already holds "California".
+
+| field | rule |
+|---|---|
+| `agreement_date` | today in America/Los_Angeles unless Ryan says otherwise; render `MM/DD/YYYY` |
+| `seller_name` | required |
+| `property_address` | required, full "street, City, CA ZIP". Partial → complete it (city/state/ZIP inference is fine) and flag `address_needs_confirm` so the card says ⚠️ confirm |
+| `purchase_price` | required; dollars as number; render `1,520,000.00` (no `$`) |
+| `earnest_money` | required; same format |
+| `closing_days` | integer, default 45 |
+| `special_stipulations` | `string[]`, default empty; one per line, clear contract language, never add terms |
+| `governing_state` | "California" |
+| `seller_signer_name` | = `seller_name` unless Ryan says otherwise |
+| `seller_tel` | optional; render `(408) 555-1234` |
+| `seller_email` | optional |
+| `buyer_date` | = `agreement_date` |
+| `seller_date` | always blank |
+
+Money shorthand is parsed in **code**, not by the model: `1.52M`, `1.52mm`,
+`$1.52 million`, `1520k`, `1,520,000`, `1520000`, `10k`, `2.5%`-style is NOT
+supported (ask). Unit-test this (`tests/offer-contract.unit.test.ts`).
+
+## Conversation flow (webhook)
+
+1. `/offer_help` → format + the example below.
+2. `/offer` with no terms → "Send the terms, e.g. …" with reply box forced
+   open (`reply_markup: { force_reply: true }`) **and** an inline button
+   `📝 Open blank form` (`web_app` button, see Mini App).
+3. `/offer <terms>` → ack immediately, parse in `waitUntil`. Parse = Sonnet
+   (`SONNET`, `thinking: false`, `maxTokens ≥ 1500`) returning strict JSON:
+   `{ seller_name, property_address, address_needs_confirm, purchase_price_raw,
+   earnest_money_raw, closing_days, special_stipulations[], agreement_date,
+   seller_signer_name, seller_tel, seller_email, unclear: string[] }`.
+   Code converts raw money, validates, computes `missing` (required but null)
+   + `unclear` (model flagged ambiguity).
+4. If anything missing/unclear → ask about **that one field only** (force
+   reply). Status `awaiting_field`. The next text from Ryan (not a reply to a
+   lead/campaign alert) is merged with a `patch` call (same model, "apply
+   this answer to this draft, change nothing else") → back to step 4 or 5.
+5. Review card (HTML): every field, address with ⚠️ when needs confirm,
+   stips as bullet lines, original text quoted at the bottom. Buttons:
+   row 1 `✅ Generate` `📝 Open form`; row 2 `✏️ Edit` `❌ Cancel`.
+   `callback_data`: `offer:gen`, `offer:edit`, `offer:cancel`; the form
+   button is `{ text, web_app: { url: OFFER_MINIAPP_URL } }`.
+   Status `review`.
+6. `✏️ Edit` → force-reply "What should change?" (status `awaiting_edit`).
+   A reply like "price is 1.25M" or "add stip: 14 day close option" → patch
+   call → re-validate → new card (clear buttons on the old card via
+   `editMessageReplyMarkup`). Replying directly to the card with text does the
+   same without tapping Edit.
+7. `✅ Generate` → `answerCallbackQuery("Generating…")`, clear buttons, then in
+   `waitUntil`: fill → `sendDocument` to Ryan → Drive upload → reply with
+   `📁 Saved to Drive: <link>` (and path). Clear the draft. Any failure →
+   `⚠️` message with the error (never silent).
+8. `❌ Cancel` → clear draft, "Cancelled."
+
+Only one draft at a time. A new `/offer` replaces the pending one (say so).
+State is `inbox_settings.key = 'offer'`:
+`{ status, fields, missing, unclear, source_text, card_message_id,
+prompt_message_id, updated_at }`. Treat drafts older than 24h as expired.
+
+**Routing safety in the webhook:** the offer text-capture branch must run
+only when `msg.reply_to_message` is absent OR it replies to one of the bot's
+offer messages (`card_message_id` / `prompt_message_id`). A reply to a lead
+alert must still go out as SMS exactly as today. Put the `/offer*` command
+branches and the capture branch **above** the "not a reply → help text"
+fallback and above the reply-to-alert send paths.
+
+Example for `/offer_help`:
+```
+/offer 1234 Main St San Jose 95125, seller John and Mary Smith, 1.2M, 10k EMD, 30 day close, seller can leave furniture, seller phone 408-555-1234
+```
+
+## Generation (`lib/offerContract.ts`)
+
+- `npm i pdf-lib` (pure JS, works on Vercel).
+- `PDFDocument.load(templateBytes)`, `doc.getForm()`, `getTextField(name).setText(v)`
+  for each field; **do not** `form.flatten()`. Call
+  `form.updateFieldAppearances(await doc.embedFont(StandardFonts.Helvetica))`
+  so the text shows in every viewer, and set
+  `form.acroForm.dict.set(PDFName.of("NeedAppearances"), PDFBool.True)`.
+  Save with `useObjectStreams: false` for max viewer compatibility.
+- Filename: `Purchase Agreement - <street> - <YYYY-MM-DD>.pdf`. `<street>` =
+  address up to the first comma, trimmed, `/[\\/:*?"<>|]/g` removed.
+  Date = agreement_date.
+- Drive: `Business Operations / Offers / <street> /` (create missing levels),
+  upload `application/pdf`. Return `webViewLink`.
+- Telegram: `sendDocument` with caption `📄 <filename>`.
+
+## Mini App (form Ryan can tap into)
+
+- Page `app/offer/page.tsx` (client component, no dashboard layout). Loads
+  `https://telegram.org/js/telegram-web-app.js` via `next/script`, reads
+  `window.Telegram.WebApp.initData`, calls `GET /api/offer?initData=…` to
+  load the pending draft (or a blank one), renders the form:
+  Seller name · Property address · Purchase price · Earnest money · Closing
+  days · Agreement date (date input) · Seller signer name · Seller phone ·
+  Seller email · Special stipulations (textarea, one per line).
+  Buttons: `Generate` (primary) · `Save & back to chat` · `Cancel`.
+  Dark theme (zinc-950 bg, matches the app). Mobile-first, large tap targets.
+- `app/api/offer/route.ts`: `GET` returns the draft; `POST { initData, action:
+  "save" | "generate" | "cancel", fields }`. Validate initData:
+  `secret = HMAC_SHA256(key="WebAppData", msg=CAMPAIGN_BOT_TOKEN)`,
+  `hash = HMAC_SHA256(key=secret, msg=data_check_string)` where
+  data_check_string = all pairs except `hash`, sorted, joined with `\n`;
+  compare in constant time; reject `auth_date` older than 24h; parse `user`
+  JSON and require `String(user.id) === TELEGRAM_CHAT_ID`. `generate` runs the
+  same pipeline as the ✅ button (PDF to Telegram + Drive) and returns
+  `{ ok, driveUrl, filename }`; the page shows "Sent to your Telegram chat"
+  + the link + a Close button (`WebApp.close()`). `save` stores fields and
+  re-posts the review card to the chat so the two surfaces stay in sync.
+- Money inputs accept the same shorthand (reuse the parser); show the
+  formatted value on blur.
+
+## Tests (`tests/offer-contract.unit.test.ts`)
+
+- money parser cases above; formatting `1520000 → "1,520,000.00"`;
+  phone formatting; filename sanitising; required-field validation;
+  date defaults (PT).
+- PDF fill: build a 2-field fixture **in the test** with pdf-lib (fields
+  `seller_name`, `special_stipulations` multiline), run the fill, reload, assert
+  values and that `getForm().getFields()` is non-empty (still fillable).
+- initData HMAC validator: sign a fixture with a fake token, assert accept /
+  reject (wrong hash, stale auth_date, other user id).
+
+The cloud session has no template, no `.env.local`, and no Telegram access.
+Everything live (real template, Drive, Telegram) is tested from the Mac mini
+after merge. Keep the live pieces behind small functions so they can be
+exercised one at a time with a script: `scripts/offer-dry-run.mjs` is
+welcome but optional.
+
+## Deliverable
+
+Branch `offer-bot` pushed to origin with: `lib/offerContract.ts`,
+`lib/drive.ts`, webhook branches, `app/offer/page.tsx`, `app/api/offer/route.ts`,
+middleware allowlist, tests, `package.json` (+ lockfile) with pdf-lib.
+`tsc --noEmit` clean, `npm test` green. Commit messages in the repo's
+`feat(scope): …` style. Do not open a PR.
