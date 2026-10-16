@@ -18,6 +18,7 @@ import {
 import { scoreLeadSpam, spamAlertLines, spamReviewColumns, type SpamScore } from "@/lib/lead-spam"
 import { isAnonymousCaller } from "@/lib/anonymous"
 import { describeContact, isOfficeLine, logInboundTextTouch, resolveOfficeCaller } from "@/lib/office-inbound"
+import { handleVendorMarketingText, isVendorMarketingText } from "@/lib/vendorMarketing"
 
 // Twilio fires this when a lead texts any of our lead-facing lines (the
 // campaign lines, the ported mailer lines, the Google Ads line, the office
@@ -36,6 +37,15 @@ const EMPTY_TWIML = `<?xml version="1.0" encoding="UTF-8"?>
 <Response></Response>`
 
 const DNC_LOOKBACK_DAYS = 90
+
+// A swallowed write failure on an inbound text is exactly the kind of silent
+// failure Ryan wants surfaced (2026-10-16: a DNC insert failed with only a
+// console.error — the message never reached the timeline and nobody knew).
+async function alertWriteFailure(what: string, from: string, source: string, error: { message?: string } | Error | string): Promise<void> {
+  const msg = typeof error === "string" ? error : error?.message ?? String(error)
+  const escaped = msg.replace(/[<>&]/g, c => (c === "<" ? "&lt;" : c === ">" ? "&gt;" : "&amp;"))
+  await sendTelegramAlert(`⚠️ Inbound text from ${from} to <b>${source}</b> — ${what} failed, Supabase said: ${escaped}`).catch(() => {})
+}
 
 export async function POST(request: Request) {
   let from = ""
@@ -84,6 +94,21 @@ export async function POST(request: Request) {
     }
   }
 
+  // Vendor marketing blasts (Thumbtack & co., 2026-10-16): STOP back from the
+  // line they hit, own Telegram alert with the full message, nothing in
+  // `leads`. Runs before the office-line and DNC paths so the "Reply STOP to
+  // opt out" boilerplate never reaches isDncMessage. See lib/vendorMarketing.
+  if (from && isVendorMarketingText(from, bodyText)) {
+    try {
+      await handleVendorMarketingText(getLeadsClient(), { from, to, body: bodyText })
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e)
+      console.error("[sms] vendor-marketing handler threw:", msg)
+      await alertWriteFailure("vendor-marketing STOP/alert", from, getCampaignSource(to) || to, msg)
+    }
+    return new NextResponse(EMPTY_TWIML, { status: 200, headers: { "Content-Type": "text/xml" } })
+  }
+
   const source = getCampaignSource(to)
   const isOffice = isOfficeLine(to)
   const isDnc = isDncMessage(bodyText)
@@ -128,7 +153,10 @@ export async function POST(request: Request) {
             .from("leads")
             .update({ is_dnc: true, status: "dead" })
             .eq("id", existingId)
-          if (error) console.error("[sms] DNC update failed:", error)
+          if (error) {
+            console.error("[sms] DNC update failed:", error)
+            await alertWriteFailure("DNC flag on the existing lead", from, source, error)
+          }
         }
 
         // Still insert the inbound STOP row so the message shows up in the
@@ -144,7 +172,10 @@ export async function POST(request: Request) {
           status: "dead",
           is_dnc: true,
         })
-        if (insertErr) console.error("[sms] DNC insert failed:", insertErr)
+        if (insertErr) {
+          console.error("[sms] DNC insert failed:", insertErr)
+          await alertWriteFailure("DNC timeline insert", from, source, insertErr)
+        }
 
         const dncName = await lookupLeadName(sb, from)
         const dncWho = dncName ? `${dncName} — ${from}` : from
@@ -236,7 +267,10 @@ export async function POST(request: Request) {
         .insert(insertRow)
         .select("id")
         .single()
-      if (error) console.error("[sms] Supabase insert failed:", error)
+      if (error) {
+        console.error("[sms] Supabase insert failed:", error)
+        await alertWriteFailure("lead insert", from, source, error)
+      }
       newLeadId = insertedRow?.id ?? null
 
       // Re-engagement carried the cluster's drip stamp onto this new event
