@@ -289,10 +289,12 @@ async function scanPersonal({ days, seen, dry, budget }) {
 export async function scanEvents(ctx, { dry = false, backfillDays = null, sources = "all", only = null } = {}) {
   const { seen } = await loadSeen()
   const days = Math.max(2, backfillDays || 2)
-  const budget = { left: dry ? 400 : MAX_CANDIDATES_PER_PASS }
+  // Model-call cap per source per pass (the first 60-day backfill spent all 40 on ryan@ and
+  // the personal account got none). Unprocessed candidates stay unseen and run next pass.
+  const perSource = () => ({ left: dry || days > 2 ? 400 : MAX_CANDIDATES_PER_PASS })
   const t0 = Date.now()
-  const g = sources === "personal" ? { skipped: "sources=personal" } : await scanGmail(ctx.gmail, { days, seen, dry, budget, only }).catch((e) => (warn("event: gmail scan failed:", e.message), { error: e.message }))
-  const p = sources === "gmail" || only ? { skipped: only ? "single message" : "sources=gmail" } : await scanPersonal({ days, seen, dry, budget }).catch((e) => (warn("event: personal scan failed:", e.message), { error: e.message }))
+  const g = sources === "personal" ? { skipped: "sources=personal" } : await scanGmail(ctx.gmail, { days, seen, dry, budget: perSource(), only }).catch((e) => (warn("event: gmail scan failed:", e.message), { error: e.message }))
+  const p = sources === "gmail" || only ? { skipped: only ? "single message" : "sources=gmail" } : await scanPersonal({ days, seen, dry, budget: perSource() }).catch((e) => (warn("event: personal scan failed:", e.message), { error: e.message }))
   if (!dry) await setSetting("events", { seen, last_scan_at: isoNow() })
   log(`events: ryan@ ${JSON.stringify(g)} · personal ${JSON.stringify(p)} · ${((Date.now() - t0) / 1000).toFixed(1)}s`)
   return { gmail: g, personal: p }
