@@ -21,6 +21,7 @@ export interface CampaignPerf {
   variant: string | null
   parent_campaign_id: string | null
   notes: string | null
+  drive_folder_id: string | null
   // Computed:
   responses: number              // count of non-junk leads with campaign_id = id
   response_rate: number | null   // responses / pieces_sent
@@ -192,6 +193,7 @@ export async function GET() {
         variant: c.variant,
         parent_campaign_id: c.parent_campaign_id,
         notes: c.notes,
+        drive_folder_id: c.drive_folder_id ?? null,
         responses,
         response_rate: responseRate,
         offers,

@@ -10,6 +10,10 @@
 //   node scripts/inbox-agent/fetch/cli.mjs --url "<download-center url>" --out /tmp/halleck-photos
 // writes MLS/ and Print/ under --out with the photographer's filenames and prints the counts.
 //
+// HomeSentry inspection reports (tapinspect share page, headless Chrome — briefs/BRIEF_INBOX_VENDOR_FILING_TAPINSPECT_2026-10-16.md Part B):
+//   node scripts/inbox-agent/fetch/cli.mjs --url "https://app.tapinspect.com/shares/<uuid>" --out /tmp/halleck-report
+// exits with `needs: payment` while the report is gated behind the invoice / agreement.
+//
 // One-time login (Phase 1b — Ryan runs this once on the mini over screen share):
 //   node scripts/inbox-agent/fetch/cli.mjs --login --headed
 // Opens https://account.docusign.com in the agent's persistent Chrome profile

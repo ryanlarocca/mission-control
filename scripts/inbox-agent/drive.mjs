@@ -208,6 +208,63 @@ export async function uploadFile(drive, folderId, name, mime, buffer) {
   return data
 }
 
+// ---- campaign folders (briefs/BRIEF_INBOX_VENDOR_FILING_TAPINSPECT_2026-10-16.md, Part A2)
+// A campaign's Drive folder is pinned by id (campaigns.drive_folder_id — "My
+// Hard Drive / Marketing / 2026 / NOO October2026"), not resolved by path; the
+// vendor subfolder inside it is found by name prefix ("3 - MAIL HOUSE" matches
+// "3 - MAIL HOUSE (quote, invoice, proofs)") and created bare when missing.
+
+/** {id, name, webViewLink, parents} of a folder/file by id, or null when it is not visible to the agent. */
+export async function getFile(drive, fileId) {
+  try {
+    const { data } = await drive.files.get({ fileId, fields: "id, name, mimeType, webViewLink, parents", supportsAllDrives: true })
+    return data
+  } catch {
+    return null
+  }
+}
+
+/** The child folder whose name starts with `prefix` (case-insensitive), the shortest match first; created as `prefix` when missing and `create`. */
+export async function childFolderByPrefix(drive, parentId, prefix, { create = false } = {}) {
+  const want = String(prefix || "").trim().toLowerCase()
+  const kids = (await listChildren(drive, parentId)).filter((k) => k.mimeType === FOLDER && k.name.toLowerCase().startsWith(want))
+  const hit = kids.sort((a, b) => a.name.length - b.name.length)[0]
+  if (hit) return { id: hit.id, name: hit.name, created: false }
+  if (!create) return { id: null, name: null, created: false }
+  const { data } = await drive.files.create({ requestBody: { name: prefix, mimeType: FOLDER, parents: [parentId] }, fields: "id, name", supportsAllDrives: true })
+  return { id: data.id, name: data.name, created: true }
+}
+
+/**
+ * "Marketing/2026/NOO October2026/3 - MAIL HOUSE (…)" for a folder id: walk the
+ * parents up to a known root (the shared Marketing / Business Operations
+ * folders) or the top of what the agent can see. Bounded to 12 levels.
+ */
+export async function folderPathOf(drive, folderId, rootId = null) {
+  const roots = new Map(Object.entries(EXTRA_ROOTS).map(([key, id]) => [id, key[0].toUpperCase() + key.slice(1)]))
+  if (rootId) roots.set(rootId, DRIVE_ROOT_NAME)
+  const segs = []
+  let id = folderId
+  for (let i = 0; id && i < 12; i++) {
+    if (roots.has(id)) {
+      const label = roots.get(id)
+      if (label !== DRIVE_ROOT_NAME) segs.unshift(label)
+      break
+    }
+    const f = await getFile(drive, id)
+    if (!f) break
+    segs.unshift(f.name)
+    id = f.parents?.[0] || null
+  }
+  return segs.join("/")
+}
+
+/** Rename a Drive file in place (ITI invoices: … SUPERSEDED / … PAID). */
+export async function renameFile(drive, fileId, name) {
+  const { data } = await drive.files.update({ fileId, requestBody: { name }, fields: "id, name, webViewLink", supportsAllDrives: true })
+  return data
+}
+
 /** Move a file between folders (undo → Properties/_Unsorted). */
 export async function moveFile(drive, fileId, toFolderId) {
   const { data } = await drive.files.get({ fileId, fields: "parents", supportsAllDrives: true })

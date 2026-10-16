@@ -16,6 +16,7 @@ export interface Campaign {
   variant: string | null
   parent_campaign_id: string | null
   notes: string | null
+  drive_folder_id: string | null   // the campaign's Drive folder (inbox agent files mail-house paperwork under it); null = none
   created_at: string
 }
 
