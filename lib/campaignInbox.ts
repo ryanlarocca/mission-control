@@ -94,6 +94,15 @@ interface CampaignContact {
   gmail_thread_id: string | null
 }
 
+/** RFC 3834 / vendor auto-responder markers (Gmail vacation = all three). */
+function isAutoSubmitted(headers: gmail_v1.Schema$MessagePartHeader[] | undefined): boolean {
+  const autoSubmitted = getHeader(headers, "Auto-Submitted").toLowerCase().trim()
+  if (autoSubmitted && autoSubmitted !== "no") return true
+  const xAutoreply = getHeader(headers, "X-Autoreply").toLowerCase().trim()
+  if (xAutoreply === "yes") return true
+  return getHeader(headers, "X-Autorespond").trim() !== ""
+}
+
 function getHeader(headers: gmail_v1.Schema$MessagePartHeader[] | undefined, name: string): string {
   const lower = name.toLowerCase()
   for (const h of headers ?? []) {
@@ -477,7 +486,9 @@ async function handleContactMessage(
 
   // Out-of-office: log it, but do NOT pause the drip and do NOT wake Ryan —
   // the locked design says auto-replies are ignored.
-  if (AUTO_REPLY_RE.test(fresh.slice(0, 300))) {
+  // Gmail vacation responders can carry an EMPTY body (signature only), so
+  // the phrase regex never fires — the RFC 3834 headers are the real tell.
+  if (AUTO_REPLY_RE.test(fresh.slice(0, 300)) || isAutoSubmitted(payload?.headers)) {
     await sb.from("campaign_events").insert({
       contact_id: contact.id,
       kind: "email_reply",
