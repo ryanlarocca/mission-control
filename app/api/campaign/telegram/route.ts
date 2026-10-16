@@ -826,8 +826,8 @@ export async function POST(request: Request) {
   // two states; a card in review takes changes by reply or ✏️.
   if (!msg.reply_to_message) {
     const draft = await getOfferDraft()
-    if (draft && (draft.status === "awaiting_field" || draft.status === "awaiting_edit")) {
-      await tg("sendMessage", { chat_id: chatId, text: "⏳ Updating the draft…", reply_to_message_id: msg.message_id })
+    if (draft && (draft.status === "awaiting_terms" || draft.status === "awaiting_field" || draft.status === "awaiting_edit")) {
+      await tg("sendMessage", { chat_id: chatId, text: draft.status === "awaiting_terms" ? "⏳ Reading the terms…" : "⏳ Updating the draft…", reply_to_message_id: msg.message_id })
       waitUntil(applyOfferText(chatId, draft, body, msg.message_id).catch(offerFail("update")))
       return NextResponse.json({ ok: true })
     }
