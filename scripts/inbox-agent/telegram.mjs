@@ -60,6 +60,19 @@ export async function tgSend(text, { rows = [], replyTo = null, html = true, dry
   return out?.result?.message_id ?? null
 }
 
+/** Rewrite a card in place (💸 Paid → the confirmation says so). Buttons replaced by `rows` (none by default). */
+export async function tgEditText(messageId, text, { rows = [], dryRun = false } = {}) {
+  if (dryRun) {
+    console.log(`---- TELEGRAM EDIT (dry run) ${messageId} ----\n` + text + (rows.length ? "\nbuttons: " + JSON.stringify(rows) : ""))
+    return null
+  }
+  if (!messageId) return null
+  const base = { message_id: messageId, text: text.slice(0, 4000), reply_markup: tgKeyboard(rows), disable_web_page_preview: true }
+  let out = await call("editMessageText", { ...base, parse_mode: "HTML" })
+  if (out && !out.ok) out = await call("editMessageText", { ...base, text: base.text.replace(/<[^>]+>/g, "") })
+  return out?.ok ? messageId : null
+}
+
 export async function tgClearButtons(messageId) {
   if (!messageId) return
   await call("editMessageReplyMarkup", { message_id: messageId, reply_markup: { inline_keyboard: [] } })

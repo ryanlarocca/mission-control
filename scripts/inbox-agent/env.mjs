@@ -101,6 +101,12 @@ export function ptDateLabel(iso) {
   if (!iso) return "?"
   return new Intl.DateTimeFormat("en-US", { timeZone: "America/Los_Angeles", month: "short", day: "numeric" }).format(new Date(iso))
 }
+/** ISO timestamp → "YYYY-MM-DD" on Ryan's clock (file names dated by the day the email arrived in PT). */
+export function ptDate(iso) {
+  const d = iso ? new Date(iso) : new Date()
+  if (!Number.isFinite(d.getTime())) return String(iso || "").slice(0, 10)
+  return ptParts(d).date
+}
 export function daysAgo(iso) {
   if (!iso) return 0
   return Math.floor((Date.now() - new Date(iso).getTime()) / 86_400_000)
