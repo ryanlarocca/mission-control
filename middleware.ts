@@ -44,6 +44,11 @@ const PUBLIC_PATHS = [
   // Playable voicemail-recording proxy (links in Telegram alerts; the only
   // input is a strictly-validated unguessable RecordingSid).
   "/api/campaign/vm",
+  // Offer bot Mini App (briefs/OFFER_BOT.md): the page Telegram opens and
+  // its API. Both authenticate with Telegram initData (HMAC, checked inside
+  // the route against CAMPAIGN_BOT_TOKEN + TELEGRAM_CHAT_ID), not the cookie.
+  "/offer",
+  "/api/offer",
   // One-click unsubscribe (RFC 8058) — recipients + mail providers hit this
   // with no session; token is HMAC-signed per contact.
   "/api/campaign/unsub",

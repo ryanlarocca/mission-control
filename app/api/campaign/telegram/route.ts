@@ -43,6 +43,7 @@ import {
 } from "@/lib/contactIntake"
 import { CALENDAR_INTENT_RE, createCalendarEvent, extractEvent } from "@/lib/calendarIntake"
 import { INBOX_CB_PREFIX, advanceSetup, answerInboxQuestion, draftDealReply, findInboxByTgMessage, handleInboxCallback, handleInboxCommand, looksLikeQuestion, recordInboxReply } from "@/lib/inboxAgent"
+import { OFFER_CB_PREFIX, applyOfferText, getOfferDraft, handleOfferCallback, isOfferMessage, promptForTerms, sendOfferHelp, startOffer } from "@/lib/offerBot"
 
 // Dedicated campaign-bot webhook — the ZERO-TOKEN action path (2026-07-23,
 // Ryan: "get the thinking time down... maybe even no tokens"). The campaign
@@ -367,6 +368,25 @@ export async function POST(request: Request) {
   if (cb?.data) {
     const chatId = cb.message?.chat?.id
     if (allowedChat && String(chatId) !== String(allowedChat)) return NextResponse.json({ ok: true })
+    // Offer bot (briefs/OFFER_BOT.md): ✅ Generate / ✏️ Edit / ❌ Cancel on
+    // the review card. Generation (template → fill → PDF to Ryan → Drive)
+    // runs in waitUntil; any failure comes back as a ⚠️ message.
+    if (cb.data.startsWith(OFFER_CB_PREFIX) && typeof chatId === "number") {
+      const cardId = cb.message?.message_id
+      const out = await handleOfferCallback(chatId, cb.data, cardId)
+      await tg("answerCallbackQuery", { callback_query_id: cb.id, text: out.toast })
+      if (out.clearButtons) {
+        await tg("editMessageReplyMarkup", { chat_id: chatId, message_id: cardId, reply_markup: { inline_keyboard: [] } })
+      }
+      if (out.text) await tg("sendMessage", { chat_id: chatId, text: out.text, reply_to_message_id: cardId })
+      if (out.background) {
+        waitUntil(out.background().catch(async (e) => {
+          console.error("[campaign-tg] offer callback failed:", e instanceof Error ? e.message : String(e))
+          await tg("sendMessage", { chat_id: chatId, text: `⚠️ Offer action failed — ${e instanceof Error ? e.message : String(e)}`, reply_to_message_id: cardId })
+        }))
+      }
+      return NextResponse.json({ ok: true })
+    }
     // Inbox Agent (2026-09-24): filing approvals, interview answers, open
     // loops, deal screens. Supabase-only here; the Mac mini worker executes.
     if (cb.data.startsWith(INBOX_CB_PREFIX)) {
@@ -538,6 +558,41 @@ export async function POST(request: Request) {
   const body = (msg.text || "").trim()
   const repliedText = msg.reply_to_message?.text || msg.reply_to_message?.caption || ""
   if (!body) return NextResponse.json({ ok: true })
+
+  // ---- Offer bot (briefs/OFFER_BOT.md, 2026-10-15) ----
+  // /offer_help · /offer [terms] · a reply to one of the bot's own offer
+  // messages (review card, "What should change?", a field question, the
+  // "Terms?" prompt). Sits ABOVE every send path: an answer like "John and
+  // Mary Smith" must never go out as an SMS, and the reply-to check is by
+  // message id, so a reply to a lead alert is untouched.
+  const offerFail = (what: string) => async (e: unknown) => {
+    console.error(`[campaign-tg] offer ${what} failed:`, e instanceof Error ? e.message : String(e))
+    await tg("sendMessage", { chat_id: chatId, text: `⚠️ Offer ${what} failed — ${e instanceof Error ? e.message : String(e)}`, reply_to_message_id: msg.message_id })
+  }
+  if (/^\/offer_help(@\w+)?\s*$/i.test(body)) {
+    await sendOfferHelp(chatId, msg.message_id)
+    return NextResponse.json({ ok: true })
+  }
+  const offerCmd = /^\/offer(?:@\w+)?(?:\s+([\s\S]+))?$/i.exec(body)
+  if (offerCmd) {
+    const terms = (offerCmd[1] ?? "").trim()
+    if (!terms) {
+      waitUntil(promptForTerms(chatId, msg.message_id).catch(offerFail("prompt")))
+      return NextResponse.json({ ok: true })
+    }
+    await tg("sendMessage", { chat_id: chatId, text: "⏳ Reading the terms…", reply_to_message_id: msg.message_id })
+    waitUntil(startOffer(chatId, terms, msg.message_id).catch(offerFail("parse")))
+    return NextResponse.json({ ok: true })
+  }
+  const offerRepliedId = msg.reply_to_message?.message_id
+  if (typeof offerRepliedId === "number") {
+    const draft = await getOfferDraft()
+    if (draft && isOfferMessage(draft, offerRepliedId)) {
+      await tg("sendMessage", { chat_id: chatId, text: draft.status === "awaiting_terms" ? "⏳ Reading the terms…" : "⏳ Updating the draft…", reply_to_message_id: msg.message_id })
+      waitUntil(applyOfferText(chatId, draft, body, msg.message_id).catch(offerFail("update")))
+      return NextResponse.json({ ok: true })
+    }
+  }
 
   // Campaign kill switch + status (Phase B guardrails, 2026-08-21).
   if (/^(pause|stop|halt) (the )?campaign\b/i.test(body)) {
@@ -764,6 +819,18 @@ export async function POST(request: Request) {
       await tg("sendMessage", { chat_id: chatId, text: `⚠️ Inbox command failed — ${e instanceof Error ? e.message : String(e)}`, reply_to_message_id: msg.message_id })
     }))
     return NextResponse.json({ ok: true })
+  }
+
+  // Offer bot: a standalone text while a question or an edit is open is the
+  // answer (brief step 4 — Ryan doesn't always tap-and-reply). Only those
+  // two states; a card in review takes changes by reply or ✏️.
+  if (!msg.reply_to_message) {
+    const draft = await getOfferDraft()
+    if (draft && (draft.status === "awaiting_field" || draft.status === "awaiting_edit")) {
+      await tg("sendMessage", { chat_id: chatId, text: "⏳ Updating the draft…", reply_to_message_id: msg.message_id })
+      waitUntil(applyOfferText(chatId, draft, body, msg.message_id).catch(offerFail("update")))
+      return NextResponse.json({ ok: true })
+    }
   }
 
   if (!msg.reply_to_message) {
