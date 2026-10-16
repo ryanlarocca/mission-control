@@ -36,6 +36,7 @@ import { detectProvider, documentLinks, providerLabel } from "@/scripts/inbox-ag
 //   ix:ds:<draft> send   ix:de:<draft> edit (reply expected)   ix:dd:<draft> dismiss
 //   ix:fr:<fetch> retry a link fetch (requeue; the worker opens the browser)
 //   ix:ed:<event> done   ix:ec:<event> add to calendar (worker runs gog)   ix:en:<event> not interested
+//   ix:vp:<file>  vendor invoice paid (worker renames … PAID in Drive, sets campaigns.total_cost)
 
 export const INBOX_CB_PREFIX = "ix:"
 const UUID = "[0-9a-f-]{36}"
@@ -498,6 +499,17 @@ export async function handleInboxCallback(data: string): Promise<InboxCallbackRe
   if ((m = new RegExp(`^ix:fr:(${UUID})$`).exec(data))) {
     await requeueFetch(sb, m[1])
     return { toast: "Retrying", clearButtons: true, text: "🔁 Retrying on the next pass (≤5 min)." }
+  }
+  // 💸 Paid on an ITI invoice (vendor filing, 2026-10-16): the worker renames the file … PAID
+  // in Drive and sets campaigns.total_cost on the parent campaign, then rewrites the card.
+  if ((m = new RegExp(`^ix:vp:(${UUID})$`).exec(data))) {
+    const { data: row } = await sb.from("inbox_files").select("status, doc_type, final_name, meta").eq("id", m[1]).maybeSingle()
+    if (!row || row.status !== "filed") return { toast: row ? `Already ${row.status}` : "Not found", clearButtons: true }
+    if (row.doc_type !== "invoice") return { toast: "Not an invoice", clearButtons: true }
+    if (/ PAID(\.[a-z0-9]+)?$/i.test(String(row.final_name || ""))) return { toast: "Already marked paid", clearButtons: true }
+    await sb.from("inbox_files").update({ status: "paid_requested" }).eq("id", m[1])
+    const total = (row.meta as { total?: number | null } | null)?.total
+    return { toast: "Marking paid", text: `💸 Marking “${row.final_name}” paid — renaming it in Drive${total != null ? ` and setting the campaign's total cost to $${Number(total).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : ""} on the next pass (≤5 min).` }
   }
   return { toast: "Unknown inbox action" }
 }

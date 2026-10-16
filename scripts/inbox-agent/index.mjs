@@ -8,12 +8,18 @@
 //   2. pollInbox       — new mail on ryan@lrghomes.com → classify (Haiku) →
 //                        attachment proposals / open loops / deal screens;
 //                        document links (DocuSign) are queued in inbox_fetches.
+//   2a. vendor filing  — ITI Direct Mail's invoices / signed proofs / quotes /
+//                        tax form go to the campaign's Drive folder, 💸 Paid
+//                        sets campaigns.total_cost (vendors.mjs;
+//                        briefs/BRIEF_INBOX_VENDOR_FILING_TAPINSPECT_2026-10-16.md).
 //   2b. runFetches     — open queued links in headless Chrome, pull the PDFs
 //                        and run them through the same filing pipeline
 //                        (briefs/BRIEF_INBOX_LINK_FETCH_2026-10-12.md); photo
 //                        deliveries (f8) are pulled with plain fetch and filed
 //                        into Properties/<address>/Photos/{MLS,Print}
-//                        (briefs/BRIEF_INBOX_MEDIA_DELIVERY_2026-10-15.md).
+//                        (briefs/BRIEF_INBOX_MEDIA_DELIVERY_2026-10-15.md);
+//                        HomeSentry inspection reports behind a tapinspect
+//                        share link park as awaiting_payment until released.
 //   2c. scanEvents     — networking-event watcher: new mail on ryan@ + the personal
 //                        Gmail (IMAP) → one inbox_events row per real event; surfaced
 //                        only in the brief + cards (briefs/BRIEF_EVENT_WATCHER_2026-10-15.md).
@@ -43,16 +49,17 @@ import {
   daysAgo, fetchAll, getSetting, keysMatch, log, propertyKey, ptDateLabel, ptParts, sanitizeFilename, sb, setSetting, warn,
 } from "./env.mjs"
 import { addLabel, getAttachmentBytes, getMessage, gmailClient, listMessageIds, sentThreadsSince } from "./gmail.mjs"
-import { downloadFile, driveClient, findExtraRoots, findFileByName, findRoot, folderTree, listChildren, moveFile, propertyFolders, resolvePath, uploadFile } from "./drive.mjs"
-import { esc, tgClearButtons, tgSend, tgSendDocument } from "./telegram.mjs"
+import { childFolderByPrefix, downloadFile, driveClient, findExtraRoots, findFileByName, findRoot, folderPathOf, folderTree, getFile, listChildren, moveFile, propertyFolders, renameFile, resolvePath, uploadFile } from "./drive.mjs"
+import { esc, tgClearButtons, tgEditText, tgSend, tgSendDocument } from "./telegram.mjs"
 import { advisorSummary, fixRlsDisabled, isSupabaseSecurityAlert } from "./supabase-advisor.mjs"
 import {
   CLASSIFY_SYSTEM, FILING_SYSTEM, HAIKU, RULES_SYSTEM, SCREEN_SYSTEM, SONNET, VERIFY_SYSTEM,
   BAY_AREA_RE, CONDO_RE, blastSignalsPass,
   changePrompt, classifyPrompt, complete, completeJson, filingPrompt, rulesPrompt, screenPrompt, verifyPrompt,
 } from "./llm.mjs"
-import { destinationFor, filingDecision, isPurchaseDoc, nextSequence, refineDocType, stageOf, withTimeSuffix } from "./filing.mjs"
-import { MAX_FETCH_ATTEMPTS, NEW_LINK_ERROR, NEW_LINK_GUARD_MS, documentLinks, fetchDocuments, newLinkGuard, nextTryAt, propertyWebsiteLinks, providerKind, providerLabel, readFetchedBytes, saveFetchedBytes, waitsClosedBy, waitsTimedOut } from "./fetch/index.mjs"
+import { destinationFor, filingDecision, isPurchaseDoc, nextSequence, refineDocType, stageOf, vendorFilename, withTimeSuffix } from "./filing.mjs"
+import { AWAITING_PAYMENT_MAX_TRIES, MAX_FETCH_ATTEMPTS, NEW_LINK_ERROR, NEW_LINK_GUARD_MS, awaitingPaymentNext, documentLinks, fetchDocuments, newLinkGuard, nextTryAt, paymentWakeTargets, propertyWebsiteLinks, providerKind, providerLabel, queuesOnSystemEmail, readFetchedBytes, requeueDecision, saveFetchedBytes, waitsClosedBy, waitsTimedOut } from "./fetch/index.mjs"
+import { invoiceDiffLines, matchVendor, money, paidName, parentCampaignOf, pickCampaign, supersedeRenames, vendorFilingDecision, vendorRules } from "./vendors.mjs"
 import { DUP_STATUSES, gmailLink, photoDedupeVerdict, propertyFolderFromReply, propertyLabelFromSubject, suffixedFilename } from "./photos.mjs"
 import { envelopeMatches, loopEligible, normalizeEnvelope } from "./loops.mjs"
 import { applyEventDecisions, eventBrief, postEventCards, scanEvents } from "./events-run.mjs"
@@ -397,7 +404,7 @@ function relevantAttachments(msg, cls) {
  *  Same logo/size filters; the "classifier said irrelevant" skip does not apply
  *  (Ryan asked for these documents by following the link), but every file still
  *  goes through refineDocType → filingDecision → verifyProperty like an attachment. */
-function fetchedDocs(files, msg, cls) {
+function fetchedDocs(files, msg, cls, provider = null) {
   const byName = new Map((cls?.attachments || []).map((a) => [a.filename, a]))
   const out = []
   for (const f of files) {
@@ -407,7 +414,8 @@ function fetchedDocs(files, msg, cls) {
     if (/^image\//.test(f.mime) && size < 40 * 1024) continue
     const c = byName.get(f.filename)
     const cleanName = f.filename.replace(/^\.+/, "")
-    const docType = refineDocType(cleanName, c?.doc_type || (/\.pdf$/i.test(f.filename) ? "other" : /\.(csv|xlsx?)$/i.test(f.filename) ? "marketing_list" : "photos"), msg.from.email, msg.subject)
+    // A tapinspect share page only ever yields the inspection report (the agent never pulls the invoice / agreement / manual).
+    const docType = provider === "tapinspect" ? "inspection" : refineDocType(cleanName, c?.doc_type || (/\.pdf$/i.test(f.filename) ? "other" : /\.(csv|xlsx?)$/i.test(f.filename) ? "marketing_list" : "photos"), msg.from.email, msg.subject)
     out.push({ filename: f.filename, mime: f.mime, size, bytes: f.bytes, attachmentId: null, partId: null, inline: false, cleanName, doc_type: docType, stage: c?.stage || null, description: c?.description || "", signed: c?.signed ?? null, property_label: c?.property_label || cls?.property?.label || null })
   }
   return out
@@ -457,14 +465,14 @@ async function statementDiff(ctx, folderId, newBytes, newName, property) {
 }
 
 /** Deterministic filing for a whitelisted doc on a known property. Returns {folder, name, folderId, seq}. */
-async function deterministicDest(ctx, pf, att, msg, stage) {
+async function deterministicDest(ctx, pf, att, msg, stage, source = "attachment") {
   const side = (await getSetting("agent")).sides?.[propertyKey(pf.name)] || "buyer"
   let seq = 1
   if (isPurchaseDoc(att.doc_type)) {
     const { id } = await resolvePath(ctx.drive, ctx.rootId, `${pf.path}/Purchase & Sale`, { create: !DRY })
     if (id) seq = nextSequence((await listChildren(ctx.drive, id)).map((k) => k.name))
   }
-  const dest = destinationFor({ property: pf.name, docType: att.doc_type, filename: att.cleanName || att.filename, subject: msg.subject, receivedAt: msg.internalDate, stage, seq, side })
+  const dest = destinationFor({ property: pf.name, docType: att.doc_type, filename: att.cleanName || att.filename, subject: msg.subject, receivedAt: msg.internalDate, stage, seq, side, source })
   return dest ? { ...dest, folder: dest.folder.replace(/^Properties\/[^/]+/, pf.path) } : null
 }
 
@@ -609,12 +617,13 @@ async function bytesForRow(ctx, row) {
 }
 
 /** Upload one file (bytes re-fetched from Gmail / the fetch store unless passed in). Returns {ok, url, error}. */
-async function fileToDrive(ctx, row, folder, name, { suffixOnExisting = false, bytes: given = null } = {}) {
+async function fileToDrive(ctx, row, folder, name, { suffixOnExisting = false, bytes: given = null, folderId: pinned = null } = {}) {
   if (!ctx.drive || !ctx.rootId) return { ok: false, error: `Drive not available — ${ctx.driveErr || "setup incomplete"}` }
   try {
     const bytes = given || (await bytesForRow(ctx, row))
     if (sha256(bytes) !== row.sha256) warn(`hash changed for ${row.filename}`)
-    const { id: folderId, created } = await resolvePath(ctx.drive, ctx.rootId, folder, { create: !DRY })
+    // A campaign folder is pinned by id (vendor filing); `folder` is then only the recorded path.
+    const { id: folderId, created } = pinned ? { id: pinned, created: [] } : await resolvePath(ctx.drive, ctx.rootId, folder, { create: !DRY })
     if (!folderId) return { ok: false, error: `folder ${folder} missing (dry run)` }
     const existing = await findFileByName(ctx.drive, folderId, name)
     if (existing && suffixOnExisting) name = withTimeSuffix(name, row.received_at) // settlement statements: every version kept, never overwritten
@@ -737,6 +746,9 @@ async function applyDecisions(ctx) {
       await tgSend(`⚠️ Couldn't undo ${esc(row.final_name)} — ${esc(e.message)}`, { replyTo: row.tg_message_id, dryRun: DRY })
     }
   }
+
+  // 💸 Paid on an ITI invoice card (vendor filing, Part A4).
+  await applyPaidRequests(ctx)
 
   // Convention feedback → rewrite.
   const rules = await getSetting("rules")
@@ -974,7 +986,7 @@ async function fileDocuments(ctx, msg, cls, docs, { source = "attachment", fetch
       note(att, "asked", `no folder for ${property}`)
       continue
     }
-    const dest = await deterministicDest(ctx, pf, att, msg, stage)
+    const dest = await deterministicDest(ctx, pf, att, msg, stage, source)
     if (!dest) continue
     const r = await fileToDrive(ctx, rowNow, dest.folder, dest.name, { suffixOnExisting: true, bytes: rec.bytes })
     if (!r.ok) {
@@ -992,6 +1004,160 @@ async function fileDocuments(ctx, msg, cls, docs, { source = "attachment", fetch
   return { filed, pdfDocs, outcomes }
 }
 
+// ------------------------------------------------------------------ 2a. vendor filing (ITI Direct Mail → campaign folder)
+// briefs/BRIEF_INBOX_VENDOR_FILING_TAPINSPECT_2026-10-16.md Part A. Ryan: invoices
+// on deal threads stay ignored, but the mail house's paper trail (invoice,
+// signed proof, quote, tax exemption form) lives in Marketing/<year>/<campaign>/
+// "3 - MAIL HOUSE (…)". Every invoice version is kept: a new one supersedes the
+// unpaid ones in the folder (rename, never overwrite); 💸 Paid renames it PAID
+// and sets campaigns.total_cost on the parent campaign.
+const CAMPAIGN_COLS = "id, name, drive_folder_id, parent_campaign_id, drop_date, total_cost"
+
+/** The campaign (and its parent) a vendor document goes to, plus the Drive folder for the rule's subfolder. */
+async function vendorDestination(ctx, rule) {
+  const { data: campaigns, error } = await sb().from("campaigns").select(CAMPAIGN_COLS)
+  if (error) throw new Error(`campaigns read: ${error.message}`)
+  const pick = pickCampaign(rule, campaigns || [])
+  if (!pick.campaign) return { ...pick, campaigns: campaigns || [] }
+  const campaign = pick.campaign
+  const parent = parentCampaignOf(campaign, campaigns || [])
+  if (!ctx.drive || !ctx.rootId) return { ...pick, parent, campaigns, folderId: null, folderPath: null, error: `Drive not available — ${ctx.driveErr || "setup incomplete"}` }
+  const root = await getFile(ctx.drive, campaign.drive_folder_id)
+  if (!root) return { ...pick, parent, campaigns, folderId: null, folderPath: null, error: `campaign folder ${campaign.drive_folder_id} is not visible to the agent (share it with ${MAILBOX})` }
+  const sub = await childFolderByPrefix(ctx.drive, campaign.drive_folder_id, rule.subfolder || "", { create: !DRY })
+  const folderPath = `${await folderPathOf(ctx.drive, campaign.drive_folder_id, ctx.rootId)}/${sub.name || rule.subfolder}`
+  if (sub.created) log(`vendor ${rule.name}: created "${rule.subfolder}" under ${folderPath.replace(/\/[^/]+$/, "")}`)
+  return { ...pick, parent, campaigns, folderId: sub.id, folderPath, created: sub.created }
+}
+
+/** The most recent previous invoice filed into the same folder (for the diff lines), by its stored amounts. */
+async function previousInvoiceMeta(folderId, exceptRowId) {
+  if (DRY && !folderId) return null
+  const q = sb().from("inbox_files").select("id, meta, received_at").eq("drive_folder_id", folderId).eq("doc_type", "invoice").eq("status", "filed").not("meta", "is", null).order("received_at", { ascending: false }).limit(5)
+  const { data } = await q
+  return (data || []).find((r) => r.id !== exceptRowId && r.meta?.invoice_no)?.meta || null
+}
+
+/**
+ * File one vendor email's documents. Returns the set of attachment filenames
+ * the vendor path took (filed or ignored) so the normal pipeline skips them.
+ */
+async function fileVendorDocuments(ctx, msg, cls, rule) {
+  const handled = new Set()
+  const rules = await getSetting("rules")
+  const atts = relevantAttachments(msg, cls)
+  const filed = []
+  let dest = null
+  for (const att of atts) {
+    const decision = vendorFilingDecision(rule, att, msg)
+    if (!decision.docType) continue // not a vendor doc type — the normal pipeline takes it
+    handled.add(att.filename)
+    const vAtt = { ...att, doc_type: decision.docType }
+    if (!decision.file) {
+      await recordIgnored(msg, vAtt, decision.why)
+      log(`vendor ${rule.name}: ${att.filename} ignored (${decision.why})`)
+      continue
+    }
+    const rec = await recordAttachment(ctx, msg, vAtt, cls, rules.status === "approved" ? "pending" : "waiting")
+    if (!rec) continue
+    if (rec.dup) {
+      log(`vendor ${rule.name}: duplicate ${att.filename} (matches ${rec.dup.id})`)
+      continue
+    }
+    if (rules.status !== "approved") continue
+    dest = dest || (await vendorDestination(ctx, rule))
+    const named = vendorFilename({ rule, docType: decision.docType, filename: att.cleanName, subject: msg.subject, receivedAt: msg.internalDate, bodyText: msg.text, signed: att.signed })
+    const meta = decision.docType === "invoice" ? { ...named.amounts, invoice_no: named.invoice_no, campaign_id: dest.parent?.id || dest.campaign?.id || null, vendor: rule.id } : { vendor: rule.id, campaign_id: dest.parent?.id || dest.campaign?.id || null }
+    if (!DRY) await sb().from("inbox_files").update({ meta, doc_type: decision.docType }).eq("id", rec.row.id)
+    const rowNow = { ...rec.row, doc_type: decision.docType, meta }
+    if (!dest.campaign) {
+      // (3) no campaign to file into → the ❓ card (✅ guess / ✏️ tell me / ⏭ skip); nothing is filed.
+      const guess = dest.candidates?.[0] ? { folder: `Marketing/<campaign "${dest.candidates[0].name}">/${rule.subfolder}`, name: named.name } : null
+      await postAskCard(ctx, rowNow, `Which campaign folder is this ${rule.name} ${decision.docType.replace(/_/g, " ")} for? (${dest.why})`, guess)
+      log(`vendor ${rule.name}: ${att.filename} — asked (${dest.why})`)
+      continue
+    }
+    if (!dest.folderId && !DRY) {
+      await tgSend(`⚠️ Couldn't file <b>${esc(named.name)}</b> for ${esc(rule.name)} — ${esc(dest.error || "campaign folder not resolved")}`, { dryRun: DRY })
+      continue
+    }
+    // A4: a new invoice supersedes every unpaid, unsuperseded ITI invoice already in the folder (rename, never overwrite).
+    let diff = []
+    if (decision.docType === "invoice") {
+      const prev = dest.folderId ? await previousInvoiceMeta(dest.folderId, rec.row.id) : null
+      diff = invoiceDiffLines(prev, meta)
+      const kids = dest.folderId ? (await listChildren(ctx.drive, dest.folderId)).filter((k) => k.mimeType !== "application/vnd.google-apps.folder") : []
+      for (const r of supersedeRenames(kids, { exclude: named.name })) {
+        if (DRY) log(`vendor ${rule.name}: would rename "${r.from}" → "${r.to}"`)
+        else {
+          await renameFile(ctx.drive, r.id, r.to)
+          await sb().from("inbox_files").update({ final_name: r.to }).eq("drive_file_id", r.id)
+          log(`vendor ${rule.name}: superseded "${r.from}" → "${r.to}"`)
+        }
+      }
+    }
+    const folderPath = dest.folderPath || `Marketing/<${dest.campaign.name}>/${rule.subfolder}`
+    const r = DRY && !dest.folderId ? { ok: true, url: "(dry run)", name: named.name } : await fileToDrive(ctx, rowNow, folderPath, named.name, { suffixOnExisting: true, bytes: rec.bytes, folderId: dest.folderId })
+    if (!r.ok) {
+      await tgSend(`⚠️ Couldn't file <b>${esc(named.name)}</b> → ${esc(folderPath)} — ${esc(r.error)}`, { dryRun: DRY })
+      continue
+    }
+    filed.push({ row: rowNow, folder: folderPath, name: r.name || named.name, url: r.url, diff: null, diffLines: diff, docType: decision.docType })
+    log(`vendor ${rule.name}: filed ${att.filename} → ${folderPath}/${r.name || named.name}${meta.total != null ? ` (${money(meta.total)})` : ""}`)
+  }
+  await postVendorConfirmation(ctx, msg, rule, dest, filed)
+  return handled
+}
+
+/** One confirmation per vendor email — the campaign name where a property filing shows the property; 💸 Paid on invoices. */
+async function postVendorConfirmation(ctx, msg, rule, dest, filed) {
+  if (!filed.length) return
+  const who = rule.name || msg.from.name || msg.from.email
+  const lines = [`🗂 <b>Filed ${filed.length === 1 ? "1 document" : `${filed.length} documents`}</b> from ${esc(who)} · ${ptDateLabel(msg.internalDate)} · “${esc(shortSubject(msg.subject))}”`]
+  if (dest?.campaign) lines.push(`📣 ${esc(dest.parent?.name || dest.campaign.name)}`)
+  for (const f of filed) {
+    lines.push(`• <a href="${f.url}">${esc(f.folder.replace(/^Marketing\//, ""))}/${esc(f.name)}</a>`)
+    for (const d of f.diffLines || []) lines.push(`  <i>${esc(d)}</i>`)
+  }
+  lines.push(`Reply to this card to move or rename any of them.`)
+  const rows = filed.length <= 3 ? filed.map((f) => [{ text: `↩️ Undo ${f.name.slice(0, 24)}`, data: `ix:fu:${f.row.id}` }, ...(f.docType === "invoice" ? [{ text: "💸 Paid", data: `ix:vp:${f.row.id}` }] : [])]) : []
+  const mid = await tgSend(lines.join("\n"), { rows, dryRun: DRY })
+  if (!DRY && mid) await sb().from("inbox_files").update({ tg_message_id: mid }).in("id", filed.map((f) => f.row.id))
+}
+
+/** 💸 Paid (recorded by the webhook as paid_requested): rename … PAID in Drive, set the parent campaign's total_cost, rewrite the card. */
+async function applyPaidRequests(ctx) {
+  const { data: rows } = await sb().from("inbox_files").select("*").eq("status", "paid_requested").limit(10)
+  for (const row of rows || []) {
+    try {
+      if (!ctx.drive || !ctx.rootId) throw new Error("Drive not available")
+      const meta = row.meta || {}
+      const newName = paidName(row.final_name)
+      if (row.drive_file_id) await renameFile(ctx.drive, row.drive_file_id, newName)
+      let campaignLine = ""
+      if (meta.campaign_id && meta.total != null) {
+        const { data: c, error } = await sb().from("campaigns").update({ total_cost: meta.total }).eq("id", meta.campaign_id).select("name").maybeSingle()
+        if (error) throw new Error(`campaigns.total_cost: ${error.message}`)
+        campaignLine = ` · ${esc(c?.name || "campaign")} total cost set to ${money(meta.total)}`
+      }
+      await sb().from("inbox_files").update({ status: "filed", final_name: newName, meta: { ...meta, paid_at: isoNow() } }).eq("id", row.id)
+      log(`vendor paid: ${row.final_name} → ${newName}${campaignLine ? ` (${campaignLine.replace(/<[^>]+>/g, "").trim()})` : ""}`)
+      // Rewrite the card: every file that shared it, then the paid line; the Paid button is gone, Undo stays within its window.
+      const { data: siblings } = row.tg_message_id ? await sb().from("inbox_files").select("id, final_folder, final_name, drive_url, doc_type").eq("tg_message_id", row.tg_message_id).eq("status", "filed") : { data: [row] }
+      const lines = [`🗂 <b>Filed</b> from ${esc(row.sender)} · ${ptDateLabel(row.received_at)} · “${esc(shortSubject(row.subject))}”`]
+      for (const s of siblings || []) lines.push(`• <a href="${s.drive_url}">${esc(String(s.final_folder || "").replace(/^Marketing\//, ""))}/${esc(s.final_name)}</a>`)
+      lines.push(`💸 <b>Paid</b> — ${esc(newName)}${campaignLine}`)
+      const rowsKb = (siblings || []).slice(0, 3).map((s) => [{ text: `↩️ Undo ${String(s.final_name).slice(0, 24)}`, data: `ix:fu:${s.id}` }])
+      if (row.tg_message_id) await tgEditText(row.tg_message_id, lines.join("\n"), { rows: rowsKb })
+      else await tgSend(lines.join("\n"), { rows: rowsKb })
+    } catch (e) {
+      warn(`vendor paid ${row.id} failed:`, e.message)
+      await sb().from("inbox_files").update({ status: "filed", error: `paid failed: ${e.message}` }).eq("id", row.id)
+      await tgSend(`⚠️ Couldn't mark <b>${esc(row.final_name)}</b> paid — ${esc(e.message)}`, { replyTo: row.tg_message_id })
+    }
+  }
+}
+
 // ------------------------------------------------------------------ 2b. documents behind links
 // Ryan 2026-10-12: the DocuSign link is "an ongoing friction point" — the
 // Completed email often arrives without the PDF, so the agent used to post
@@ -1000,17 +1166,18 @@ async function fileDocuments(ctx, msg, cls, docs, { source = "attachment", fetch
 // headless Chrome on the mini. The old notice is the failure card.
 const FETCH_KINDS = new Set(["docusign_request", "docusign_completed", "esign_completed", "media_delivery"])
 
-/** The media (photo) links in one email — the provider match is the gate, never the classifier. */
-function mediaLinks(msg, cls) {
-  return documentLinks(msg, Array.isArray(cls?.document_links) ? cls.document_links : []).filter((l) => providerKind(l.provider) === "media")
+/** The links that queue even on a system email (f8 photos, HomeSentry reports) — the provider match is the gate, never the classifier. */
+function systemLinks(msg, cls) {
+  return documentLinks(msg, Array.isArray(cls?.document_links) ? cls.document_links : []).filter((l) => queuesOnSystemEmail(l.provider))
 }
 
 async function enqueueFetches(ctx, msg, cls, kind, atts = []) {
   const reported = Array.isArray(cls?.document_links) ? cls.document_links : []
   const links = documentLinks(msg, reported)
   // Ryan 2026-10-15: the f8 delivery email classifies as "automated" and the
-  // classifier may not report the link — a media provider link queues regardless.
-  if (!FETCH_KINDS.has(kind) && !reported.length && !links.some((l) => providerKind(l.provider) === "media")) return
+  // classifier may not report the link — a media provider link queues regardless
+  // (2026-10-16: HomeSentry's tapinspect share link likewise).
+  if (!FETCH_KINDS.has(kind) && !reported.length && !links.some((l) => queuesOnSystemEmail(l.provider))) return
   if (!links.length) {
     if (kind === "docusign_completed" && !atts.length) await tgSend(`🖊 DocuSign completed — “${esc(shortSubject(msg.subject))}” — no signed PDF attached and no envelope link I can open; grab it from the email.`, { dryRun: DRY })
     return
@@ -1027,6 +1194,14 @@ async function enqueueFetches(ctx, msg, cls, kind, atts = []) {
     const url_sha256 = sha256(link.url)
     const { data: existing } = await sb().from("inbox_fetches").select("id, status").eq("url_sha256", url_sha256).maybeSingle()
     if (existing) {
+      // Part B5: HomeSentry reuses the same share URL for "results updated" — a
+      // finished or parked tapinspect job goes back on the queue under the new
+      // email; a queued/running one is left alone. Everything else stays a duplicate.
+      if (requeueDecision(existing, link.provider) === "requeue") {
+        await sb().from("inbox_fetches").update({ status: "queued", attempts: 0, next_try_at: null, error: null, resolved_at: null, gmail_id: msg.id, thread_id: msg.threadId, kind: linkKind }).eq("id", existing.id)
+        log(`fetch requeued: ${link.provider} · was ${existing.status} · ${shortSubject(msg.subject, 50)} · ${link.url.slice(0, 70)}`)
+        continue
+      }
       log(`fetch: duplicate link (${existing.status} · ${existing.id}) ${link.url.slice(0, 70)}`)
       continue
     }
@@ -1057,7 +1232,8 @@ async function messageForFetch(ctx, job) {
  *  DocuSign jobs are never starved behind photo deliveries. */
 async function runFetches(ctx) {
   if (DRY) return // dry runs fetch inline from enqueueFetches (nothing is queued)
-  const { data: due, error } = await sb().from("inbox_fetches").select("*").eq("status", "queued").or(`next_try_at.is.null,next_try_at.lte.${isoNow()}`).order("created_at").limit(6)
+  // `awaiting_payment` rows (HomeSentry, Part B4) carry a next_try_at a day out — the daily retry rides the same select.
+  const { data: due, error } = await sb().from("inbox_fetches").select("*").in("status", ["queued", "awaiting_payment"]).or(`next_try_at.is.null,next_try_at.lte.${isoNow()}`).order("created_at").limit(6)
   if (error) {
     warn("inbox_fetches read:", error.message)
     return
@@ -1115,6 +1291,24 @@ async function resolveNewLinkWaits(job, msg) {
     log(`fetch ${w.id}: resolved by the fresh link (${job.id})`)
   }
 }
+/** Part B4 wake rule (a): a HomeSentry email (same share uuid, or payment/updated/results for the same property) requeues the parked report. */
+async function wakePaymentWaits(msg, cls) {
+  if (!/@tapinspect\.com$/i.test(msg.from.email || "")) return
+  const { data, error } = await sb().from("inbox_fetches").select("id, status, provider, url, inbox_messages(subject, classification)").eq("status", "awaiting_payment").limit(50)
+  if (error) return warn("inbox_fetches payment waits read:", error.message)
+  const rows = (data || []).map((r) => {
+    const m = Array.isArray(r.inbox_messages) ? r.inbox_messages[0] : r.inbox_messages
+    return { ...r, subject: m?.subject || null, property_label: m?.classification?.property?.label || null }
+  })
+  for (const w of paymentWakeTargets(msg, cls, rows)) {
+    if (DRY) {
+      log(`fetch ${w.id}: would requeue (HomeSentry email “${shortSubject(msg.subject, 50)}”)`)
+      continue
+    }
+    await sb().from("inbox_fetches").update({ status: "queued", attempts: 0, next_try_at: null, error: null, resolved_at: null, gmail_id: msg.id, thread_id: msg.threadId }).eq("id", w.id)
+    log(`fetch ${w.id}: requeued — HomeSentry says “${shortSubject(msg.subject, 50)}”`)
+  }
+}
 /** awaiting_new_link for more than 2 h → one ⚠️ card, then failed. */
 async function expireNewLinkWaits() {
   const { data, error } = await sb().from("inbox_fetches").select("id, status, provider, url, started_at, inbox_messages(subject)").eq("status", "awaiting_new_link").limit(50)
@@ -1156,6 +1350,23 @@ async function runFetchJob(ctx, job, msg, cls) {
   const r = await fetchDocuments({ url: job.url, provider: job.provider, accessCode: job.access_code || null, jobId: job.id, log, sendNewLink: !guard })
   const shot = r.screenshots?.at(-1) || null
   const openBtn = { text: `${job.kind === "docusign_request" ? "🖊 " : ""}Open in ${label}`, url: job.url }
+  if (!r.ok && (r.needs === "payment" || (job.status === "awaiting_payment" && !r.needs))) {
+    // Part B4: HomeSentry's report is behind the invoice + agreement. Park the
+    // job (no card — the email already runs the "sign / pay" loop) and retry
+    // daily; a transient error while parked keeps it parked rather than
+    // burning the 3-attempt budget. 14 days with no release → expired, one card.
+    const next = awaitingPaymentNext(attempts)
+    if (next.status === "expired") {
+      const mid = await tgSend(`⌛ ${label} never released the report for “${esc(subj)}” — ${AWAITING_PAYMENT_MAX_TRIES} days of daily checks (invoice paid? agreement signed?). Open the share page, or tap 🔁 once it is.`, { rows: [[{ text: "Open", url: job.url }, { text: "🔁 Retry", data: `ix:fr:${job.id}` }]], dryRun: DRY })
+      if (!DRY) await sb().from("inbox_fetches").update({ status: "expired", attempts: next.attempts, error: next.error, screenshot: shot, tg_message_id: mid, resolved_at: isoNow() }).eq("id", job.id)
+      warn(`fetch ${job.id}: expired — ${next.error}${shot ? ` · screenshot ${shot}` : ""}`)
+      return
+    }
+    const error = r.needs === "payment" ? next.error : `${next.error}; last check failed: ${r.error}`
+    if (!DRY) await sb().from("inbox_fetches").update({ status: "awaiting_payment", attempts: next.attempts, error, screenshot: shot, next_try_at: next.next_try_at }).eq("id", job.id)
+    log(`fetch ${job.id}: awaiting_payment (try ${next.attempts}/${AWAITING_PAYMENT_MAX_TRIES}) — ${error}; next check ${next.next_try_at}${shot ? ` · ${shot}` : ""}`)
+    return
+  }
   if (!r.ok) {
     // Phase 1b: the link expired. Either this run asked DocuSign for a fresh
     // one, or another job for the same envelope is still waiting on its ask —
@@ -1207,7 +1418,7 @@ async function runFetchJob(ctx, job, msg, cls) {
   const cls2 = files.length ? await classify(ctx, { ...msg, attachments: files.map((f) => ({ filename: f.filename, mime: f.mime, size: f.bytes.length, inline: false })) }) : null
   const merged = { ...(cls || {}), attachments: cls2?.attachments || cls?.attachments || [], property: cls?.property || cls2?.property || null }
   if (!DRY && cls2) await sb().from("inbox_messages").update({ classification: merged }).eq("gmail_id", msg.id)
-  const docs = fetchedDocs(files, msg, merged)
+  const docs = fetchedDocs(files, msg, merged, job.provider)
   const { filed, outcomes } = await fileDocuments(ctx, msg, merged, docs, { source: job.kind === "manual" ? "manual" : job.provider, fetchId: DRY ? null : job.id })
 
   const lines = [`📥 <b>Pulled ${files.length === 1 ? "1 document" : `${files.length} documents`} from ${label}</b> — “${esc(subj)}”`, ...filedLines(filed)]
@@ -1403,18 +1614,34 @@ async function handleMessage(ctx, msg) {
   // one carrying the listing photos. A media provider link on a system email
   // (or a classified media_delivery) queues the photo pull and nothing else:
   // no loops, no screens. The provider match is the gate, not the classifier.
+  // Ryan 2026-10-16: ITI Direct Mail's invoices / signed proofs / quotes / tax
+  // form file into the campaign folder (vendors.mjs) — before the system-email
+  // return, because PandaDoc's "Signed copy" relay is machine-sent. The vendor
+  // path takes only the vendor doc types; everything else on the email keeps
+  // its normal handling (filing pipeline, loops, needs-reply).
+  const vendor = matchVendor(msg, vendorRules(await getSetting("vendors")))
+  const vendorHandled = vendor ? await fileVendorDocuments(ctx, msg, cls, vendor) : new Set()
+  // Ryan 2026-10-15: f8's "Media Delivery" email is automated — and it is the
+  // one carrying the listing photos. A media provider link on a system email
+  // (or a classified media_delivery) queues the photo pull and nothing else:
+  // no loops, no screens. The provider match is the gate, not the classifier.
+  // 2026-10-16: HomeSentry's tapinspect share link queues the same way, and a
+  // HomeSentry email wakes any report parked behind its invoice (Part B4).
   if (kind === "media_delivery" || ((kind === "automated" || kind === "newsletter" || kind === "skip") && !(cls.needs_reply && !cls.solicitation))) {
-    if (mediaLinks(msg, cls).length) await enqueueFetches(ctx, msg, cls, "media_delivery")
+    const links = systemLinks(msg, cls)
+    if (links.length) await enqueueFetches(ctx, msg, cls, links.some((l) => providerKind(l.provider) === "media") ? "media_delivery" : kind)
+    await wakePaymentWaits(msg, cls)
     return
   }
 
   // --- attachments → the filing pipeline (shared with documents pulled from links).
-  const atts = relevantAttachments(msg, cls)
+  const atts = relevantAttachments(msg, cls).filter((a) => !vendorHandled.has(a.filename))
   const { filed, pdfDocs } = await fileDocuments(ctx, msg, cls, atts, { source: "attachment" })
   await postFiledConfirmation(ctx, msg, filed)
 
   // --- documents behind links (DocuSign first; briefs/BRIEF_INBOX_LINK_FETCH_2026-10-12.md)
   await enqueueFetches(ctx, msg, cls, kind, atts)
+  await wakePaymentWaits(msg, cls)
 
   // --- secure-portal notices with nothing attached
   if (kind === "zix" && !atts.length && /portal|secure message center|view message|retrieve/i.test(msg.text)) {
