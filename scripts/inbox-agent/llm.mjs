@@ -107,6 +107,10 @@ export function subfolderFor(docType, stage) {
       // (DRF / draw request form, lien package or waiver, draw schedule, draw
       // approval, draw inspection) lives in Construction at every stage.
       return "Construction"
+    case "staging_proposal": case "staging_invoice":
+      // Ryan 2026-10-17 (Ridgeview): staging contracts are kept. Not whitelisted —
+      // they reach filing only through a vendor rule (vendors.mjs, StyleMe).
+      return "Staging"
     default:
       return null
   }

@@ -8,10 +8,20 @@
 // relay senders (PandaDoc on ITI's behalf) and the doc types it unlocks; every
 // other sender keeps the transaction whitelist unchanged.
 //
-// Pure, dependency-free: the worker (index.mjs) and the unit tests agree on
-// every verdict, name, rename and diff line. Drive calls live in drive.mjs.
+// Ryan 2026-10-17 (briefs/BRIEF_INBOX_STAGING_VENDOR_FRESHBOOKS_2026-10-17.md):
+// "The one thing I do like to keep is staging contracts, just off of what
+// happened at Ridgeview." StyleMe Home Staging bills through FreshBooks (no
+// attachment, a client link); its proposals and invoices file into the
+// PROPERTY folder's Staging/ subfolder — a second rule with
+// `destination: "property"`, the property read from the fetched document.
+// XO Staging (QuickBooks) is the next rule + provider; the seam is here.
+//
+// Pure, dependency-free except for the link helpers in fetch/providers.mjs:
+// the worker (index.mjs) and the unit tests agree on every verdict, name,
+// rename and diff line. Drive calls live in drive.mjs.
+import { freshbooksKind, freshbooksNumber } from "./fetch/providers.mjs"
 
-/** Mirrors the migration seed (2026-10-16_campaign_drive_folder.sql); used when inbox_settings.vendors is empty. */
+/** Mirrors the migration seeds (2026-10-16_campaign_drive_folder.sql + 2026-10-17_vendor_styleme.sql); used when inbox_settings.vendors is empty. */
 export const DEFAULT_VENDORS = {
   rules: [
     {
@@ -23,8 +33,21 @@ export const DEFAULT_VENDORS = {
       campaign_id: "5b71ff54-14f9-4c83-a14d-8d1eed6325f2",
       subfolder: "3 - MAIL HOUSE",
     },
+    {
+      id: "styleme",
+      name: "StyleMe Home Staging",
+      name_short: "StyleMe",
+      senders: [],
+      relays: [{ sender_re: "@fb\\d*\\.freshbooks\\.com$", subject_re: "^StyleMe Home Staging" }],
+      doc_types: ["staging_proposal", "staging_invoice"],
+      destination: "property",
+      subfolder: "Staging",
+    },
   ],
 }
+
+/** The doc types only a `destination: "property"` vendor rule can produce (never whitelisted for everybody). */
+export const STAGING_DOC_TYPES = new Set(["staging_proposal", "staging_invoice"])
 
 /** The vendor rules to use: inbox_settings.vendors when it has rules, else the seed. */
 export function vendorRules(settings) {
@@ -39,11 +62,29 @@ function subjectOf(msg) {
   return String(msg?.subject || "")
 }
 
+function safeRe(source, flags = "i") {
+  try {
+    return new RegExp(source, flags)
+  } catch {
+    return null
+  }
+}
+/** Does a relay entry claim this sender? Exact `sender`, or `sender_re` (FreshBooks rotates mail@fb02 / fb05 …). */
+function relaySenderMatches(relay, sender) {
+  if (relay?.sender) return String(relay.sender).trim().toLowerCase() === sender
+  if (relay?.sender_re) {
+    const re = safeRe(relay.sender_re)
+    return !!re && re.test(sender)
+  }
+  return false
+}
+
 /**
  * The vendor rule an email belongs to, or null. Sender exact match
- * (case-insensitive) on `senders`, or a relay sender whose subject matches
- * the relay's `subject_re` (case-insensitive). Anything else → null, and the
- * caller keeps the normal whitelist behaviour.
+ * (case-insensitive) on `senders`, or a relay sender — exact `sender`, or a
+ * `sender_re` regex on the address — whose subject matches the relay's
+ * `subject_re` (case-insensitive). Anything else → null, and the caller keeps
+ * the normal whitelist behaviour.
  * @param {{ from?: {email?: string}, sender?: string, subject?: string }} msg
  * @param {{ rules?: Array<any> } | Array<any>} vendors
  */
@@ -55,14 +96,9 @@ export function matchVendor(msg, vendors) {
   for (const rule of rules) {
     if ((rule.senders || []).some((s) => String(s).trim().toLowerCase() === sender)) return rule
     for (const relay of rule.relays || []) {
-      if (String(relay.sender || "").trim().toLowerCase() !== sender) continue
-      let re
-      try {
-        re = new RegExp(relay.subject_re || "(?!)", "i")
-      } catch {
-        continue
-      }
-      if (re.test(subject)) return rule
+      if (!relaySenderMatches(relay, sender)) continue
+      const re = safeRe(relay.subject_re || "(?!)")
+      if (re && re.test(subject)) return rule
     }
   }
   return null
@@ -154,6 +190,7 @@ export function proofTitleFrom(subject) {
  * caller then runs it through the normal pipeline untouched).
  */
 export function vendorDocType(rule, att, msg) {
+  if (rule?.destination === "property") return stagingDocType(rule, att, msg)
   const f = String(att?.cleanName || att?.filename || "")
   const subject = subjectOf(msg)
   let t = att?.doc_type || "other"
@@ -176,6 +213,69 @@ export function vendorFilingDecision(rule, att, msg) {
   if (!/\.pdf$/i.test(String(att?.cleanName || att?.filename || "")) && !/^application\/pdf$/.test(att?.mime || "")) return { file: false, docType, why: `${docType} is not a PDF` }
   if (docType === "proof" && !isSignedProofRelay(msg)) return { file: false, docType, why: "unsigned proof" }
   return { file: true, docType, why: `${rule.name} ${docType}` }
+}
+
+// ---------------------------------------------------------------- staging (StyleMe via FreshBooks, destination: property)
+const FB_SENT_PROPOSAL_RE = /sent you (?:a |an )?(?:proposal|estimate)\b/i
+const FB_SENT_INVOICE_RE = /sent you (?:a |an )?invoice\b/i
+/** "StyleMe Home Staging, LLC sent you a proposal (SS01174)" → "SS01174"; the comment emails' "invoice 080223UP ($2,985.00)" → "080223UP". */
+const FB_SUBJECT_NUMBER_RE = /\(([A-Z0-9][A-Z0-9-]{3,})\)\s*$/i
+const FB_SUBJECT_INVOICE_RE = /invoice\s+([A-Z0-9][A-Z0-9-]{3,})\b/i
+
+/**
+ * The doc type of one document on a `destination: "property"` vendor email —
+ * from the fetched file's `kind` when the fetcher set it, else the FreshBooks
+ * link (`#/link/estimate/…` / `entityName=proposal` → proposal, `invoiceNumber=`
+ * → invoice), else the subject ("sent you a proposal" / "sent you an invoice").
+ * A comment email ("… commented on invoice …") is not a document → null.
+ * Only types the rule lists are returned.
+ */
+export function stagingDocType(rule, att, msg) {
+  const allowed = new Set(rule?.doc_types || [])
+  let t = null
+  if (att?.kind && STAGING_DOC_TYPES.has(att.kind)) t = att.kind
+  else if (att?.doc_type && STAGING_DOC_TYPES.has(att.doc_type)) t = att.doc_type
+  if (!t) {
+    const k = freshbooksKind(att?.url || msg?.url)
+    if (k === "proposal") t = "staging_proposal"
+    else if (k === "invoice") t = "staging_invoice"
+  }
+  if (!t) {
+    const subject = subjectOf(msg)
+    if (FB_SENT_PROPOSAL_RE.test(subject)) t = "staging_proposal"
+    else if (FB_SENT_INVOICE_RE.test(subject)) t = "staging_invoice"
+  }
+  return t && allowed.has(t) ? t : null
+}
+
+/** The document number: the subject's trailing "(SS01174)", else the link's estimateNumber / invoiceNumber, else "invoice 080223UP" in the subject, else null. */
+export function stagingNumberFrom(subject, url = null) {
+  const s = String(subject || "")
+  const m = FB_SUBJECT_NUMBER_RE.exec(s)
+  if (m) return m[1]
+  const fromLink = freshbooksNumber(url)
+  if (fromLink) return fromLink
+  const i = FB_SUBJECT_INVOICE_RE.exec(s)
+  return i ? i[1] : null
+}
+
+/** Is this name already marked paid ("… PAID.pdf")? */
+export function isPaidName(name) {
+  return /\sPAID(\.[a-z0-9]{1,6})?$/i.test(String(name || ""))
+}
+
+/**
+ * The filed inbox_files row for StyleMe invoice N (Part D): by meta.invoice_no,
+ * else by its name ("StyleMe invoice 080223UP - …"). Only `filed` rows of a
+ * staging_invoice; null when none.
+ * @param {Array<{ status?: string, doc_type?: string, final_name?: string|null, meta?: {invoice_no?: string|null}|null }>} rows
+ * @param {string|null|undefined} invoiceNo
+ */
+export function stagingInvoiceRowFor(rows, invoiceNo) {
+  const want = String(invoiceNo || "").trim().toLowerCase()
+  if (!want) return null
+  const re = new RegExp(`\\binvoice\\s+${want.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "i")
+  return (rows || []).find((r) => r && r.status === "filed" && r.doc_type === "staging_invoice" && (String(r.meta?.invoice_no || "").toLowerCase() === want || re.test(String(r.final_name || "")))) || null
 }
 
 // ---------------------------------------------------------------- revisions / paid

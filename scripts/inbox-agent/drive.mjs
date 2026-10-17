@@ -295,6 +295,17 @@ export async function renameFile(drive, fileId, name) {
   return data
 }
 
+/** Replace a Drive file's bytes in place, same id and links (StyleMe: the paid copy of an invoice replaces the outstanding one — Part D of the 2026-10-17 staging brief). */
+export async function updateFileContent(drive, fileId, mime, buffer) {
+  const { data } = await drive.files.update({
+    fileId,
+    media: { mimeType: mime || "application/octet-stream", body: Readable.from(buffer) },
+    fields: "id, name, webViewLink, size, md5Checksum",
+    supportsAllDrives: true,
+  })
+  return data
+}
+
 /** Move a file between folders (undo → Properties/_Unsorted). */
 export async function moveFile(drive, fileId, toFolderId) {
   const { data } = await drive.files.get({ fileId, fields: "parents", supportsAllDrives: true })

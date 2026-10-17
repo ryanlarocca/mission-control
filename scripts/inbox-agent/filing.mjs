@@ -6,9 +6,14 @@
 // property subfolder it belongs in, and what it is called.
 import { ptDate, sanitizeFilename } from "./env.mjs"
 import { PS_LABEL, WHITELIST, subfolderFor } from "./llm.mjs"
-import { invoiceNumberFrom, money, parseItiAmounts, proofTitleFrom } from "./vendors.mjs"
+import { invoiceNumberFrom, money, paidName, parseItiAmounts, proofTitleFrom, stagingNumberFrom } from "./vendors.mjs"
+import { freshbooksAmount } from "./fetch/freshbooks.mjs"
 
-export const PROPERTY_SUBFOLDERS = ["Purchase & Sale", "Disclosures", "Inspections", "Title & Escrow", "Loan & Insurance", "Construction", "Photos"]
+// Ryan 2026-10-17: "Staging" joins the standard set (the Ridgeview staging
+// dispute — escrow asked for the agreement and nothing was on file). An
+// existing property folder gets Staging/ on first use (resolvePath with
+// create), never pre-emptively.
+export const PROPERTY_SUBFOLDERS = ["Purchase & Sale", "Disclosures", "Inspections", "Title & Escrow", "Loan & Insurance", "Construction", "Staging", "Photos"]
 export const INSURER_RE = /goosehead|obieinsurance|foremost|steadily|lemonade|statefarm|allstate|farmers|travelers|hippo/i
 export const LENDER_RE = /kiavi|conventus|lendinghome|cvlending|onyxcap|lima ?one|roc ?capital/i
 const PS_TYPES = new Set(["purchase_agreement", "counter", "addendum", "contingency_removal"])
@@ -150,10 +155,17 @@ export function destinationFor({ property, docType, filename, subject, receivedA
  * The prefix is the rule's id in upper case ("ITI"); the date is the email's
  * received date in PT. Returns { name, amounts, invoice_no } — amounts are the
  * parsed Subtotal / Shipping / Discount / Tax / Total for invoices, else null.
- * @param {{ rule: {id?: string, name?: string}, docType: string, filename: string, subject?: string|null, receivedAt?: string|null, bodyText?: string|null, signed?: boolean|null }} args
+ *
+ * Staging (Part A of the 2026-10-17 brief; prefix = the rule's `name_short`):
+ *   staging_proposal → `StyleMe proposal SS01174 - 2026-10-10.pdf`
+ *   staging_invoice  → `StyleMe invoice 080223VA - 2026-10-17 - $3,253.75.pdf` (` PAID` before the extension when `paid`)
+ * Number from the subject's parentheses or the link's estimateNumber /
+ * invoiceNumber; amount from the body ("for $3,253.75") or the fetched page
+ * text ("Amount Due (USD) $3,253.75"); `amounts.total` carries it.
+ * @param {{ rule: {id?: string, name?: string, name_short?: string}, docType: string, filename: string, subject?: string|null, receivedAt?: string|null, bodyText?: string|null, signed?: boolean|null, url?: string|null, pageText?: string|null, paid?: boolean }} args
  * @returns {{ name: string, amounts: {subtotal: number|null, shipping: number|null, discount: number|null, tax: number|null, total: number|null}|null, invoice_no: string|null }}
  */
-export function vendorFilename({ rule, docType, filename, subject, receivedAt, bodyText = "", signed = null }) {
+export function vendorFilename({ rule, docType, filename, subject, receivedAt, bodyText = "", signed = null, url = null, pageText = null, paid = false }) {
   const prefix = String(rule?.id || "vendor").toUpperCase()
   const d = ptDate(receivedAt)
   const ext = (/\.([a-z0-9]{1,6})$/i.exec(filename || "") || [])[1]?.toLowerCase() || "pdf"
@@ -161,6 +173,20 @@ export function vendorFilename({ rule, docType, filename, subject, receivedAt, b
   let amounts = null
   let invoice_no = null
   switch (docType) {
+    case "staging_proposal": case "staging_invoice": {
+      const vendor = String(rule?.name_short || rule?.name || prefix)
+      const number = stagingNumberFrom(subject, url)
+      if (docType === "staging_proposal") {
+        name = `${vendor} proposal${number ? ` ${number}` : ""} - ${d}.${ext}`
+      } else {
+        invoice_no = number
+        const total = freshbooksAmount(subject, bodyText, pageText)
+        amounts = { subtotal: null, shipping: null, discount: null, tax: null, total }
+        name = `${vendor} invoice${number ? ` ${number}` : ""} - ${d}${money(total) ? ` - ${money(total)}` : ""}.${ext}`
+        if (paid) name = paidName(name)
+      }
+      break
+    }
     case "invoice": {
       amounts = parseItiAmounts(bodyText)
       invoice_no = invoiceNumberFrom(filename, subject)
@@ -185,6 +211,19 @@ export function vendorFilename({ rule, docType, filename, subject, receivedAt, b
       name = filename
   }
   return { name: sanitizeFilename(name), amounts, invoice_no }
+}
+
+/**
+ * Where a `destination: "property"` vendor document goes:
+ * `Properties/<property>/<rule.subfolder || subfolderFor(docType)>` — StyleMe's
+ * proposals and invoices → `Properties/2116 Quito Rd/Staging`. null when the
+ * doc type has no subfolder (never files).
+ * @param {{ rule: {subfolder?: string|null}|null, docType: string, property: string|null|undefined }} args
+ */
+export function vendorPropertyFolder({ rule, docType, property }) {
+  if (!property) return null
+  const sub = rule?.subfolder || subfolderFor(docType, null)
+  return sub ? `Properties/${property}/${sub}` : null
 }
 
 /**
