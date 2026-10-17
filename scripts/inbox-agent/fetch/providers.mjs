@@ -23,7 +23,17 @@
 // invoice is paid and the agreement signed — the worker parks the job as
 // `awaiting_payment` and never pays anything.
 
-/** @typedef {"docusign"|"f8"|"tapinspect"} Provider */
+// Ryan 2026-10-17: "The one thing I do like to keep is staging contracts, just
+// off of what happened at Ridgeview." StyleMe Home Staging bills through
+// FreshBooks: no attachment, only a client link on my.freshbooks.com whose
+// hash route (#/link/estimate/<jwt>?… for a proposal, #/link/<jwt>?… for an
+// invoice) renders the document with a Download PDF button. The link queues
+// only when the email matches a `destination: "property"` vendor rule
+// (vendors.mjs) — another vendor's FreshBooks notice is not a document Ryan
+// keeps. XO Staging (QuickBooks) is the next seam: a second provider here and a
+// second rule there.
+
+/** @typedef {"docusign"|"f8"|"tapinspect"|"freshbooks"} Provider */
 /** @typedef {"document"|"media"} ProviderKind */
 
 const URL_RE = /https?:\/\/[^\s<>"'()\[\]]+/gi
@@ -50,6 +60,10 @@ const POSTMARK_HOST_RE = /^track\.pstmrk\.it$/i
 // HomeSentry / Tap Inspect: https://app.tapinspect.com/shares/<uuid> — public, no login.
 const TAPINSPECT_HOST_RE = /^app\.tapinspect\.com$/i
 const TAPINSPECT_SHARE_RE = /^\/shares\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\/?$/i
+// FreshBooks client links: https://my.freshbooks.com/#/link/estimate/<jwt>?companyName=…&entityName=proposal&estimateNumber=SS01174&…
+// and https://my.freshbooks.com/#/link/<jwt>?companyName=…&invoiceNumber=080223VA&…  (the query lives INSIDE the hash).
+const FRESHBOOKS_HOST_RE = /^my\.freshbooks\.com$/i
+const FRESHBOOKS_LINK_RE = /^#\/link\/(estimate\/)?([A-Za-z0-9._~-]{8,})(?:\?|$)/i
 
 /**
  * "docusign" when the URL opens an envelope, null for everything else
@@ -77,7 +91,40 @@ export function detectProvider(url) {
   if (F8_HOST_RE.test(host) && F8_DOWNLOAD_CENTER_RE.test(u.pathname)) return "f8"
   // HomeSentry inspection report share page. Everything else on tapinspect.com is null.
   if (TAPINSPECT_HOST_RE.test(host) && TAPINSPECT_SHARE_RE.test(u.pathname)) return "tapinspect"
+  // FreshBooks client link (StyleMe proposals / invoices). Login, marketing, the rest of the app: null.
+  if (FRESHBOOKS_HOST_RE.test(host) && /^\/?$/.test(u.pathname) && FRESHBOOKS_LINK_RE.test(u.hash)) return "freshbooks"
   return null
+}
+
+/** The query inside a FreshBooks link's hash (`#/link/…?companyName=…&invoiceNumber=…`) as URLSearchParams; empty when it is not one. */
+function freshbooksParams(url) {
+  let u
+  try {
+    u = new URL(String(url || "").trim())
+  } catch {
+    return new URLSearchParams()
+  }
+  if (!FRESHBOOKS_HOST_RE.test(u.hostname)) return new URLSearchParams()
+  const q = u.hash.indexOf("?")
+  return new URLSearchParams(q >= 0 ? u.hash.slice(q + 1) : "")
+}
+
+/** "proposal" (#/link/estimate/… or entityName=proposal) | "invoice" (#/link/<jwt> or invoiceNumber=) | null when the link is not a FreshBooks document. */
+export function freshbooksKind(url) {
+  if (detectProvider(url) !== "freshbooks") return null
+  const u = new URL(String(url).trim())
+  const params = freshbooksParams(url)
+  if (/^#\/link\/estimate\//i.test(u.hash) || /^(proposal|estimate)$/i.test(params.get("entityName") || "") || params.has("estimateNumber")) return "proposal"
+  if (params.has("invoiceNumber") || /^#\/link\/[A-Za-z0-9._~-]+/.test(u.hash)) return "invoice"
+  return null
+}
+
+/** The document number carried in the link (`estimateNumber=SS01174` / `invoiceNumber=080223VA`), else null. */
+export function freshbooksNumber(url) {
+  if (detectProvider(url) !== "freshbooks") return null
+  const params = freshbooksParams(url)
+  const n = (params.get("invoiceNumber") || params.get("estimateNumber") || "").trim()
+  return n || null
 }
 
 /** The share uuid in a tapinspect link (HomeSentry reuses the SAME share URL for "results updated"), else null. */
@@ -112,7 +159,19 @@ export function providerKind(provider) {
  * link is the only thing that matters. DocuSign keeps its kind-based gate.
  */
 export function queuesOnSystemEmail(provider) {
-  return provider === "f8" || provider === "tapinspect"
+  return provider === "f8" || provider === "tapinspect" || provider === "freshbooks"
+}
+
+/**
+ * Some providers are shared billing systems: a FreshBooks link is a document
+ * Ryan keeps only when the email matched a vendor rule that files into a
+ * property folder (StyleMe). Every other provider queues on its own.
+ * @param {Provider|string|null|undefined} provider
+ * @param {{ destination?: string }|null|undefined} rule the matched vendor rule, or null
+ */
+export function queuesForVendor(provider, rule) {
+  if (provider !== "freshbooks") return true
+  return rule?.destination === "property"
 }
 
 /**
@@ -184,7 +243,7 @@ export function documentLinks(msg, extra = []) {
 
 /** Human label for cards. */
 export function providerLabel(provider) {
-  return provider === "docusign" ? "DocuSign" : provider === "f8" ? "f8" : provider === "tapinspect" ? "HomeSentry (Tap Inspect)" : provider || "the link"
+  return provider === "docusign" ? "DocuSign" : provider === "f8" ? "f8" : provider === "tapinspect" ? "HomeSentry (Tap Inspect)" : provider === "freshbooks" ? "FreshBooks" : provider || "the link"
 }
 
 /**

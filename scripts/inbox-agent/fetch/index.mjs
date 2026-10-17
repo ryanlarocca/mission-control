@@ -1,7 +1,8 @@
 // Inbox Agent — fetch documents from behind a link (briefs/BRIEF_INBOX_LINK_FETCH_2026-10-12.md).
 //
 //   fetchDocuments({ url, provider, accessCode, jobId, log, headed })
-//     → { ok: true,  files: [{ filename, mime, bytes }], screenshots: [paths], steps }
+//     → { ok: true,  files: [{ filename, mime, bytes, kind?, pageText? }], screenshots: [paths], steps }
+//       (kind + pageText only from FreshBooks: "staging_proposal" | "staging_invoice" and the rendered page's text)
 //     → { ok: false, error, needs: "access_code" | "login" | "expired" | "new_link" | null, screenshots, steps }
 //
 // The dispatcher owns the cross-provider rules: the 90 s job cap, ZIP
@@ -17,13 +18,15 @@ import { JOB_TIMEOUT_MS, mimeFor, pruneScreenshots, withTimeout } from "./browse
 import { fetchDocuSign } from "./docusign.mjs"
 import { F8_JOB_TIMEOUT_MS, fetchF8 } from "./f8.mjs"
 import { TAPINSPECT_JOB_TIMEOUT_MS, fetchTapInspect } from "./tapinspect.mjs"
+import { FRESHBOOKS_JOB_TIMEOUT_MS, fetchFreshBooks } from "./freshbooks.mjs"
 import { addressIn, detectProvider, documentLinks, tapinspectShareId } from "./providers.mjs"
 import { envelopeMatches } from "../loops.mjs"
 import { keysMatch, propertyKey } from "../env.mjs"
 
-export { addressIn, detectProvider, documentLinks, extractUrls, propertyWebsiteLinks, providerKind, providerLabel, queuesOnSystemEmail, tapinspectShareId, unwrapTrackingUrl } from "./providers.mjs"
+export { addressIn, detectProvider, documentLinks, extractUrls, freshbooksKind, freshbooksNumber, propertyWebsiteLinks, providerKind, providerLabel, queuesForVendor, queuesOnSystemEmail, tapinspectShareId, unwrapTrackingUrl } from "./providers.mjs"
 export { fetchF8, parseDownloadCenter, parseDownloadJson } from "./f8.mjs"
 export { SELECTORS as TAPINSPECT_SELECTORS, fetchTapInspect, gateFromReportText, tapClickAllowed } from "./tapinspect.mjs"
+export { SELECTORS as FRESHBOOKS_SELECTORS, fbClickAllowed, fetchFreshBooks, freshbooksAddress, freshbooksAmount, freshbooksGate, parseFreshbooksPage } from "./freshbooks.mjs"
 
 /** Media jobs (f8: ~255 MB over 72 CDN downloads) get 10 min; document jobs keep the 90 s browser cap. */
 export const MEDIA_JOB_TIMEOUT_MS = F8_JOB_TIMEOUT_MS
@@ -233,14 +236,14 @@ export async function fetchDocuments({ url, provider = null, accessCode = null, 
     if (r.ok) log(`[fetch] ${p}: ${r.steps.join(" → ")} → ${r.sets.map((s) => `${s.set} ${s.files.length}`).join(" · ")}`)
     return { ...r, screenshots: [] }
   }
-  if (p !== "docusign" && p !== "tapinspect") return { ok: false, error: `no fetcher for ${p || "that link"}`, needs: null, screenshots: [], steps: [] }
-  timeoutMs = timeoutMs ?? (p === "tapinspect" ? TAPINSPECT_JOB_TIMEOUT_MS : JOB_TIMEOUT_MS)
+  if (p !== "docusign" && p !== "tapinspect" && p !== "freshbooks") return { ok: false, error: `no fetcher for ${p || "that link"}`, needs: null, screenshots: [], steps: [] }
+  timeoutMs = timeoutMs ?? (p === "tapinspect" ? TAPINSPECT_JOB_TIMEOUT_MS : p === "freshbooks" ? FRESHBOOKS_JOB_TIMEOUT_MS : JOB_TIMEOUT_MS)
   try {
     pruneScreenshots()
   } catch {}
   let r
   try {
-    const flow = p === "tapinspect" ? fetchTapInspect({ url, jobId, log, headed }) : fetchDocuSign({ url, accessCode, jobId, log, headed, sendNewLink })
+    const flow = p === "tapinspect" ? fetchTapInspect({ url, jobId, log, headed }) : p === "freshbooks" ? fetchFreshBooks({ url, jobId, log, headed }) : fetchDocuSign({ url, accessCode, jobId, log, headed, sendNewLink })
     r = await withTimeout(flow, timeoutMs, `fetch ${jobId}`)
   } catch (e) {
     return { ok: false, error: e?.message || String(e), needs: null, screenshots: [], steps: [] }
