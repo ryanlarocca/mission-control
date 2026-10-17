@@ -60,7 +60,7 @@ import { destinationFor, driveDuplicateOf, filingDecision, isPurchaseDoc, nextSe
 import { AWAITING_PAYMENT_MAX_TRIES, MAX_FETCH_ATTEMPTS, NEW_LINK_ERROR, NEW_LINK_GUARD_MS, awaitingPaymentNext, documentLinks, fetchDocuments, newLinkGuard, nextTryAt, paymentWakeTargets, propertyWebsiteLinks, providerKind, providerLabel, queuesOnSystemEmail, readFetchedBytes, requeueDecision, saveFetchedBytes, tapinspectShareId, waitsClosedBy, waitsTimedOut } from "./fetch/index.mjs"
 import { invoiceDiffLines, matchVendor, money, paidName, parentCampaignOf, pickCampaign, supersedeRenames, vendorFilingDecision, vendorRules } from "./vendors.mjs"
 import { DUP_STATUSES, gmailLink, photoDedupeVerdict, propertyFolderFromReply, propertyLabelFromSubject, suffixedFilename } from "./photos.mjs"
-import { LOOP_KEY_WINDOW_MS, SENT_LOOKBACK_DAYS, answeredBy, completionCloses, completionDismisses, completionEvent, envelopeMatches, isLooseEnd, loopEligible, loopKey, loopKeyMatch, mergeLoop, normalizeEnvelope, owedBy, reportFiledEvent, splitLoops } from "./loops.mjs"
+import { LOOP_ACTIVE_STATUSES, LOOP_KEY_WINDOW_MS, SENT_LOOKBACK_DAYS, answeredBy, completionCloses, completionDismisses, completionEvent, envelopeMatches, isLooseEnd, loopEligible, loopKey, loopKeyMatch, mergeLoop, normalizeEnvelope, owedBy, reportFiledEvent, resolutionKind, splitLoops } from "./loops.mjs"
 import { applyEventDecisions, eventBrief, postEventCards, scanEvents } from "./events-run.mjs"
 
 // ------------------------------------------------------------------ args
@@ -1762,15 +1762,19 @@ async function upsertLoop(ctx, msg, cls, kind) {
   const key = loopKey(msg, cls)
   const owed_by = owedBy(cls)
   // On a refresh, owed_by moves only when the classifier said so explicitly — a null never undoes Ryan's "theirs".
+  // Part H: a portal ask (sign/pay outside email) is asked about once in the brief, then parked as `asked`.
+  const resolution = resolutionKind(msg, cls, kind)
   const incoming = { gmail_id: msg.id, message_at: msg.internalDate, due_on: cls.due_on || null, priority, ask, loop_key: key, owed_by: cls.owed_by === "them" || cls.owed_by === "ryan" ? cls.owed_by : null }
   // Same thread first, then the same signature envelope, then (Part D) the same ask
   // from the same vendor family for the same property within 48 h — the three Quito
   // emails (HomeSentry booking, "Please sign agreement", Amanda's forward) are one loop.
-  const { data: open } = await sb().from("inbox_loops").select("*").eq("thread_id", msg.threadId).in("status", ["open", "snoozed"]).limit(1)
+  // An `asked` loop matches at any age: a vendor reminder reopens it (asked → open).
+  const live = ["open", "snoozed", "asked"]
+  const { data: open } = await sb().from("inbox_loops").select("*").eq("thread_id", msg.threadId).in("status", live).limit(1)
   let loop = open?.[0] || null
   let how = loop ? "thread" : null
   if (isSig) {
-    const { data: sig } = await sb().from("inbox_loops").select("*").eq("category", "signature").in("status", ["open", "snoozed"]).limit(50)
+    const { data: sig } = await sb().from("inbox_loops").select("*").eq("category", "signature").in("status", live).limit(50)
     const env = (sig || []).find((l) => normalizeEnvelope(l.subject) === normalizeEnvelope(msg.subject)) || null
     if (env) {
       loop = env
@@ -1779,23 +1783,23 @@ async function upsertLoop(ctx, msg, cls, kind) {
   }
   if (!loop) {
     const since = new Date(Date.now() - LOOP_KEY_WINDOW_MS).toISOString()
-    const { data: keyed } = await sb().from("inbox_loops").select("*").eq("loop_key", key).in("status", ["open", "snoozed"]).gte("created_at", since).order("created_at").limit(10)
+    const { data: keyed } = await sb().from("inbox_loops").select("*").eq("loop_key", key).in("status", live).or(`created_at.gte.${since},status.eq.asked`).order("created_at").limit(10)
     loop = loopKeyMatch(keyed || [], key)
     if (loop) how = "key"
   }
   const now = isoNow()
   if (DRY) {
-    log(`loop: ${ask} (${priority} · ${owed_by} · ${key})${loop ? ` — would refresh ${loop.id} (same ${how})` : ""}`)
+    log(`loop: ${ask} (${priority} · ${owed_by} · ${resolution} · ${key})${loop ? ` — would refresh ${loop.id} (same ${how}${loop.status === "asked" ? ", reopens an asked loop" : ""})` : ""}`)
     return
   }
   if (loop) {
-    await sb().from("inbox_loops").update(mergeLoop(loop, incoming, { sameThread: how === "thread" })).eq("id", loop.id)
-    log(`loop refreshed (same ${how}): ${loop.id} ← ${msg.id}`)
+    await sb().from("inbox_loops").update({ ...mergeLoop(loop, incoming, { sameThread: how === "thread" }), ...(loop.resolution ? {} : { resolution }) }).eq("id", loop.id)
+    log(`loop ${loop.status === "asked" ? "reopened" : "refreshed"} (same ${how}): ${loop.id} ← ${msg.id}`)
     return
   }
   const { data } = await sb().from("inbox_loops").insert({
     thread_id: msg.threadId, gmail_id: msg.id, subject: msg.subject, counterparty: cls.counterparty || msg.from.name || msg.from.email, counterparty_email: msg.from.email,
-    category, ask, due_on: cls.due_on || null, priority, status: "open", message_at: msg.internalDate, loop_key: key, owed_by,
+    category, ask, due_on: cls.due_on || null, priority, status: "open", message_at: msg.internalDate, loop_key: key, owed_by, resolution,
   }).select("*").single()
   // Ryan 2026-09-25: "I don't need Telegram giving me a second alert on every
   // single email." Loops are tracked silently and surface in the brief /
@@ -1818,7 +1822,7 @@ async function resolveSignatureLoops(msg) {
   if (DRY) return
   // Ryan 2026-10-12: also closes loops whose subject still carries a leading
   // "Completed:" (every stacked prefix is stripped before comparing).
-  const { data: sig } = await sb().from("inbox_loops").select("id, subject, tg_message_id").eq("category", "signature").in("status", ["open", "snoozed", "acknowledged"]).limit(50)
+  const { data: sig } = await sb().from("inbox_loops").select("id, subject, tg_message_id").eq("category", "signature").in("status", LOOP_ACTIVE_STATUSES).limit(50)
   for (const l of sig || []) {
     if (envelopeMatches(l.subject, msg.subject)) {
       log(`loop resolved by completion: ${l.id} (${shortSubject(l.subject, 50)})`)
@@ -1833,7 +1837,7 @@ async function sentFor(ctx) {
   return ctx.sent
 }
 async function resolveLoops(ctx) {
-  const { data: open } = await sb().from("inbox_loops").select("id, thread_id, counterparty_email, created_at, message_at, tg_message_id, status, snooze_until").in("status", ["open", "snoozed", "acknowledged"]).limit(500)
+  const { data: open } = await sb().from("inbox_loops").select("id, thread_id, counterparty_email, created_at, message_at, tg_message_id, status, snooze_until").in("status", LOOP_ACTIVE_STATUSES).limit(500)
   if (!open?.length) return
   const sent = await sentFor(ctx)
   const now = isoNow()
@@ -1898,7 +1902,7 @@ async function loopContext(ctx, loop, event) {
  */
 async function resolveByCompletion(ctx, event, msg) {
   if (!event) return
-  const { data: loops } = await sb().from("inbox_loops").select("*").in("status", ["open", "snoozed", "acknowledged"]).limit(500)
+  const { data: loops } = await sb().from("inbox_loops").select("*").in("status", LOOP_ACTIVE_STATUSES).limit(500)
   for (const l of loops || []) {
     if (l.gmail_id === msg.id) continue
     const extra = await loopContext(ctx, l, event)
@@ -2109,7 +2113,7 @@ async function maybeDigest(ctx, force = false) {
   }
   const dayAgo = new Date(Date.now() - 86_400_000).toISOString()
   const [loops, filed, pending, waiting, dups, screens, interview, rules] = await Promise.all([
-    sb().from("inbox_loops").select("*").in("status", ["open"]).order("priority").order("created_at"),
+    sb().from("inbox_loops").select("*").in("status", ["open", "asked"]).order("priority").order("created_at"),
     sb().from("inbox_files").select("final_folder, final_name, drive_url").eq("status", "filed").gte("filed_at", dayAgo),
     sb().from("inbox_files").select("filename, property_label").in("status", ["pending", "change_requested"]),
     sb().from("inbox_files").select("id", { count: "exact", head: true }).eq("status", "waiting"),
@@ -2140,7 +2144,10 @@ async function maybeDigest(ctx, force = false) {
     if (isLooseEnd(m, { sent, openThreads, dismissed })) looseEnds.push(m)
   }
   // Part F: loops the other party still owes an action on sit in their own block.
-  const { mine: open, theirs } = splitLoops(loops.data || [])
+  // Part H: portal asks (sign/pay outside email) are asked about ONCE, then parked as
+  // `asked` — never re-listed, never counted; `asked` rows come back from the query
+  // only so their threads don't surface as loose ends.
+  const { mine: open, theirs, ask: portalAsks } = splitLoops(loops.data || [])
   const loopLine = (l) => {
     const age = daysAgo(l.message_at || l.created_at)
     return `${l.priority === "high" ? "🔴" : "•"} ${esc(l.counterparty)} — ${esc(l.ask)}${l.due_on ? ` · due ${esc(l.due_on)}` : ""}${age >= 2 ? ` · ${age}d` : ""}`
@@ -2150,6 +2157,11 @@ async function maybeDigest(ctx, force = false) {
     for (const l of open.slice(0, 12)) lines.push(loopLine(l))
     if (open.length > 12) lines.push(`… +${open.length - 12} more`)
   } else lines.push("\n✅ Nothing waiting on you.")
+  if (portalAsks.length) {
+    lines.push(`\n<i>Can't tell from email — did you handle these?</i>`)
+    for (const l of portalAsks.slice(0, 8)) lines.push(loopLine(l))
+    if (portalAsks.length > 8) lines.push(`… +${portalAsks.length - 8} more`)
+  }
   if (theirs.length) {
     lines.push(`\n<b>Waiting on them (${theirs.length})</b>`)
     for (const l of theirs.slice(0, 8)) lines.push(loopLine(l))
@@ -2195,6 +2207,17 @@ async function maybeDigest(ctx, force = false) {
         { text: "⏰ Snooze 2d", data: `ix:lz:${l.id}` },
       ]] })
       await sb().from("inbox_loops").update({ tg_message_id: mid, last_digest_at: isoNow() }).eq("id", l.id)
+    }
+    // Part H: the one question for each portal ask — same card, then `asked` so it is never raised again.
+    for (const l of portalAsks.slice(0, 8)) {
+      const card = `❔ <b>${esc(l.counterparty)}</b> — ${esc(l.ask)}${l.due_on ? ` · due ${esc(l.due_on)}` : ""}\n<i>Can't tell from email whether this is done.</i>`
+      const mid = await tgSend(card, { rows: [[
+        { text: "✓ Done", data: `ix:ld:${l.id}` },
+        { text: "👀 Got it", data: `ix:la:${l.id}` },
+        { text: "⏰ Snooze 2d", data: `ix:lz:${l.id}` },
+      ]] })
+      await sb().from("inbox_loops").update({ status: "asked", snooze_until: null, tg_message_id: mid, last_digest_at: isoNow() }).eq("id", l.id)
+      log(`loop asked once (portal): ${l.id} (${shortSubject(l.subject, 50)})`)
     }
   }
 }

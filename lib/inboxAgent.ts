@@ -596,15 +596,18 @@ export async function handleInboxCommand(body: string): Promise<{ text: string; 
     return { text: "▶️ Inbox agent resumed." }
   }
   if (/^open$/i.test(t) || /^(what's|whats|what is) (open|waiting)/i.test(t)) {
-    const { data } = await sb.from("inbox_loops").select("*").eq("status", "open").order("priority").order("created_at")
-    const { mine, theirs } = splitLoops(data || [])
-    if (!mine.length && !theirs.length) return { text: "✅ Nothing waiting on you." }
+    const { data } = await sb.from("inbox_loops").select("*").in("status", ["open", "asked"]).order("priority").order("created_at")
+    const { mine: owed, theirs, ask, asked } = splitLoops(data || [])
+    const mine = [...owed, ...ask] // a portal ask not yet raised in a brief is still Ryan's to do
+    if (!mine.length && !theirs.length && !asked.length) return { text: "✅ Nothing waiting on you." }
     const line = (l: { priority: string; counterparty: string; ask: string; due_on: string | null; created_at: string }) => `${l.priority === "high" ? "🔴" : "•"} ${esc(l.counterparty)} — ${esc(l.ask)}${l.due_on ? ` · due ${esc(l.due_on)}` : ""} · ${ago(l.created_at)}`
     const lines = mine.length ? [`<b>Waiting on you (${mine.length})</b>`, ...mine.slice(0, 15).map(line)] : ["✅ Nothing waiting on you."]
     if (mine.length > 15) lines.push(`… +${mine.length - 15} more`)
     // Ryan 2026-10-17: the other party still has to do something (get a report released, send a form) — not his list.
     if (theirs.length) lines.push("", `<b>Waiting on them (${theirs.length})</b>`, ...theirs.slice(0, 10).map(line))
     if (theirs.length > 10) lines.push(`… +${theirs.length - 10} more`)
+    // Part H: portal asks the brief already raised once — shown here only, never re-listed in the brief.
+    if (asked.length) lines.push("", `<i>Asked you about (${asked.length}, can't tell from email):</i>`, ...asked.slice(0, 10).map(line))
     lines.push("Reply “done” or “snooze 3d” on the original card, or tap its buttons; “theirs” / “mine” moves an item between the two lists.")
     return { text: lines.join("\n") }
   }

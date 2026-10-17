@@ -11,7 +11,7 @@ import { describe, expect, it } from "vitest"
 import {
   LOOP_KEY_WINDOW_MS, RELAY_SENDER_RE, SENT_LOOKBACK_DAYS,
   answeredBy, askKind, completionCloses, completionDismisses, completionEvent, completionMatch, envelopeMatches, foldSent, forwardOrigin, isLooseEnd,
-  loopEligible, loopKey, loopKeyMatch, mergeLoop, owedBy, owedByFromReply, parseAddressList, parseLoopKey, replyResolves, reportFiledEvent, splitLoops, vendorFamilyOf,
+  loopEligible, loopKey, loopKeyMatch, mergeLoop, owedBy, owedByFromReply, parseAddressList, parseLoopKey, replyResolves, reportFiledEvent, resolutionKind, shouldAskPortal, splitLoops, vendorFamilyOf,
 } from "../scripts/inbox-agent/loops.mjs"
 import { addressIn } from "../scripts/inbox-agent/fetch/providers.mjs"
 
@@ -73,10 +73,10 @@ function simulateUpsert(loops: Loop[], msg: Msg, cls: Cls, { kind = "human", cre
   const priority = isSig ? "high" : cls.priority || "normal"
   const key = loopKey(msg, cls)
   const incoming = { gmail_id: msg.id, message_at: msg.internalDate, due_on: cls.due_on || null, priority, ask, loop_key: key, owed_by: owedBy(cls) }
-  let loop = loops.find((l) => l.thread_id === msg.threadId && ["open", "snoozed"].includes(l.status)) || null
+  let loop = loops.find((l) => l.thread_id === msg.threadId && ["open", "snoozed", "asked"].includes(l.status)) || null
   let how = loop ? "thread" : null
   if (isSig) {
-    const env = loops.find((l) => l.category === "signature" && ["open", "snoozed"].includes(l.status) && envelopeMatches(l.subject, msg.subject))
+    const env = loops.find((l) => l.category === "signature" && ["open", "snoozed", "asked"].includes(l.status) && envelopeMatches(l.subject, msg.subject))
     if (env) (loop = env), (how = "envelope")
   }
   if (!loop) {
@@ -89,7 +89,7 @@ function simulateUpsert(loops: Loop[], msg: Msg, cls: Cls, { kind = "human", cre
   }
   const row: Loop = {
     id: `loop-${msg.id}`, thread_id: msg.threadId, gmail_id: msg.id, subject: msg.subject, counterparty: cls.counterparty || msg.from.name || msg.from.email, counterparty_email: msg.from.email,
-    category: isSig ? "signature" : cls.category || "other", ask, due_on: cls.due_on || null, priority, status: "open", created_at: createdAt, message_at: msg.internalDate, loop_key: key, owed_by: owedBy(cls),
+    category: isSig ? "signature" : cls.category || "other", ask, due_on: cls.due_on || null, priority, status: "open", created_at: createdAt, message_at: msg.internalDate, loop_key: key, owed_by: owedBy(cls), resolution: resolutionKind(msg, cls, kind),
   }
   loops.push(row)
   return row
@@ -97,7 +97,7 @@ function simulateUpsert(loops: Loop[], msg: Msg, cls: Cls, { kind = "human", cre
 function applyCompletion(loops: Loop[], event: ReturnType<typeof completionEvent>, extraFor: (l: Loop) => { text?: string; propertyLabel?: string | null; shareIds?: string[] } = () => ({})) {
   const closed: string[] = []
   for (const l of loops) {
-    if (!["open", "snoozed", "acknowledged"].includes(l.status)) continue
+    if (!["open", "snoozed", "acknowledged", "asked"].includes(l.status)) continue
     if (completionCloses(event, l, extraFor(l))) {
       l.status = "resolved_by_event"
       closed.push(l.id)
@@ -386,12 +386,79 @@ describe("Part F — Waiting on them", () => {
     expect(owedBy({ owed_by: "ryan" })).toBe("ryan")
     expect(owedBy({ owed_by: null })).toBe("ryan")
     expect(owedBy(null)).toBe("ryan")
-    const loops = [{ id: "a", owed_by: null }, { id: "b", owed_by: "them" }, { id: "c", owed_by: "ryan" }]
-    expect(splitLoops(loops)).toEqual({ mine: [loops[0], loops[2]], theirs: [loops[1]] })
-    expect(splitLoops(null)).toEqual({ mine: [], theirs: [] })
+    const loops = [{ id: "a", owed_by: null, status: "open" }, { id: "b", owed_by: "them", status: "open" }, { id: "c", owed_by: "ryan", status: "open" }]
+    expect(splitLoops(loops)).toEqual({ mine: [loops[0], loops[2]], theirs: [loops[1]], ask: [], asked: [] })
+    expect(splitLoops(null)).toEqual({ mine: [], theirs: [], ask: [], asked: [] })
     for (const t of ["theirs", "Theirs — Amanda has to chase them", "them", "their ball", "waiting on them"]) expect(owedByFromReply(t), t).toBe("them")
     for (const t of ["mine", "Mine now", "me", "my ball", "on me"]) expect(owedByFromReply(t), t).toBe("ryan")
     for (const t of ["done", "snooze 3d", "theirsx", "the report is theirs", ""]) expect(owedByFromReply(t), t).toBeNull()
+  })
+})
+
+describe("Part H — ask once when the mailbox can't know", () => {
+  const quickReminder: Msg = { id: "quito-reminder", threadId: "t-quito-reminder", from: HOMESENTRY, subject: "Quick Reminder: Inspection of 2116 Quito Rd, San Jose, CA 95130", internalDate: "2026-10-19T15:00:00.000Z", text: `A quick reminder that your inspection is Monday. Please sign the agreement and pay the invoice.\nhttps://app.tapinspect.com/shares/${QUITO_SHARE}` }
+  const quickReminderCls: Cls = { kind: "human", needs_reply: true, ask: "Sign the agreement and pay the invoice for the 2116 Quito Rd inspection", property: { label: "2116 Quito Rd" }, due_on: "2026-10-20", counterparty: "HomeSentry Inspections", category: "vendor" }
+  it("resolutionKind: tapinspect sign/agreement/invoice and FreshBooks are portal asks; DocuSign requests and link-less asks are email", () => {
+    expect(resolutionKind(quitoBooking, quitoBookingCls)).toBe("portal")
+    expect(resolutionKind(quitoSign, quitoSignCls)).toBe("portal")
+    expect(resolutionKind(halleckSign, halleckSignCls)).toBe("portal")
+    expect(resolutionKind(halleckResults, halleckResultsCls)).toBe("portal") // "Pay the HomeSentry invoice …"
+    expect(resolutionKind(fbComment, fbCommentCls)).toBe("portal")
+    expect(resolutionKind(halleckDisclosures, { needs_reply: true }, "docusign_request")).toBe("email")
+    expect(resolutionKind(juanNoo, juanNooCls)).toBe("email") // "Approve the revised invoice" — no link, an email reply does it
+    expect(resolutionKind(amandaTermite, amandaTermiteCls)).toBe("email") // pay ask, no link in the body
+    // Any sign/pay ask with a non-DocuSign action link is a portal ask; a DocuSign or footer link is not.
+    const pay = { ...juanNoo, text: "Pay here: https://pay.vendor.com/inv/243496\nThanks" }
+    expect(resolutionKind(pay, { ask: "Pay ITI invoice 243496" })).toBe("portal")
+    expect(resolutionKind({ ...pay, text: "Sign here: https://na4.docusign.net/Signing/EmailStart.aspx?a=1" }, { ask: "Sign the contract" })).toBe("email")
+    expect(resolutionKind({ ...pay, text: "Unsubscribe: https://vendor.com/unsubscribe · https://www.linkedin.com/in/juan" }, { ask: "Pay the invoice" })).toBe("email")
+    expect(resolutionKind(pay, { ask: "Call me about the drop date" })).toBe("email")
+  })
+  it("the Quito sequence with no receipt: listed ONCE under the ask heading, then asked, absent from the next brief, not counted", () => {
+    const loops: Loop[] = []
+    simulateUpsert(loops, quitoBooking, quitoBookingCls)
+    simulateUpsert(loops, quitoSign, quitoSignCls)
+    simulateUpsert(loops, amandaQuitoFwd, amandaQuitoFwdCls)
+    simulateUpsert(loops, halleckDisclosures, { needs_reply: true }, { kind: "docusign_request" })
+    expect(loops).toHaveLength(2)
+    expect(loops[0].resolution).toBe("portal")
+    expect(loops[1].resolution).toBe("email")
+    // First brief after it opened (10-17 07:30 PT).
+    const brief1 = Date.parse("2026-10-17T14:30:00.000Z")
+    expect(shouldAskPortal(loops[0], brief1)).toBe(true)
+    expect(shouldAskPortal(loops[1], brief1)).toBe(false)
+    let b = splitLoops(loops, { now: brief1 })
+    expect(b.mine.map((l) => l.id)).toEqual([loops[1].id]) // Waiting on you (1): the disclosures only
+    expect(b.ask.map((l) => l.id)).toEqual([loops[0].id]) // "Can't tell from email — did you handle these?"
+    expect(b.asked).toEqual([])
+    // The digest posts the card and parks it.
+    for (const l of b.ask) Object.assign(l, { status: "asked", snooze_until: null })
+    // Second brief: not re-listed, not counted.
+    b = splitLoops(loops, { now: brief1 + 86_400_000 })
+    expect(b.ask).toEqual([])
+    expect(b.mine.map((l) => l.id)).toEqual([loops[1].id])
+    expect(b.asked.map((l) => l.id)).toEqual([loops[0].id]) // only the `open` command's "Asked you about" line
+    expect(shouldAskPortal(loops[0], brief1 + 86_400_000)).toBe(false)
+    // An owed_by=them portal ask goes to Waiting on them, never the question.
+    expect(splitLoops([{ ...loops[0], status: "open", owed_by: "them" }], { now: brief1 }).theirs).toHaveLength(1)
+    // Evidence still beats asking: a Quito receipt afterwards closes the asked loop.
+    expect(applyCompletion(loops, completionEvent(quitoPaid))).toEqual([loops[0].id])
+    expect(loops[0].status).toBe("resolved_by_event")
+  })
+  it("an asked loop closes on a reply too, and a HomeSentry 'Quick Reminder' for Quito reopens it (asked → open) instead of a second row", () => {
+    const loops: Loop[] = []
+    simulateUpsert(loops, quitoBooking, quitoBookingCls)
+    Object.assign(loops[0], { status: "asked", snooze_until: null })
+    // A reply to HomeSentry after the email resolves it (Part B applies to asked loops).
+    const sent = foldSent([{ threadId: "t-other", internalDate: "2026-10-18T01:00:00.000Z", to: HOMESENTRY.email }])
+    expect(answeredBy(loops[0], sent)).toBe("recipient")
+    // The reminder, three days later on a new thread, matches the asked loop by key at any age.
+    const reopened = simulateUpsert(loops, quickReminder, quickReminderCls, { createdAt: quickReminder.internalDate })
+    expect(loops).toHaveLength(1)
+    expect(reopened).toBe(loops[0])
+    expect(loops[0]).toMatchObject({ status: "open", gmail_id: quickReminder.id, message_at: quickReminder.internalDate, snooze_until: null, due_on: "2026-10-20" })
+    expect(loopKeyMatch([{ loop_key: "tapinspect.com|2116quito|signature", status: "asked", created_at: "2026-09-01T00:00:00.000Z" }], "tapinspect.com|2116quito|signature")).not.toBeNull()
+    expect(loopKeyMatch([{ loop_key: "tapinspect.com|2116quito|signature", status: "done", created_at: "2026-10-19T00:00:00.000Z" }], "tapinspect.com|2116quito|signature", Date.parse("2026-10-19T01:00:00.000Z"))).toBeNull()
   })
 })
 
@@ -435,9 +502,11 @@ describe("Definition of done — the week replayed, then the brief", () => {
     for (const l of loops) if (["open", "snoozed", "acknowledged"].includes(l.status) && answeredBy(l, sent)) l.status = "resolved_by_reply"
     expect(loops.find((l) => l.gmail_id === juanSoftQuote.id)?.status).toBe("resolved_by_reply")
 
-    const { mine, theirs } = splitLoops(loops.filter((l) => l.status === "open"))
+    const { mine, theirs, ask, asked } = splitLoops(loops.filter((l) => l.status === "open"), { now: NOW })
     expect(mine.map((l) => l.ask)).toEqual(["Sign: 5764 Halleck Dr San Jose - Disclosures"])
     expect(theirs.map((l) => `${l.counterparty} / ${l.ask}`)).toEqual([`Amanda Bakshi / ${amandaTermiteCls.ask}`])
+    expect(ask).toEqual([]) // Part H: nothing left to ask about — the evidence settled every portal ask
+    expect(asked).toEqual([])
     expect(loops.find((l) => l.gmail_id === amandaQuitoFwd.id)?.status).toBe("resolved_by_reply")
     // A later Quito receipt has nothing left to close and leaves the two survivors alone.
     expect(applyCompletion(loops, completionEvent(quitoPaid))).toEqual([])

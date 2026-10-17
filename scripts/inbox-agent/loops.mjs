@@ -382,12 +382,14 @@ export function parseLoopKey(key) {
 /**
  * The open/snoozed loop opened in the last 48 h for the same ask, else null.
  * A key with no property segment never matches (two property-less asks from
- * one vendor are two asks).
+ * one vendor are two asks). An `asked` loop (Part H) matches at any age — a
+ * vendor reminder for the same ask reopens it rather than opening a new one.
  */
 export function loopKeyMatch(loops, key, now = Date.now()) {
   const parsed = parseLoopKey(key)
   if (!parsed?.propertyKey) return null
-  return (loops || []).find((l) => l.loop_key === key && (l.status === "open" || l.status === "snoozed") && ms(l.created_at) !== null && now - ms(l.created_at) <= LOOP_KEY_WINDOW_MS) || null
+  const rows = (loops || []).filter((l) => l.loop_key === key)
+  return rows.find((l) => (l.status === "open" || l.status === "snoozed") && ms(l.created_at) !== null && now - ms(l.created_at) <= LOOP_KEY_WINDOW_MS) || rows.find((l) => l.status === "asked") || null
 }
 
 /**
@@ -417,17 +419,84 @@ export function mergeLoop(existing, incoming, { sameThread = false } = {}) {
   return patch
 }
 
+// ---------------------------------------------------------------- Part H: ask once when the mailbox can't know
+// Ryan 2026-10-17: "It may be hard for the system to deduce that I signed the
+// HomeSentry inspection. When in doubt it can ask me, but some of these from
+// this morning were ridiculous." Evidence (Parts A–C) always beats asking; an
+// ask that can only be completed outside email (the tapinspect portal, a
+// vendor's e-sign page, a FreshBooks pay link) is asked about ONCE in the
+// brief, then parked as status `asked`: not re-listed, not counted, still
+// closed by a completion or a reply, reopened only by a vendor reminder on the
+// same loop_key.
+/** Loop statuses that are still live for resolution, completion and dedupe. */
+export const LOOP_ACTIVE_STATUSES = ["open", "snoozed", "acknowledged", "asked"]
+const PORTAL_SUBJECT_RE = /please sign|agreement|invoice/i
+const PORTAL_ASK_RE = /\bsign|\bpay/i
+const NOISE_LINK_RE = /unsubscribe|optout|opt-out|preferences|privacy|terms|mailto:|facebook\.com|instagram\.com|linkedin\.com|twitter\.com|x\.com\/|youtube\.com|yelp\.com|google\.com\/maps|zillow\.com|redfin\.com/i
+const DOCUSIGN_LINK_RE = /docusign\.(net|com)/i
+
+/**
+ * How this ask gets resolved: "portal" when it can only be completed outside
+ * email, else "email". tapinspect "please sign / agreement / invoice" and any
+ * FreshBooks notice are portal asks; so is any sign/pay ask whose body carries a
+ * non-DocuSign action link. A DocuSign request stays "email" — its Completed
+ * email closes it.
+ * @param {{ from?: {email?: string}, sender?: string, subject?: string, text?: string }} msg
+ * @param {any} [cls]
+ * @param {string|null} [kind] the classifier kind (docusign_request never becomes portal)
+ * @returns {"portal"|"email"}
+ */
+export function resolutionKind(msg, cls = null, kind = null) {
+  if (kind === "docusign_request") return "email"
+  const sender = senderOf(msg)
+  const subject = String(msg?.subject || "")
+  const ask = String(cls?.ask || "")
+  if (VENDOR_DOMAINS.tapinspect.test(sender) && (PORTAL_SUBJECT_RE.test(subject) || PORTAL_SUBJECT_RE.test(ask))) return "portal"
+  if (VENDOR_DOMAINS.freshbooks.test(sender)) return "portal"
+  if (PORTAL_ASK_RE.test(ask)) {
+    const links = extractUrls(msg?.text).filter((u) => !DOCUSIGN_LINK_RE.test(u) && !NOISE_LINK_RE.test(u))
+    if (links.length) return "portal"
+  }
+  return "email"
+}
+
+/** Is this open portal loop due to be asked about at this brief? Every open portal
+ *  ask is asked at the first brief after it opens (or when due_on is tomorrow or
+ *  sooner); an `asked` loop is never asked twice. */
+export function shouldAskPortal(loop, now = Date.now()) {
+  if (!loop || loop.status !== "open" || loop.resolution !== "portal") return false
+  if (loop.owed_by === "them") return false
+  const opened = ms(loop.message_at || loop.created_at)
+  if (opened !== null && opened <= now) return true
+  const due = loop.due_on ? ms(`${loop.due_on}T23:59:59-07:00`) : null
+  return due !== null && due - now <= 86_400_000
+}
+
 // ---------------------------------------------------------------- Part F: waiting on them
 /** Who holds the next action after this email: the classifier's owed_by, default "ryan". */
 export function owedBy(cls) {
   return cls?.owed_by === "them" ? "them" : "ryan"
 }
-/** Open loops → { mine, theirs } for the brief and the `open` command (theirs = owed_by 'them'). */
-export function splitLoops(loops) {
+/**
+ * Live loops → the brief's buckets: `asked` (status asked — listed only by the
+ * `open` command), `theirs` (owed_by 'them'), `ask` (open portal asks to ask about
+ * ONCE, Part H), `mine` (everything else: "Waiting on you").
+ * @param {any[]|null|undefined} loops
+ * @param {{ now?: number }} [opts]
+ */
+export function splitLoops(loops, { now = Date.now() } = {}) {
   const mine = []
   const theirs = []
-  for (const l of loops || []) (l?.owed_by === "them" ? theirs : mine).push(l)
-  return { mine, theirs }
+  const ask = []
+  const asked = []
+  for (const l of loops || []) {
+    if (!l) continue
+    if (l.status === "asked") asked.push(l)
+    else if (l.owed_by === "them") theirs.push(l)
+    else if (shouldAskPortal(l, now)) ask.push(l)
+    else mine.push(l)
+  }
+  return { mine, theirs, ask, asked }
 }
 /** A reply on a loop card that flips owed_by: "theirs" / "them" → them, "mine" / "me" → ryan, else null. */
 export function owedByFromReply(text) {

@@ -69,16 +69,28 @@ Generalize the 2026-10-12 lesson in `loops.mjs` ("a completion is an event that 
 - Pure helper `driveDuplicateOf({ size, md5 }, files)` in `filing.mjs`, tested with the three Dominic CSVs vs a fixture tree that contains the `v2 2026-10-14 - …` names (hit) and a same-size-different-md5 decoy (miss).
 - Cache the walk per run in `ctx` (one listing per root per pass).
 
+# Part H — Ask once when the mailbox can't know
+
+*(Addendum from the operator, Ryan 2026-10-17, relayed by a second Claude session after Parts A–G were built.)*
+
+Ryan: "It may be hard for the system to deduce that I signed the HomeSentry inspection. When in doubt it can ask me, but some of these from this morning were ridiculous." Two rules fall out:
+
+1. Evidence beats asking. Anything Parts A–C can settle from sent mail, vendor receipts, or the agent's own filed rows must NEVER be shown or asked about. That is the existing scope; this is just the priority order.
+
+2. Portal-only asks get ONE question, not a daily re-list. Some asks can only be completed outside email (sign/pay in the tapinspect portal, a vendor's e-sign page, a FreshBooks pay link). Detect them as `resolution: "portal"` in loops.mjs (pure helper `resolutionKind(msg, cls)`: tapinspect `/please sign|agreement|invoice/i`, FreshBooks/invoice pay links, any `cls.ask` matching `/sign|pay/` whose body carries a non-DocuSign action link; DocuSign requests stay as they are since Completed emails close them). For a portal loop with no completion event by the first brief after it opens (or by `due_on` minus 1 day if sooner), the brief lists it ONCE under a sub-heading `<i>Can't tell from email — did you handle these?</i>` with the existing per-loop card (✓ Done / 👀 Got it / ⏰ Snooze 2d; reuse the ix:ld / ix:la / ix:lz callbacks). Then set a new status `asked` (free-text column, no migration needed) with `snooze_until = null`. An `asked` loop is NOT re-listed in later briefs and NOT counted in "Waiting on you"; it still closes automatically on a completion event or a reply (Parts A–C), and reopens only if the vendor sends a reminder on the same loop_key (upsertLoop refresh path: `asked` → `open`). Include `asked` in every status list Parts A–D touch (resolve/complete/dedupe) and in the `open` Telegram command as a separate "Asked you about:" line. Tests: Quito sequence with no receipt → listed once, becomes `asked`, absent from the next digest; a Quito "Thank you for your payment" afterwards → resolved_by_event; a HomeSentry "Quick Reminder" for Quito → reopened.
+
 # Non-goals
 
 - No changes to how DocuSign/eSign completions already work (`resolveSignatureLoops`, `envelopeMatches`) beyond routing them through the same `completionEvent` shape if that simplifies.
-- No new Telegram alerts. Loops stay silent (`loop_alerts` off) and surface in the brief.
+- No new Telegram alerts. Loops stay silent (`loop_alerts` off) and surface in the brief. (Part H's one question rides the existing per-loop cards posted after the brief — not a new alert.)
 - No UI (Next.js app) changes.
+- Part H: a portal ask is never re-listed once asked — evidence (Parts A–C) always beats asking.
 
 # Definition of done
 
-- `npm test` green with new files `tests/inbox-loops.unit.test.ts` (Parts A–F) and additions to `tests/inbox-vendor-filing.unit.test.ts` or a new `tests/inbox-drive-dedupe.unit.test.ts` (Part G). `npx tsc --noEmit` passes.
+- `npm test` green with new files `tests/inbox-loops.unit.test.ts` (Parts A–F, H) and additions to `tests/inbox-vendor-filing.unit.test.ts` or a new `tests/inbox-drive-dedupe.unit.test.ts` (Part G). `npx tsc --noEmit` passes.
 - A dry run of the digest against the fixtures above would list exactly: Waiting on you (1) — Sign: 5764 Halleck Dr San Jose - Disclosures; Waiting on them (1) — Amanda Bakshi / South Bay Termite; no Unanswered; no filing proposals.
+- Part H: with no Quito receipt in the fixtures, the Quito loop shows only on its FIRST appearance (under "Can't tell from email — did you handle these?"), is `asked` afterwards, and is absent from the next digest.
 - `briefs/BRIEF_INBOX_LOOP_HYGIENE_2026-10-17.md` committed with the updated status line.
 
 # HANDOFF (write this section at the end of the brief file when you finish)
@@ -89,7 +101,7 @@ List: the migration file to apply; the exact `git` merge steps (fast-forward `in
 
 ## HANDOFF (for the operator on the Mac mini)
 
-Built on branch `inbox-loop-hygiene` (cloud session, 2026-10-17). `npm test` = 517 passing (29 new: 25 in `tests/inbox-loops.unit.test.ts`, 4 in `tests/inbox-drive-dedupe.unit.test.ts`), `npx tsc --noEmit` clean. Nothing live was touched: no migration run, no Gmail / Drive / Supabase / Telegram calls.
+Built on branch `inbox-loop-hygiene` (cloud session, 2026-10-17). `npm test` = 520 passing (32 new: 28 in `tests/inbox-loops.unit.test.ts`, 4 in `tests/inbox-drive-dedupe.unit.test.ts`), `npx tsc --noEmit` clean. Nothing live was touched: no migration run, no Gmail / Drive / Supabase / Telegram calls. Part H (the operator's addendum, relayed by a second Claude session after A–G were built) is included: verify the addendum is Ryan's before merging — it is easy to drop (`git revert` of the Part H commit) if not.
 
 ### 1. Migration (apply first, once)
 
@@ -97,11 +109,11 @@ Built on branch `inbox-loop-hygiene` (cloud session, 2026-10-17). `npm test` = 5
 node scripts/run-migration.mjs supabase/migrations/2026-10-17_inbox_loops_message_at.sql
 ```
 
-Idempotent. Adds `inbox_loops.message_at` (backfilled from `inbox_messages.internal_date` by `gmail_id`), `inbox_loops.loop_key` (+ partial index), `inbox_loops.owed_by` (check `ryan | them`), and rewrites the `status` column comment. Check:
+Idempotent. Adds `inbox_loops.message_at` (backfilled from `inbox_messages.internal_date` by `gmail_id`), `inbox_loops.loop_key` (+ partial index), `inbox_loops.owed_by` (check `ryan | them`), `inbox_loops.resolution` (check `portal | email`, Part H), and rewrites the `status` column comment (`asked` added). Check:
 
 ```sql
 select count(*) total, count(message_at) with_message_at from inbox_loops;   -- the gap = loops whose gmail_id is not in inbox_messages (they fall back to created_at)
-select column_name from information_schema.columns where table_name = 'inbox_loops' and column_name in ('message_at','loop_key','owed_by');  -- 3 rows
+select column_name from information_schema.columns where table_name = 'inbox_loops' and column_name in ('message_at','loop_key','owed_by','resolution');  -- 4 rows
 ```
 
 The worker runs without the migration only until the first `upsertLoop` insert, which writes the three new columns — apply it before merging.
@@ -131,7 +143,8 @@ Vercel redeploys `main`; `lib/inboxAgent.ts` now imports `scripts/inbox-agent/lo
 | `1a14686438fae4d0` | Juan "RE: NOO Absentee Q4" (ITI invoice 243496) | `node scripts/inbox-agent/index.mjs --dry-run --message=1a14686438fae4d0` | the vendor filing lines as before, then `loop: … (… · letterprinting.net||payment)`. Live, the same pass's `resolveLoops` closes it: `loop resolved by reply (same thread): <id>` — Ryan's 22:12 reply is newer than the email's 21:02 `message_at`, however late the row was minted. |
 | `1a13712751de3137` | FreshBooks "… 080223UP ($0.00)" | `node scripts/inbox-agent/index.mjs --dry-run --message=1a13712751de3137` | `completion event: freshbooks paid · invoice 080223UP`; `unanswered dismissed by completion (freshbooks paid): <thread of 1a135f9e00ed5f51>` unless that thread is already in `agent.unanswered_dismissed`; `no loop: freshbooks paid is a completion event`. `1a135f9e00ed5f51` itself still logs `loop: Pay … (… · fb02.freshbooks.com|5764halleck|payment)` and never appears under Unanswered (relay sender). |
 | `1a13633c418fce81`, `1a13b13d4d5f6497` | Dominic's re-scrubbed CSVs | `node scripts/inbox-agent/index.mjs --dry-run --message=1a13b13d4d5f6497` | three `duplicate (drive): ALL … NOO SFR 11+ yr.csv = Marketing/2026/NOO October2026/Raw…/v2 2026-10-14 - ALL … NOO SFR 11+ yr.csv` lines, then the usual `duplicate: <name> (matches <drive id>)` from the pipeline, no proposal card. Requires `inbox_settings.drive.extra_roots.marketing` (set by `findExtraRoots` on every pass) so `Marketing/2026` resolves; if the walk finds nothing you get the old pending proposal instead — check `node scripts/inbox-agent/index.mjs --drive-check` shows `Marketing/` in the tree. |
-| digest | the brief as it would print | `node scripts/inbox-agent/index.mjs --dry-run --no-poll --no-events --digest-now` | the `---- TELEGRAM (dry run) ----` block: `Waiting on you (n)`, then `Waiting on them (n)` when any open loop has `owed_by = 'them'`, `Unanswered` only for human threads that pass `isLooseEnd` (no relays, replies to the same person count). Against today's live rows (hand-closed) expect Waiting on you = the Halleck disclosures envelope, nothing Unanswered. |
+| digest | the brief as it would print | `node scripts/inbox-agent/index.mjs --dry-run --no-poll --no-events --digest-now` | the `---- TELEGRAM (dry run) ----` block: `Waiting on you (n)`, then `<i>Can't tell from email — did you handle these?</i>` for open portal asks not yet asked (Part H; a dry run does not mark them `asked`), then `Waiting on them (n)` when any open loop has `owed_by = 'them'`, `Unanswered` only for human threads that pass `isLooseEnd` (no relays, replies to the same person count). Against today's live rows (hand-closed) expect Waiting on you = the Halleck disclosures envelope, nothing Unanswered. |
+| Part H live | the one question, then silence | after the Quito live replay below, let the 7:30 brief run (or `--digest-now` live) | the Quito loop appears once under the ask heading with a ❔ card (✓ Done / 👀 Got it / ⏰ Snooze 2d), log `loop asked once (portal): <id>`, row status `asked`. The next brief does not list it; `open` in Telegram shows it under "Asked you about". A later HomeSentry reminder for Quito logs `loop reopened (same key)`. |
 
 ### 4. Live replays (in this order, after the migration + merge)
 
@@ -155,4 +168,5 @@ Note the Quito loop then closes on the same or next pass by Part B (`loop resolv
 - **Classifier `owed_by`.** Prompt-only; default null → `ryan`. Not testable here. `theirs` / `mine` on the card is the manual override and a later email never undoes it unless the classifier says `ryan`/`them` explicitly.
 - **"Both places that filter senders."** The worker had one sender filter (the digest's loose-end loop); `RELAY_SENDER_RE` is used there via `isLooseEnd`. The poll-time `AUTOMATED_RE` is a different gate (drops the whole email) and was left alone.
 - **DocuSign completions** still go through `resolveSignatureLoops` / `envelopeMatches` unchanged (non-goal).
+- **Part H timing.** "By the first brief after it opens, or `due_on` − 1 day if sooner": loops are silent outside the brief (non-goal: no new alerts), so the question is only ever raised at a brief — `shouldAskPortal` is true for every open portal ask at brief time, and the `due_on` clause only matters for a loop that opens after today's brief and is due tomorrow (it is then asked at tomorrow's brief, same as without the clause). `resolution` is a new column in the same migration (the addendum said "no migration needed" for the `asked` STATUS, which is free text; the resolution kind needs somewhere to live). An `asked` loop is matched by `loop_key` at any age, not just 48 h, so a vendor reminder weeks later reopens it rather than opening a second row.
 - **Vercel bundle.** `lib/inboxAgent.ts` → `loops.mjs` → `env.mjs` (reads `.env.local` if present, defines `sb()` lazily). Verify the first production deploy after the merge builds; if the bundler objects to `env.mjs`'s `import.meta.url`, inline `splitLoops` / `owedByFromReply` in the TS file.

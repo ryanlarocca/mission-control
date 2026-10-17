@@ -22,6 +22,15 @@ comment on column inbox_loops.owed_by is 'ryan | them — who holds the next act
 alter table inbox_loops drop constraint if exists inbox_loops_owed_by_check;
 alter table inbox_loops add constraint inbox_loops_owed_by_check check (owed_by is null or owed_by in ('ryan', 'them'));
 
+-- Part H: how the ask gets resolved. 'portal' = only completable outside email (tapinspect
+-- portal, a vendor e-sign page, a FreshBooks pay link); the brief asks about it ONCE, then
+-- status 'asked' (not re-listed, not counted; still closed by a completion or a reply).
+alter table inbox_loops add column if not exists resolution text;
+comment on column inbox_loops.resolution is 'portal | email (loops.mjs resolutionKind) — portal asks are asked about once in the brief, then parked as status asked';
+alter table inbox_loops drop constraint if exists inbox_loops_resolution_check;
+alter table inbox_loops add constraint inbox_loops_resolution_check check (resolution is null or resolution in ('portal', 'email'));
+
 -- resolved_by_event now also covers vendor completions (HomeSentry paid / results updated /
--- report filed, FreshBooks $0.00), not only DocuSign "Completed".
-comment on column inbox_loops.status is 'open | done | snoozed | acknowledged | resolved_by_reply | resolved_by_event | expired';
+-- report filed, FreshBooks $0.00), not only DocuSign "Completed". asked = a portal ask the
+-- brief raised once (Part H).
+comment on column inbox_loops.status is 'open | done | snoozed | acknowledged | asked | resolved_by_reply | resolved_by_event | expired';
