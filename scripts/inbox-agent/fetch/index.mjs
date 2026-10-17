@@ -17,11 +17,11 @@ import { JOB_TIMEOUT_MS, mimeFor, pruneScreenshots, withTimeout } from "./browse
 import { fetchDocuSign } from "./docusign.mjs"
 import { F8_JOB_TIMEOUT_MS, fetchF8 } from "./f8.mjs"
 import { TAPINSPECT_JOB_TIMEOUT_MS, fetchTapInspect } from "./tapinspect.mjs"
-import { detectProvider, documentLinks, tapinspectShareId } from "./providers.mjs"
+import { addressIn, detectProvider, documentLinks, tapinspectShareId } from "./providers.mjs"
 import { envelopeMatches } from "../loops.mjs"
 import { keysMatch, propertyKey } from "../env.mjs"
 
-export { detectProvider, documentLinks, extractUrls, propertyWebsiteLinks, providerKind, providerLabel, queuesOnSystemEmail, tapinspectShareId, unwrapTrackingUrl } from "./providers.mjs"
+export { addressIn, detectProvider, documentLinks, extractUrls, propertyWebsiteLinks, providerKind, providerLabel, queuesOnSystemEmail, tapinspectShareId, unwrapTrackingUrl } from "./providers.mjs"
 export { fetchF8, parseDownloadCenter, parseDownloadJson } from "./f8.mjs"
 export { SELECTORS as TAPINSPECT_SELECTORS, fetchTapInspect, gateFromReportText, tapClickAllowed } from "./tapinspect.mjs"
 
@@ -153,13 +153,6 @@ export function paymentWakeTargets(msg, cls, rows) {
     const rk = propertyKey(r.property_label || addressIn(r.subject) || "")
     return !!rk && keysMatch(rk, key)
   })
-}
-
-const ADDRESS_RE = /\b(\d{1,6}[a-z]?)\s+([A-Za-z][A-Za-z0-9.' -]{0,40}?)\s+(ave|avenue|dr|drive|st|street|rd|road|ct|court|ln|lane|blvd|boulevard|way|pl|place|cir|circle|ter|terrace|hwy|highway)\b\.?/i
-/** "Inspection results for 5764 Halleck Dr, San Jose, CA 95123" → "5764 Halleck Dr" (number + street, anywhere in the text), else null. */
-export function addressIn(text) {
-  const m = ADDRESS_RE.exec(String(text || ""))
-  return m ? `${m[1]} ${m[2].trim()} ${m[3]}` : null
 }
 
 // ---------------------------------------------------------------- zip

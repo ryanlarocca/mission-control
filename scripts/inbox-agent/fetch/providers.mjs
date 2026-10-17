@@ -93,6 +93,14 @@ export function tapinspectShareId(url) {
   return m ? m[1].toLowerCase() : null
 }
 
+const ADDRESS_RE = /\b(\d{1,6}[a-z]?)\s+([A-Za-z][A-Za-z0-9.' -]{0,40}?)\s+(ave|avenue|dr|drive|st|street|rd|road|ct|court|ln|lane|blvd|boulevard|way|pl|place|cir|circle|ter|terrace|hwy|highway)\b\.?/i
+/** "Inspection results for 5764 Halleck Dr, San Jose, CA 95123" → "5764 Halleck Dr" (number + street, anywhere in the text), else null.
+ *  Lives here (dependency-free) so loops.mjs can use it without importing the browser-side dispatcher. */
+export function addressIn(text) {
+  const m = ADDRESS_RE.exec(String(text || ""))
+  return m ? `${m[1]} ${m[2].trim()} ${m[3]}` : null
+}
+
 /** "document" providers go through the PDF filing pipeline; "media" providers (photos) go to Photos/. */
 export function providerKind(provider) {
   return provider === "f8" ? "media" : "document"
