@@ -11,7 +11,12 @@
 //   2a. vendor filing  — ITI Direct Mail's invoices / signed proofs / quotes /
 //                        tax form go to the campaign's Drive folder, 💸 Paid
 //                        sets campaigns.total_cost (vendors.mjs;
-//                        briefs/BRIEF_INBOX_VENDOR_FILING_TAPINSPECT_2026-10-16.md).
+//                        briefs/BRIEF_INBOX_VENDOR_FILING_TAPINSPECT_2026-10-16.md);
+//                        StyleMe Home Staging's FreshBooks proposals / invoices
+//                        are pulled from the client link and filed into
+//                        Properties/<address>/Staging/, the invoice replaced by
+//                        its paid copy on the "$0.00" comment
+//                        (briefs/BRIEF_INBOX_STAGING_VENDOR_FRESHBOOKS_2026-10-17.md).
 //   2b. runFetches     — open queued links in headless Chrome, pull the PDFs
 //                        and run them through the same filing pipeline
 //                        (briefs/BRIEF_INBOX_LINK_FETCH_2026-10-12.md); photo
@@ -49,16 +54,16 @@ import {
   daysAgo, fetchAll, getSetting, keysMatch, log, propertyKey, ptDate, ptDateLabel, ptParts, sanitizeFilename, sb, setSetting, warn,
 } from "./env.mjs"
 import { addLabel, getAttachmentBytes, getMessage, gmailClient, listMessageIds, sentSince } from "./gmail.mjs"
-import { childFolderByPrefix, downloadFile, driveClient, findExtraRoots, findFileByName, findRoot, folderPathOf, folderTree, getFile, listChildren, moveFile, propertyFolders, renameFile, resolvePath, uploadFile, walkFolder } from "./drive.mjs"
+import { childFolderByPrefix, downloadFile, driveClient, findExtraRoots, findFileByName, findRoot, folderPathOf, folderTree, getFile, listChildren, moveFile, propertyFolders, renameFile, resolvePath, updateFileContent, uploadFile, walkFolder } from "./drive.mjs"
 import { esc, tgClearButtons, tgEditText, tgSend, tgSendDocument } from "./telegram.mjs"
 import { advisorSummary, fixRlsDisabled, isSupabaseSecurityAlert } from "./supabase-advisor.mjs"
 import {
   CLASSIFY_SYSTEM, FILING_SYSTEM, HAIKU, RULES_SYSTEM, SCREEN_SYSTEM, SONNET, VERIFY_SYSTEM,
   BAY_AREA_RE, CONDO_RE, blastSignalsPass,
   changePrompt, classifyPrompt, complete, completeJson, filingPrompt, rulesPrompt, screenPrompt, verifyPrompt, WHITELIST } from "./llm.mjs"
-import { destinationFor, driveDuplicateOf, filingDecision, isPurchaseDoc, nextSequence, refineDocType, stageOf, vendorFilename, withTimeSuffix } from "./filing.mjs"
-import { AWAITING_PAYMENT_MAX_TRIES, MAX_FETCH_ATTEMPTS, NEW_LINK_ERROR, NEW_LINK_GUARD_MS, awaitingPaymentNext, documentLinks, fetchDocuments, newLinkGuard, nextTryAt, paymentWakeTargets, propertyWebsiteLinks, providerKind, providerLabel, queuesOnSystemEmail, readFetchedBytes, requeueDecision, saveFetchedBytes, tapinspectShareId, waitsClosedBy, waitsTimedOut } from "./fetch/index.mjs"
-import { invoiceDiffLines, matchVendor, money, paidName, parentCampaignOf, pickCampaign, supersedeRenames, vendorFilingDecision, vendorRules } from "./vendors.mjs"
+import { destinationFor, driveDuplicateOf, filingDecision, isPurchaseDoc, nextSequence, refineDocType, stageOf, vendorFilename, vendorPropertyFolder, withTimeSuffix } from "./filing.mjs"
+import { AWAITING_PAYMENT_MAX_TRIES, MAX_FETCH_ATTEMPTS, NEW_LINK_ERROR, NEW_LINK_GUARD_MS, awaitingPaymentNext, documentLinks, fetchDocuments, freshbooksAddress, newLinkGuard, nextTryAt, paymentWakeTargets, propertyWebsiteLinks, providerKind, providerLabel, queuesForVendor, queuesOnSystemEmail, readFetchedBytes, requeueDecision, saveFetchedBytes, tapinspectShareId, waitsClosedBy, waitsTimedOut } from "./fetch/index.mjs"
+import { invoiceDiffLines, isPaidName, matchVendor, money, paidName, parentCampaignOf, pickCampaign, stagingInvoiceRowFor, stagingNumberFrom, supersedeRenames, vendorDocType, vendorFilingDecision, vendorRules } from "./vendors.mjs"
 import { DUP_STATUSES, gmailLink, photoDedupeVerdict, propertyFolderFromReply, propertyLabelFromSubject, suffixedFilename } from "./photos.mjs"
 import { LOOP_ACTIVE_STATUSES, LOOP_KEY_WINDOW_MS, SENT_LOOKBACK_DAYS, answeredBy, completionCloses, completionDismisses, completionEvent, envelopeMatches, isLooseEnd, loopEligible, loopKey, loopKeyMatch, mergeLoop, normalizeEnvelope, owedBy, reportFiledEvent, resolutionKind, splitLoops } from "./loops.mjs"
 import { applyEventDecisions, eventBrief, postEventCards, scanEvents } from "./events-run.mjs"
@@ -418,8 +423,9 @@ function fetchedDocs(files, msg, cls, provider = null) {
     const c = byName.get(f.filename)
     const cleanName = f.filename.replace(/^\.+/, "")
     // A tapinspect share page only ever yields the inspection report (the agent never pulls the invoice / agreement / manual).
-    const docType = provider === "tapinspect" ? "inspection" : refineDocType(cleanName, c?.doc_type || (/\.pdf$/i.test(f.filename) ? "other" : /\.(csv|xlsx?)$/i.test(f.filename) ? "marketing_list" : "photos"), msg.from.email, msg.subject)
-    out.push({ filename: f.filename, mime: f.mime, size, bytes: f.bytes, attachmentId: null, partId: null, inline: false, cleanName, doc_type: docType, stage: c?.stage || null, description: c?.description || "", signed: c?.signed ?? null, property_label: c?.property_label || cls?.property?.label || null })
+    // A FreshBooks link yields exactly the document the fetcher named (staging_proposal / staging_invoice) plus the page text the property is read from.
+    const docType = provider === "tapinspect" ? "inspection" : provider === "freshbooks" ? f.kind || "other" : refineDocType(cleanName, c?.doc_type || (/\.pdf$/i.test(f.filename) ? "other" : /\.(csv|xlsx?)$/i.test(f.filename) ? "marketing_list" : "photos"), msg.from.email, msg.subject)
+    out.push({ filename: f.filename, mime: f.mime, size, bytes: f.bytes, attachmentId: null, partId: null, inline: false, cleanName, doc_type: docType, stage: c?.stage || null, description: c?.description || "", signed: c?.signed ?? null, property_label: c?.property_label || cls?.property?.label || null, ...(provider === "freshbooks" ? { kind: f.kind || null, pageText: f.pageText || "" } : {}) })
   }
   return out
 }
@@ -1090,9 +1096,11 @@ async function previousInvoiceMeta(folderId, exceptRowId) {
  * the vendor path took (filed or ignored) so the normal pipeline skips them.
  */
 async function fileVendorDocuments(ctx, msg, cls, rule) {
+  const atts = relevantAttachments(msg, cls, { ignoreRelevance: true }) // an ITI invoice Haiku calls irrelevant is still the invoice
+  // A `destination: "property"` rule (StyleMe) files into the property folder — the property read from the document, never the email.
+  if (rule.destination === "property") return (await fileVendorPropertyDocs(ctx, msg, cls, rule, atts, { source: "attachment" })).handled
   const handled = new Set()
   const rules = await getSetting("rules")
-  const atts = relevantAttachments(msg, cls, { ignoreRelevance: true }) // an ITI invoice Haiku calls irrelevant is still the invoice
   const filed = []
   let dest = null
   for (const att of atts) {
@@ -1172,6 +1180,238 @@ async function postVendorConfirmation(ctx, msg, rule, dest, filed) {
   if (!DRY && mid) await sb().from("inbox_files").update({ tg_message_id: mid }).in("id", filed.map((f) => f.row.id))
 }
 
+// ---- destination: "property" (StyleMe Home Staging via FreshBooks; briefs/BRIEF_INBOX_STAGING_VENDOR_FRESHBOOKS_2026-10-17.md Parts B–D)
+// Ryan 2026-10-17: staging contracts are kept (Ridgeview). The property comes
+// from the FETCHED document — the FreshBooks page text ("Prepared For … 2116
+// Quito Rd, San Jose, CA 95130" / "Billed To …") first, the PDF's first page
+// (verifyProperty) as the second opinion — never from the email, which carries
+// no address. Known property folder → Properties/<address>/Staging/ (the
+// subfolder is created on first use); unknown → the existing "New property?"
+// ❓ card. An invoice whose "$0.00" comment already arrived files as … PAID.
+
+/** Has FreshBooks already sent the "… commented on invoice <N> ($0.00)" receipt for this invoice? (inbox_messages, read-only.) */
+async function stagingInvoicePaidAlready(invoiceNo) {
+  if (!invoiceNo) return false
+  try {
+    const { data } = await sb().from("inbox_messages").select("gmail_id").ilike("sender", "%freshbooks.com").ilike("subject", `%invoice ${invoiceNo} ($0.00)%`).limit(1)
+    return !!data?.length
+  } catch (e) {
+    warn(`paid lookup for invoice ${invoiceNo} failed:`, e.message)
+    return false
+  }
+}
+
+/**
+ * File one property-destination vendor email's documents — attachments, or
+ * the files pulled from its FreshBooks link (`docs` from fetchedDocs, each with
+ * bytes + pageText + kind). Same inbox_files rows as the other paths; returns
+ * { handled, filed, outcomes } like fileDocuments.
+ */
+async function fileVendorPropertyDocs(ctx, msg, cls, rule, docs, { source = "attachment", fetchId = null, url = null } = {}) {
+  const handled = new Set()
+  const filed = []
+  const outcomes = []
+  const note = (att, outcome, why = "") => outcomes.push({ filename: att.cleanName || att.filename, outcome, why })
+  const rulesApproved = (await getSetting("rules")).status === "approved"
+  for (const att of docs) {
+    const decision = vendorFilingDecision(rule, { ...att, url: att.url || url }, msg)
+    if (!decision.docType) continue // not a vendor document (a comment email, a stray attachment) — the normal pipeline takes it
+    handled.add(att.filename)
+    const docType = decision.docType
+    if (!decision.file) {
+      await recordIgnored(msg, { ...att, doc_type: docType }, decision.why, { source, fetchId })
+      note(att, "ignored", decision.why)
+      log(`vendor ${rule.name}: ${att.filename} ignored (${decision.why})`)
+      continue
+    }
+    const fromPage = freshbooksAddress(att.pageText)
+    const vAtt = { ...att, doc_type: docType, property_label: fromPage || null }
+    const rec = await recordAttachment(ctx, msg, vAtt, cls, rulesApproved ? "pending" : "waiting", { source, fetchId })
+    if (!rec) continue
+    if (rec.dup) {
+      log(`vendor ${rule.name}: duplicate ${att.filename} (matches ${rec.dup.id})`)
+      note(att, "duplicate", rec.dup.final_name ? `already filed as ${rec.dup.final_name}` : "already on file")
+      continue
+    }
+    if (!rulesApproved) {
+      note(att, "waiting", "queued until the filing convention is approved")
+      continue
+    }
+    const number = stagingNumberFrom(msg.subject, att.url || url)
+    const paid = docType === "staging_invoice" && (await stagingInvoicePaidAlready(number))
+    const named = vendorFilename({ rule, docType, filename: att.cleanName || att.filename, subject: msg.subject, receivedAt: msg.internalDate, bodyText: msg.text, url: att.url || url, pageText: att.pageText, paid })
+    const meta = { vendor: rule.id, number, invoice_no: docType === "staging_invoice" ? named.invoice_no || number : null, total: named.amounts?.total ?? null, url: att.url || url || null, ...(paid ? { paid_at: isoNow() } : {}) }
+    if (!DRY) await sb().from("inbox_files").update({ meta, doc_type: docType }).eq("id", rec.row.id)
+    // The property: page text first, the PDF's first page as the second opinion.
+    const verify = /^application\/pdf$/.test(att.mime) ? await verifyProperty(ctx, rec.bytes, att.cleanName || att.filename) : null
+    const vLabel = labelFromVerify(verify)
+    let property = fromPage || null
+    const rowBase = { ...rec.row, doc_type: docType, meta }
+    if (vLabel && property && !keysMatch(propertyKey(vLabel), propertyKey(property)) && (verify?.confidence ?? 1) >= 0.6) {
+      await postAskCard(ctx, rowBase, `The PDF says ${vLabel} but the FreshBooks page says ${property}. Which property does “${named.name}” belong to?`, null)
+      note(att, "asked", `PDF says ${vLabel}, page says ${property}`)
+      continue
+    }
+    if (!property && vLabel) property = vLabel
+    if (!property) {
+      await postAskCard(ctx, rowBase, `Which property is this ${rule.name} ${docType.replace(/_/g, " ")} (“${named.name}”) for?`, null)
+      note(att, "asked", "property unknown")
+      continue
+    }
+    if (!DRY) await sb().from("inbox_files").update({ property_label: property, property_key: propertyKey(property) }).eq("id", rec.row.id)
+    const rowNow = { ...rowBase, property_label: property, property_key: propertyKey(property) }
+    await loadTree(ctx)
+    const pf = propertyFolderFor(ctx, property)
+    const folder0 = vendorPropertyFolder({ rule, docType, property })
+    if (!pf) {
+      await postAskCard(ctx, rowNow, `New property? I don't have a folder for ${property}. Create Properties/${property}/ with the standard subfolders?`, { folder: folder0, name: named.name })
+      note(att, "asked", `no folder for ${property}`)
+      log(`vendor ${rule.name}: ${named.name} — asked (no folder for ${property})`)
+      continue
+    }
+    const folder = folder0.replace(/^Properties\/[^/]+/, pf.path)
+    let r
+    if (DRY) {
+      // A dry run never creates Staging/ — say so instead of failing on the missing folder.
+      const probe = ctx.drive && ctx.rootId ? await resolvePath(ctx.drive, ctx.rootId, folder) : { id: null, missing: "(Drive not available)" }
+      if (!probe.id) log(`vendor ${rule.name}: would create ${probe.missing}/ under ${folder.replace(/\/[^/]+$/, "")}`)
+      r = { ok: true, url: "(dry run)", name: named.name }
+    } else r = await fileToDrive(ctx, rowNow, folder, named.name, { suffixOnExisting: true, bytes: rec.bytes })
+    if (!r.ok) {
+      await tgSend(`⚠️ Couldn't file <b>${esc(named.name)}</b> → ${esc(folder)} — ${esc(r.error)}`, { dryRun: DRY })
+      note(att, "error", r.error)
+      continue
+    }
+    filed.push({ row: rowNow, folder, name: r.name || named.name, url: r.url, diff: null, docType, property, number, label: `${rule.name_short || rule.name} ${docType === "staging_proposal" ? "proposal" : "invoice"}${number ? ` ${number}` : ""}` })
+    note(att, "filed", `${folder}/${r.name || named.name}`)
+    log(`vendor ${rule.name}: filed ${att.filename} → ${folder}/${r.name || named.name}${meta.total != null ? ` (${money(meta.total)})` : ""}${paid ? " · already paid" : ""}`)
+  }
+  if (source === "attachment") await postStagingConfirmation(ctx, msg, rule, filed)
+  return { handled, filed, outcomes }
+}
+
+/** The card for a StyleMe filing ("📄 Filed StyleMe proposal SS01174 → 2116 Quito Rd/Staging"), ↩️ Undo per file. Returns the message id. */
+async function postStagingConfirmation(ctx, msg, rule, filed, extraLines = []) {
+  if (!filed.length) return null
+  const sub = (f) => f.folder.split("/").at(-1)
+  const head = filed.length === 1 ? `📄 <b>Filed ${esc(filed[0].label)}</b> → ${esc(filed[0].property)}/${esc(sub(filed[0]))}` : `📄 <b>Filed ${filed.length} ${esc(rule.name_short || rule.name)} documents</b>`
+  const lines = [head, ...filedLines(filed), ...extraLines, `Reply to this card to move or rename ${filed.length === 1 ? "it" : "any of them"}.`]
+  const mid = await tgSend(lines.join("\n"), { rows: undoRows(filed), dryRun: DRY })
+  if (!DRY && mid) await sb().from("inbox_files").update({ tg_message_id: mid }).in("id", filed.map((f) => f.row.id))
+  return mid
+}
+
+/** "StyleMe invoice 080223UP" from a filed name ("StyleMe invoice 080223UP - 2026-10-04 - $2,985.00.pdf"). */
+function stagingLabelOf(name) {
+  return String(name || "").replace(/\s+-\s.*$/, "").replace(/\.[a-z0-9]{1,6}$/i, "")
+}
+
+/** The one-line "💸 … marked PAID" appended to the filed row's card (tgEditText); silent + log when there is no card. */
+async function notePaidOnCard(ctx, row, newName) {
+  const line = `💸 ${esc(stagingLabelOf(newName))} marked PAID`
+  if (!row.tg_message_id) return log(`vendor paid: ${stagingLabelOf(newName)} marked PAID (no card to update)`)
+  const { data: siblings } = await sb().from("inbox_files").select("id, final_folder, final_name, drive_url, property_label").eq("tg_message_id", row.tg_message_id).eq("status", "filed")
+  const rows = (siblings || []).map((s) => ({ row: s, folder: s.final_folder || "", name: s.id === row.id ? newName : s.final_name, url: s.drive_url }))
+  const first = rows[0]
+  const head = first ? `📄 <b>Filed ${esc(stagingLabelOf(first.name))}</b> → ${esc(row.property_label || "")}/${esc(String(first.folder).split("/").at(-1))}` : `📄 <b>Filed</b>`
+  const lines = [head, ...filedLines(rows), line, "Reply to this card to move or rename it."]
+  await tgEditText(row.tg_message_id, lines.join("\n"), { rows: undoRows(rows) })
+}
+
+/** Rename a filed StyleMe invoice … PAID (no new bytes). */
+async function renameStagingPaid(ctx, row) {
+  const newName = isPaidName(row.final_name) ? row.final_name : paidName(row.final_name)
+  if (DRY) return log(`vendor paid: would rename "${row.final_name}" → "${newName}"`)
+  if (!ctx.drive || !ctx.rootId) throw new Error("Drive not available")
+  if (row.drive_file_id && newName !== row.final_name) await renameFile(ctx.drive, row.drive_file_id, newName)
+  await sb().from("inbox_files").update({ final_name: newName, meta: { ...(row.meta || {}), paid_at: row.meta?.paid_at || isoNow() } }).eq("id", row.id)
+  log(`vendor paid: "${row.final_name}" → "${newName}"`)
+  await notePaidOnCard(ctx, row, newName)
+}
+
+/**
+ * Part D: the FreshBooks "$0.00" comment for invoice N → re-pull the ORIGINAL
+ * invoice link (the row's inbox_fetches job goes back on the queue as
+ * `staging_paid`); the fetch replaces the Drive file's bytes with the paid copy
+ * and renames it … PAID. No link to re-pull → rename only. Already PAID or not
+ * on file → nothing.
+ */
+async function markStagingInvoicePaid(ctx, event, msg) {
+  if (event?.vendor !== "freshbooks" || !event.invoice) return
+  const { data: rows } = await sb().from("inbox_files").select("*").eq("doc_type", "staging_invoice").eq("status", "filed").order("filed_at", { ascending: false }).limit(100)
+  const row = stagingInvoiceRowFor(rows, event.invoice)
+  if (!row) return log(`vendor paid: no filed StyleMe invoice ${event.invoice} on file — nothing to mark`)
+  if (isPaidName(row.final_name)) return log(`vendor paid: ${row.final_name} is already marked PAID`)
+  let job = null
+  if (row.fetch_id) {
+    const { data: f } = await sb().from("inbox_fetches").select("id, url, status, provider").eq("id", row.fetch_id).maybeSingle()
+    if (f?.url && f.provider === "freshbooks" && f.status !== "queued" && f.status !== "running") job = f
+  }
+  if (!job) return renameStagingPaid(ctx, row)
+  if (DRY) return log(`vendor paid: would re-pull ${job.url.slice(0, 70)} (job ${job.id}) to replace "${row.final_name}" with the paid copy, then rename … PAID`)
+  await sb().from("inbox_fetches").update({ status: "queued", kind: "staging_paid", attempts: 0, next_try_at: null, error: null, resolved_at: null }).eq("id", job.id)
+  log(`vendor paid: re-pulling the FreshBooks invoice (job ${job.id}, was ${job.status}) to replace "${row.final_name}" with the paid copy — ${msg.subject}`)
+}
+
+/** A `staging_paid` fetch came back: replace the filed invoice's bytes in Drive, rename … PAID, note it on the card. */
+async function applyStagingPaid(ctx, job, file, attempts, shot) {
+  const { data: rows } = await sb().from("inbox_files").select("*").eq("fetch_id", job.id).eq("doc_type", "staging_invoice").eq("status", "filed").limit(5)
+  const row = rows?.[0] || null
+  if (!row) {
+    if (!DRY) await sb().from("inbox_fetches").update({ status: "done", attempts, screenshot: shot, resolved_at: isoNow(), error: "paid re-pull: no filed invoice row for this job" }).eq("id", job.id)
+    return warn(`fetch ${job.id}: paid re-pull — no filed StyleMe invoice row for this job`)
+  }
+  const newName = isPaidName(row.final_name) ? row.final_name : paidName(row.final_name)
+  if (DRY) return log(`fetch ${job.id}: would replace "${row.final_name}" with the paid copy (${file.bytes.length} bytes) and rename → "${newName}"`)
+  if (!ctx.drive || !ctx.rootId) throw new Error("Drive not available")
+  if (row.drive_file_id) {
+    await updateFileContent(ctx.drive, row.drive_file_id, "application/pdf", file.bytes)
+    if (newName !== row.final_name) await renameFile(ctx.drive, row.drive_file_id, newName)
+  }
+  saveFetchedBytes(job.id, file.bytes)
+  const hash = sha256(file.bytes)
+  await sb().from("inbox_files").update({ final_name: newName, sha256: hash, size_bytes: file.bytes.length, meta: { ...(row.meta || {}), paid_at: isoNow(), paid_copy: true } }).eq("id", row.id)
+  await sb().from("inbox_fetches").update({ status: "done", attempts, files: [{ filename: file.filename, mime: file.mime, size: file.bytes.length, sha256: hash, inbox_file_id: row.id }], screenshot: shot, resolved_at: isoNow(), error: null }).eq("id", job.id)
+  log(`fetch ${job.id}: paid copy replaced "${row.final_name}" → "${newName}" (${file.bytes.length} bytes)`)
+  await notePaidOnCard(ctx, row, newName)
+}
+
+/** A FreshBooks fetch came back OK: file through the property-destination vendor path (or finish a paid re-pull). */
+async function fileFreshBooksJob(ctx, job, msg, cls, r, attempts, shot) {
+  const files = r.files
+  if (DRY) {
+    const dir = path.join("/tmp/inbox-fetch", String(job.id), "files")
+    fs.mkdirSync(dir, { recursive: true })
+    for (const f of files) fs.writeFileSync(path.join(dir, sanitizeFilename(f.filename)), f.bytes)
+    log(`fetch ${job.id}: dry run — ${files.length} file(s) in ${dir}`)
+  } else {
+    for (const f of files) saveFetchedBytes(job.id, f.bytes)
+  }
+  if (job.kind === "staging_paid") return applyStagingPaid(ctx, job, files[0], attempts, shot)
+  const rules = vendorRules(await getSetting("vendors"))
+  // The email's rule; a typed `fetch <url>` has no vendor email behind it — the property-destination rule that lists the document's type takes it.
+  const rule = matchVendor(msg, rules) || rules.find((x) => x.destination === "property" && (x.doc_types || []).includes(files[0]?.kind)) || null
+  if (!rule) {
+    const mid = await tgSend(`⚠️ Pulled a document from FreshBooks for “${esc(shortSubject(msg.subject))}” but no vendor rule claims it — nothing filed.`, { rows: [[{ text: "Open", url: job.url }]], dryRun: DRY })
+    if (!DRY) await sb().from("inbox_fetches").update({ status: "failed", attempts, error: "no property-destination vendor rule for this FreshBooks document", screenshot: shot, tg_message_id: mid, resolved_at: isoNow() }).eq("id", job.id)
+    return warn(`fetch ${job.id}: no vendor rule for the FreshBooks document`)
+  }
+  const docs = fetchedDocs(files, msg, cls, "freshbooks")
+  const { filed, outcomes } = await fileVendorPropertyDocs(ctx, msg, cls, rule, docs, { source: job.kind === "manual" ? "manual" : job.provider, fetchId: DRY ? null : job.id, url: job.url })
+  const extra = outcomes.filter((o) => o.outcome !== "filed").map((o) => `• ${esc(o.filename)} — ${o.outcome}${o.why ? ` (${esc(shortSubject(o.why, 80))})` : ""}`)
+  const mid = await postStagingConfirmation(ctx, msg, rule, filed, extra)
+  if (!DRY) {
+    const { data: rowsForJob } = await sb().from("inbox_files").select("id, sha256").eq("fetch_id", job.id)
+    const byHash = new Map((rowsForJob || []).map((x) => [x.sha256, x.id]))
+    const summary = files.map((f) => {
+      const hash = sha256(f.bytes)
+      return { filename: f.filename, mime: f.mime, size: f.bytes.length, sha256: hash, kind: f.kind || null, inbox_file_id: byHash.get(hash) || null }
+    })
+    await sb().from("inbox_fetches").update({ status: "done", attempts, files: summary, screenshot: shot, tg_message_id: mid, resolved_at: isoNow(), error: null }).eq("id", job.id)
+  }
+  log(`fetch ${job.id}: done — ${files.length} file(s), ${filed.length} filed${outcomes.filter((o) => o.outcome === "asked").length ? `, ${outcomes.filter((o) => o.outcome === "asked").length} asked` : ""}`)
+}
+
 /** 💸 Paid (recorded by the webhook as paid_requested): rename … PAID in Drive, set the parent campaign's total_cost, rewrite the card. */
 async function applyPaidRequests(ctx) {
   if (DRY) return // renames + total_cost are live writes; a dry run never applies them
@@ -1214,14 +1454,24 @@ async function applyPaidRequests(ctx) {
 // headless Chrome on the mini. The old notice is the failure card.
 const FETCH_KINDS = new Set(["docusign_request", "docusign_completed", "esign_completed", "media_delivery"])
 
-/** The links that queue even on a system email (f8 photos, HomeSentry reports) — the provider match is the gate, never the classifier. */
-function systemLinks(msg, cls) {
-  return documentLinks(msg, Array.isArray(cls?.document_links) ? cls.document_links : []).filter((l) => queuesOnSystemEmail(l.provider))
+/** The links that queue even on a system email (f8 photos, HomeSentry reports, StyleMe's FreshBooks links) — the provider match is the gate, never the classifier; a FreshBooks link needs the vendor rule too. */
+function systemLinks(msg, cls, vendor = null) {
+  return documentLinks(msg, Array.isArray(cls?.document_links) ? cls.document_links : []).filter((l) => queuesOnSystemEmail(l.provider) && queuesForVendor(l.provider, vendor))
 }
 
-async function enqueueFetches(ctx, msg, cls, kind, atts = []) {
+/** The inbox_fetches.kind for a link: "media_delivery" for photos, the vendor doc type for a FreshBooks document (null = not a document, never queued), else the email's kind. */
+function fetchKindFor(link, kind, msg, vendor) {
+  if (providerKind(link.provider) === "media") return "media_delivery"
+  if (link.provider === "freshbooks") return vendorDocType(vendor, { url: link.url }, msg)
+  return kind
+}
+
+async function enqueueFetches(ctx, msg, cls, kind, atts = [], vendor = null) {
   const reported = Array.isArray(cls?.document_links) ? cls.document_links : []
-  const links = documentLinks(msg, reported)
+  // 2026-10-17: a FreshBooks link is a document only on an email a `destination: "property"`
+  // vendor rule (StyleMe) claims, and only when it points at a proposal / invoice (a
+  // comment email's "View invoice" link is not one).
+  const links = documentLinks(msg, reported).filter((l) => queuesForVendor(l.provider, vendor) && fetchKindFor(l, kind, msg, vendor))
   // Ryan 2026-10-15: the f8 delivery email classifies as "automated" and the
   // classifier may not report the link — a media provider link queues regardless
   // (2026-10-16: HomeSentry's tapinspect share link likewise).
@@ -1231,7 +1481,7 @@ async function enqueueFetches(ctx, msg, cls, kind, atts = []) {
     return
   }
   for (const link of links) {
-    const linkKind = providerKind(link.provider) === "media" ? "media_delivery" : kind
+    const linkKind = fetchKindFor(link, kind, msg, vendor)
     if (DRY) {
       // --dry-run: the fetch runs right here (browser and all) with no DB
       // writes and no Drive upload; files land in /tmp/inbox-fetch/<job>/files
@@ -1415,6 +1665,17 @@ async function runFetchJob(ctx, job, msg, cls) {
     log(`fetch ${job.id}: awaiting_payment (try ${next.attempts}/${AWAITING_PAYMENT_MAX_TRIES}) — ${error}; next check ${next.next_try_at}${shot ? ` · ${shot}` : ""}`)
     return
   }
+  if (!r.ok && job.kind === "staging_paid") {
+    // Part D: the paid re-pull failed. Retry quietly on the normal backoff; when it
+    // is spent, just rename the filed invoice … PAID (the bytes stay the outstanding
+    // copy) — no card either way, the "$0.00" comment already told Ryan.
+    if (attempts < MAX_FETCH_ATTEMPTS) return failAttempt(job, attempts, r, r.error)
+    const { data: rows } = await sb().from("inbox_files").select("*").eq("fetch_id", job.id).eq("doc_type", "staging_invoice").eq("status", "filed").limit(5)
+    if (rows?.[0] && !isPaidName(rows[0].final_name)) await renameStagingPaid(ctx, rows[0]).catch((e) => warn(`fetch ${job.id}: paid rename failed:`, e.message))
+    if (!DRY) await sb().from("inbox_fetches").update({ status: "failed", attempts, error: `paid re-pull failed (${r.error}); renamed PAID without new bytes`, screenshot: shot, resolved_at: isoNow() }).eq("id", job.id)
+    warn(`fetch ${job.id}: paid re-pull failed after ${attempts} attempts — ${r.error}; renamed PAID without new bytes${shot ? ` · screenshot ${shot}` : ""}`)
+    return
+  }
   if (!r.ok) {
     // Phase 1b: the link expired. Either this run asked DocuSign for a fresh
     // one, or another job for the same envelope is still waiting on its ask —
@@ -1449,6 +1710,8 @@ async function runFetchJob(ctx, job, msg, cls) {
     return
   }
   if (media) return filePhotos(ctx, msg, cls, job, r, attempts)
+  // 2026-10-17: a FreshBooks document is a vendor document (StyleMe → Properties/<address>/Staging/), never the transaction whitelist.
+  if (job.provider === "freshbooks") return fileFreshBooksJob(ctx, job, msg, cls, r, attempts, shot)
 
   // Keep the bytes (a later ✅/✏️/↩️ re-reads them like an attachment), then
   // file through the same pipeline as attachments.
@@ -1672,6 +1935,8 @@ async function handleMessage(ctx, msg) {
   if (completion) {
     log(`completion event: ${completion.vendor} ${completion.kind}${completion.property ? ` · ${completion.property}` : ""}${completion.invoice ? ` · invoice ${completion.invoice}` : ""}${completion.shareId ? ` · share ${completion.shareId.slice(0, 8)}…` : ""}`)
     await resolveByCompletion(ctx, completion, msg)
+    // Part D (2026-10-17): the FreshBooks "$0.00" comment also marks the filed StyleMe invoice PAID (re-pull → replace bytes → rename).
+    await markStagingInvoicePaid(ctx, completion, msg)
   }
   // Ryan 2026-10-05: Kiavi's servicing desk sent the ACH form for the Halleck
   // draws from servicing@ — the classifier said "needs reply" but the kind was
@@ -1695,8 +1960,8 @@ async function handleMessage(ctx, msg) {
   // 2026-10-16: HomeSentry's tapinspect share link queues the same way, and a
   // HomeSentry email wakes any report parked behind its invoice (Part B4).
   if (kind === "media_delivery" || ((kind === "automated" || kind === "newsletter" || kind === "skip") && !(cls.needs_reply && !cls.solicitation))) {
-    const links = systemLinks(msg, cls)
-    if (links.length) await enqueueFetches(ctx, msg, cls, links.some((l) => providerKind(l.provider) === "media") ? "media_delivery" : kind)
+    const links = systemLinks(msg, cls, vendor)
+    if (links.length) await enqueueFetches(ctx, msg, cls, links.some((l) => providerKind(l.provider) === "media") ? "media_delivery" : kind, [], vendor)
     await wakePaymentWaits(msg, cls)
     // 2026-10-16 (South Bay Termite "Termite Report & Receipt | <address>" came
     // back as "automated"): a system-looking email can still carry a whitelisted
@@ -1716,8 +1981,8 @@ async function handleMessage(ctx, msg) {
   const { filed, pdfDocs } = await fileDocuments(ctx, msg, cls, atts, { source: "attachment" })
   await postFiledConfirmation(ctx, msg, filed)
 
-  // --- documents behind links (DocuSign first; briefs/BRIEF_INBOX_LINK_FETCH_2026-10-12.md)
-  await enqueueFetches(ctx, msg, cls, kind, atts)
+  // --- documents behind links (DocuSign first; briefs/BRIEF_INBOX_LINK_FETCH_2026-10-12.md; StyleMe's FreshBooks links ride the vendor rule)
+  await enqueueFetches(ctx, msg, cls, kind, atts, vendor)
   await wakePaymentWaits(msg, cls)
 
   // --- secure-portal notices with nothing attached

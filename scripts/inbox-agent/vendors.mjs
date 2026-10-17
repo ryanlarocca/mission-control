@@ -248,7 +248,12 @@ export function stagingDocType(rule, att, msg) {
   return t && allowed.has(t) ? t : null
 }
 
-/** The document number: the subject's trailing "(SS01174)", else the link's estimateNumber / invoiceNumber, else "invoice 080223UP" in the subject, else null. */
+/**
+ * The document number: the subject's trailing "(SS01174)", else the link's estimateNumber / invoiceNumber, else "invoice 080223UP" in the subject, else null.
+ * @param {string|null|undefined} subject
+ * @param {string|null|undefined} [url]
+ * @returns {string|null}
+ */
 export function stagingNumberFrom(subject, url = null) {
   const s = String(subject || "")
   const m = FB_SUBJECT_NUMBER_RE.exec(s)
@@ -268,8 +273,9 @@ export function isPaidName(name) {
  * The filed inbox_files row for StyleMe invoice N (Part D): by meta.invoice_no,
  * else by its name ("StyleMe invoice 080223UP - …"). Only `filed` rows of a
  * staging_invoice; null when none.
- * @param {Array<{ status?: string, doc_type?: string, final_name?: string|null, meta?: {invoice_no?: string|null}|null }>} rows
+ * @param {Array<any>|null|undefined} rows inbox_files rows ({ status, doc_type, final_name, meta, … })
  * @param {string|null|undefined} invoiceNo
+ * @returns {any|null}
  */
 export function stagingInvoiceRowFor(rows, invoiceNo) {
   const want = String(invoiceNo || "").trim().toLowerCase()

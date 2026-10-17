@@ -108,8 +108,9 @@ export function freshbooksAmount(...texts) {
  * and the tests: { kind, number, address, amount, status }.
  * @param {string|null|undefined} text page.innerText
  * @param {string|null|undefined} [url] the link (kind + number fall back to its params)
+ * @returns {{ kind: "proposal"|"invoice"|null, number: string|null, address: string|null, amount: number|null, status: "paid"|"outstanding"|"invoiced"|null }}
  */
-export function parseFreshbooksPage(text, url = null) {
+export function parseFreshbooksPage(text, url) {
   const t = String(text || "")
   const h = SELECTORS.heading.exec(t)
   const kind = freshbooksKind(url) || (h ? (/^invoice$/i.test(h[1]) ? "invoice" : "proposal") : null)
