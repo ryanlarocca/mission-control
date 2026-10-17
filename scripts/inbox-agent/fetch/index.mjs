@@ -115,11 +115,17 @@ export function awaitingPaymentNext(attempts, now = Date.now()) {
   return { status: "awaiting_payment", next_try_at: new Date(now + AWAITING_PAYMENT_RETRY_MS).toISOString(), attempts: n, error: AWAITING_PAYMENT_ERROR }
 }
 
-/** B5: what to do when a link's url_sha256 already has a row. */
-export function requeueDecision(existing, provider) {
+/** The subjects that mean a new version of an already-filed report ("results … have been updated"). */
+export const TAPINSPECT_UPDATED_SUBJECT_RE = /updated|revised|new version|re-?issued/i
+
+/** B5: what to do when a link's url_sha256 already has a row. A `done` report is
+ *  fetched again only when the email says the results were UPDATED — live 2026-10-16
+ *  Amanda forwarded the first results email and the watcher re-pulled the same PDF. */
+export function requeueDecision(existing, provider, subject = "") {
   if (!existing) return "insert"
-  if (provider === "tapinspect" && REQUEUE_FROM.has(existing.status)) return "requeue"
-  return "leave"
+  if (provider !== "tapinspect" || !REQUEUE_FROM.has(existing.status)) return "leave"
+  if (existing.status === "done" && !TAPINSPECT_UPDATED_SUBJECT_RE.test(String(subject || ""))) return "leave"
+  return "requeue"
 }
 
 /**

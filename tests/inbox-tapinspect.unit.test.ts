@@ -106,7 +106,11 @@ describe("awaiting_payment — daily retry, 14-day cutoff", () => {
 
 describe("same URL twice — requeue matrix (B5)", () => {
   it("a finished or parked tapinspect job is requeued; queued/running left alone; other providers stay duplicates", () => {
-    for (const status of ["done", "awaiting_payment", "failed", "expired"]) expect(requeueDecision({ id: "x", status }, "tapinspect"), status).toBe("requeue")
+    for (const status of ["awaiting_payment", "failed", "expired"]) expect(requeueDecision({ id: "x", status }, "tapinspect"), status).toBe("requeue")
+    // A finished report is pulled again only for an "updated" email — a forward of the first results email is not a new version.
+    expect(requeueDecision({ id: "x", status: "done" }, "tapinspect", "Inspection results for 5764 Halleck Dr, San Jose, CA 95123 have been updated")).toBe("requeue")
+    expect(requeueDecision({ id: "x", status: "done" }, "tapinspect", "Fwd: Inspection results for 5764 Halleck Dr, San Jose, CA 95123")).toBe("leave")
+    expect(requeueDecision({ id: "x", status: "done" }, "tapinspect")).toBe("leave")
     for (const status of ["queued", "running", "needs_login", "needs_property"]) expect(requeueDecision({ id: "x", status }, "tapinspect"), status).toBe("leave")
     for (const status of ["done", "failed", "expired"]) expect(requeueDecision({ id: "x", status }, "docusign"), status).toBe("leave")
     expect(requeueDecision({ id: "x", status: "done" }, "f8")).toBe("leave")
@@ -121,8 +125,9 @@ describe("same URL twice — requeue matrix (B5)", () => {
     // 10/16 "results have been updated" carries the SAME share URL → requeue, never a second row.
     expect(documentLinks(resultsUpdated)[0].url).toBe(HALLECK_SHARE)
     expect(requeueDecision(parked, "tapinspect")).toBe("requeue")
-    // Once done, a later re-delivery requeues again (an unchanged PDF is caught by the sha dedupe downstream).
-    expect(requeueDecision({ ...parked, status: "done" }, "tapinspect")).toBe("requeue")
+    // Once done, only an "updated" email requeues it (an unchanged PDF is then caught by the sha dedupe, silently).
+    expect(requeueDecision({ ...parked, status: "done" }, "tapinspect", resultsUpdated.subject)).toBe("requeue")
+    expect(requeueDecision({ ...parked, status: "done" }, "tapinspect", "Fwd: Inspection results for 5764 Halleck Dr")).toBe("leave")
     // While it is queued for the next pass a second copy of the email leaves it alone.
     expect(requeueDecision({ ...parked, status: "queued" }, "tapinspect")).toBe("leave")
   })

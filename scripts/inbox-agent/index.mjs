@@ -1197,7 +1197,7 @@ async function enqueueFetches(ctx, msg, cls, kind, atts = []) {
       // Part B5: HomeSentry reuses the same share URL for "results updated" — a
       // finished or parked tapinspect job goes back on the queue under the new
       // email; a queued/running one is left alone. Everything else stays a duplicate.
-      if (requeueDecision(existing, link.provider) === "requeue") {
+      if (requeueDecision(existing, link.provider, msg.subject) === "requeue") {
         await sb().from("inbox_fetches").update({ status: "queued", attempts: 0, next_try_at: null, error: null, resolved_at: null, gmail_id: msg.id, thread_id: msg.threadId, kind: linkKind }).eq("id", existing.id)
         log(`fetch requeued: ${link.provider} · was ${existing.status} · ${shortSubject(msg.subject, 50)} · ${link.url.slice(0, 70)}`)
         continue
@@ -1426,7 +1426,12 @@ async function runFetchJob(ctx, job, msg, cls) {
   if (!files.length) lines.push("The envelope opened but held no documents to download.")
   if (filed.length) lines.push(`Reply to this card to move or rename any of them.`)
   const rows = [...(job.kind === "docusign_request" ? [[openBtn]] : []), ...undoRows(filed)]
-  const mid = await tgSend(lines.join("\n"), { rows, dryRun: DRY })
+  // Every pulled file was already on file (a forward of the same share link, an
+  // unchanged "updated" report) → nothing to show; a card here is the double alert
+  // Ryan saw on 2026-10-16. Log it and finish the job quietly.
+  const allDuplicates = files.length > 0 && !filed.length && outcomes.length > 0 && outcomes.every((o) => o.outcome === "duplicate")
+  if (allDuplicates) log(`fetch ${job.id}: ${files.length} file(s), all already filed — no card`)
+  const mid = allDuplicates ? null : await tgSend(lines.join("\n"), { rows, dryRun: DRY })
   if (!DRY) {
     if (mid && filed.length) await sb().from("inbox_files").update({ tg_message_id: mid }).in("id", filed.map((f) => f.row.id))
     const { data: rowsForJob } = await sb().from("inbox_files").select("id, filename, sha256").eq("fetch_id", job.id)
