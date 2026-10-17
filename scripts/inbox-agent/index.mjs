@@ -46,21 +46,21 @@ import fs from "node:fs"
 import path from "node:path"
 import {
   AUTO_THRESHOLD, MAILBOX, MAIN_CHECKOUT, MAX_ATTACHMENT_BYTES, REPO_ROOT,
-  daysAgo, fetchAll, getSetting, keysMatch, log, propertyKey, ptDateLabel, ptParts, sanitizeFilename, sb, setSetting, warn,
+  daysAgo, fetchAll, getSetting, keysMatch, log, propertyKey, ptDate, ptDateLabel, ptParts, sanitizeFilename, sb, setSetting, warn,
 } from "./env.mjs"
-import { addLabel, getAttachmentBytes, getMessage, gmailClient, listMessageIds, sentThreadsSince } from "./gmail.mjs"
-import { childFolderByPrefix, downloadFile, driveClient, findExtraRoots, findFileByName, findRoot, folderPathOf, folderTree, getFile, listChildren, moveFile, propertyFolders, renameFile, resolvePath, uploadFile } from "./drive.mjs"
+import { addLabel, getAttachmentBytes, getMessage, gmailClient, listMessageIds, sentSince } from "./gmail.mjs"
+import { childFolderByPrefix, downloadFile, driveClient, findExtraRoots, findFileByName, findRoot, folderPathOf, folderTree, getFile, listChildren, moveFile, propertyFolders, renameFile, resolvePath, uploadFile, walkFolder } from "./drive.mjs"
 import { esc, tgClearButtons, tgEditText, tgSend, tgSendDocument } from "./telegram.mjs"
 import { advisorSummary, fixRlsDisabled, isSupabaseSecurityAlert } from "./supabase-advisor.mjs"
 import {
   CLASSIFY_SYSTEM, FILING_SYSTEM, HAIKU, RULES_SYSTEM, SCREEN_SYSTEM, SONNET, VERIFY_SYSTEM,
   BAY_AREA_RE, CONDO_RE, blastSignalsPass,
   changePrompt, classifyPrompt, complete, completeJson, filingPrompt, rulesPrompt, screenPrompt, verifyPrompt, WHITELIST } from "./llm.mjs"
-import { destinationFor, filingDecision, isPurchaseDoc, nextSequence, refineDocType, stageOf, vendorFilename, withTimeSuffix } from "./filing.mjs"
-import { AWAITING_PAYMENT_MAX_TRIES, MAX_FETCH_ATTEMPTS, NEW_LINK_ERROR, NEW_LINK_GUARD_MS, awaitingPaymentNext, documentLinks, fetchDocuments, newLinkGuard, nextTryAt, paymentWakeTargets, propertyWebsiteLinks, providerKind, providerLabel, queuesOnSystemEmail, readFetchedBytes, requeueDecision, saveFetchedBytes, waitsClosedBy, waitsTimedOut } from "./fetch/index.mjs"
+import { destinationFor, driveDuplicateOf, filingDecision, isPurchaseDoc, nextSequence, refineDocType, stageOf, vendorFilename, withTimeSuffix } from "./filing.mjs"
+import { AWAITING_PAYMENT_MAX_TRIES, MAX_FETCH_ATTEMPTS, NEW_LINK_ERROR, NEW_LINK_GUARD_MS, awaitingPaymentNext, documentLinks, fetchDocuments, newLinkGuard, nextTryAt, paymentWakeTargets, propertyWebsiteLinks, providerKind, providerLabel, queuesOnSystemEmail, readFetchedBytes, requeueDecision, saveFetchedBytes, tapinspectShareId, waitsClosedBy, waitsTimedOut } from "./fetch/index.mjs"
 import { invoiceDiffLines, matchVendor, money, paidName, parentCampaignOf, pickCampaign, supersedeRenames, vendorFilingDecision, vendorRules } from "./vendors.mjs"
 import { DUP_STATUSES, gmailLink, photoDedupeVerdict, propertyFolderFromReply, propertyLabelFromSubject, suffixedFilename } from "./photos.mjs"
-import { envelopeMatches, loopEligible, normalizeEnvelope } from "./loops.mjs"
+import { LOOP_KEY_WINDOW_MS, SENT_LOOKBACK_DAYS, answeredBy, completionCloses, completionDismisses, completionEvent, envelopeMatches, isLooseEnd, loopEligible, loopKey, loopKeyMatch, mergeLoop, normalizeEnvelope, owedBy, reportFiledEvent, splitLoops } from "./loops.mjs"
 import { applyEventDecisions, eventBrief, postEventCards, scanEvents } from "./events-run.mjs"
 
 // ------------------------------------------------------------------ args
@@ -122,6 +122,10 @@ const AUTOMATED_RE = /(^|[.@-])(dmarc|mailer-daemon|postmaster|noreply-dmarc|cal
 
 function sha256(buf) {
   return crypto.createHash("sha256").update(buf).digest("hex")
+}
+/** Drive reports md5Checksum on uploaded (non-Google-native) files — the key for the Part G dedupe. */
+function md5(buf) {
+  return crypto.createHash("md5").update(buf).digest("hex")
 }
 function domainOf(email) {
   const d = String(email || "").split("@")[1] || ""
@@ -498,12 +502,54 @@ async function postFiledConfirmation(ctx, msg, filed) {
   if (!DRY && mid) await sb().from("inbox_files").update({ tg_message_id: mid }).in("id", filed.map((f) => f.row.id))
 }
 
+// Part G (briefs/BRIEF_INBOX_LOOP_HYGIENE_2026-10-17.md): Dominic's re-scrubbed
+// CSVs sat as proposals for days while Ryan had uploaded the same bytes by hand
+// as "v2 2026-10-14 - <name>.csv". The sha dedupe only sees files the agent
+// filed; before an attachment becomes a proposal, Drive itself is consulted —
+// one walk per root per pass, cached on ctx.
+const DRIVE_DEDUPE_STATUSES = new Set(["pending", "interview", "waiting", "approved"])
+
+/** The Drive subtree an attachment could already live in: Marketing/<year> for marketing lists, the property's own folder for property documents; null when there is nothing to check. */
+async function driveFilesFor(ctx, att, msg, label) {
+  if (!ctx.drive || !ctx.rootId) return null
+  ctx.driveWalks = ctx.driveWalks || new Map()
+  if (att.doc_type === "marketing_list") {
+    const year = ptDate(msg.internalDate).slice(0, 4)
+    const key = `marketing:${year}`
+    if (!ctx.driveWalks.has(key)) {
+      const r = await resolvePath(ctx.drive, ctx.rootId, `Marketing/${year}`)
+      ctx.driveWalks.set(key, r.id ? await walkFolder(ctx.drive, r.id, { maxDepth: 4, pathPrefix: `Marketing/${year}` }) : [])
+    }
+    return ctx.driveWalks.get(key)
+  }
+  await loadTree(ctx)
+  const pf = propertyFolderFor(ctx, label)
+  if (!pf?.id) return null
+  const key = `folder:${pf.id}`
+  if (!ctx.driveWalks.has(key)) ctx.driveWalks.set(key, await walkFolder(ctx.drive, pf.id, { maxDepth: 3, pathPrefix: pf.path }))
+  return ctx.driveWalks.get(key)
+}
+
 /** Download (or take att.bytes for a fetched document), hash, dedupe, insert an inbox_files row. Returns {row, bytes} or null. */
 async function recordAttachment(ctx, msg, att, cls, status, { source = "attachment", fetchId = null } = {}) {
   const bytes = att.bytes || (await getAttachmentBytes(ctx.gmail, msg.id, att.attachmentId))
   const hash = sha256(bytes)
   const { data: dup } = await sb().from("inbox_files").select("id, status, final_folder, final_name, proposed_folder, proposed_name").eq("sha256", hash).in("status", ["filed", "pending", "approved", "waiting", "interview", "changed", "change_requested"]).limit(1)
   const label = att.property_label || cls?.property?.label || null
+  let dupRow = dup?.[0] || null
+  // Part G: the sha lookup missed → is the file already in Drive under another name? Size first, then md5.
+  if (!dupRow && DRIVE_DEDUPE_STATUSES.has(status)) {
+    try {
+      const files = await driveFilesFor(ctx, att, msg, label)
+      const hit = files?.length ? driveDuplicateOf({ size: bytes.length, md5: md5(bytes) }, files) : null
+      if (hit) {
+        log(`duplicate (drive): ${att.filename} = ${hit.path}`)
+        dupRow = { id: hit.id, status: "filed", final_folder: hit.path.replace(/\/[^/]*$/, ""), final_name: hit.name, drive_file_id: hit.id, drive_url: hit.webViewLink, drive: true }
+      }
+    } catch (e) {
+      warn(`drive dedupe for ${att.filename} failed:`, e.message)
+    }
+  }
   const row = {
     gmail_id: msg.id,
     thread_id: msg.threadId,
@@ -521,12 +567,14 @@ async function recordAttachment(ctx, msg, att, cls, status, { source = "attachme
     property_key: propertyKey(label),
     property_label: label,
     doc_type: att.doc_type,
-    status: dup?.length ? "duplicate" : status,
+    status: dupRow ? "duplicate" : status,
+    // A Drive hit records where the existing copy lives (the brief's "Skipped as duplicates" line shows the name; no card).
+    ...(dupRow?.drive ? { final_folder: dupRow.final_folder, final_name: dupRow.final_name, drive_file_id: dupRow.drive_file_id, drive_url: dupRow.drive_url, resolved_at: isoNow() } : {}),
   }
-  if (DRY) return { row: { ...row, id: "dry-run" }, bytes, dup: dup?.[0] || null }
+  if (DRY) return { row: { ...row, id: "dry-run" }, bytes, dup: dupRow }
   const { data, error } = await sb().from("inbox_files").insert(row).select("*").single()
   if (error) throw new Error(`inbox_files insert: ${error.message}`)
-  return { row: data, bytes, dup: dup?.[0] || null }
+  return { row: data, bytes, dup: dupRow }
 }
 
 // ------------------------------------------------------------------ filing proposals
@@ -1420,6 +1468,11 @@ async function runFetchJob(ctx, job, msg, cls) {
   if (!DRY && cls2) await sb().from("inbox_messages").update({ classification: merged }).eq("gmail_id", msg.id)
   const docs = fetchedDocs(files, msg, merged, job.provider)
   const { filed, outcomes } = await fileDocuments(ctx, msg, merged, docs, { source: job.kind === "manual" ? "manual" : job.provider, fetchId: DRY ? null : job.id })
+  // Part C (2026-10-17): a FILED HomeSentry report is a completion — the "sign / pay"
+  // loops and the results loop for that property are done, whatever the email said.
+  if (job.provider === "tapinspect") {
+    for (const f of filed) if (f.row.doc_type === "inspection" && f.row.property_label) await resolveByCompletion(ctx, reportFiledEvent(f.row.property_label), msg)
+  }
 
   const lines = [`📥 <b>Pulled ${files.length === 1 ? "1 document" : `${files.length} documents`} from ${label}</b> — “${esc(subj)}”`, ...filedLines(filed)]
   for (const o of outcomes.filter((x) => x.outcome !== "filed")) lines.push(`• ${esc(o.filename)} — ${o.outcome}${o.why ? ` (${esc(shortSubject(o.why, 80))})` : ""}`)
@@ -1611,6 +1664,15 @@ async function handleMessage(ctx, msg) {
   await insertMessage(msg, kind, cls)
   if (!cls) return
   log(`${msg.from.email} · ${shortSubject(msg.subject, 50)} → ${kind}${cls.property?.label ? ` · ${cls.property.label}` : ""}${cls.needs_reply ? " · needs reply" : ""}`)
+  // Ryan 2026-10-17 (Part C): a vendor completion — HomeSentry "Thank you for your
+  // payment" / "results … have been updated", FreshBooks "… ($0.00)" — CLOSES the
+  // loops and loose ends for that property / invoice and never opens one (the
+  // loopEligible gate below sees the same event).
+  const completion = completionEvent(msg, cls)
+  if (completion) {
+    log(`completion event: ${completion.vendor} ${completion.kind}${completion.property ? ` · ${completion.property}` : ""}${completion.invoice ? ` · invoice ${completion.invoice}` : ""}${completion.shareId ? ` · share ${completion.shareId.slice(0, 8)}…` : ""}`)
+    await resolveByCompletion(ctx, completion, msg)
+  }
   // Ryan 2026-10-05: Kiavi's servicing desk sent the ACH form for the Halleck
   // draws from servicing@ — the classifier said "needs reply" but the kind was
   // "automated" and this return threw the ask away. A system-looking sender that
@@ -1681,8 +1743,8 @@ async function handleMessage(ctx, msg) {
     // A person who pitched Ryan a deal directly is owed an answer, whatever the screen says.
     if (cls.deal?.tier === "direct" && !cls.needs_reply) cls = { ...cls, needs_reply: true, ask: cls.ask || `Reply to ${cls.counterparty || msg.from.name || msg.from.email} about ${cls.deal.address || "their deal"}`, category: cls.category || "agent" }
     // Ryan 2026-10-12: a "Completed:" envelope never opens a loop — it only closes one (loops.mjs).
-    if (loopEligible(kind) && (cls.needs_reply || kind === "docusign_request")) await upsertLoop(ctx, msg, cls, kind)
-    else if (!loopEligible(kind)) log(`no loop: ${kind} is a completion event`)
+    if (loopEligible(kind, msg, cls) && (cls.needs_reply || kind === "docusign_request")) await upsertLoop(ctx, msg, cls, kind)
+    else if (!loopEligible(kind, msg, cls)) log(`no loop: ${completion ? `${completion.vendor} ${completion.kind}` : kind} is a completion event`)
   }
 
   // --- deals
@@ -1696,24 +1758,43 @@ async function upsertLoop(ctx, msg, cls, kind) {
   const category = isSig ? "signature" : cls.category || "other"
   const ask = isSig ? `Sign: ${shortSubject(msg.subject.replace(/^(reminder:\s*)?(please sign:?\s*)?/i, ""))}` : cls.ask || cls.summary
   const priority = isSig ? "high" : cls.priority || "normal"
+  // 2026-10-17: message_at (Part A), loop_key (Part D) and owed_by (Part F) ride every loop.
+  const key = loopKey(msg, cls)
+  const owed_by = owedBy(cls)
+  const incoming = { gmail_id: msg.id, message_at: msg.internalDate, due_on: cls.due_on || null, priority, ask, loop_key: key, owed_by }
+  // Same thread first, then the same signature envelope, then (Part D) the same ask
+  // from the same vendor family for the same property within 48 h — the three Quito
+  // emails (HomeSentry booking, "Please sign agreement", Amanda's forward) are one loop.
   const { data: open } = await sb().from("inbox_loops").select("*").eq("thread_id", msg.threadId).in("status", ["open", "snoozed"]).limit(1)
   let loop = open?.[0] || null
+  let how = loop ? "thread" : null
   if (isSig) {
     const { data: sig } = await sb().from("inbox_loops").select("*").eq("category", "signature").in("status", ["open", "snoozed"]).limit(50)
-    loop = (sig || []).find((l) => normalizeEnvelope(l.subject) === normalizeEnvelope(msg.subject)) || loop
+    const env = (sig || []).find((l) => normalizeEnvelope(l.subject) === normalizeEnvelope(msg.subject)) || null
+    if (env) {
+      loop = env
+      how = "envelope"
+    }
+  }
+  if (!loop) {
+    const since = new Date(Date.now() - LOOP_KEY_WINDOW_MS).toISOString()
+    const { data: keyed } = await sb().from("inbox_loops").select("*").eq("loop_key", key).in("status", ["open", "snoozed"]).gte("created_at", since).order("created_at").limit(10)
+    loop = loopKeyMatch(keyed || [], key)
+    if (loop) how = "key"
   }
   const now = isoNow()
   if (DRY) {
-    log(`loop: ${ask} (${priority})`)
+    log(`loop: ${ask} (${priority} · ${owed_by} · ${key})${loop ? ` — would refresh ${loop.id} (same ${how})` : ""}`)
     return
   }
   if (loop) {
-    await sb().from("inbox_loops").update({ ask, due_on: cls.due_on || loop.due_on, priority: priority === "high" ? "high" : loop.priority, gmail_id: msg.id, status: "open", snooze_until: null }).eq("id", loop.id)
+    await sb().from("inbox_loops").update(mergeLoop(loop, incoming, { sameThread: how === "thread" })).eq("id", loop.id)
+    log(`loop refreshed (same ${how}): ${loop.id} ← ${msg.id}`)
     return
   }
   const { data } = await sb().from("inbox_loops").insert({
     thread_id: msg.threadId, gmail_id: msg.id, subject: msg.subject, counterparty: cls.counterparty || msg.from.name || msg.from.email, counterparty_email: msg.from.email,
-    category, ask, due_on: cls.due_on || null, priority, status: "open",
+    category, ask, due_on: cls.due_on || null, priority, status: "open", message_at: msg.internalDate, loop_key: key, owed_by,
   }).select("*").single()
   // Ryan 2026-09-25: "I don't need Telegram giving me a second alert on every
   // single email." Loops are tracked silently and surface in the brief /
@@ -1745,10 +1826,15 @@ async function resolveSignatureLoops(msg) {
     }
   }
 }
+/** Ryan's sent mail over the last SENT_LOOKBACK_DAYS, by thread and by recipient — read once per pass (resolveLoops + the digest). */
+async function sentFor(ctx) {
+  if (!ctx.sent) ctx.sent = await sentSince(ctx.gmail, SENT_LOOKBACK_DAYS)
+  return ctx.sent
+}
 async function resolveLoops(ctx) {
-  const { data: open } = await sb().from("inbox_loops").select("id, thread_id, created_at, tg_message_id, status, snooze_until").in("status", ["open", "snoozed", "acknowledged"]).limit(500)
+  const { data: open } = await sb().from("inbox_loops").select("id, thread_id, counterparty_email, created_at, message_at, tg_message_id, status, snooze_until").in("status", ["open", "snoozed", "acknowledged"]).limit(500)
   if (!open?.length) return
-  const sent = await sentThreadsSince(ctx.gmail, 4)
+  const sent = await sentFor(ctx)
   const now = isoNow()
   for (const l of open) {
     // Snoozed items and "Got it"-acknowledged items with a due date both carry a
@@ -1757,15 +1843,86 @@ async function resolveLoops(ctx) {
     if ((l.status === "snoozed" || l.status === "acknowledged") && l.snooze_until && l.snooze_until <= now) {
       if (!DRY) await sb().from("inbox_loops").update({ status: "open", snooze_until: null }).eq("id", l.id)
     }
-    const when = sent.get(l.thread_id)
-    if (when && when > l.created_at) {
+    // Parts A + B: a sent message counts when it is newer than the EMAIL (message_at,
+    // not the row's created_at), on the loop's thread OR to its counterparty on any thread.
+    const how = answeredBy(l, sent)
+    if (how) {
       if (!DRY) {
         await sb().from("inbox_loops").update({ status: "resolved_by_reply", resolved_at: now }).eq("id", l.id)
         await tgClearButtons(l.tg_message_id)
       }
-      log(`loop resolved by reply: ${l.id}`)
+      log(`loop resolved by reply (same ${how}): ${l.id}`)
     }
   }
+}
+
+// ---- Part C: vendor completions (briefs/BRIEF_INBOX_LOOP_HYGIENE_2026-10-17.md)
+/** tapinspect share uuids queued in inbox_fetches over the last 30 days, by thread — the cheap way to tie a loop or an Unanswered thread to an inspection job. */
+async function shareIdsByThread(ctx) {
+  if (!ctx.shareIdsByThread) {
+    const since = new Date(Date.now() - 30 * 86_400_000).toISOString()
+    const { data } = await sb().from("inbox_fetches").select("thread_id, url").eq("provider", "tapinspect").gte("created_at", since).limit(500)
+    const map = new Map()
+    for (const f of data || []) {
+      const id = tapinspectShareId(f.url)
+      if (!id || !f.thread_id) continue
+      if (!map.has(f.thread_id)) map.set(f.thread_id, [])
+      map.get(f.thread_id).push(id)
+    }
+    ctx.shareIdsByThread = map
+  }
+  return ctx.shareIdsByThread
+}
+/** The context completionCloses compares against: share uuids on the loop's thread, the classifier's property, and — only when those don't decide and the event carries a share uuid — the loop email's body from Gmail. */
+async function loopContext(ctx, loop, event) {
+  const shareIds = loop.thread_id ? (await shareIdsByThread(ctx)).get(loop.thread_id) || [] : []
+  let propertyLabel = null
+  let text = ""
+  if (loop.gmail_id) {
+    const { data: m } = await sb().from("inbox_messages").select("classification").eq("gmail_id", loop.gmail_id).maybeSingle()
+    propertyLabel = m?.classification?.property?.label || null
+    if (event.shareId && !completionCloses(event, loop, { shareIds, propertyLabel })) {
+      ctx.bodyCache = ctx.bodyCache || new Map()
+      if (!ctx.bodyCache.has(loop.gmail_id)) ctx.bodyCache.set(loop.gmail_id, await getMessage(ctx.gmail, loop.gmail_id).then((x) => x.text || "").catch(() => ""))
+      text = ctx.bodyCache.get(loop.gmail_id)
+    }
+  }
+  return { shareIds, propertyLabel, text }
+}
+/**
+ * A completion event closes every matching open/snoozed/acknowledged loop
+ * (resolved_by_event, buttons cleared) and dismisses the matching Unanswered
+ * threads from the same vendor in the last 10 days via agent.unanswered_dismissed
+ * — the map the digest already honours, so it needs no new logic.
+ */
+async function resolveByCompletion(ctx, event, msg) {
+  if (!event) return
+  const { data: loops } = await sb().from("inbox_loops").select("*").in("status", ["open", "snoozed", "acknowledged"]).limit(500)
+  for (const l of loops || []) {
+    if (l.gmail_id === msg.id) continue
+    const extra = await loopContext(ctx, l, event)
+    if (!completionCloses(event, l, extra)) continue
+    log(`loop resolved by completion (${event.vendor} ${event.kind}${event.property ? ` · ${event.property}` : ""}): ${l.id} (${shortSubject(l.subject, 50)})`)
+    if (DRY) continue
+    await sb().from("inbox_loops").update({ status: "resolved_by_event", resolved_at: isoNow() }).eq("id", l.id)
+    if (l.tg_message_id) await tgClearButtons(l.tg_message_id)
+  }
+  const since = new Date(Date.now() - 10 * 86_400_000).toISOString()
+  const { data: rows } = await sb().from("inbox_messages").select("gmail_id, thread_id, sender, subject, classification").gte("internal_date", since).neq("gmail_id", msg.id).order("internal_date", { ascending: false }).limit(400)
+  const shares = await shareIdsByThread(ctx)
+  const agent = await getSetting("agent")
+  const dismissed = { ...(agent.unanswered_dismissed || {}) }
+  const seen = new Set()
+  let added = 0
+  for (const r of rows || []) {
+    if (!r.thread_id || r.thread_id === msg.threadId || seen.has(r.thread_id) || dismissed[r.thread_id]) continue
+    seen.add(r.thread_id)
+    if (!completionDismisses(event, r, { shareIds: shares.get(r.thread_id) || [] })) continue
+    log(`unanswered dismissed by completion (${event.vendor} ${event.kind}): ${r.thread_id} (${shortSubject(r.subject, 50)})`)
+    dismissed[r.thread_id] = isoNow()
+    added++
+  }
+  if (added && !DRY) await setSetting("agent", { unanswered_dismissed: dismissed })
 }
 
 // ------------------------------------------------------------------ deals
@@ -1966,36 +2123,37 @@ async function maybeDigest(ctx, force = false) {
   // on the thread after it arrived, 2+ days old.
   const weekAgo = new Date(Date.now() - 7 * 86_400_000).toISOString()
   const { data: recentHuman } = await sb().from("inbox_messages").select("gmail_id, thread_id, sender, sender_name, subject, internal_date, classification").in("kind", ["human", "deal_lead", "zix", "esign_completed"]).gte("internal_date", weekAgo).order("internal_date", { ascending: false }).limit(300)
-  const sent = await sentThreadsSince(ctx.gmail, 8)
+  const sent = await sentFor(ctx)
   const openThreads = new Set((loops.data || []).map((l) => l.thread_id))
   // Ryan 2026-10-05: "nothing here relevant … a simple button to remove these
   // from the daily brief." 🧹 on the brief dismisses every thread listed that day.
+  // 2026-10-17: the rule itself lives in loops.mjs isLooseEnd — relays
+  // (RELAY_SENDER_RE) never count, and a reply to the same person on another
+  // thread counts as an answer (Parts B + E).
   const dismissed = agent.unanswered_dismissed || {}
   const seenThread = new Set()
   const looseEnds = []
   for (const m of recentHuman || []) {
     if (!m.thread_id || seenThread.has(m.thread_id)) continue
     seenThread.add(m.thread_id)
-    if (openThreads.has(m.thread_id)) continue
-    if (dismissed[m.thread_id]) continue
-    const c = m.classification || {}
-    if (c.is_human === false || /noreply|no-reply|notification|docusign|authentisign/i.test(m.sender || "")) continue
-    if (c.needs_reply === false) continue // FYI mail (a signed copy, a "thanks") is not a loose end
-    if (c.solicitation === true || c.deal?.tier === "blast") continue // marketing is never a loose end (Ryan 2026-10-03)
-    const replied = sent.get(m.thread_id)
-    if (replied && replied > m.internal_date) continue
-    if (daysAgo(m.internal_date) < 2) continue
-    looseEnds.push(m)
+    if (isLooseEnd(m, { sent, openThreads, dismissed })) looseEnds.push(m)
   }
-  const open = loops.data || []
+  // Part F: loops the other party still owes an action on sit in their own block.
+  const { mine: open, theirs } = splitLoops(loops.data || [])
+  const loopLine = (l) => {
+    const age = daysAgo(l.message_at || l.created_at)
+    return `${l.priority === "high" ? "🔴" : "•"} ${esc(l.counterparty)} — ${esc(l.ask)}${l.due_on ? ` · due ${esc(l.due_on)}` : ""}${age >= 2 ? ` · ${age}d` : ""}`
+  }
   if (open.length) {
     lines.push(`\n<b>Waiting on you (${open.length})</b>`)
-    for (const l of open.slice(0, 12)) {
-      const age = daysAgo(l.created_at)
-      lines.push(`${l.priority === "high" ? "🔴" : "•"} ${esc(l.counterparty)} — ${esc(l.ask)}${l.due_on ? ` · due ${esc(l.due_on)}` : ""}${age >= 2 ? ` · ${age}d` : ""}`)
-    }
+    for (const l of open.slice(0, 12)) lines.push(loopLine(l))
     if (open.length > 12) lines.push(`… +${open.length - 12} more`)
   } else lines.push("\n✅ Nothing waiting on you.")
+  if (theirs.length) {
+    lines.push(`\n<b>Waiting on them (${theirs.length})</b>`)
+    for (const l of theirs.slice(0, 8)) lines.push(loopLine(l))
+    if (theirs.length > 8) lines.push(`… +${theirs.length - 8} more`)
+  }
   if (looseEnds.length) {
     lines.push(`\n<b>Unanswered ${looseEnds.length > 8 ? "(showing 8 of " + looseEnds.length + ")" : ""}</b> — human emails with no reply from you`)
     for (const m of looseEnds.slice(0, 8)) lines.push(`• ${esc(m.sender_name || m.sender)} — “${esc(shortSubject(m.subject, 60))}” · ${daysAgo(m.internal_date)}d`)
