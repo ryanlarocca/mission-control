@@ -187,6 +187,27 @@ export function vendorFilename({ rule, docType, filename, subject, receivedAt, b
   return { name: sanitizeFilename(name), amounts, invoice_no }
 }
 
+/**
+ * Part G (briefs/BRIEF_INBOX_LOOP_HYGIENE_2026-10-17.md): is this attachment
+ * already in Drive under another name? Dominic's re-scrubbed CSVs sat as
+ * proposals for days while the identical bytes lived in Marketing/2026/… as
+ * "v2 2026-10-14 - <name>.csv". `files` = a drive.mjs walkFolder listing;
+ * size is the cheap pre-filter, md5Checksum decides. Returns the matching file
+ * or null (a same-size file with another md5 is not a duplicate).
+ * @param {{ size: number|null|undefined, md5: string|null|undefined }} att
+ * @param {Array<{ id?: string, name?: string, size?: number|string|null, md5Checksum?: string|null, webViewLink?: string|null, path?: string }>} files
+ */
+export function driveDuplicateOf({ size, md5 }, files) {
+  const want = String(md5 || "").trim().toLowerCase()
+  const n = Number(size)
+  if (!want || !Number.isFinite(n) || n <= 0) return null
+  for (const f of files || []) {
+    if (f?.size == null || Number(f.size) !== n) continue
+    if (String(f.md5Checksum || "").toLowerCase() === want) return f
+  }
+  return null
+}
+
 /** "5764 Halleck Dr Buyer Statement 2026-10-02 FINAL.pdf" → same-day second copy gets the time appended. */
 export function withTimeSuffix(name, receivedAt) {
   const t = new Date(receivedAt || Date.now()).toISOString().slice(11, 16).replace(":", "")

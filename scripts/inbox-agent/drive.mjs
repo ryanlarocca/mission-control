@@ -38,7 +38,7 @@ export async function listChildren(drive, folderId) {
   do {
     const { data } = await drive.files.list({
       q: `'${folderId}' in parents and trashed = false`,
-      fields: "nextPageToken, files(id, name, mimeType, modifiedTime, size, webViewLink)",
+      fields: "nextPageToken, files(id, name, mimeType, modifiedTime, size, md5Checksum, webViewLink)",
       pageSize: 200,
       pageToken,
       supportsAllDrives: true,
@@ -167,6 +167,36 @@ export async function folderTree(drive, rootId, { maxDepth = 3 } = {}) {
     await rec(id, "  ", 2)
   }
   return lines.join("\n")
+}
+
+/** Google-native files (Docs, Sheets, …) have no md5Checksum and no bytes to compare against. */
+const GOOGLE_NATIVE_RE = /^application\/vnd\.google-apps\./
+export const WALK_MAX_FILES = 2000
+
+/**
+ * Every non-folder descendant of a folder (Part G of briefs/BRIEF_INBOX_LOOP_HYGIENE_2026-10-17.md):
+ * [{ id, name, size, md5Checksum, webViewLink, path }], `path` relative to the
+ * walked folder ("NOO October2026/Raw/v2 2026-10-14 - ALL SC Co NOO SFR 11+ yr.csv"),
+ * prefixed with `pathPrefix` when given. Breadth-first, `maxDepth` levels deep,
+ * capped at ~2,000 files; Google-native types are skipped (no md5 to match).
+ */
+export async function walkFolder(drive, folderId, { maxDepth = 4, maxFiles = WALK_MAX_FILES, pathPrefix = "" } = {}) {
+  const out = []
+  const queue = [{ id: folderId, prefix: pathPrefix ? `${pathPrefix}/` : "", depth: 1 }]
+  while (queue.length && out.length < maxFiles) {
+    const { id, prefix, depth } = queue.shift()
+    const kids = await listChildren(drive, id)
+    for (const k of kids) {
+      if (k.mimeType === FOLDER) {
+        if (depth < maxDepth) queue.push({ id: k.id, prefix: `${prefix}${k.name}/`, depth: depth + 1 })
+        continue
+      }
+      if (GOOGLE_NATIVE_RE.test(k.mimeType || "")) continue
+      out.push({ id: k.id, name: k.name, size: k.size != null ? Number(k.size) : null, md5Checksum: k.md5Checksum || null, webViewLink: k.webViewLink || null, path: `${prefix}${k.name}` })
+      if (out.length >= maxFiles) break
+    }
+  }
+  return out
 }
 
 /** Download a Drive file's bytes (for settlement-statement diffs). */
