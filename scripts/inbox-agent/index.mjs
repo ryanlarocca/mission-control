@@ -1353,6 +1353,21 @@ async function markStagingInvoicePaid(ctx, event, msg) {
   log(`vendor paid: re-pulling the FreshBooks invoice (job ${job.id}, was ${job.status}) to replace "${row.final_name}" with the paid copy — ${msg.subject}`)
 }
 
+/** The paid re-pull is spent (or crashed): rename the filed invoice … PAID without new bytes, close the job as failed, no card. */
+async function failStagingPaidQuietly(ctx, job, attempts, shot, why) {
+  let renamed = "renamed PAID without new bytes"
+  try {
+    const { data: rows } = await sb().from("inbox_files").select("*").eq("fetch_id", job.id).eq("doc_type", "staging_invoice").eq("status", "filed").limit(5)
+    if (rows?.[0] && !isPaidName(rows[0].final_name)) await renameStagingPaid(ctx, rows[0])
+    else if (!rows?.[0]) renamed = "no filed invoice row to rename"
+    else renamed = "already named PAID"
+  } catch (e) {
+    renamed = `rename also failed: ${e.message}`
+  }
+  if (!DRY) await sb().from("inbox_fetches").update({ status: "failed", attempts, error: `paid re-pull failed (${why}); ${renamed}`, screenshot: shot, resolved_at: isoNow() }).eq("id", job.id)
+  warn(`fetch ${job.id}: paid re-pull failed after ${attempts} attempt${attempts === 1 ? "" : "s"} — ${why}; ${renamed}${shot ? ` · screenshot ${shot}` : ""}`)
+}
+
 /** A `staging_paid` fetch came back: replace the filed invoice's bytes in Drive, rename … PAID, note it on the card. */
 async function applyStagingPaid(ctx, job, file, attempts, shot) {
   const { data: rows } = await sb().from("inbox_files").select("*").eq("fetch_id", job.id).eq("doc_type", "staging_invoice").eq("status", "filed").limit(5)
@@ -1387,10 +1402,18 @@ async function fileFreshBooksJob(ctx, job, msg, cls, r, attempts, shot) {
   } else {
     for (const f of files) saveFetchedBytes(job.id, f.bytes)
   }
-  if (job.kind === "staging_paid") return applyStagingPaid(ctx, job, files[0], attempts, shot)
+  if (job.kind === "staging_paid") {
+    // A Drive / Supabase failure here must not fall through to runFetches' generic retry card.
+    try {
+      return await applyStagingPaid(ctx, job, files[0], attempts, shot)
+    } catch (e) {
+      return failStagingPaidQuietly(ctx, job, attempts, shot, e.message)
+    }
+  }
   const rules = vendorRules(await getSetting("vendors"))
-  // The email's rule; a typed `fetch <url>` has no vendor email behind it — the property-destination rule that lists the document's type takes it.
-  const rule = matchVendor(msg, rules) || rules.find((x) => x.destination === "property" && (x.doc_types || []).includes(files[0]?.kind)) || null
+  // The email's rule. Only a typed `fetch <url>` (synthetic manual: message, no vendor email behind it) may fall back to
+  // the property-destination rule that lists the document's type; another vendor's FreshBooks email never becomes StyleMe's.
+  const rule = matchVendor(msg, rules) || (/^manual:/.test(job.gmail_id || "") ? rules.find((x) => x.destination === "property" && (x.doc_types || []).includes(files[0]?.kind)) : null) || null
   if (!rule) {
     const mid = await tgSend(`⚠️ Pulled a document from FreshBooks for “${esc(shortSubject(msg.subject))}” but no vendor rule claims it — nothing filed.`, { rows: [[{ text: "Open", url: job.url }]], dryRun: DRY })
     if (!DRY) await sb().from("inbox_fetches").update({ status: "failed", attempts, error: "no property-destination vendor rule for this FreshBooks document", screenshot: shot, tg_message_id: mid, resolved_at: isoNow() }).eq("id", job.id)
@@ -1670,11 +1693,7 @@ async function runFetchJob(ctx, job, msg, cls) {
     // is spent, just rename the filed invoice … PAID (the bytes stay the outstanding
     // copy) — no card either way, the "$0.00" comment already told Ryan.
     if (attempts < MAX_FETCH_ATTEMPTS) return failAttempt(job, attempts, r, r.error)
-    const { data: rows } = await sb().from("inbox_files").select("*").eq("fetch_id", job.id).eq("doc_type", "staging_invoice").eq("status", "filed").limit(5)
-    if (rows?.[0] && !isPaidName(rows[0].final_name)) await renameStagingPaid(ctx, rows[0]).catch((e) => warn(`fetch ${job.id}: paid rename failed:`, e.message))
-    if (!DRY) await sb().from("inbox_fetches").update({ status: "failed", attempts, error: `paid re-pull failed (${r.error}); renamed PAID without new bytes`, screenshot: shot, resolved_at: isoNow() }).eq("id", job.id)
-    warn(`fetch ${job.id}: paid re-pull failed after ${attempts} attempts — ${r.error}; renamed PAID without new bytes${shot ? ` · screenshot ${shot}` : ""}`)
-    return
+    return failStagingPaidQuietly(ctx, job, attempts, shot, r.error)
   }
   if (!r.ok) {
     // Phase 1b: the link expired. Either this run asked DocuSign for a fresh
@@ -1936,7 +1955,8 @@ async function handleMessage(ctx, msg) {
     log(`completion event: ${completion.vendor} ${completion.kind}${completion.property ? ` · ${completion.property}` : ""}${completion.invoice ? ` · invoice ${completion.invoice}` : ""}${completion.shareId ? ` · share ${completion.shareId.slice(0, 8)}…` : ""}`)
     await resolveByCompletion(ctx, completion, msg)
     // Part D (2026-10-17): the FreshBooks "$0.00" comment also marks the filed StyleMe invoice PAID (re-pull → replace bytes → rename).
-    await markStagingInvoicePaid(ctx, completion, msg)
+    // Never lets a Drive / Supabase hiccup turn the receipt itself into an "error" row — the loops above are already closed.
+    await markStagingInvoicePaid(ctx, completion, msg).catch((e) => warn(`vendor paid (${completion.invoice}):`, e.message))
   }
   // Ryan 2026-10-05: Kiavi's servicing desk sent the ACH form for the Halleck
   // draws from servicing@ — the classifier said "needs reply" but the kind was

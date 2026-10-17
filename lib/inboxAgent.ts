@@ -7,8 +7,9 @@ import { VOICE_SYSTEM } from "@/lib/reply/draft"
 // Shared with the Mac mini worker (plain ESM, no deps) so a link is judged the
 // same way here and there. Vercel only writes inbox_fetches rows — nothing in
 // lib/ ever launches a browser (briefs/BRIEF_INBOX_LINK_FETCH_2026-10-12.md §4).
-import { detectProvider, documentLinks, providerLabel } from "@/scripts/inbox-agent/fetch/providers.mjs"
+import { detectProvider, documentLinks, providerLabel, queuesForVendor } from "@/scripts/inbox-agent/fetch/providers.mjs"
 import { owedByFromReply, splitLoops } from "@/scripts/inbox-agent/loops.mjs"
+import { matchVendor, vendorRules } from "@/scripts/inbox-agent/vendors.mjs"
 
 // Inbox Agent — the Vercel half (briefs/BRIEF_INBOX_AGENT_2026-09-24.md).
 //
@@ -267,7 +268,7 @@ async function requeueFetch(sb: FetchSb, id: string): Promise<void> {
 /** `fetch` replied on a card → every document link in that card's email goes on the queue. */
 async function enqueueLinksForMessage(gmailId: string): Promise<string> {
   const sb = getLeadsClient()
-  const { data: row } = await sb.from("inbox_messages").select("kind, thread_id, classification").eq("gmail_id", gmailId).maybeSingle()
+  const { data: row } = await sb.from("inbox_messages").select("kind, thread_id, sender, subject, classification").eq("gmail_id", gmailId).maybeSingle()
   const reported = ((row?.classification as { document_links?: unknown } | null)?.document_links as string[] | undefined) || []
   let text = ""
   let threadId: string | null = row?.thread_id || null
@@ -276,7 +277,9 @@ async function enqueueLinksForMessage(gmailId: string): Promise<string> {
     text = msg.text
     threadId = threadId || msg.threadId || null
   }
-  const links = documentLinks({ text }, reported)
+  // 2026-10-17: a FreshBooks link is a document only on an email a property-destination vendor rule (StyleMe) claims — same gate as the worker's poll.
+  const vendor = row ? matchVendor({ sender: row.sender as string, subject: row.subject as string }, vendorRules((await getSetting("vendors")) as { rules?: unknown[] })) : null
+  const links = documentLinks({ text }, reported).filter((l) => queuesForVendor(l.provider, vendor))
   if (!links.length) return "No document links (DocuSign) in that email — nothing to pull."
   let queued = 0, dup = 0
   for (const l of links) {

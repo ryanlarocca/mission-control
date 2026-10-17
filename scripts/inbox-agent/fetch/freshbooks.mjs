@@ -36,7 +36,7 @@ export const SELECTORS = {
   downloadPdf: /^download pdf$/i,
   downloadPdfLoose: /download\s*pdf/i,
   /** Document rendered: "Proposal SS01174" / "Invoice 080223VA" / "Estimate …" somewhere in the page text. */
-  heading: /\b(proposal|invoice|estimate)\s*(?:#|no\.?|number)?\s*[A-Z0-9][A-Z0-9-]{3,}/i,
+  heading: /\b(proposal|invoice|estimate)\s*(?:#|no\.?|number)?\s*(?=[A-Z0-9-]*\d)[A-Z0-9][A-Z0-9-]{3,}/i, // the id must carry a digit — "invoice from" is prose
   /** Everything the flow must never click (judged before the allowlist). */
   forbidden: /\bpay\b|payment|accept|save this (proposal|estimate|invoice)|create an account|\bsend\b|view comments?|view history|\bprint\b|\bsign\b|agree|submit|decline|log ?in|sign ?in|sign ?up|password/i,
   /** The page asked for credentials. */
