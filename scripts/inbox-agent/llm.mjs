@@ -169,6 +169,7 @@ Return JSON only:
   "solicitation": true|false,                  // the sender is marketing TO Ryan — a listing/flyer/open house, a financing or service pitch, a rate sheet, a bid-list invite, a newsletter — rather than responding to something Ryan started or working a deal he is in. A solicitation never needs a reply from Ryan even if it says "RSVP" or "call me".
   "needs_reply": true|false,                   // does the sender need something from Ryan (an answer, a signature, a document, a decision, a signing time)? Always false when solicitation is true.
   "ask": "one sentence: what they need from Ryan" | null,
+  "owed_by": "ryan" | "them" | null,           // who holds the NEXT action: "them" when the sender/forwarder still has to do something before Ryan can act (get a report released, send a form, confirm a date); "ryan" when Ryan can act now; null when unsure
   "due_on": "YYYY-MM-DD" | null,               // only if a date/deadline is stated or clearly implied (e.g. 'tomorrow', 'by Friday')
   "priority": "high"|"normal"|"low",           // high = money/closing/signature/deadline within ~3 days or a direct deal from a person
   "category": "escrow"|"lender"|"agent"|"contractor"|"tax"|"insurance"|"vendor"|"signature"|"personal"|"other",

@@ -3,6 +3,7 @@
 // it covers read + label). Same JWT pattern as scripts/campaign-gmail.mjs.
 import { google } from "googleapis"
 import { MAILBOX, warn } from "./env.mjs"
+import { SENT_LOOKBACK_DAYS, foldSent } from "./loops.mjs"
 
 const GMAIL_SCOPES = ["https://www.googleapis.com/auth/gmail.modify"]
 
@@ -140,15 +141,24 @@ export async function addLabel(gmail, messageId, labelName) {
   }
 }
 
-/** Thread ids Ryan replied on recently (for closing open loops). */
-export async function sentThreadsSince(gmail, days = 3) {
+/**
+ * What Ryan sent recently, folded two ways (loops.mjs foldSent):
+ *   byThread    threadId → latest sent internalDate ISO   (a reply on the thread)
+ *   byRecipient email    → latest sent internalDate ISO   (a reply to the same person, any thread — Part B)
+ * To/Cc come from the metadata format; the mailbox's own address is never a recipient.
+ */
+export async function sentSince(gmail, days = SENT_LOOKBACK_DAYS) {
   const ids = await listMessageIds(gmail, `in:sent newer_than:${days}d`, 300)
-  const map = new Map() // threadId → latest sent internalDate ISO
+  const messages = []
   for (const id of ids) {
-    const { data } = await gmail.users.messages.get({ userId: "me", id, format: "minimal" })
-    const when = data.internalDate ? new Date(Number(data.internalDate)).toISOString() : null
-    const prev = map.get(data.threadId)
-    if (!prev || (when && when > prev)) map.set(data.threadId, when)
+    const { data } = await gmail.users.messages.get({ userId: "me", id, format: "metadata", metadataHeaders: ["To", "Cc"] })
+    const headers = data.payload?.headers || []
+    messages.push({ threadId: data.threadId, internalDate: data.internalDate ? new Date(Number(data.internalDate)).toISOString() : null, to: header(headers, "To"), cc: header(headers, "Cc") })
   }
-  return map
+  return foldSent(messages, { self: MAILBOX })
+}
+
+/** Thread ids Ryan replied on recently (for closing open loops). Kept for callers that only need the thread map. */
+export async function sentThreadsSince(gmail, days = SENT_LOOKBACK_DAYS) {
+  return (await sentSince(gmail, days)).byThread
 }

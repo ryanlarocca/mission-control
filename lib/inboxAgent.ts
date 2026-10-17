@@ -8,6 +8,7 @@ import { VOICE_SYSTEM } from "@/lib/reply/draft"
 // same way here and there. Vercel only writes inbox_fetches rows — nothing in
 // lib/ ever launches a browser (briefs/BRIEF_INBOX_LINK_FETCH_2026-10-12.md §4).
 import { detectProvider, documentLinks, providerLabel } from "@/scripts/inbox-agent/fetch/providers.mjs"
+import { owedByFromReply, splitLoops } from "@/scripts/inbox-agent/loops.mjs"
 
 // Inbox Agent — the Vercel half (briefs/BRIEF_INBOX_AGENT_2026-09-24.md).
 //
@@ -203,6 +204,12 @@ export async function recordInboxReply(ref: InboxRef, text: string): Promise<str
       if (/^(aware|got it|noted|i know|seen|stop reminding|no reminder)\b/.test(lower)) {
         const how = await acknowledgeLoop(sb, ref.id)
         return how === "muted" ? "👀 Got it — muted; it won't show in the daily brief." : "👀 Got it — muted; back the day before it's due."
+      }
+      // Ryan 2026-10-17: "theirs" / "mine" flips who holds the next action (Waiting on them vs Waiting on you).
+      const owed = owedByFromReply(lower)
+      if (owed) {
+        await sb.from("inbox_loops").update({ owed_by: owed }).eq("id", ref.id)
+        return owed === "them" ? "🤝 Noted — the ball is in their court; it moves to “Waiting on them” in the brief." : "🙋 Noted — back on you; it's under “Waiting on you” again."
       }
       const snooze = /^snooze\s*(\d+)?\s*(d|day|days|w|week|weeks)?/.exec(lower)
       if (snooze) {
@@ -550,7 +557,7 @@ export async function handleInboxCommand(body: string): Promise<{ text: string; 
   if (/^(inbox|inbox help|inbox\?)$/i.test(t) || /^inbox status$/i.test(t)) {
     const [agent, rules, drive, loops, pending, waiting, iv] = await Promise.all([
       getSetting("agent"), getSetting("rules"), getSetting("drive"),
-      sb.from("inbox_loops").select("id", { count: "exact", head: true }).eq("status", "open"),
+      sb.from("inbox_loops").select("id", { count: "exact", head: true }).eq("status", "open").or("owed_by.is.null,owed_by.neq.them"),
       sb.from("inbox_files").select("id", { count: "exact", head: true }).in("status", ["pending", "batch", "change_requested"]),
       sb.from("inbox_files").select("id", { count: "exact", head: true }).eq("status", "waiting"),
       sb.from("inbox_interview").select("id", { count: "exact", head: true }).in("status", ["pending", "asked"]),
@@ -590,11 +597,15 @@ export async function handleInboxCommand(body: string): Promise<{ text: string; 
   }
   if (/^open$/i.test(t) || /^(what's|whats|what is) (open|waiting)/i.test(t)) {
     const { data } = await sb.from("inbox_loops").select("*").eq("status", "open").order("priority").order("created_at")
-    if (!data?.length) return { text: "✅ Nothing waiting on you." }
-    const lines = [`<b>Waiting on you (${data.length})</b>`]
-    for (const l of data.slice(0, 15)) lines.push(`${l.priority === "high" ? "🔴" : "•"} ${esc(l.counterparty)} — ${esc(l.ask)}${l.due_on ? ` · due ${esc(l.due_on)}` : ""} · ${ago(l.created_at)}`)
-    if (data.length > 15) lines.push(`… +${data.length - 15} more`)
-    lines.push("Reply “done” or “snooze 3d” on the original card, or tap its buttons.")
+    const { mine, theirs } = splitLoops(data || [])
+    if (!mine.length && !theirs.length) return { text: "✅ Nothing waiting on you." }
+    const line = (l: { priority: string; counterparty: string; ask: string; due_on: string | null; created_at: string }) => `${l.priority === "high" ? "🔴" : "•"} ${esc(l.counterparty)} — ${esc(l.ask)}${l.due_on ? ` · due ${esc(l.due_on)}` : ""} · ${ago(l.created_at)}`
+    const lines = mine.length ? [`<b>Waiting on you (${mine.length})</b>`, ...mine.slice(0, 15).map(line)] : ["✅ Nothing waiting on you."]
+    if (mine.length > 15) lines.push(`… +${mine.length - 15} more`)
+    // Ryan 2026-10-17: the other party still has to do something (get a report released, send a form) — not his list.
+    if (theirs.length) lines.push("", `<b>Waiting on them (${theirs.length})</b>`, ...theirs.slice(0, 10).map(line))
+    if (theirs.length > 10) lines.push(`… +${theirs.length - 10} more`)
+    lines.push("Reply “done” or “snooze 3d” on the original card, or tap its buttons; “theirs” / “mine” moves an item between the two lists.")
     return { text: lines.join("\n") }
   }
   if (/^rules$/i.test(t)) {
