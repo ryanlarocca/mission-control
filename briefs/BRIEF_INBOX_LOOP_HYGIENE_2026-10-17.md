@@ -84,3 +84,75 @@ Generalize the 2026-10-12 lesson in `loops.mjs` ("a completion is an event that 
 # HANDOFF (write this section at the end of the brief file when you finish)
 
 List: the migration file to apply; the exact `git` merge steps (fast-forward `inbox-loop-hygiene` into `main`, then `git -C /Users/ryanlarocca/Projects/PROJECTS/mission-control pull --ff-only`); the live checks for the operator (run the worker once with `--dry-run` on the Halleck, Quito, Juan and FreshBooks gmail ids above and confirm the log lines "loop resolved by completion" / "duplicate (drive)"); anything you could not cover with tests and why.
+
+---
+
+## HANDOFF (for the operator on the Mac mini)
+
+Built on branch `inbox-loop-hygiene` (cloud session, 2026-10-17). `npm test` = 517 passing (29 new: 25 in `tests/inbox-loops.unit.test.ts`, 4 in `tests/inbox-drive-dedupe.unit.test.ts`), `npx tsc --noEmit` clean. Nothing live was touched: no migration run, no Gmail / Drive / Supabase / Telegram calls.
+
+### 1. Migration (apply first, once)
+
+```
+node scripts/run-migration.mjs supabase/migrations/2026-10-17_inbox_loops_message_at.sql
+```
+
+Idempotent. Adds `inbox_loops.message_at` (backfilled from `inbox_messages.internal_date` by `gmail_id`), `inbox_loops.loop_key` (+ partial index), `inbox_loops.owed_by` (check `ryan | them`), and rewrites the `status` column comment. Check:
+
+```sql
+select count(*) total, count(message_at) with_message_at from inbox_loops;   -- the gap = loops whose gmail_id is not in inbox_messages (they fall back to created_at)
+select column_name from information_schema.columns where table_name = 'inbox_loops' and column_name in ('message_at','loop_key','owed_by');  -- 3 rows
+```
+
+The worker runs without the migration only until the first `upsertLoop` insert, which writes the three new columns — apply it before merging.
+
+### 2. Merge
+
+```
+cd /Users/ryanlarocca/Projects/PROJECTS/mission-control
+git fetch origin inbox-loop-hygiene
+git checkout main
+git merge --ff-only origin/inbox-loop-hygiene
+git push origin main
+git -C /Users/ryanlarocca/Projects/PROJECTS/mission-control pull --ff-only
+```
+
+Vercel redeploys `main`; `lib/inboxAgent.ts` now imports `scripts/inbox-agent/loops.mjs` (which imports `env.mjs` — plain ESM, `@supabase/supabase-js` is already a dependency). Confirm the deploy is green, then in Telegram type `open`: a "Waiting on them" block appears once any loop has `owed_by = 'them'`.
+
+### 3. Dry runs (no DB writes, no Drive upload, no Telegram; Drive is READ for the dedupe walk; a tapinspect link still fetches inline into `/tmp/inbox-fetch/`)
+
+| Gmail id | What | Command | Expected log lines |
+|---|---|---|---|
+| `1a14674c084ab8c7` | Halleck "Thank you for your payment" | `node scripts/inbox-agent/index.mjs --dry-run --message=1a14674c084ab8c7` | `completion event: tapinspect paid · 5764 Halleck Dr`; then one `loop resolved by completion (tapinspect paid · 5764 Halleck Dr): <id> (…)` per still-open Halleck HomeSentry loop and `unanswered dismissed by completion (tapinspect paid): <thread> (…)` per matching tapinspect thread not already in `agent.unanswered_dismissed`. Since the 10-16/10-17 rows were hand-closed/dismissed, both lists may be empty — the `completion event:` line is the proof the email is recognised. If the classifier says needs_reply, also `no loop: tapinspect paid is a completion event`. |
+| `1a146754b76d30a8` | Halleck "results … have been updated" | `node scripts/inbox-agent/index.mjs --dry-run --message=1a146754b76d30a8` | `completion event: tapinspect updated · 5764 Halleck Dr · share d50c5c43…` (the share uuid from the body). The inline dry fetch then runs as before; when it would file the report you also get `loop resolved by completion (tapinspect report_filed · 5764 Halleck Dr): …` for any open Halleck loop. |
+| `1a1317578e6f00b5` | Halleck "Please sign agreement" | `node scripts/inbox-agent/index.mjs --dry-run --message=1a1317578e6f00b5` | `loop: <ask> (normal · ryan · tapinspect.com|5764halleck|signature)` — the loop_key with the property taken from the classifier (the subject has no address). Not a completion. |
+| `1a145be09c1aae90` → `1a145be12eff4a08` → `1a145bee1ca7d82e` | Quito booking, agreement, Amanda's forward | three `--dry-run --message=…` runs in that order | each logs `loop: … (… · tapinspect.com|2116quito|signature)` — the SAME key for all three (Amanda's forward keys to tapinspect.com via the quoted `From:` header). A dry run inserts nothing, so "would refresh <id> (same key)" appears only if a live open Quito loop exists. To see the dedupe live, replay the three live (next section) and check `select count(*) from inbox_loops where loop_key = 'tapinspect.com|2116quito|signature' and status in ('open','snoozed');` → 1. |
+| `1a1455ab4b1bc7ef` | Amanda's termite forward | `node scripts/inbox-agent/index.mjs --dry-run --message=1a1455ab4b1bc7ef` | `loop: Pay $300 … (normal · them · southbaytermite@yahoo.com|5764halleck|payment)` if Haiku sets `owed_by: "them"` (prompt note: the forwarder still has to do something). If it says `ryan`, reply `theirs` on the loop card once live. The key's vendor family is South Bay Termite, so Halleck HomeSentry events never touch it. |
+| `1a14686438fae4d0` | Juan "RE: NOO Absentee Q4" (ITI invoice 243496) | `node scripts/inbox-agent/index.mjs --dry-run --message=1a14686438fae4d0` | the vendor filing lines as before, then `loop: … (… · letterprinting.net||payment)`. Live, the same pass's `resolveLoops` closes it: `loop resolved by reply (same thread): <id>` — Ryan's 22:12 reply is newer than the email's 21:02 `message_at`, however late the row was minted. |
+| `1a13712751de3137` | FreshBooks "… 080223UP ($0.00)" | `node scripts/inbox-agent/index.mjs --dry-run --message=1a13712751de3137` | `completion event: freshbooks paid · invoice 080223UP`; `unanswered dismissed by completion (freshbooks paid): <thread of 1a135f9e00ed5f51>` unless that thread is already in `agent.unanswered_dismissed`; `no loop: freshbooks paid is a completion event`. `1a135f9e00ed5f51` itself still logs `loop: Pay … (… · fb02.freshbooks.com|5764halleck|payment)` and never appears under Unanswered (relay sender). |
+| `1a13633c418fce81`, `1a13b13d4d5f6497` | Dominic's re-scrubbed CSVs | `node scripts/inbox-agent/index.mjs --dry-run --message=1a13b13d4d5f6497` | three `duplicate (drive): ALL … NOO SFR 11+ yr.csv = Marketing/2026/NOO October2026/Raw…/v2 2026-10-14 - ALL … NOO SFR 11+ yr.csv` lines, then the usual `duplicate: <name> (matches <drive id>)` from the pipeline, no proposal card. Requires `inbox_settings.drive.extra_roots.marketing` (set by `findExtraRoots` on every pass) so `Marketing/2026` resolves; if the walk finds nothing you get the old pending proposal instead — check `node scripts/inbox-agent/index.mjs --drive-check` shows `Marketing/` in the tree. |
+| digest | the brief as it would print | `node scripts/inbox-agent/index.mjs --dry-run --no-poll --no-events --digest-now` | the `---- TELEGRAM (dry run) ----` block: `Waiting on you (n)`, then `Waiting on them (n)` when any open loop has `owed_by = 'them'`, `Unanswered` only for human threads that pass `isLooseEnd` (no relays, replies to the same person count). Against today's live rows (hand-closed) expect Waiting on you = the Halleck disclosures envelope, nothing Unanswered. |
+
+### 4. Live replays (in this order, after the migration + merge)
+
+```
+node scripts/inbox-agent/index.mjs --message=1a145be09c1aae90      # Quito booking → 1 loop (key tapinspect.com|2116quito|signature)
+node scripts/inbox-agent/index.mjs --message=1a145be12eff4a08      # agreement → "loop refreshed (same key)", still 1 row
+node scripts/inbox-agent/index.mjs --message=1a145bee1ca7d82e      # Amanda's forward → refreshed again, counterparty stays HomeSentry, due 2026-10-20
+node scripts/inbox-agent/index.mjs --message=1a13712751de3137      # FreshBooks $0.00 → dismisses the 080223UP thread (no loop)
+node scripts/inbox-agent/index.mjs --message=1a13b13d4d5f6497      # Dominic → 3 inbox_files rows status duplicate with drive_file_id = the v2 copies
+```
+Note the Quito loop then closes on the same or next pass by Part B (`loop resolved by reply (same recipient)`): Ryan's "Paid" to inspections@tapinspect.com on 10-16 20:40 is newer than the Quito emails (14:20). That is the brief's rule and matches the hand-closed rows; see §5.
+
+### 5. Judgement calls and what is not covered by tests
+
+- **Same-person replies close across properties (Part B, by design).** `answeredBy` counts any send to the counterparty after the email, so one "Paid" to HomeSentry about Halleck also closed the Quito ask in the replay test. The brief asks for exactly this and the operator hand-closed those rows, but a vendor with several live jobs could get a loop closed by a reply about another one. If that bites, the tightening is in `answeredBy` (require the thread match for loops whose `loop_key` carries a property).
+- **Completion matching is narrower than the brief's literal "subject matches /inspection/i and the address".** Applied literally, the Halleck HomeSentry receipt would have closed Amanda's "Fwd: Termite Inspection Report | 5764 Halleck Dr" (South Bay Termite) and a DocuSign "Please Sign: 2116 Quito Rd - Inspection Contingency Removal". `completionMatch` therefore (a) treats the vendor family of a forward as the quoted `From:` domain (`loop_key`), (b) excludes termite / WDO / pest / contingency asks and e-sign relay senders from the inspection rule. Tests cover all three.
+- **`loop_key` dedupe needs a property.** `letterprinting.net||payment` (Juan, no property) never merges with another property-less Juan ask; the key is still stored for completion matching.
+- **Loose-end dismissal reads no Gmail bodies.** It uses the row's subject, `classification.property.label` / `ask`, the invoice number and `inbox_fetches.url` share uuids on the thread (last 30 days). Loop closing does read the loop email's body from Gmail, but only for an event that carries a share uuid and only when the cheaper signals did not decide (cached per pass).
+- **Sent-mail cost.** `sentSince` reads up to 300 sent messages over 8 days with `format: "metadata"` once per pass (`ctx.sent`); before, resolveLoops read 4 days and the digest another 8 on digest days. Header shapes (`To`/`Cc` with display names) are covered by `parseAddressList` tests, not against live Gmail.
+- **Drive walk cost.** One `walkFolder` of `Marketing/<year>` (depth 4, ≤ 2,000 files) per pass when a marketing list arrives, and one of the property folder (depth 3) when a whitelisted property document arrives; both cached on `ctx`. A walk failure is logged and the sha-only behaviour continues.
+- **Classifier `owed_by`.** Prompt-only; default null → `ryan`. Not testable here. `theirs` / `mine` on the card is the manual override and a later email never undoes it unless the classifier says `ryan`/`them` explicitly.
+- **"Both places that filter senders."** The worker had one sender filter (the digest's loose-end loop); `RELAY_SENDER_RE` is used there via `isLooseEnd`. The poll-time `AUTOMATED_RE` is a different gate (drops the whole email) and was left alone.
+- **DocuSign completions** still go through `resolveSignatureLoops` / `envelopeMatches` unchanged (non-goal).
+- **Vercel bundle.** `lib/inboxAgent.ts` → `loops.mjs` → `env.mjs` (reads `.env.local` if present, defines `sb()` lazily). Verify the first production deploy after the merge builds; if the bundler objects to `env.mjs`'s `import.meta.url`, inline `splitLoops` / `owedByFromReply` in the TS file.
