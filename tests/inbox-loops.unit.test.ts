@@ -282,6 +282,10 @@ describe("Part C — completion events", () => {
     // The same forward WITHOUT the quoted HomeSentry header still closes: "inspection" + the address, and no other inspector named.
     const bareFwd = { ...fwdOnly[0], loop_key: `${AMANDA.email.split("@")[1]}|2116quito|signature`, ask: "Sign the agreement and pay for the Quito inspection" }
     expect(completionMatch(completionEvent(quitoPaid), { senderEmail: AMANDA.email, vendorFamily: "bakshirealestate.com", subject: fwdOnly[0].subject, ask: bareFwd.ask })).toBe("inspection+property")
+    // …but never a DocuSign envelope that mentions the inspection, nor the buyer's inspection contingency.
+    expect(completionMatch(completionEvent(quitoPaid), { senderEmail: "dse_NA4@docusign.net", vendorFamily: "docusign.net", subject: "Please Sign: 2116 Quito Rd - Inspection Contingency Removal", ask: "Sign: 2116 Quito Rd - Inspection Contingency Removal" })).toBeNull()
+    expect(completionMatch(completionEvent(quitoPaid), { senderEmail: "dse_NA4@docusign.net", vendorFamily: "docusign.net", subject: "Please Sign: 2116 Quito Rd - Home Inspection Agreement", ask: "Sign the inspection agreement" })).toBeNull()
+    expect(completionMatch(completionEvent(quitoPaid), { senderEmail: AMANDA.email, vendorFamily: "bakshirealestate.com", subject: "2116 Quito Rd", ask: "Decide whether to remove the inspection contingency by Friday" })).toBeNull()
   })
   it("FreshBooks: 080223UP $2,985 → $0.00 closes it; a different invoice number does not", () => {
     const loops: Loop[] = []
@@ -371,6 +375,8 @@ describe("Part D — one ask, one loop", () => {
     expect(mergeLoop({ ...existing, priority: "high" }, { ...incoming, priority: "low" }).priority).toBe("high")
     expect(mergeLoop({ ...existing, due_on: null }, { ...incoming, due_on: "2026-10-21" }).due_on).toBe("2026-10-21")
     expect(mergeLoop({ ...existing, loop_key: "old" }, incoming).loop_key).toBeUndefined() // an existing key is never rewritten
+    // A refresh with no explicit owed_by never undoes Ryan's "theirs" (index.mjs passes null unless the classifier said ryan/them).
+    expect(mergeLoop({ ...existing, owed_by: "them" }, { ...incoming, owed_by: null }).owed_by).toBeUndefined()
   })
 })
 

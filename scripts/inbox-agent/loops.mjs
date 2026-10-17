@@ -170,9 +170,13 @@ const TAP_UPDATED_SUBJECT_RE = /inspection results\b.*\bhave been updated/i
 const FB_PAID_SUBJECT_RE = /commented on invoice\s+(\S+)\s+\(\$0\.00\)/i
 const FB_INVOICE_RE = /invoice\s*#?\s*([A-Z0-9][A-Z0-9-]{2,})/i
 const PAID_BODY_RE = /thank you for your payment/i
-// A termite / WDO / pest inspection is another inspector's trade — a HomeSentry
-// event never closes South Bay Termite's ask on the same house.
-const OTHER_INSPECTOR_RE = /termite|\bWDO\b|\bpest\b/i
+// A termite / WDO / pest inspection is another inspector's trade, and an
+// inspection CONTINGENCY is the buyer's decision — a HomeSentry event never
+// closes South Bay Termite's ask or a "remove the inspection contingency" on
+// the same house. Nor does it close an e-sign envelope that merely mentions
+// the inspection (the DocuSign "Completed" path owns those).
+const OTHER_INSPECTOR_RE = /termite|\bWDO\b|\bpest\b|contingenc/i
+const ESIGN_RELAY_RE = /docusign|authentisign|esign|dotloop|glide|pandadoc/i
 
 function senderOf(msg) {
   return String(msg?.from?.email || msg?.sender || "").trim().toLowerCase()
@@ -268,7 +272,7 @@ export function completionMatch(event, t) {
   const domainRe = VENDOR_DOMAINS[event.vendor]
   const sameVendor = (domainRe && (domainRe.test(String(t?.senderEmail || "")) || domainRe.test(String(t?.vendorFamily || "")))) || VENDOR_NAMES[event.vendor]?.test(hay)
   if (sameVendor) return "vendor+property"
-  if (event.vendor === "tapinspect" && /inspection/i.test(head) && !OTHER_INSPECTOR_RE.test(head)) return "inspection+property"
+  if (event.vendor === "tapinspect" && /inspection/i.test(head) && !OTHER_INSPECTOR_RE.test(head) && !ESIGN_RELAY_RE.test(`${t?.senderEmail || ""} ${t?.vendorFamily || ""}`)) return "inspection+property"
   return null
 }
 

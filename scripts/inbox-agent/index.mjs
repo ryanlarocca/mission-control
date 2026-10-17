@@ -1761,7 +1761,8 @@ async function upsertLoop(ctx, msg, cls, kind) {
   // 2026-10-17: message_at (Part A), loop_key (Part D) and owed_by (Part F) ride every loop.
   const key = loopKey(msg, cls)
   const owed_by = owedBy(cls)
-  const incoming = { gmail_id: msg.id, message_at: msg.internalDate, due_on: cls.due_on || null, priority, ask, loop_key: key, owed_by }
+  // On a refresh, owed_by moves only when the classifier said so explicitly — a null never undoes Ryan's "theirs".
+  const incoming = { gmail_id: msg.id, message_at: msg.internalDate, due_on: cls.due_on || null, priority, ask, loop_key: key, owed_by: cls.owed_by === "them" || cls.owed_by === "ryan" ? cls.owed_by : null }
   // Same thread first, then the same signature envelope, then (Part D) the same ask
   // from the same vendor family for the same property within 48 h — the three Quito
   // emails (HomeSentry booking, "Please sign agreement", Amanda's forward) are one loop.
