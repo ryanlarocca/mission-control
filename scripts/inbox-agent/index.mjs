@@ -1837,7 +1837,7 @@ async function sentFor(ctx) {
   return ctx.sent
 }
 async function resolveLoops(ctx) {
-  const { data: open } = await sb().from("inbox_loops").select("id, thread_id, counterparty_email, created_at, message_at, tg_message_id, status, snooze_until").in("status", LOOP_ACTIVE_STATUSES).limit(500)
+  const { data: open } = await sb().from("inbox_loops").select("id, thread_id, counterparty_email, created_at, message_at, loop_key, tg_message_id, status, snooze_until").in("status", LOOP_ACTIVE_STATUSES).limit(500)
   if (!open?.length) return
   const sent = await sentFor(ctx)
   const now = isoNow()

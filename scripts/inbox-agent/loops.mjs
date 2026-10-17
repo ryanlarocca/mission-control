@@ -131,6 +131,10 @@ export function answeredBy(item, sent) {
   const byThread = sent instanceof Map ? sent : sent?.byThread
   const byRecipient = sent instanceof Map ? null : sent?.byRecipient
   if (item?.thread_id && byThread?.has(item.thread_id) && replyResolves(item, byThread.get(item.thread_id))) return "thread"
+  // Operator 2026-10-17: a loop keyed to a property (tapinspect.com|2116quito|signature) is
+  // never answered by a reply to the same vendor about ANOTHER property — "Paid" for
+  // Halleck must not close the Quito ask. Those need the thread, a completion, or Part H.
+  if (parseLoopKey(item?.loop_key)?.propertyKey) return null
   const who = String(item?.counterparty_email || item?.sender || "").trim().toLowerCase()
   if (who && byRecipient?.has(who) && replyResolves(item, byRecipient.get(who))) return "recipient"
   return null

@@ -449,9 +449,11 @@ describe("Part H — ask once when the mailbox can't know", () => {
     const loops: Loop[] = []
     simulateUpsert(loops, quitoBooking, quitoBookingCls)
     Object.assign(loops[0], { status: "asked", snooze_until: null })
-    // A reply to HomeSentry after the email resolves it (Part B applies to asked loops).
-    const sent = foldSent([{ threadId: "t-other", internalDate: "2026-10-18T01:00:00.000Z", to: HOMESENTRY.email }])
-    expect(answeredBy(loops[0], sent)).toBe("recipient")
+    // A reply to HomeSentry ON THE QUITO THREAD after the email resolves it (Part B applies to asked loops). A reply to
+    // HomeSentry on another thread does not: the loop is keyed to 2116 Quito, and "Paid" about Halleck is not an answer.
+    expect(answeredBy(loops[0], foldSent([{ threadId: "t-other", internalDate: "2026-10-18T01:00:00.000Z", to: HOMESENTRY.email }]))).toBeNull()
+    const sent = foldSent([{ threadId: quitoBooking.threadId, internalDate: "2026-10-18T01:00:00.000Z", to: HOMESENTRY.email }])
+    expect(answeredBy(loops[0], sent)).toBe("thread")
     // The reminder, three days later on a new thread, matches the asked loop by key at any age.
     const reopened = simulateUpsert(loops, quickReminder, quickReminderCls, { createdAt: quickReminder.internalDate })
     expect(loops).toHaveLength(1)
@@ -495,21 +497,22 @@ describe("Definition of done — the week replayed, then the brief", () => {
     applyCompletion(loops, reportFiledEvent("5764 Halleck Dr"))
     // Before Ryan's sent mail is counted: the disclosures, the Quito ask (one loop for three emails) and Juan's two threads.
     expect(loops.filter((l) => l.status === "open")).toHaveLength(5)
-    // Ryan's sent mail over the week (Parts A + B): Juan's two threads close (one by thread, one by recipient), and the
-    // "Paid" he sent HomeSentry on 10-16 20:40 answers the Quito ask too (same counterparty, after the Quito emails) —
-    // the operator hand-closed those three rows as well.
+    // Ryan's sent mail over the week (Parts A + B): Juan's two threads close (one by thread, one by recipient). The
+    // "Paid" he sent HomeSentry on 10-16 20:40 was about Halleck: a property-keyed loop never closes on a reply about
+    // another property, so the Quito ask survives for Part H to ask about once (Ryan 2026-10-17: "when in doubt ask me").
     const sent = foldSent([...sentToJuan, halleckPaidReply], { self: "ryan@lrghomes.com" })
     for (const l of loops) if (["open", "snoozed", "acknowledged"].includes(l.status) && answeredBy(l, sent)) l.status = "resolved_by_reply"
     expect(loops.find((l) => l.gmail_id === juanSoftQuote.id)?.status).toBe("resolved_by_reply")
+    const quito = loops.find((l) => l.gmail_id === amandaQuitoFwd.id)!
+    expect(quito.status).toBe("open")
 
     const { mine, theirs, ask, asked } = splitLoops(loops.filter((l) => l.status === "open"), { now: NOW })
     expect(mine.map((l) => l.ask)).toEqual(["Sign: 5764 Halleck Dr San Jose - Disclosures"])
     expect(theirs.map((l) => `${l.counterparty} / ${l.ask}`)).toEqual([`Amanda Bakshi / ${amandaTermiteCls.ask}`])
-    expect(ask).toEqual([]) // Part H: nothing left to ask about — the evidence settled every portal ask
+    expect(ask.map((l) => l.id)).toEqual([quito.id]) // Part H: the one thing the mailbox can't settle — asked once, then parked
     expect(asked).toEqual([])
-    expect(loops.find((l) => l.gmail_id === amandaQuitoFwd.id)?.status).toBe("resolved_by_reply")
-    // A later Quito receipt has nothing left to close and leaves the two survivors alone.
-    expect(applyCompletion(loops, completionEvent(quitoPaid))).toEqual([])
+    // Evidence still beats asking: a later Quito receipt closes it and leaves the two survivors alone.
+    expect(applyCompletion(loops, completionEvent(quitoPaid))).toEqual([quito.id])
     expect(splitLoops(loops.filter((l) => l.status === "open")).mine.map((l) => l.ask)).toEqual(["Sign: 5764 Halleck Dr San Jose - Disclosures"])
 
     const openThreads = new Set(loops.filter((l) => l.status === "open").map((l) => l.thread_id))
