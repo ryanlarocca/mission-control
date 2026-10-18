@@ -42,7 +42,7 @@ import {
   type Tier,
 } from "@/lib/contactIntake"
 import { CALENDAR_INTENT_RE, createCalendarEvent, extractEvent } from "@/lib/calendarIntake"
-import { INBOX_CB_PREFIX, advanceSetup, answerInboxQuestion, draftDealReply, findInboxByTgMessage, handleInboxCallback, handleInboxCommand, looksLikeQuestion, recordInboxReply } from "@/lib/inboxAgent"
+import { INBOX_CB_PREFIX, advanceSetup, answerInboxQuestion, bindReplyPrompt, draftDealReply, findInboxByTgMessage, handleInboxCallback, handleInboxCommand, looksLikeQuestion, recordInboxReply, takeOpenReplyPrompt } from "@/lib/inboxAgent"
 import { OFFER_CB_PREFIX, applyOfferText, getOfferDraft, handleOfferCallback, isOfferMessage, promptForTerms, sendOfferHelp, startOffer } from "@/lib/offerBot"
 
 // Dedicated campaign-bot webhook — the ZERO-TOKEN action path (2026-07-23,
@@ -411,12 +411,20 @@ export async function POST(request: Request) {
         await tg("editMessageReplyMarkup", { chat_id: chatId, message_id: cb.message?.message_id, reply_markup: { inline_keyboard: [] } })
       }
       if (out.text) {
-        await tg("sendMessage", {
+        const sent = await tg("sendMessage", {
           chat_id: chatId,
           text: out.text,
           reply_to_message_id: cb.message?.message_id,
           ...(out.buttons ? { reply_markup: { inline_keyboard: out.buttons.map((r) => r.map((b) => ({ text: b.text, callback_data: b.data }))) } } : {}),
+          // force_reply: the phone opens the reply box on this prompt by itself;
+          // bindReplyPrompt ties the prompt back to the card (2026-10-18).
+          ...(out.promptReply ? { reply_markup: { force_reply: true, input_field_placeholder: out.promptReply.slice(0, 64) } } : {}),
         })
+        const promptMid = sent?.result?.message_id
+        const cardMid = cb.message?.message_id
+        if (out.promptReply && typeof promptMid === "number" && typeof cardMid === "number") {
+          await bindReplyPrompt(promptMid, cardMid).catch((e) => console.error("[inbox] bindReplyPrompt:", e instanceof Error ? e.message : String(e)))
+        }
       }
       return NextResponse.json({ ok: true })
     }
@@ -857,7 +865,11 @@ export async function POST(request: Request) {
   // Reply to a posted DRAFT message = revision feedback (2026-07-29, the
   // Pamela 4plex/8plex fix). Claude rewrites with the old draft + feedback,
   // the old version is superseded (buttons cleared), v2 posts fresh buttons.
-  const repliedTgId = msg.reply_to_message?.message_id
+  // A plain message (no reply attached) typed within 30 min of tapping an
+  // inbox-agent "tell me…" button is the answer to that prompt — Ryan
+  // dismissed the reply box, or the app lost it (2026-10-18).
+  const openPrompt = typeof msg.reply_to_message?.message_id === "number" ? null : await takeOpenReplyPrompt().catch(() => null)
+  const repliedTgId = msg.reply_to_message?.message_id ?? openPrompt?.cardMid
   if (typeof repliedTgId === "number") {
     // Reply Planner draft (lead alert): the reply text is Ryan's "why" —
     // redraft with it and post v2. Checked first so the lead-phone branch

@@ -50,6 +50,10 @@ export interface InboxCallbackResult {
   text?: string
   clearButtons?: boolean
   buttons?: Array<Array<{ text: string; data: string }>>
+  /** Send `text` as a Telegram force-reply prompt (the phone opens the reply
+   *  box by itself) and bind that prompt to the tapped card, so whatever Ryan
+   *  types next is handled as a reply to the card. Value = input placeholder. */
+  promptReply?: string
 }
 
 export type InboxRef =
@@ -83,10 +87,64 @@ function esc(s: unknown): string {
   return String(s ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
 }
 
+// ------------------------------------------------------------- reply prompts
+// Ryan 2026-10-18: "✏️ Tell me where" only *explained* how to reply, and on
+// the phone that means swipe-to-reply on the right card — he read it as a
+// broken button. Now the tap sends a force-reply prompt (Telegram opens the
+// reply box) and this map ties that prompt's message id back to the card it
+// was for, so the typed answer resolves to the same file/interview/screen.
+// A plain message typed within PROMPT_WINDOW_MS of the tap (reply box
+// dismissed) is routed to the latest open prompt too.
+const PROMPT_WINDOW_MS = 30 * 60_000
+const PROMPT_KEEP = 60
+type ReplyPrompt = { card: number; at: string; used?: boolean }
+async function promptMap(): Promise<Record<string, ReplyPrompt>> {
+  const v = await getSetting("reply_prompts")
+  return (v.map as Record<string, ReplyPrompt>) || {}
+}
+export async function bindReplyPrompt(promptMid: number, cardMid: number): Promise<void> {
+  const map = await promptMap()
+  map[String(promptMid)] = { card: cardMid, at: new Date().toISOString() }
+  const keep = Object.entries(map).sort((a, b) => a[1].at.localeCompare(b[1].at)).slice(-PROMPT_KEEP)
+  const sb = getLeadsClient()
+  await sb.from("inbox_settings").upsert({ key: "reply_prompts", value: { map: Object.fromEntries(keep) }, updated_at: new Date().toISOString() })
+}
+/** The most recent force-reply prompt that is still fresh and unanswered —
+ *  used when Ryan types the answer without the reply box attached. Marks it
+ *  used so a second plain message isn't swallowed. */
+export async function takeOpenReplyPrompt(): Promise<{ promptMid: number; cardMid: number } | null> {
+  const map = await promptMap()
+  const open = Object.entries(map)
+    .filter(([, p]) => !p.used && Date.now() - new Date(p.at).getTime() < PROMPT_WINDOW_MS)
+    .sort((a, b) => b[1].at.localeCompare(a[1].at))[0]
+  if (!open) return null
+  map[open[0]] = { ...open[1], used: true }
+  const sb = getLeadsClient()
+  await sb.from("inbox_settings").upsert({ key: "reply_prompts", value: { map }, updated_at: new Date().toISOString() })
+  return { promptMid: Number(open[0]), cardMid: open[1].card }
+}
+async function markPromptUsed(promptMid: number): Promise<void> {
+  const map = await promptMap()
+  const p = map[String(promptMid)]
+  if (!p || p.used) return
+  map[String(promptMid)] = { ...p, used: true }
+  const sb = getLeadsClient()
+  await sb.from("inbox_settings").upsert({ key: "reply_prompts", value: { map }, updated_at: new Date().toISOString() })
+}
+
 // ------------------------------------------------------------- which card?
 /** Which inbox-agent card did Ryan reply to? Checked by the webhook before
- *  any branch that could text a lead, exactly like the Reply Planner lookup. */
+ *  any branch that could text a lead, exactly like the Reply Planner lookup.
+ *  A reply to a force-reply prompt resolves to the card the prompt was for. */
 export async function findInboxByTgMessage(tgMessageId: number): Promise<InboxRef | null> {
+  const prompt = (await promptMap())[String(tgMessageId)]
+  if (prompt && prompt.card !== tgMessageId) {
+    await markPromptUsed(tgMessageId)
+    return findInboxByCard(prompt.card)
+  }
+  return findInboxByCard(tgMessageId)
+}
+async function findInboxByCard(tgMessageId: number): Promise<InboxRef | null> {
   const sb = getLeadsClient()
   const [file, iv, loop, screen, rules, agent, draft, fetchRow] = await Promise.all([
     sb.from("inbox_files").select("id, status, gmail_id, thread_id").eq("tg_message_id", tgMessageId).limit(5),
@@ -387,17 +445,20 @@ export async function handleInboxCallback(data: string): Promise<InboxCallbackRe
   }
   if ((m = new RegExp(`^ix:fc:(${UUID})$`).exec(data))) {
     await sb.from("inbox_files").update({ status: "change_requested" }).eq("id", m[1]).in("status", ["pending", "waiting", "batch"])
-    return { toast: "Reply with the folder + name", text: "✏️ Reply to the proposal with where it goes and what to call it — e.g. “Properties/93 Ridgeview/Addendum A.pdf”, or just “Halleck folder, keep the name”." }
+    return { toast: "Type where it goes", promptReply: "e.g. Properties/93 Ridgeview/Addendum A.pdf", text: "✏️ Where should it go, and what should I call it? Just type it — e.g. “Properties/93 Ridgeview/Addendum A.pdf”, or “Halleck folder, keep the name”." }
   }
   if ((m = new RegExp(`^ix:fs:(${UUID})$`).exec(data))) {
     await sb.from("inbox_files").update({ status: "skipped", resolved_at: now }).eq("id", m[1]).in("status", ["pending", "waiting", "change_requested", "batch", "asked"])
     await sb.from("inbox_interview").update({ status: "skipped", answer_kind: "skipped", answered_at: now }).eq("file_id", m[1]).eq("status", "asked")
     return { toast: "Skipped", clearButtons: true, text: "⏭ Skipped — not filed." }
   }
-  // ❓ card → "Tell me where": the reply to the card is already matched by
-  // tg_message_id (findInboxByTgMessage → interview), so this just explains.
+  // ❓ card → "Tell me where": opens the reply box (force-reply) bound to the
+  // card, so the folder Ryan types resolves to this interview row.
   if ((m = new RegExp(`^ix:qw:(${UUID})$`).exec(data))) {
-    return { toast: "Reply with the folder", text: "✏️ Reply to the question card with the folder (and a name if you want one) — e.g. “Marketing/2026/NOO October2026” or “Quito, Disclosures”. I'll file it there and remember the rule for that sender + document type." }
+    const { data: iv } = await sb.from("inbox_interview").select("status, inbox_files(filename)").eq("id", m[1]).maybeSingle()
+    if (iv && !["asked", "answered"].includes(iv.status)) return { toast: `Already ${iv.status}`, clearButtons: true }
+    const fname = (iv as unknown as { inbox_files?: { filename?: string } } | null)?.inbox_files?.filename
+    return { toast: "Type the folder", promptReply: "e.g. Marketing/2026/NOO October2026", text: `✏️ Where does ${fname ? `“${fname}”` : "it"} go? Just type the folder (and a name if you want one) — e.g. “Marketing/2026/NOO October2026” or “Quito, Disclosures”. I'll file it there and remember the rule for that sender + document type.` }
   }
   if ((m = new RegExp(`^ix:fm:(${UUID})$`).exec(data))) {
     const { data: row } = await sb.from("inbox_files").select("rule_id").eq("id", m[1]).maybeSingle()
@@ -438,7 +499,7 @@ export async function handleInboxCallback(data: string): Promise<InboxCallbackRe
     await setSetting("rules", { status: "approved", approved_at: now })
     return { toast: "Rules approved", clearButtons: true, text: "📐 Convention locked in. Filing proposals start on the next pass — training mode, I'll ask before every upload." }
   }
-  if (data === "ix:rn") return { toast: "Reply with the changes", text: "✏️ Reply to the convention message with what's off and I'll redo it." }
+  if (data === "ix:rn") return { toast: "Type the changes", promptReply: "What's off?", text: "✏️ What's off? Just type it and I'll redo the convention." }
   if ((m = new RegExp(`^ix:ld:(${UUID})$`).exec(data))) {
     await sb.from("inbox_loops").update({ status: "done", resolved_at: now }).eq("id", m[1])
     return { toast: "Done", clearButtons: true }
@@ -471,7 +532,7 @@ export async function handleInboxCallback(data: string): Promise<InboxCallbackRe
   }
   if ((m = new RegExp(`^ix:sl:(${UUID})$`).exec(data))) {
     await sb.from("inbox_deal_screens").update({ ryan_verdict: "look" }).eq("id", m[1])
-    return { toast: "Marked: look further", text: "👀 Marked “look further”. Reply to the card with what you want dug into — rents, comps, questions for the agent — and I'll come back on this thread." }
+    return { toast: "Marked: look further", promptReply: "rents, comps, questions for the agent…", text: "👀 Marked “look further”. What do you want dug into — rents, comps, questions for the agent? Just type it and I'll come back on this thread." }
   }
   if ((m = new RegExp(`^ix:sp:(${UUID})$`).exec(data))) {
     await sb.from("inbox_deal_screens").update({ ryan_verdict: "pass" }).eq("id", m[1])

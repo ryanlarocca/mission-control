@@ -307,7 +307,7 @@ async function postAskCard(ctx, row, question, guess) {
     `From ${esc(row.sender)} · ${ptDateLabel(row.received_at)} · “${esc(shortSubject(row.subject))}”`,
     esc(question),
     guess ? `Best guess: <b>${esc(guess.folder)}/</b>${esc(guess.name)}` : "",
-    "✏️ Reply to this card with the folder (e.g. “Marketing/2026/NOO October2026”) and I'll file it there and remember the rule.",
+    "✏️ Tap “Tell me where” and type the folder (e.g. “Marketing/2026/NOO October2026”) — I'll file it there and remember the rule.",
   ].filter(Boolean).join("\n")
   // Ryan 2026-10-02: "it only gives me the option to use the guess or skip —
   // neither acceptable." Third button spells out the reply path.
