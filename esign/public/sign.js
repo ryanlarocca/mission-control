@@ -9,10 +9,36 @@
 
   function fontOf(key) { var el = document.querySelector('.fontprev[data-font="' + key + '"]'); return el ? el.style.fontFamily : 'cursive'; }
   function pickedFont() { var r = document.querySelector('input[name=fontpick]:checked'); return r ? r.value : 'greatvibes'; }
-  function refreshPreviews() { var n = typed.value.trim() || typed.placeholder; document.querySelectorAll('.fontprev').forEach(function (el) { el.textContent = n; }); }
+  // Shrink a one-line preview until it fits its box (long names, narrow phones). `max` is the font's natural size.
+  // `box` is the element whose clientWidth is the room available (the preview itself when it is a
+  // shrinkable flex item, else its container).
+  function fit(el, max, min, box) {
+    var size = max;
+    if (!box.clientWidth) return; // hidden — measured again when shown
+    el.style.fontSize = size + 'px';
+    while (size > min && el.scrollWidth > box.clientWidth - 2) { size -= 1; el.style.fontSize = size + 'px'; }
+  }
+  function refreshPreviews() {
+    var n = typed.value.trim() || typed.placeholder;
+    document.querySelectorAll('.fontprev').forEach(function (el) {
+      el.textContent = n;
+      if (!el.dataset.max) el.dataset.max = parseInt(el.style.fontSize, 10) || 30;
+      fit(el, +el.dataset.max, 16, el);
+    });
+  }
   typed.addEventListener('input', refreshPreviews);
+  // Hidden text never triggers a web-font download, so fetch the four script fonts up front and re-fit once they land.
+  if (document.fonts) {
+    document.querySelectorAll('.fontprev').forEach(function (el) { try { document.fonts.load('24px ' + el.style.fontFamily); } catch (e) { /* ignore */ } });
+    document.fonts.ready.then(refreshPreviews);
+  }
 
-  function openSheet() { sheet.hidden = false; document.body.classList.add('noscroll'); err.hidden = true; refreshPreviews(); if (!typed.value) setTimeout(function () { typed.focus(); }, 50); if (mode === 'draw') setupPad(); }
+  function openSheet() {
+    sheet.hidden = false; document.body.classList.add('noscroll'); err.hidden = true; refreshPreviews();
+    if (document.fonts) document.fonts.ready.then(refreshPreviews);
+    if (!typed.value) setTimeout(function () { typed.focus(); }, 50);
+    if (mode === 'draw') setupPad();
+  }
   function closeSheet() { sheet.hidden = true; document.body.classList.remove('noscroll'); }
   tab.addEventListener('click', openSheet);
   if (/[?&]sheet=1/.test(location.search)) openSheet();
@@ -23,14 +49,17 @@
       mode = b.getAttribute('data-tab');
       document.querySelectorAll('.tabbtn').forEach(function (x) { x.classList.toggle('on', x === b); });
       $('tab-type').hidden = mode !== 'type'; $('tab-draw').hidden = mode !== 'draw';
+      err.hidden = true;
       if (mode === 'draw') setupPad();
     });
   });
 
-  function setupPad() {
+  // (Re)size the canvas to its CSS box. Keeps an existing drawing unless `clear` or the box changed size.
+  function setupPad(clear) {
     var r = pad.getBoundingClientRect(); if (!r.width) return;
-    var dpr = window.devicePixelRatio || 1;
-    pad.width = Math.round(r.width * dpr); pad.height = Math.round(r.height * dpr);
+    var dpr = window.devicePixelRatio || 1, w = Math.round(r.width * dpr), h = Math.round(r.height * dpr);
+    if (!clear && ctx && pad.width === w && pad.height === h) return;
+    pad.width = w; pad.height = h;
     ctx = pad.getContext('2d'); ctx.scale(dpr, dpr);
     ctx.lineWidth = 2.6; ctx.lineCap = 'round'; ctx.lineJoin = 'round'; ctx.strokeStyle = '#1a1a40';
     drawn = false;
@@ -39,7 +68,7 @@
   pad.addEventListener('pointerdown', function (e) { e.preventDefault(); pad.setPointerCapture(e.pointerId); drawing = true; last = pos(e); });
   pad.addEventListener('pointermove', function (e) { if (!drawing) return; e.preventDefault(); var p = pos(e); ctx.beginPath(); ctx.moveTo(last.x, last.y); ctx.lineTo(p.x, p.y); ctx.stroke(); last = p; drawn = true; });
   pad.addEventListener('pointerup', function () { drawing = false; }); pad.addEventListener('pointercancel', function () { drawing = false; });
-  clearBtn.addEventListener('click', function () { setupPad(); });
+  clearBtn.addEventListener('click', function () { setupPad(true); });
 
   function croppedPng() {
     var w = pad.width, h = pad.height, data = ctx.getImageData(0, 0, w, h).data, minX = w, minY = h, maxX = 0, maxY = 0, x, y, i;
@@ -59,10 +88,10 @@
     $('f_typed_name').value = name; $('f_method').value = png ? 'drawn' : 'typed'; $('f_font').value = pickedFont(); $('f_png').value = png || '';
     preview.innerHTML = '';
     if (png) { var img = document.createElement('img'); img.src = png; img.alt = 'your signature'; preview.appendChild(img); }
-    else { var sp = document.createElement('span'); sp.textContent = name; sp.style.fontFamily = fontOf(pickedFont()); preview.appendChild(sp); }
-    tab.classList.add('signed'); adopted = true; closeSheet();
-    hint.textContent = 'Signature added. Tick the box, then tap Finish.';
-    $('finishcard').scrollIntoView({ behavior: 'smooth', block: 'center' });
+    else { var sp = document.createElement('span'); sp.textContent = name; sp.style.fontFamily = fontOf(pickedFont()); preview.appendChild(sp); fit(sp, 28, 9, preview); }
+    tab.classList.add('signed'); tab.setAttribute('aria-label', 'Your signature — tap to change'); adopted = true; closeSheet();
+    hint.innerHTML = 'Signature added. Tick the box, then tap <strong>Finish</strong>. Tap your signature on the document to change it.';
+    setTimeout(function () { $('finishcard').scrollIntoView({ behavior: 'smooth', block: 'center' }); }, 60);
     refresh();
   });
 

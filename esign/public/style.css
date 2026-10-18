@@ -27,7 +27,10 @@ input:focus,select:focus,textarea:focus{outline:2px solid var(--blue);border-col
 .field{margin:0 0 14px}
 .field>span{display:block;font-size:14px;font-weight:600;color:var(--muted);margin-bottom:6px}
 .pages{margin:0 -6px}
-.page{display:block;width:100%;height:auto;border:1px solid var(--line);border-radius:6px;background:#fff;margin:0 0 10px;box-shadow:0 1px 3px rgba(0,0,0,.08)}
+/* .pagewrap is exactly the page image (border on the wrapper, no padding), so the
+   percentage offsets of the Sign-here tab map 1:1 onto PDF points. */
+.pagewrap{position:relative;border:1px solid var(--line);border-radius:6px;background:#fff;margin:0 0 10px;box-shadow:0 1px 3px rgba(0,0,0,.08)}
+.page{display:block;width:100%;height:auto;border-radius:5px}
 .pageno{font-size:13px;color:var(--muted);text-align:center;margin:-4px 0 14px}
 .sigpad{border:2px dashed #a1a1aa;border-radius:12px;background:#fff;touch-action:none;width:100%;height:170px;display:block}
 .sigrow{display:flex;justify-content:space-between;align-items:center;font-size:14px;color:var(--muted);margin:6px 0 10px}
@@ -51,19 +54,20 @@ code,.mono{font-family:Menlo,Consolas,monospace;font-size:13px;word-break:break-
 .row{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
 .ev{font-size:13px;color:var(--muted)}
 @media (min-width:600px){main{padding:26px 18px 80px}h1{font-size:27px}}
-/* tap-to-sign */
-.pagewrap{position:relative}
-.spot{position:absolute;display:flex;align-items:flex-end}
-.spot.inline{position:static;display:block;height:46px}
-.signtab{position:relative;display:flex;align-items:center;gap:8px;width:100%;min-height:40px;height:100%;border:2px solid #d97706;border-radius:6px;background:rgba(253,224,71,.55);cursor:pointer;padding:2px 6px;font:inherit;text-align:left}
-.signtab .flag{position:absolute;left:-2px;top:-26px;background:#d97706;color:#fff;font-size:13px;font-weight:700;padding:3px 9px;border-radius:6px 6px 6px 0;white-space:nowrap;box-shadow:0 1px 3px rgba(0,0,0,.25);animation:nudge 1.6s ease-in-out infinite}
-@keyframes nudge{0%,100%{transform:translateY(0)}50%{transform:translateY(-3px)}}
-.signtab.signed{background:rgba(220,252,231,.75);border-color:#15803d}
+/* tap-to-sign: .spot is a zero-height anchor whose top sits ON the signature
+   line; the 48px tab hangs above it so its bottom edge is the line. */
+.spot{position:absolute;height:0}
+.spot.inline{position:relative;height:50px}
+.signtab{position:absolute;left:0;right:0;bottom:0;height:48px;display:block;border:2px solid #d97706;border-radius:6px 6px 2px 2px;background:rgba(253,224,71,.6);cursor:pointer;padding:0;font:inherit;text-align:left;-webkit-tap-highlight-color:rgba(217,119,6,.3)}
+.signtab .flag{position:absolute;left:-2px;top:-2px;background:#d97706;color:#fff;font-size:14px;line-height:1;font-weight:700;padding:5px 10px 5px 8px;border-radius:5px 0 8px 0;white-space:nowrap;box-shadow:0 1px 3px rgba(0,0,0,.25);animation:nudge 1.6s ease-in-out infinite}
+.signtab .flag:before{content:"✎ "}
+@keyframes nudge{0%,100%{transform:translateX(0)}50%{transform:translateX(3px)}}
+.signtab.signed{background:rgba(220,252,231,.55);border-color:#15803d;cursor:default}
 .signtab.signed .flag{display:none}
-.sigpreview{flex:1;display:flex;align-items:flex-end;overflow:hidden;height:100%;color:#1a1a59}
-.sigpreview span{font-size:clamp(14px,5.5vw,30px);line-height:1;white-space:nowrap}
-.sigpreview img{max-height:100%;max-width:100%}
-.addline{margin-top:10px}.linebar{border-bottom:1.5px solid #333;margin:4px 0 6px}
+.sigpreview{position:absolute;left:4px;right:4px;bottom:1px;height:40px;display:flex;align-items:flex-end;overflow:hidden;color:#1a1a59;pointer-events:none}
+.sigpreview span{font-size:28px;line-height:1;white-space:nowrap;padding-bottom:3px}
+.sigpreview img{max-height:100%;max-width:100%;display:block}
+.addline{margin-top:10px}.linebar{border-bottom:1.5px solid #333;margin:0 0 6px}
 .sheet{position:fixed;inset:0;background:rgba(0,0,0,.45);display:flex;align-items:flex-end;z-index:50}
 .sheetin{background:#fff;width:100%;max-height:92vh;overflow:auto;border-radius:18px 18px 0 0;padding:20px 18px 28px;box-shadow:0 -4px 24px rgba(0,0,0,.2)}
 .sheetin .btn{margin-top:10px}
@@ -75,11 +79,24 @@ code,.mono{font-family:Menlo,Consolas,monospace;font-size:13px;word-break:break-
 .fontcard{display:flex;align-items:center;gap:12px;border:2px solid var(--line);border-radius:12px;padding:10px 12px;cursor:pointer;background:#fff}
 .fontcard:has(input:checked){border-color:var(--blue);background:#eff6ff}
 .fontcard input{width:22px;height:22px;flex:none}
-.fontprev{flex:1;line-height:1.1;color:#1a1a59;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.fontlabel{font-size:12px;color:var(--muted);flex:none}
+.fontbody{flex:1;min-width:0;display:flex;flex-direction:column;gap:2px}
+.fontprev{display:block;line-height:1.15;color:#1a1a59;white-space:nowrap;overflow:hidden}
+.fontlabel{font-size:12px;color:var(--muted)}
 @media (min-width:600px){.sheet{align-items:center;padding:20px}.sheetin{max-width:520px;border-radius:18px}}
 .sheet[hidden],[hidden]{display:none!important}
 html,body{max-width:100%;overflow-x:hidden}
-.fontprev{min-width:0}
+.fontprev{min-width:0;padding-left:8px}
 .sigpreview{min-width:0}
-.fontprev{padding-left:8px}
+/* admin on a phone: one field per line, stacked signer table, wrapping buttons */
+@media (max-width:599px){
+  .signer-row{grid-template-columns:1fr}
+  .signer-row .row{justify-content:space-between}
+  .signer-row .row select{flex:1}
+  table.list.stack,table.list.stack tbody,table.list.stack tr,table.list.stack td{display:block;width:100%}
+  table.list.stack thead{display:none}
+  table.list.stack tr{border-bottom:1px solid var(--line);padding:10px 0}
+  table.list.stack td{border:0;padding:3px 0}
+  table.list.stack td.actions form{display:inline-block;margin:4px 6px 0 0}
+  .btn.small{margin:4px 6px 4px 0}
+  .row .btn.small{flex:1 1 auto}
+}

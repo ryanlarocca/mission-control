@@ -9,6 +9,8 @@ import { asset } from "../lib/assets.mjs"
 
 export const esc = (s) => String(s ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;")
 const first = (name) => String(name || "").split(/\s+/)[0]
+/** +14085551212 → (408) 555-1212 for display; anything else is shown as-is. */
+export const fmtPhone = (p) => { const m = /^\+1(\d{3})(\d{3})(\d{4})$/.exec(String(p || "")); return m ? `(${m[1]}) ${m[2]}-${m[3]}` : String(p || "") }
 
 // Every static URL is content-hashed (?v=…) so a deploy never leaves a phone on an old stylesheet.
 export function layout({ title, body, who = "", scripts = [] }) {
@@ -29,17 +31,19 @@ export function expiredPage() {
 
 export function closedPage(envelope, signer) {
   const msg = envelope.status === "completed"
-    ? "This document has been fully signed. Your copy was emailed to you."
-    : envelope.status === "voided" ? "This signing request was cancelled by the sender." : "This signing request is closed."
+    ? "This document has been fully signed. Your copy has been sent to you."
+    : envelope.status === "voided" ? `This signing request was cancelled by ${esc(env.ownerName)}.`
+    : envelope.status === "declined" ? "This signing request was closed because one of the signers asked for a paper copy instead."
+    : "This signing request is closed."
   const dl = envelope.status === "completed" && signer?.token ? `<a class="btn" href="/s/${signer.token}/final.pdf">Download the signed PDF</a>` : ""
-  return layout({ title: "Closed", body: `<div class="card"><h1>${esc(envelope.title)}</h1><p>${msg}</p>${dl}</div>` })
+  return layout({ title: "Closed", who: signer?.name ? esc(signer.name) : "", body: `<div class="card"><h1>${esc(envelope.title)}</h1><p>${msg}</p>${dl}<p class="muted">Questions? Call or text ${esc(env.ownerName)} at ${esc(env.ownerPhone)}.</p></div>` })
 }
 
 export function consentPage({ envelope, signer, token, error }) {
   const paras = consentParagraphs().map((p) => `<p>${esc(p)}</p>`).join("")
   return layout({
     title: "Sign electronically?",
-    who: `${esc(signer.name)}<br>${esc(signer.email)}`,
+    who: `${esc(signer.name)}<br>${esc(signer.email || fmtPhone(signer.phone))}`,
     body: `
 <div class="card">
   <div class="step">Step 1 of 2 · Before you start</div>
@@ -64,17 +68,18 @@ export function consentPage({ envelope, signer, token, error }) {
 
 export function reviewPage({ envelope, signer, token, error, spot }) {
   // spot: { page (1-based), x, lineY, w } in PDF points for template signers; null → addendum.
-  const pct = spot ? { left: (spot.x / 612) * 100, top: ((792 - (spot.lineY + 30)) / 792) * 100, width: (spot.w / 612) * 100, height: (34 / 792) * 100 } : null
+  // The anchor's top is the signature line itself (letter page, 612×792pt); the tab hangs above it.
+  const pct = spot ? { left: (spot.x / 612) * 100, top: ((792 - spot.lineY) / 792) * 100, width: (spot.w / 612) * 100 } : null
   const tab = `<button type="button" class="signtab" id="signtab" aria-label="Sign here"><span class="flag">Sign here</span><span class="sigpreview" id="sigpreview"></span></button>`
   const pages = Array.from({ length: envelope.page_count }, (_, i) =>
-    `<div class="pagewrap"><img class="page" src="/s/${token}/pages/${i + 1}.png" alt="Page ${i + 1}" loading="${i < 2 ? "eager" : "lazy"}">${pct && spot.page === i + 1 ? `<div class="spot" style="left:${pct.left}%;top:${pct.top}%;width:${pct.width}%;height:${pct.height}%">${tab}</div>` : ""}</div><div class="pageno">Page ${i + 1} of ${envelope.page_count}</div>`).join("")
+    `<div class="pagewrap"><img class="page" src="/s/${token}/pages/${i + 1}.png" alt="Page ${i + 1}" loading="${i < 2 ? "eager" : "lazy"}">${pct && spot.page === i + 1 ? `<div class="spot" style="left:${pct.left.toFixed(3)}%;top:${pct.top.toFixed(3)}%;width:${pct.width.toFixed(3)}%">${tab}</div>` : ""}</div><div class="pageno">Page ${i + 1} of ${envelope.page_count}</div>`).join("")
   const fontFaces = Object.values(SIGNATURE_FONTS).map((f) => `@font-face{font-family:"${f.css}";src:url(${asset(`/fonts/${f.file}`)}) format("truetype");font-display:swap}`).join("")
-  const fontCards = Object.entries(SIGNATURE_FONTS).map(([k, f]) => `<label class="fontcard"><input type="radio" name="fontpick" value="${k}" ${k === DEFAULT_FONT ? "checked" : ""}><span class="fontprev" style="font-family:'${f.css}';font-size:${f.webSize}px" data-font="${k}">${esc(signer.name)}</span><span class="fontlabel">${f.label}</span></label>`).join("")
+  const fontCards = Object.entries(SIGNATURE_FONTS).map(([k, f]) => `<label class="fontcard"><input type="radio" name="fontpick" value="${k}" ${k === DEFAULT_FONT ? "checked" : ""}><span class="fontbody"><span class="fontprev" style="font-family:'${f.css}';font-size:${f.webSize}px" data-font="${k}">${esc(signer.name)}</span><span class="fontlabel">${f.label}</span></span></label>`).join("")
   const roleLabel = signer.role === "buyer" ? "Buyer" : "Seller"
   const addendumCard = !spot ? `<div class="card" id="addcard"><h2>Your signature</h2><p class="muted">Your signature goes on the Signature Addendum attached to this agreement, with the other ${roleLabel.toLowerCase()}s.</p><div class="addline"><div class="spot inline">${tab}</div><div class="linebar"></div><div class="muted" style="font-size:14px">${roleLabel} · ${esc(signer.name)}</div></div></div>` : ""
   return layout({
     title: "Review and sign",
-    who: `${esc(signer.name)}<br>${esc(signer.email || signer.phone || "")}`,
+    who: `${esc(signer.name)}<br>${esc(signer.email || fmtPhone(signer.phone))}`,
     scripts: ["/sign.js"],
     body: `<style>${fontFaces}</style>
 <div class="card">
@@ -122,14 +127,14 @@ export function donePage({ envelope, signer, token }) {
   <p style="text-align:center">You signed <strong>${esc(envelope.title)}</strong> on ${esc(fmtLongDatePT(signer.signed_at))}.</p>
   ${completed
     ? `<p style="text-align:center">Everyone has signed. The completed PDF has been emailed to you, and you can download it here any time.</p><a class="btn" href="/s/${token}/final.pdf">Download the signed PDF</a>`
-    : `<p style="text-align:center">Once everyone has signed, the completed PDF will be emailed to you at <strong>${esc(signer.email)}</strong>.</p><a class="btn secondary" href="/s/${token}/document.pdf">Download the document as it stands</a>`}
+    : `<p style="text-align:center">Once everyone has signed, ${signer.email && signer.delivery !== "text" ? `the completed PDF will be emailed to you at <strong>${esc(signer.email)}</strong>` : `a link to the completed PDF will be texted to you at <strong>${esc(fmtPhone(signer.phone))}</strong>`}.</p><a class="btn secondary" href="/s/${token}/document.pdf">Download the document as it stands</a>`}
   <p class="muted" style="text-align:center;margin-top:16px">Questions? Call or text ${esc(env.ownerName)} at ${esc(env.ownerPhone)}.</p>
 </div>`,
   })
 }
 
 export function declinedPage(signer) {
-  return layout({ title: "Paper copy", body: `<div class="card"><h1>No problem, ${esc(first(signer.name))}</h1><p>${esc(env.ownerName)} has been told you'd prefer to sign on paper and will be in touch${signer.phone ? ` at ${esc(signer.phone)}` : ""}.</p><p class="muted">You can also reach ${esc(env.ownerName)} at ${esc(env.ownerPhone)}.</p></div>` })
+  return layout({ title: "Paper copy", body: `<div class="card"><h1>No problem, ${esc(first(signer.name))}</h1><p>${esc(env.ownerName)} has been told you'd prefer to sign on paper and will be in touch${signer.phone ? ` at ${esc(fmtPhone(signer.phone))}` : ""}.</p><p class="muted">You can also reach ${esc(env.ownerName)} at ${esc(env.ownerPhone)}.</p></div>` })
 }
 
 export function verifyPage({ envelope, signers }) {
@@ -160,7 +165,7 @@ export function adminList({ envelopes, signersByEnv, flash }) {
     const prog = ss.map((s) => `<span class="pill ${s.status}" title="${esc(s.email)}">${esc(first(s.name))}: ${s.status}</span>`).join(" ")
     return `<tr><td><a href="/admin/e/${e.id}"><strong>${esc(e.title)}</strong></a><div class="ev">${esc(e.property_address || "")} · ${esc(fmtDatePT(e.created_at))}</div></td><td><span class="pill ${e.status}">${e.status.replace("_", " ")}</span></td><td>${prog}</td></tr>`
   }).join("")
-  return layout({ title: "Signing requests", who: `<a href="/admin/logout">sign out</a>`, body: `${flash ? `<div class="ok">${esc(flash)}</div>` : ""}${adminNav}<div class="card"><h1>Signing requests</h1>${envelopes.length ? `<table class="list"><tr><th>Document</th><th>Status</th><th>Signers</th></tr>${rows}</table>` : "<p class='muted'>Nothing yet. Create your first request.</p>"}</div>` })
+  return layout({ title: "Signing requests", who: `<a href="/admin/logout">sign out</a>`, body: `${flash ? `<div class="ok">${esc(flash)}</div>` : ""}${adminNav}<div class="card"><h1>Signing requests</h1>${envelopes.length ? `<table class="list stack"><thead><tr><th>Document</th><th>Status</th><th>Signers</th></tr></thead><tbody>${rows}</tbody></table>` : "<p class='muted'>Nothing yet. Create your first request.</p>"}</div>` })
 }
 
 export function adminNew({ prefill = {}, offers = [], error, offersError }) {
@@ -186,7 +191,7 @@ export function adminNew({ prefill = {}, offers = [], error, offersError }) {
   </div>
   <button class="btn" type="submit">Send for signature</button>
 </form></div>
-<template id="signer-tpl"><input type="text" name="s_name[]" placeholder="Full legal name" class="full"><input type="email" name="s_email[]" placeholder="Email"><input type="tel" name="s_phone[]" placeholder="Cell phone"><select name="s_role[]"><option value="seller">Seller</option><option value="buyer">Buyer (me / partner)</option></select><select name="s_delivery[]"><option value="email">Send by email</option><option value="text">Send by text (my cell)</option><option value="both">Email + text</option></select><div class="row full"><select name="s_order[]"><option value="1">Signs 1st</option><option value="2">Signs 2nd</option><option value="3">Signs 3rd</option><option value="4">Signs 4th</option></select><button class="link rm" type="button">remove</button></div></template>
+<template id="signer-tpl"><input type="text" name="s_name[]" placeholder="Full legal name" class="full"><input type="email" name="s_email[]" placeholder="Email"><input type="tel" name="s_phone[]" placeholder="Cell phone"><select name="s_role[]"><option value="seller">Seller</option><option value="buyer">Buyer (me / partner)</option></select><select name="s_delivery[]" aria-label="Send by"><option value="email">By email</option><option value="text">By text (my cell)</option><option value="both">Email + text</option></select><div class="row full"><select name="s_order[]"><option value="1">Signs 1st</option><option value="2">Signs 2nd</option><option value="3">Signs 3rd</option><option value="4">Signs 4th</option></select><button class="link rm" type="button">remove</button></div></template>
 <script>window.PREFILL=${pre}</script>`,
   })
 }
@@ -199,7 +204,7 @@ export function adminDetail({ envelope, signers, events, flash, error, freshLink
     const link = freshLinks[s.id]
     return `<tr><td><strong>${esc(s.name)}</strong><div class="ev">${[s.email, s.phone].filter(Boolean).map(esc).join(" · ")}<br>${s.role} · order ${s.order_index} · by ${s.delivery === "both" ? "email + text" : s.delivery} · ${s.placement === "template" ? "on the agreement" : "on the addendum"}</div></td>
 <td><span class="pill ${s.status}">${s.status}</span><div class="ev">${s.sent_at ? `sent ${esc(fmtTsPT(s.sent_at))}${s.send_count > 1 ? ` (×${s.send_count})` : ""}<br>` : ""}${s.opened_at ? `opened ${esc(fmtTsPT(s.opened_at))} · ${esc(geoLabel(s.open_geo))} · ${esc(deviceLabel(s.open_ua))}<br>` : ""}${s.signed_at ? `signed ${esc(fmtTsPT(s.signed_at))} · ${esc(geoLabel(s.sign_geo))}` : ""}</div></td>
-<td>${canSend ? `<form method="post" action="/admin/e/${envelope.id}/resend/${s.id}" style="display:inline"><button class="btn small secondary" type="submit">Resend</button></form><form method="post" action="/admin/e/${envelope.id}/link/${s.id}" style="display:inline"><button class="btn small secondary" type="submit">Get link to text</button></form>` : ""}${link ? `<div class="ev">Fresh link (expires ${esc(fmtDatePT(link.expiresAt))}):<br><code>${esc(link.link)}</code> <button class="link" data-copy="${esc(link.link)}">copy</button></div>` : ""}</td></tr>`
+<td class="actions">${canSend ? `<form method="post" action="/admin/e/${envelope.id}/resend/${s.id}" style="display:inline"><button class="btn small secondary" type="submit">Resend</button></form><form method="post" action="/admin/e/${envelope.id}/link/${s.id}" style="display:inline"><button class="btn small secondary" type="submit">Get link to text</button></form>` : ""}${link ? `<div class="ev">Fresh link (expires ${esc(fmtDatePT(link.expiresAt))}):<br><code>${esc(link.link)}</code> <button class="link" data-copy="${esc(link.link)}">copy</button></div>` : ""}</td></tr>`
   }).join("")
   const byId = Object.fromEntries(signers.map((s) => [s.id, s.name]))
   const ev = events.map((e) => `<div class="ev">${esc(fmtTsPT(e.at))} — <strong>${esc(e.kind.replace(/_/g, " "))}</strong> ${e.signer_id ? esc(byId[e.signer_id] || "") : ""} ${e.ip ? `· ${esc(e.ip)}` : ""}${e.geo ? ` · ${esc(geoLabel(e.geo))}` : ""}</div>`).join("")
@@ -214,7 +219,7 @@ export function adminDetail({ envelope, signers, events, flash, error, freshLink
 <div class="card"><h1>${esc(envelope.title)}</h1>
 <p><span class="pill ${envelope.status}">${envelope.status.replace("_", " ")}</span> · ${esc(envelope.property_address || "")} · created ${esc(fmtTsPT(envelope.created_at))}${envelope.completed_at ? ` · completed ${esc(fmtTsPT(envelope.completed_at))}` : ""}${envelope.is_template ? " · LRG purchase agreement template" : ""}</p>
 ${files}<div class="row">${actions}${retryBuild}</div>
-<table class="list" style="margin-top:14px"><tr><th>Signer</th><th>Status</th><th></th></tr>${rows}</table>
+<table class="list stack" style="margin-top:14px"><thead><tr><th>Signer</th><th>Status</th><th></th></tr></thead><tbody>${rows}</tbody></table>
 <h2 style="margin-top:20px">Fingerprints</h2><p class="ev">Original SHA-256: <code>${envelope.original_sha256}</code></p>${envelope.final_sha256 ? `<p class="ev">Final SHA-256: <code>${envelope.final_sha256}</code></p>` : ""}
 <p class="ev">Envelope <code>${envelope.id}</code> · public record page: <a href="/verify/${envelope.id}">/verify/${envelope.id}</a></p>
 <h2 style="margin-top:20px">Event log</h2>${ev}</div>`,
