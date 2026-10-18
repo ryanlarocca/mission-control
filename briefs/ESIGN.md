@@ -27,9 +27,20 @@ a Certificate of Completion is emailed to everyone and filed in Drive.
    previous one has all signed.
 3. Link → consent screen (ESIGN/UETA disclosure, versioned in
    `lib/consent.mjs`; "I'd rather sign on paper" declines + alerts Ryan) →
-   review (every page as a PNG, `pdftoppm` 110 dpi, plus a PDF link) → sign:
-   type full legal name (must contain a space), optional draw-on-screen pad,
-   "I have read…" box, green **I agree and sign**.
+   review (every page as a PNG, `pdftoppm` 110 dpi, plus a PDF link) with a
+   yellow **Sign here** tab overlaid on the agreement's own signature line
+   (template signers; addendum signers get a "Your signature" card) → tap →
+   bottom sheet: full legal name (must contain a space), **Choose a style**
+   (Great Vibes / Allura / Homemade Apple / Alex Brush, served as web fonts
+   from `/fonts/`) or **Draw with your finger** → Adopt → signature shows on
+   the page → "I have read…" box → green **Finish**. Fonts embed unsubsetted
+   (Allura breaks under pdf-lib subsetting); variable TTFs render garbage —
+   use static builds only.
+3b. Delivery per signer: **email**, **text** (CRMS sidecar `POST
+   127.0.0.1:5799/send` — iMessage then SMS from Ryan's own cell), or
+   **both**. Email is optional when a cell number is given. Completion goes
+   out as an email with the PDF attached (email signers + Ryan) and as a text
+   with the `/verify/<id>` link (text signers).
 4. Every open / sign / decline / expired-link hit records IP (Cloudflare's
    `cf-connecting-ip`), approximate location (ip-api.com), User-Agent, and
    posts a Telegram notice.
@@ -78,8 +89,7 @@ a Certificate of Completion is emailed to everyone and filed in Drive.
 ## Deliberately out of scope (tonight)
 
 SMS one-time code (`sms_verified` column exists, always "Not requested"),
-templates, bulk send, user accounts, reminders, text delivery of links
-(use **Get link to text** on the admin page and text it by hand).
+templates, bulk send, user accounts, reminders.
 
 ## Gotchas learned
 
@@ -91,3 +101,9 @@ templates, bulk send, user accounts, reminders, text delivery of links
   `updateFieldAppearances` only regenerates dirty fields.
 - Git worktrees have no `.env.local`; `lib/env.mjs` falls back to the main
   checkout's file.
+- `curl -F` treats a value starting with `(` as a nested-multipart marker —
+  a phone like `(408) …` in a test post swallows every later field. Browsers
+  are fine; write test phones without parentheses.
+- Headless Chrome won't lay out narrower than ~500 px; a 390-px screenshot
+  is a cropped 500-px page, not an overflow bug.
+- A `hidden` attribute loses to `display:flex` in CSS — `[hidden]{display:none!important}`.
