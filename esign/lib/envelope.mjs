@@ -8,8 +8,10 @@ import { env } from "./env.mjs"
 import { getDb, now, run, one, addEvent, getEnvelope, getSigners, getSigner, getEvents } from "./db.mjs"
 import { sha256, inspectPdf, renderPages, buildFinalPdf } from "./pdf.mjs"
 import { CONSENT_VERSION } from "./consent.mjs"
+import { fontKey } from "./fonts.mjs"
 import { sendMail, driveClient, driveDownload, driveMeta, driveResolvePath, driveUpload } from "./google.mjs"
-import { inviteEmail, completedEmail } from "./emails.mjs"
+import { inviteEmail, completedEmail, inviteText, completedText } from "./emails.mjs"
+import { sendText, normalizePhone } from "./sms.mjs"
 import { notify, esc } from "./notify.mjs"
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
@@ -29,13 +31,21 @@ export function normalizeSigners(input) {
   for (const [i, s] of (input || []).entries()) {
     const name = String(s.name || "").trim().replace(/\s+/g, " ")
     const email = String(s.email || "").trim().toLowerCase()
-    const phone = String(s.phone || "").trim() || null
+    const phoneRaw = String(s.phone || "").trim()
+    const phone = phoneRaw ? normalizePhone(phoneRaw) : null
     const role = s.role === "buyer" ? "buyer" : "seller"
     const order = Math.max(1, Math.min(9, Number(s.order) || 1))
-    if (!name && !email) continue
+    let delivery = ["email", "text", "both"].includes(s.delivery) ? s.delivery : "email"
+    if (!name && !email && !phoneRaw) continue
     if (!name) throw new UserError(`Signer ${i + 1}: name is required`)
-    if (!EMAIL_RE.test(email)) throw new UserError(`Signer ${i + 1} (${name}): a valid email is required`)
-    out.push({ name, email, phone, role, order })
+    if (email && !EMAIL_RE.test(email)) throw new UserError(`Signer ${i + 1} (${name}): "${email}" is not a valid email`)
+    if (phoneRaw && !phone) throw new UserError(`Signer ${i + 1} (${name}): "${phoneRaw}" is not a 10-digit phone number`)
+    if (delivery !== "email" && !phone) throw new UserError(`Signer ${i + 1} (${name}): a phone number is needed to send by text`)
+    if (delivery !== "text" && !email) {
+      if (phone) delivery = "text"
+      else throw new UserError(`Signer ${i + 1} (${name}): needs an email address or a phone number`)
+    }
+    out.push({ name, email, phone, role, order, delivery })
   }
   if (!out.length) throw new UserError("Add at least one signer")
   if (out.length > 8) throw new UserError("At most 8 signers")
@@ -82,14 +92,14 @@ export async function createEnvelope({ title, propertyAddress, agreementDate, me
   const insertEnv = db.prepare(`INSERT INTO envelopes (id, title, property_address, agreement_date, message, source, drive_file_id, drive_folder_id,
     original_sha256, original_path, page_count, is_template, status, created_at, created_by)
     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
-  const insertSigner = db.prepare(`INSERT INTO signers (id, envelope_id, order_index, role, name, email, phone, placement, status) VALUES (?,?,?,?,?,?,?,?,?)`)
+  const insertSigner = db.prepare(`INSERT INTO signers (id, envelope_id, order_index, role, name, email, phone, delivery, placement, status) VALUES (?,?,?,?,?,?,?,?,?,?)`)
   db.exec("BEGIN")
   try {
     insertEnv.run(id, title, propertyAddress || null, agreementDate || null, message || null, driveFileId ? "drive" : "upload", driveFileId || null, driveFolderId,
       sha256(bytes), originalPath, pageCount, info.isTemplate ? 1 : 0, "in_progress", ts, createdBy || "admin")
     for (const s of cleanSigners) {
       const placement = s === firstSeller || s === firstBuyer ? "template" : "addendum"
-      insertSigner.run(crypto.randomBytes(6).toString("hex"), id, s.order, s.role, s.name, s.email, s.phone, placement, "waiting")
+      insertSigner.run(crypto.randomBytes(6).toString("hex"), id, s.order, s.role, s.name, s.email, s.phone, s.delivery, placement, "waiting")
     }
     db.exec("COMMIT")
   } catch (e) {
@@ -126,13 +136,39 @@ export async function sendToSigner(envelope, signer, { resend = false } = {}) {
   const { token, hash } = newToken()
   const expiresAt = new Date(Date.now() + env.linkDays * 86400e3).toISOString()
   const link = `${env.baseUrl}/s/${token}`
-  const mail = inviteEmail({ envelope, signer, link, expiresAt })
-  const gmailId = await sendMail({ to: `"${signer.name.replace(/"/g, "")}" <${signer.email}>`, subject: mail.subject, text: mail.text, html: mail.html })
+  const channels = []
+  const wantEmail = signer.delivery !== "text" && signer.email
+  const wantText = signer.delivery !== "email" && signer.phone
+  // Email first; if it fails and a text is also wanted, the text still goes.
+  let emailErr = null
+  if (wantEmail) {
+    try {
+      const mail = inviteEmail({ envelope, signer, link, expiresAt })
+      const gmailId = await sendMail({ to: `"${signer.name.replace(/"/g, "")}" <${signer.email}>`, subject: mail.subject, text: mail.text, html: mail.html })
+      channels.push(`email:${signer.email}`)
+      addEvent(envelope.id, resend ? "link_resent" : "invitation_sent", { signerId: signer.id, details: { channel: "email", to: signer.email, gmailId, expiresAt } })
+    } catch (e) { emailErr = e }
+  }
+  if (wantText) {
+    try {
+      await sendText(signer.phone, inviteText({ envelope, signer, link, expiresAt }))
+      channels.push(`text:${signer.phone}`)
+      addEvent(envelope.id, resend ? "link_resent" : "invitation_sent", { signerId: signer.id, details: { channel: "text", to: signer.phone, expiresAt } })
+    } catch (e) {
+      if (!channels.length) throw emailErr ? new Error(`${emailErr.message}; ${e.message}`) : e
+      addEvent(envelope.id, "text_failed", { signerId: signer.id, details: { error: String(e?.message || e) } })
+      await notify(`⚠️ e-sign: email went to ${esc(signer.name)} but the text did not: ${esc(e?.message || e)}`)
+    }
+  }
+  if (!channels.length) throw emailErr || new Error(`${signer.name} has no way to be reached`)
+  if (emailErr) {
+    addEvent(envelope.id, "email_failed", { signerId: signer.id, details: { error: String(emailErr.message) } })
+    await notify(`⚠️ e-sign: text went to ${esc(signer.name)} but the email did not: ${esc(emailErr.message)}`)
+  }
   const ts = now()
   run(`UPDATE signers SET token_hash = ?, token_expires_at = ?, status = CASE WHEN status = 'waiting' THEN 'sent' ELSE status END,
        sent_at = COALESCE(sent_at, ?), send_count = send_count + 1 WHERE id = ?`, hash, expiresAt, ts, signer.id)
-  addEvent(envelope.id, resend ? "link_resent" : "invitation_sent", { signerId: signer.id, details: { to: signer.email, gmailId, expiresAt } })
-  return { link, expiresAt }
+  return { link, expiresAt, channels }
 }
 
 export async function resend(envelopeId, signerId) {
@@ -196,7 +232,7 @@ export async function recordDecline(signer, envelope, reason, ctx) {
   await notify(`✋ <b>${esc(signer.name)}</b> declined to sign <b>${esc(envelope.title)}</b> electronically${reason ? `: ${esc(reason)}` : ""}.\nThey asked for a paper copy — call them at ${esc(signer.phone || "(no phone on file)")}.`)
 }
 
-export async function recordSign(signer, envelope, { typedName, method, signaturePng }, ctx) {
+export async function recordSign(signer, envelope, { typedName, method, signaturePng, font }, ctx) {
   if (envelope.status !== "in_progress") throw new UserError("This document is no longer open for signing")
   if (signer.status === "signed") throw new UserError("You already signed this document")
   if (!signer.consented_at) throw new UserError("Please accept the electronic signature consent first")
@@ -211,10 +247,11 @@ export async function recordSign(signer, envelope, { typedName, method, signatur
     if (png.length > 400_000) throw new UserError("Drawn signature is too large")
   }
   const ts = now()
-  const r = run(`UPDATE signers SET status = 'signed', signed_at = ?, sign_ip = ?, sign_ua = ?, sign_geo = ?, typed_name = ?, signature_method = ?, signature_png = ?, token_hash = token_hash
-     WHERE id = ? AND status != 'signed'`, ts, ctx.ip, ctx.ua, ctx.geo ? JSON.stringify(ctx.geo) : null, name, png ? "drawn" : "typed", png, signer.id)
+  const fontK = fontKey(font)
+  const r = run(`UPDATE signers SET status = 'signed', signed_at = ?, sign_ip = ?, sign_ua = ?, sign_geo = ?, typed_name = ?, signature_method = ?, signature_png = ?, signature_font = ?
+     WHERE id = ? AND status != 'signed'`, ts, ctx.ip, ctx.ua, ctx.geo ? JSON.stringify(ctx.geo) : null, name, png ? "drawn" : "typed", png, fontK, signer.id)
   if (!r.changes) throw new UserError("You already signed this document")
-  addEvent(envelope.id, "signed", { signerId: signer.id, ip: ctx.ip, ua: ctx.ua, geo: ctx.geo, details: { typedName: name, method: png ? "drawn" : "typed" } })
+  addEvent(envelope.id, "signed", { signerId: signer.id, ip: ctx.ip, ua: ctx.ua, geo: ctx.geo, details: { typedName: name, method: png ? "drawn" : "typed", font: png ? null : fontK } })
   await notify(`✍️ <b>${esc(signer.name)}</b> signed <b>${esc(envelope.title)}</b>\n${esc(ctx.geoLabel)} · ${esc(ctx.device)}`)
   // Advance: finish or invite the next tier. Failures here must not undo the signature.
   try {
@@ -284,8 +321,17 @@ export async function deliver(envelopeId) {
     }
   }
 
-  const already = new Set(getEvents(envelopeId).filter((e) => e.kind === "completion_email_sent").map((e) => JSON.parse(e.details || "{}").to))
-  const recipients = [...signers.map((s) => ({ name: s.name, email: s.email })), { name: env.ownerName, email: env.senderEmail }]
+  const already = new Set(getEvents(envelopeId).filter((e) => e.kind === "completion_email_sent" || e.kind === "completion_text_sent").map((e) => JSON.parse(e.details || "{}").to))
+  for (const s of signers) {
+    if (s.delivery === "email" || !s.phone || already.has(s.phone)) continue
+    try {
+      await sendText(s.phone, completedText({ envelope, signer: s }))
+      addEvent(envelopeId, "completion_text_sent", { details: { to: s.phone } })
+    } catch (e) {
+      problems.push(`Text to ${s.phone}: ${e?.message || e}`)
+    }
+  }
+  const recipients = [...signers.filter((s) => s.email && s.delivery !== "text").map((s) => ({ name: s.name, email: s.email })), { name: env.ownerName, email: env.senderEmail }]
   const seen = new Set()
   for (const r of recipients) {
     if (seen.has(r.email) || already.has(r.email)) continue

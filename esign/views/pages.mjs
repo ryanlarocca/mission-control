@@ -4,6 +4,7 @@ import { env } from "../lib/env.mjs"
 import { consentParagraphs } from "../lib/consent.mjs"
 import { fmtTsPT, fmtLongDatePT, fmtDatePT } from "../lib/pdf.mjs"
 import { geoLabel, deviceLabel } from "../lib/geo.mjs"
+import { SIGNATURE_FONTS, DEFAULT_FONT } from "../lib/fonts.mjs"
 
 export const esc = (s) => String(s ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;")
 const first = (name) => String(name || "").split(/\s+/)[0]
@@ -59,37 +60,50 @@ export function consentPage({ envelope, signer, token, error }) {
   })
 }
 
-export function reviewPage({ envelope, signer, token, error }) {
+export function reviewPage({ envelope, signer, token, error, spot }) {
+  // spot: { page (1-based), x, lineY, w } in PDF points for template signers; null → addendum.
+  const pct = spot ? { left: (spot.x / 612) * 100, top: ((792 - (spot.lineY + 30)) / 792) * 100, width: (spot.w / 612) * 100, height: (34 / 792) * 100 } : null
+  const tab = `<button type="button" class="signtab" id="signtab" aria-label="Sign here"><span class="flag">Sign here</span><span class="sigpreview" id="sigpreview"></span></button>`
   const pages = Array.from({ length: envelope.page_count }, (_, i) =>
-    `<img class="page" src="/s/${token}/pages/${i + 1}.png" alt="Page ${i + 1}" loading="${i < 2 ? "eager" : "lazy"}"><div class="pageno">Page ${i + 1} of ${envelope.page_count}</div>`).join("")
+    `<div class="pagewrap"><img class="page" src="/s/${token}/pages/${i + 1}.png" alt="Page ${i + 1}" loading="${i < 2 ? "eager" : "lazy"}">${pct && spot.page === i + 1 ? `<div class="spot" style="left:${pct.left}%;top:${pct.top}%;width:${pct.width}%;height:${pct.height}%">${tab}</div>` : ""}</div><div class="pageno">Page ${i + 1} of ${envelope.page_count}</div>`).join("")
+  const fontFaces = Object.values(SIGNATURE_FONTS).map((f) => `@font-face{font-family:"${f.css}";src:url(/fonts/${f.file}) format("truetype");font-display:swap}`).join("")
+  const fontCards = Object.entries(SIGNATURE_FONTS).map(([k, f]) => `<label class="fontcard"><input type="radio" name="fontpick" value="${k}" ${k === DEFAULT_FONT ? "checked" : ""}><span class="fontprev" style="font-family:'${f.css}';font-size:${f.webSize}px" data-font="${k}">${esc(signer.name)}</span><span class="fontlabel">${f.label}</span></label>`).join("")
+  const roleLabel = signer.role === "buyer" ? "Buyer" : "Seller"
+  const addendumCard = !spot ? `<div class="card" id="addcard"><h2>Your signature</h2><p class="muted">Your signature goes on the Signature Addendum attached to this agreement, with the other ${roleLabel.toLowerCase()}s.</p><div class="addline"><div class="spot inline">${tab}</div><div class="linebar"></div><div class="muted" style="font-size:14px">${roleLabel} · ${esc(signer.name)}</div></div></div>` : ""
   return layout({
     title: "Review and sign",
-    who: `${esc(signer.name)}<br>${esc(signer.email)}`,
+    who: `${esc(signer.name)}<br>${esc(signer.email || signer.phone || "")}`,
     scripts: ["/sign.js"],
-    body: `
+    body: `<style>${fontFaces}</style>
 <div class="card">
-  <div class="step">Step 2 of 2 · Review, then sign at the bottom</div>
+  <div class="step">Step 2 of 2 · Review, then sign</div>
   <h1>${esc(envelope.title)}</h1>
   ${envelope.property_address ? `<p class="muted">${esc(envelope.property_address)}</p>` : ""}
-  <p>Please read all ${envelope.page_count} page${envelope.page_count === 1 ? "" : "s"} below. You sign at the very bottom. <a class="link" href="/s/${token}/document.pdf" target="_blank">Open as a PDF</a></p>
+  <p>Read all ${envelope.page_count} page${envelope.page_count === 1 ? "" : "s"}, then tap the yellow <strong>Sign here</strong> tab${spot ? ` on page ${spot.page}` : " below"}. <a class="link" href="/s/${token}/document.pdf" target="_blank">Open as a PDF</a></p>
+  ${error ? `<div class="error">${esc(error)}</div>` : ""}
 </div>
 <div class="pages">${pages}</div>
-<div class="card" id="sign">
-  <h2>Sign as ${esc(signer.role === "buyer" ? "Buyer" : "Seller")}</h2>
-  ${error ? `<div class="error">${esc(error)}</div>` : ""}
-  <form method="post" action="/s/${token}/sign" id="signform" autocomplete="off">
-    <label class="field"><span>Type your full legal name</span><input type="text" name="typed_name" id="typed_name" placeholder="${esc(signer.name)}" autocapitalize="words" autocomplete="name" required maxlength="80"></label>
-    <p class="muted" style="margin-top:-6px">Your typed name is your signature. ${signer.placement === "template" ? "It will be placed on the agreement's signature line." : "It will be placed on the signature page with the other parties."}</p>
-    <p><button class="link" id="drawtoggle" type="button">Draw my signature instead (optional)</button></p>
-    <div id="padwrap" style="display:none">
-      <canvas class="sigpad" id="pad"></canvas>
-      <div class="sigrow"><span>Sign above with your finger</span><button class="link" id="clearpad" type="button">Clear</button></div>
-    </div>
-    <input type="hidden" name="method" id="method" value="typed"><input type="hidden" name="signature_png" id="signature_png" value="">
-    <label class="check"><input type="checkbox" id="agree" name="agree" value="1" required> I have read this document and I agree to sign it electronically. I understand this is legally binding.</label>
-    <button class="btn green" type="submit" id="signbtn" disabled>I agree and sign</button>
-  </form>
-  <p class="muted" style="margin-top:14px">Changed your mind? Just close this page. Nothing is signed until you tap the green button. Questions: ${esc(env.ownerName)}, ${esc(env.ownerPhone)}.</p>
+${addendumCard}
+<div class="card" id="finishcard">
+  <label class="check"><input type="checkbox" id="agree"> I have read this document and I agree to sign it electronically. I understand this is legally binding.</label>
+  <button class="btn green" type="button" id="finish" disabled>Finish</button>
+  <p class="muted" id="finishhint" style="margin-top:10px">Tap <strong>Sign here</strong> on the document first.</p>
+  <p class="muted" style="margin-top:14px">Changed your mind? Just close this page. Nothing is signed until you tap Finish. Questions: ${esc(env.ownerName)}, ${esc(env.ownerPhone)}.</p>
+</div>
+<form method="post" action="/s/${token}/sign" id="signform" style="display:none">
+  <input type="hidden" name="typed_name" id="f_typed_name"><input type="hidden" name="method" id="f_method" value="typed"><input type="hidden" name="font" id="f_font" value="${DEFAULT_FONT}"><input type="hidden" name="signature_png" id="f_png"><input type="hidden" name="agree" id="f_agree" value="">
+</form>
+<div class="sheet" id="sheet" hidden>
+  <div class="sheetin">
+    <h2>Your signature</h2>
+    <label class="field"><span>Type your full legal name</span><input type="text" id="typed_name" placeholder="${esc(signer.name)}" autocapitalize="words" autocomplete="name" maxlength="80"></label>
+    <div class="tabs"><button type="button" class="tabbtn on" data-tab="type">Choose a style</button><button type="button" class="tabbtn" data-tab="draw">Draw with your finger</button></div>
+    <div id="tab-type" class="fontgrid">${fontCards}</div>
+    <div id="tab-draw" hidden><canvas class="sigpad" id="pad"></canvas><div class="sigrow"><span>Sign above with your finger</span><button class="link" id="clearpad" type="button">Clear</button></div></div>
+    <div class="error" id="sheeterr" hidden></div>
+    <button class="btn green" type="button" id="adopt">Adopt and sign</button>
+    <button class="btn secondary" type="button" id="cancelsheet">Cancel</button>
+  </div>
 </div>`,
   })
 }
@@ -164,13 +178,13 @@ export function adminNew({ prefill = {}, offers = [], error, offersError }) {
   <label class="field"><span>Property address</span><input type="text" name="property_address" id="property_address" value="${esc(prefill.address || "")}"></label>
   <label class="field"><span>Agreement date (as written on the contract)</span><input type="date" name="agreement_date" value="${esc(prefill.date || "")}"></label>
   <label class="field"><span>Note to signers (optional)</span><textarea name="message" rows="2" placeholder="Hi — here's the agreement we discussed. Call me with any questions.">${esc(prefill.message || "")}</textarea></label>
-  <div class="field"><span>Signers — lower order numbers sign first; same number = at the same time</span>
+  <div class="field"><span>Signers — lower order numbers sign first; same number = at the same time. Each signer needs an email or a cell number.</span>
     <div id="signers"></div>
     <button class="btn small secondary" id="addsigner" type="button">+ Add signer</button>
   </div>
   <button class="btn" type="submit">Send for signature</button>
 </form></div>
-<template id="signer-tpl"><input type="text" name="s_name[]" placeholder="Full legal name" class="full"><input type="email" name="s_email[]" placeholder="Email"><input type="tel" name="s_phone[]" placeholder="Phone (optional)"><select name="s_role[]"><option value="seller">Seller</option><option value="buyer">Buyer (me / partner)</option></select><div class="row"><select name="s_order[]"><option value="1">Signs 1st</option><option value="2">Signs 2nd</option><option value="3">Signs 3rd</option><option value="4">Signs 4th</option></select><button class="link rm" type="button">remove</button></div></template>
+<template id="signer-tpl"><input type="text" name="s_name[]" placeholder="Full legal name" class="full"><input type="email" name="s_email[]" placeholder="Email"><input type="tel" name="s_phone[]" placeholder="Cell phone"><select name="s_role[]"><option value="seller">Seller</option><option value="buyer">Buyer (me / partner)</option></select><select name="s_delivery[]"><option value="email">Send by email</option><option value="text">Send by text (my cell)</option><option value="both">Email + text</option></select><div class="row full"><select name="s_order[]"><option value="1">Signs 1st</option><option value="2">Signs 2nd</option><option value="3">Signs 3rd</option><option value="4">Signs 4th</option></select><button class="link rm" type="button">remove</button></div></template>
 <script>window.PREFILL=${pre}</script>`,
   })
 }
@@ -181,9 +195,9 @@ export function adminDetail({ envelope, signers, events, flash, error, freshLink
   const rows = signers.map((s) => {
     const canSend = open && s.status !== "signed" && s.order_index <= tier
     const link = freshLinks[s.id]
-    return `<tr><td><strong>${esc(s.name)}</strong><div class="ev">${esc(s.email)}${s.phone ? ` · ${esc(s.phone)}` : ""}<br>${s.role} · order ${s.order_index} · ${s.placement === "template" ? "on the agreement" : "on the addendum"}</div></td>
+    return `<tr><td><strong>${esc(s.name)}</strong><div class="ev">${[s.email, s.phone].filter(Boolean).map(esc).join(" · ")}<br>${s.role} · order ${s.order_index} · by ${s.delivery === "both" ? "email + text" : s.delivery} · ${s.placement === "template" ? "on the agreement" : "on the addendum"}</div></td>
 <td><span class="pill ${s.status}">${s.status}</span><div class="ev">${s.sent_at ? `sent ${esc(fmtTsPT(s.sent_at))}${s.send_count > 1 ? ` (×${s.send_count})` : ""}<br>` : ""}${s.opened_at ? `opened ${esc(fmtTsPT(s.opened_at))} · ${esc(geoLabel(s.open_geo))} · ${esc(deviceLabel(s.open_ua))}<br>` : ""}${s.signed_at ? `signed ${esc(fmtTsPT(s.signed_at))} · ${esc(geoLabel(s.sign_geo))}` : ""}</div></td>
-<td>${canSend ? `<form method="post" action="/admin/e/${envelope.id}/resend/${s.id}" style="display:inline"><button class="btn small secondary" type="submit">Resend email</button></form><form method="post" action="/admin/e/${envelope.id}/link/${s.id}" style="display:inline"><button class="btn small secondary" type="submit">Get link to text</button></form>` : ""}${link ? `<div class="ev">Fresh link (expires ${esc(fmtDatePT(link.expiresAt))}):<br><code>${esc(link.link)}</code> <button class="link" data-copy="${esc(link.link)}">copy</button></div>` : ""}</td></tr>`
+<td>${canSend ? `<form method="post" action="/admin/e/${envelope.id}/resend/${s.id}" style="display:inline"><button class="btn small secondary" type="submit">Resend</button></form><form method="post" action="/admin/e/${envelope.id}/link/${s.id}" style="display:inline"><button class="btn small secondary" type="submit">Get link to text</button></form>` : ""}${link ? `<div class="ev">Fresh link (expires ${esc(fmtDatePT(link.expiresAt))}):<br><code>${esc(link.link)}</code> <button class="link" data-copy="${esc(link.link)}">copy</button></div>` : ""}</td></tr>`
   }).join("")
   const byId = Object.fromEntries(signers.map((s) => [s.id, s.name]))
   const ev = events.map((e) => `<div class="ev">${esc(fmtTsPT(e.at))} — <strong>${esc(e.kind.replace(/_/g, " "))}</strong> ${e.signer_id ? esc(byId[e.signer_id] || "") : ""} ${e.ip ? `· ${esc(e.ip)}` : ""}${e.geo ? ` · ${esc(geoLabel(e.geo))}` : ""}</div>`).join("")

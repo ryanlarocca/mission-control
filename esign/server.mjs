@@ -14,6 +14,8 @@ import { notify, esc as tesc } from "./lib/notify.mjs"
 import { driveClient, listRecentOffers } from "./lib/google.mjs"
 import * as E from "./lib/envelope.mjs"
 import * as V from "./views/pages.mjs"
+import { SIGNATURE_FONTS } from "./lib/fonts.mjs"
+import { TEMPLATE } from "./lib/pdf.mjs"
 
 ensureDataDirs()
 getDb()
@@ -83,8 +85,15 @@ async function parseForm(c) {
 }
 
 function signersFromForm(arr) {
-  const names = arr("s_name[]"), emails = arr("s_email[]"), phones = arr("s_phone[]"), roles = arr("s_role[]"), orders = arr("s_order[]")
-  return names.map((name, i) => ({ name, email: emails[i], phone: phones[i], role: roles[i], order: orders[i] }))
+  const names = arr("s_name[]"), emails = arr("s_email[]"), phones = arr("s_phone[]"), roles = arr("s_role[]"), orders = arr("s_order[]"), deliveries = arr("s_delivery[]")
+  return names.map((name, i) => ({ name, email: emails[i], phone: phones[i], role: roles[i], order: orders[i], delivery: deliveries[i] }))
+}
+
+/** Where this signer's "Sign here" tab sits on the page images (template signers only). */
+function signSpot(envelope, signer) {
+  if (!envelope.is_template || signer.placement !== "template") return null
+  const t = TEMPLATE[signer.role]
+  return t ? { page: TEMPLATE.page + 1, x: t.x, lineY: t.lineY, w: t.w } : null
 }
 
 // ------------------------------------------------------------ static + health
@@ -95,6 +104,11 @@ app.get("/logo.png", () => staticFile("logo.png"))
 app.get("/style.css", () => staticFile("style.css"))
 app.get("/sign.js", () => staticFile("sign.js"))
 app.get("/admin.js", () => staticFile("admin.js"))
+app.get("/fonts/:file", (c) => {
+  const f = Object.values(SIGNATURE_FONTS).find((x) => x.file === c.req.param("file"))
+  if (!f) return c.notFound()
+  return new Response(fs.readFileSync(path.join(APP_ROOT, "assets", "fonts", f.file)), { headers: { "content-type": "font/ttf", "cache-control": "public, max-age=86400" } })
+})
 app.get("/robots.txt", (c) => c.text("User-agent: *\nDisallow: /\n"))
 
 // ------------------------------------------------------------ signer flow
@@ -129,7 +143,7 @@ app.get("/s/:token", async (c) => {
   const ctx = await ctxOf(c)
   await E.recordOpen(signer, envelope, ctx)
   if (!signer.consented_at) return html(c, V.consentPage({ envelope, signer, token }))
-  return html(c, V.reviewPage({ envelope, signer, token }))
+  return html(c, V.reviewPage({ envelope, signer, token, spot: signSpot(envelope, signer) }))
 })
 
 app.post("/s/:token/consent", async (c) => {
@@ -157,14 +171,15 @@ app.post("/s/:token/sign", async (c) => {
   const { token, signer, envelope } = r
   if (signer.status === "signed") return c.redirect(`/s/${token}`)
   const { str } = await parseForm(c)
-  if (str("agree") !== "1") return html(c, V.reviewPage({ envelope, signer, token, error: "Please tick the box to confirm you've read the document." }))
+  const spot = signSpot(envelope, signer)
+  if (str("agree") !== "1") return html(c, V.reviewPage({ envelope, signer, token, spot, error: "Please tick the box to confirm you've read the document." }))
   try {
-    await E.recordSign(signer, envelope, { typedName: str("typed_name"), method: str("method"), signaturePng: str("signature_png") }, await ctxOf(c))
+    await E.recordSign(signer, envelope, { typedName: str("typed_name"), method: str("method"), signaturePng: str("signature_png"), font: str("font") }, await ctxOf(c))
   } catch (e) {
-    if (e instanceof E.UserError) return html(c, V.reviewPage({ envelope, signer, token, error: e.message }), 400)
+    if (e instanceof E.UserError) return html(c, V.reviewPage({ envelope, signer, token, spot, error: e.message }), 400)
     console.error("[esign] sign failed:", e)
     await notify(`🔴 e-sign: signing failed for ${tesc(signer.name)} on <b>${tesc(envelope.title)}</b>: ${tesc(e?.message || e)}`)
-    return html(c, V.reviewPage({ envelope, signer, token, error: "Something went wrong on our side. Please try again in a minute, or call " + env.ownerPhone + "." }), 500)
+    return html(c, V.reviewPage({ envelope, signer, token, spot, error: "Something went wrong on our side. Please try again in a minute, or call " + env.ownerPhone + "." }), 500)
   }
   return c.redirect(`/s/${token}`)
 })

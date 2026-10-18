@@ -41,6 +41,7 @@ CREATE TABLE IF NOT EXISTS signers (
   name TEXT NOT NULL,
   email TEXT NOT NULL,
   phone TEXT,
+  delivery TEXT NOT NULL DEFAULT 'email', -- 'email' | 'text' | 'both'
   placement TEXT NOT NULL,         -- 'template' | 'addendum'
   token_hash TEXT,
   token_expires_at TEXT,
@@ -56,6 +57,7 @@ CREATE TABLE IF NOT EXISTS signers (
   sign_ip TEXT, sign_ua TEXT, sign_geo TEXT,
   typed_name TEXT,
   signature_method TEXT,           -- 'typed' | 'drawn'
+  signature_font TEXT,             -- key in lib/fonts.mjs (typed signatures)
   signature_png BLOB,
   declined_at TEXT,
   decline_reason TEXT,
@@ -87,6 +89,10 @@ export function getDb() {
   db = new DatabaseSync(path.join(env.dataDir, "esign.sqlite"))
   db.exec("PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;")
   db.exec(SCHEMA)
+  // additive migrations
+  const cols = db.prepare("PRAGMA table_info(signers)").all().map((c) => c.name)
+  if (!cols.includes("signature_font")) db.exec("ALTER TABLE signers ADD COLUMN signature_font TEXT")
+  if (!cols.includes("delivery")) db.exec("ALTER TABLE signers ADD COLUMN delivery TEXT NOT NULL DEFAULT 'email'")
   return db
 }
 

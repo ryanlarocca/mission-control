@@ -51,3 +51,35 @@ code,.mono{font-family:Menlo,Consolas,monospace;font-size:13px;word-break:break-
 .row{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
 .ev{font-size:13px;color:var(--muted)}
 @media (min-width:600px){main{padding:26px 18px 80px}h1{font-size:27px}}
+/* tap-to-sign */
+.pagewrap{position:relative}
+.spot{position:absolute;display:flex;align-items:flex-end}
+.spot.inline{position:static;display:block;height:46px}
+.signtab{position:relative;display:flex;align-items:center;gap:8px;width:100%;min-height:40px;height:100%;border:2px solid #d97706;border-radius:6px;background:rgba(253,224,71,.55);cursor:pointer;padding:2px 6px;font:inherit;text-align:left}
+.signtab .flag{position:absolute;left:-2px;top:-26px;background:#d97706;color:#fff;font-size:13px;font-weight:700;padding:3px 9px;border-radius:6px 6px 6px 0;white-space:nowrap;box-shadow:0 1px 3px rgba(0,0,0,.25);animation:nudge 1.6s ease-in-out infinite}
+@keyframes nudge{0%,100%{transform:translateY(0)}50%{transform:translateY(-3px)}}
+.signtab.signed{background:rgba(220,252,231,.75);border-color:#15803d}
+.signtab.signed .flag{display:none}
+.sigpreview{flex:1;display:flex;align-items:flex-end;overflow:hidden;height:100%;color:#1a1a59}
+.sigpreview span{font-size:clamp(14px,5.5vw,30px);line-height:1;white-space:nowrap}
+.sigpreview img{max-height:100%;max-width:100%}
+.addline{margin-top:10px}.linebar{border-bottom:1.5px solid #333;margin:4px 0 6px}
+.sheet{position:fixed;inset:0;background:rgba(0,0,0,.45);display:flex;align-items:flex-end;z-index:50}
+.sheetin{background:#fff;width:100%;max-height:92vh;overflow:auto;border-radius:18px 18px 0 0;padding:20px 18px 28px;box-shadow:0 -4px 24px rgba(0,0,0,.2)}
+.sheetin .btn{margin-top:10px}
+.noscroll{overflow:hidden}
+.tabs{display:flex;gap:6px;margin:4px 0 12px}
+.tabbtn{flex:1;font:inherit;font-size:15px;font-weight:600;padding:11px 8px;border:1.5px solid var(--line);background:#fafafa;border-radius:10px;color:var(--muted)}
+.tabbtn.on{background:#eff6ff;border-color:var(--blue);color:var(--blue)}
+.fontgrid{display:grid;grid-template-columns:1fr;gap:8px}
+.fontcard{display:flex;align-items:center;gap:12px;border:2px solid var(--line);border-radius:12px;padding:10px 12px;cursor:pointer;background:#fff}
+.fontcard:has(input:checked){border-color:var(--blue);background:#eff6ff}
+.fontcard input{width:22px;height:22px;flex:none}
+.fontprev{flex:1;line-height:1.1;color:#1a1a59;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.fontlabel{font-size:12px;color:var(--muted);flex:none}
+@media (min-width:600px){.sheet{align-items:center;padding:20px}.sheetin{max-width:520px;border-radius:18px}}
+.sheet[hidden],[hidden]{display:none!important}
+html,body{max-width:100%;overflow-x:hidden}
+.fontprev{min-width:0}
+.sigpreview{min-width:0}
+.fontprev{padding-left:8px}

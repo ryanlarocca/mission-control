@@ -10,10 +10,19 @@ import fontkit from "@pdf-lib/fontkit"
 import { APP_ROOT, env } from "./env.mjs"
 import { geoLabel, deviceLabel } from "./geo.mjs"
 import { CONSENT_VERSION } from "./consent.mjs"
+import { SIGNATURE_FONTS, fontKey } from "./fonts.mjs"
 
 const execFileP = promisify(execFile)
 const PDFTOPPM = fs.existsSync("/opt/homebrew/bin/pdftoppm") ? "/opt/homebrew/bin/pdftoppm" : "pdftoppm"
-const SCRIPT_FONT = path.join(APP_ROOT, "assets", "fonts", "GreatVibes-Regular.ttf")
+const FONT_DIR = path.join(APP_ROOT, "assets", "fonts")
+
+/** Embed (once per document) the script font a signer picked. */
+async function scriptFontFor(doc, fonts, signer) {
+  const key = fontKey(signer.signature_font)
+  fonts.scripts ??= {}
+  if (!fonts.scripts[key]) fonts.scripts[key] = await doc.embedFont(fs.readFileSync(path.join(FONT_DIR, SIGNATURE_FONTS[key].file)), { subset: false }) // Allura breaks under subsetting
+  return { font: fonts.scripts[key], size: SIGNATURE_FONTS[key].pdfSize }
+}
 
 export function sha256(bytes) {
   return crypto.createHash("sha256").update(bytes).digest("hex")
@@ -116,10 +125,11 @@ async function drawSignature(doc, page, fonts, signer, { x, baseY, maxW, maxH })
     return
   }
   const name = signer.typed_name || signer.name
-  let size = Math.min(22, maxH)
-  const w1 = fonts.script.widthOfTextAtSize(name, 1)
+  const sf = await scriptFontFor(doc, fonts, signer)
+  let size = Math.min(sf.size, maxH)
+  const w1 = sf.font.widthOfTextAtSize(name, 1)
   if (w1 * size > maxW) size = Math.max(9, maxW / w1)
-  page.drawText(name, { x: x + 2, y: baseY + 3, size, font: fonts.script, color: rgb(0.1, 0.1, 0.35) })
+  page.drawText(name, { x: x + 2, y: baseY + 3, size, font: sf.font, color: rgb(0.1, 0.1, 0.35) })
 }
 
 function stampText(page, fonts, signer, envelopeId, { x, y, w }) {
@@ -142,7 +152,6 @@ export async function buildFinalPdf({ originalBytes, envelope, signers, events }
     helv: await doc.embedFont(StandardFonts.Helvetica),
     bold: await doc.embedFont(StandardFonts.HelveticaBold),
     mono: await doc.embedFont(StandardFonts.Courier),
-    script: await doc.embedFont(fs.readFileSync(SCRIPT_FONT), { subset: true }),
   }
   doc.setTitle(`${envelope.title} — signed`)
   doc.setProducer(`${env.businessName} e-sign`)
@@ -303,14 +312,14 @@ async function drawCertificate(doc, fonts, envelope, signers, events, { signedSh
   for (const s of signers) {
     need(120)
     page.drawText(`${s.name}  —  ${s.role === "buyer" ? "Buyer" : "Seller"} (signing order ${s.order_index})`, { x: M, y, size: 9.5, font: fonts.bold }); y -= 13
-    kv("Email / phone", `${s.email}${s.phone ? `  ·  ${s.phone}` : ""}`)
+    kv("Email / phone", [s.email, s.phone].filter(Boolean).join("  ·  ") || "—")
     kv("Status", s.status === "signed" ? "Signed" : s.status)
-    kv("Sent", s.sent_at ? `${fmtTsPT(s.sent_at)} (email${s.send_count > 1 ? `, ${s.send_count} sends` : ""})` : "—")
+    kv("Sent", s.sent_at ? `${fmtTsPT(s.sent_at)} by ${s.delivery === "both" ? "email and text message" : s.delivery === "text" ? "text message" : "email"}${s.send_count > 1 ? ` (${s.send_count} sends)` : ""}` : "—")
     kv("Opened", s.opened_at ? `${fmtTsPT(s.opened_at)} · IP ${s.open_ip ?? "?"} · ${geoLabel(s.open_geo)} · ${deviceLabel(s.open_ua)}` : "—")
     kv("Consent", s.consented_at ? `${fmtTsPT(s.consented_at)} · agreed to electronic records and signatures (consent text v${s.consent_version}) · IP ${s.consent_ip ?? "?"}` : "—")
     kv("Signed", s.signed_at ? `${fmtTsPT(s.signed_at)} · IP ${s.sign_ip ?? "?"} · ${geoLabel(s.sign_geo)} · ${deviceLabel(s.sign_ua)}` : "—")
     if (s.signed_at) {
-      kv("Signature", `${s.signature_method === "drawn" ? "Drawn on screen" : "Typed"} · legal name typed: "${s.typed_name}" · placed on ${s.placement === "template" ? "the agreement's signature line" : "the Signature Addendum"}`)
+      kv("Signature", `${s.signature_method === "drawn" ? "Drawn on screen with finger/stylus" : `Typed (style: ${SIGNATURE_FONTS[fontKey(s.signature_font)].label})`} · legal name typed: "${s.typed_name}" · placed on ${s.placement === "template" ? "the agreement's signature line" : "the Signature Addendum"}`)
       kv("Intent", `Clicked "I agree and sign" after reviewing all ${envelope.page_count} pages`)
     }
     kv("SMS verification", s.sms_verified ? "Passed" : "Not requested")

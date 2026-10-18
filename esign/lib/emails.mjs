@@ -56,3 +56,14 @@ export function completedEmail({ envelope, signers, recipientName, finalSha256 }
     `Download any time: ${env.baseUrl}/verify/${envelope.id}\nSHA-256: ${finalSha256}\n\n${env.businessName} · ${env.senderEmail}`
   return { subject, html, text }
 }
+
+/** The invitation as a text message (iMessage/SMS from Ryan's cell). */
+export function inviteText({ envelope, signer, link, expiresAt }) {
+  const first = signer.name.split(/\s+/)[0]
+  return `Hi ${first}, it's ${env.ownerName} with ${env.businessName}. Here's the ${envelope.title} to review and sign on your phone:\n${link}\nThe link is just for you and works until ${fmtLongDatePT(expiresAt)}. Call or text me with any questions.`
+}
+
+export function completedText({ envelope, signer }) {
+  const first = signer.name.split(/\s+/)[0]
+  return `Hi ${first}, ${envelope.title} is now signed by everyone. Your copy (with the signing certificate) is here:\n${env.baseUrl}/verify/${envelope.id}\nThank you! — ${env.ownerName}, ${env.businessName}`
+}

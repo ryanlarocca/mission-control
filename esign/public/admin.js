@@ -9,6 +9,7 @@
     div.querySelector('[name="s_email[]"]').value = v.email || '';
     div.querySelector('[name="s_phone[]"]').value = v.phone || '';
     div.querySelector('[name="s_role[]"]').value = v.role || 'seller';
+    div.querySelector('[name="s_delivery[]"]').value = v.delivery || 'email';
     div.querySelector('[name="s_order[]"]').value = v.order || (v.role === 'buyer' ? '2' : '1');
     div.querySelector('.rm').addEventListener('click', function (e) { e.preventDefault(); div.remove(); });
     rows.appendChild(div);
