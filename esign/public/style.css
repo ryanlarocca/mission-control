@@ -1,0 +1,53 @@
+:root{--ink:#18181b;--muted:#52525b;--line:#e4e4e7;--bg:#f4f4f5;--card:#fff;--blue:#1d4ed8;--blue-d:#1e40af;--green:#15803d;--red:#b91c1c}
+*{box-sizing:border-box}
+html{-webkit-text-size-adjust:100%}
+body{margin:0;background:var(--bg);color:var(--ink);font:17px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif}
+header.brand{background:var(--card);border-bottom:1px solid var(--line);padding:14px 18px;display:flex;align-items:center;gap:12px}
+header.brand img{height:34px}
+header.brand .who{font-size:14px;color:var(--muted);margin-left:auto;text-align:right}
+main{max-width:720px;margin:0 auto;padding:18px 14px 60px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:22px 20px;margin:0 0 16px}
+h1{font-size:24px;line-height:1.25;margin:0 0 12px}
+h2{font-size:19px;margin:0 0 10px}
+p{margin:0 0 12px}
+.muted{color:var(--muted);font-size:15px}
+.step{font-size:13px;letter-spacing:.06em;text-transform:uppercase;color:var(--blue);font-weight:700;margin-bottom:6px}
+.btn{display:block;width:100%;border:0;border-radius:12px;padding:18px 20px;font-size:19px;font-weight:700;text-align:center;cursor:pointer;text-decoration:none;color:#fff;background:var(--blue)}
+.btn:active{background:var(--blue-d)}
+.btn[disabled]{opacity:.5;cursor:default}
+.btn.secondary{background:#fff;color:var(--ink);border:1px solid var(--line);font-weight:600;font-size:17px;margin-top:10px}
+.btn.green{background:var(--green)}
+.btn.small{display:inline-block;width:auto;padding:10px 14px;font-size:15px;margin:4px 6px 4px 0}
+.btn.danger{background:#fff;color:var(--red);border:1px solid #fecaca}
+label.check{display:flex;gap:12px;align-items:flex-start;font-size:17px;padding:14px;border:2px solid var(--line);border-radius:12px;margin:14px 0;background:#fafafa}
+label.check input{width:26px;height:26px;flex:none;margin:2px 0 0}
+label.check.on{border-color:var(--blue);background:#eff6ff}
+input[type=text],input[type=email],input[type=tel],input[type=date],input[type=password],select,textarea{width:100%;font:inherit;font-size:18px;padding:13px 14px;border:1.5px solid #d4d4d8;border-radius:10px;background:#fff}
+input:focus,select:focus,textarea:focus{outline:2px solid var(--blue);border-color:var(--blue)}
+.field{margin:0 0 14px}
+.field>span{display:block;font-size:14px;font-weight:600;color:var(--muted);margin-bottom:6px}
+.pages{margin:0 -6px}
+.page{display:block;width:100%;height:auto;border:1px solid var(--line);border-radius:6px;background:#fff;margin:0 0 10px;box-shadow:0 1px 3px rgba(0,0,0,.08)}
+.pageno{font-size:13px;color:var(--muted);text-align:center;margin:-4px 0 14px}
+.sigpad{border:2px dashed #a1a1aa;border-radius:12px;background:#fff;touch-action:none;width:100%;height:170px;display:block}
+.sigrow{display:flex;justify-content:space-between;align-items:center;font-size:14px;color:var(--muted);margin:6px 0 10px}
+.link{color:var(--blue);background:none;border:0;font:inherit;font-size:15px;padding:0;cursor:pointer;text-decoration:underline}
+.error{background:#fef2f2;border:1px solid #fecaca;color:var(--red);padding:12px 14px;border-radius:10px;margin:0 0 14px;font-size:16px}
+.ok{background:#f0fdf4;border:1px solid #bbf7d0;color:var(--green);padding:12px 14px;border-radius:10px;margin:0 0 14px}
+.consent p{font-size:16px}
+.bigcheck{font-size:40px;text-align:center;margin:6px 0}
+table.list{width:100%;border-collapse:collapse;font-size:15px}
+table.list th,table.list td{text-align:left;padding:9px 8px;border-bottom:1px solid var(--line);vertical-align:top}
+table.list th{font-size:12px;text-transform:uppercase;letter-spacing:.05em;color:var(--muted)}
+.pill{display:inline-block;padding:2px 9px;border-radius:999px;font-size:12px;font-weight:700;background:#e4e4e7}
+.pill.in_progress,.pill.sent,.pill.opened,.pill.consented{background:#dbeafe;color:#1e40af}
+.pill.completed,.pill.signed{background:#dcfce7;color:#166534}
+.pill.voided,.pill.declined{background:#fee2e2;color:#991b1b}
+.pill.waiting{background:#f4f4f5;color:#52525b}
+.signer-row{display:grid;grid-template-columns:1fr 1fr;gap:8px;padding:12px;border:1px solid var(--line);border-radius:12px;margin:0 0 10px;background:#fafafa}
+.signer-row .full{grid-column:1/-1}
+.signer-row input,.signer-row select{font-size:16px;padding:10px 12px}
+code,.mono{font-family:Menlo,Consolas,monospace;font-size:13px;word-break:break-all}
+.row{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
+.ev{font-size:13px;color:var(--muted)}
+@media (min-width:600px){main{padding:26px 18px 80px}h1{font-size:27px}}

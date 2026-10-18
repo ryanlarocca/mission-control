@@ -24,3 +24,6 @@ supabase/
 infrastructure/
 coverage/
 *.tsbuildinfo
+
+# e-sign service runs on the Mac mini (esign/server.mjs); its node_modules must never ride a CLI upload.
+esign/

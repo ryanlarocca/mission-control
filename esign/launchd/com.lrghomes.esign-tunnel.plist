@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Named Cloudflare Tunnel "esign": sign.lrghomes.com → http://127.0.0.1:5877.
+  Config in ~/.cloudflared/esign.yml (credentials json beside it). No router
+  ports are opened; Cloudflare terminates HTTPS.
+  Install:  cp esign/launchd/com.lrghomes.esign-tunnel.plist ~/Library/LaunchAgents/ && launchctl load ~/Library/LaunchAgents/com.lrghomes.esign-tunnel.plist
+  Logs:     ~/Projects/logs/esign-tunnel.log
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.lrghomes.esign-tunnel</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/opt/homebrew/bin/cloudflared</string>
+    <string>--config</string>
+    <string>/Users/ryanlarocca/.cloudflared/esign.yml</string>
+    <string>tunnel</string>
+    <string>run</string>
+  </array>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>ThrottleInterval</key><integer>10</integer>
+  <key>StandardOutPath</key><string>/Users/ryanlarocca/Projects/logs/esign-tunnel.log</string>
+  <key>StandardErrorPath</key><string>/Users/ryanlarocca/Projects/logs/esign-tunnel.log</string>
+</dict>
+</plist>

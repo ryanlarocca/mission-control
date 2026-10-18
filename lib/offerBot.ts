@@ -403,12 +403,29 @@ export async function loadOfferTemplate(drive: Drive): Promise<Buffer> {
   return bytes
 }
 
-export async function uploadOfferToDrive(drive: Drive, fields: OfferFields, filename: string, bytes: Uint8Array): Promise<{ url: string | null; path: string }> {
+export async function uploadOfferToDrive(drive: Drive, fields: OfferFields, filename: string, bytes: Uint8Array): Promise<{ id: string; url: string | null; path: string }> {
   const rel = offerDriveRelPath(fields)
   const folder = await resolveDrivePath(drive, OFFER_DRIVE_ROOT_ID, rel, { create: true })
   if (!folder.id) throw new Error(`Drive folder ${rel} could not be created`)
   const up = await uploadDriveFile(drive, folder.id, filename, "application/pdf", bytes)
-  return { url: up.webViewLink, path: `${OFFER_DRIVE_ROOT_NAME}/${rel}/${filename}` }
+  return { id: up.id, url: up.webViewLink, path: `${OFFER_DRIVE_ROOT_NAME}/${rel}/${filename}` }
+}
+
+/** e-sign (esign/ on the Mac mini, briefs/ESIGN.md): the admin "new request"
+ *  page pre-filled from the offer — Drive file, seller, property, date. */
+export const ESIGN_BASE_URL = (process.env.ESIGN_BASE_URL || "https://sign.lrghomes.com").replace(/\/+$/, "")
+
+export function esignNewRequestUrl(fields: OfferFields, driveFileId: string, filename: string): string {
+  const q = new URLSearchParams()
+  q.set("drive", driveFileId)
+  q.set("title", filename.replace(/\.pdf$/i, ""))
+  if (fields.property_address) q.set("address", fields.property_address)
+  if (fields.agreement_date) q.set("date", fields.agreement_date)
+  const signer = fields.seller_signer_name || fields.seller_name
+  if (signer) q.set("name", signer)
+  if (fields.seller_email) q.set("email", fields.seller_email)
+  if (fields.seller_tel) q.set("phone", fields.seller_tel)
+  return `${ESIGN_BASE_URL}/admin/new?${q.toString()}`
 }
 
 /**
@@ -425,7 +442,7 @@ export async function generateAndDeliver(chatId: number, draft: OfferDraft, repl
   if (absent.length) console.warn("[offer-bot] template lacks fields:", absent.join(", "))
   const filename = offerFilename(draft.fields)
   const telegramMessageId = await sendOfferDocument(chatId, { filename, bytes }, `📄 ${filename}`, replyTo)
-  let saved: { url: string | null; path: string }
+  let saved: { id: string; url: string | null; path: string }
   try {
     saved = await uploadOfferToDrive(drive, draft.fields, filename, bytes)
   } catch (e) {
@@ -434,7 +451,7 @@ export async function generateAndDeliver(chatId: number, draft: OfferDraft, repl
   await sendText(
     chatId,
     `📁 Saved to Drive: ${saved.url ? `<a href="${esc(saved.url)}">${esc(filename)}</a>` : esc(filename)}\n<i>${esc(saved.path)}</i>`,
-    {},
+    { reply_markup: { inline_keyboard: [[{ text: "✍️ Send for signature", url: esignNewRequestUrl(draft.fields, saved.id, filename) }]] } },
     telegramMessageId
   )
   await clearOfferDraft()

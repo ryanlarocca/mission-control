@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  LRG e-sign server (esign/server.mjs) on 127.0.0.1:5877, published as
+  https://sign.lrghomes.com by com.lrghomes.esign-tunnel. Restarts on crash
+  and at login/boot.
+  Install:  cp esign/launchd/com.lrghomes.esign.plist ~/Library/LaunchAgents/ && launchctl load ~/Library/LaunchAgents/com.lrghomes.esign.plist
+  Restart:  launchctl kickstart -k gui/$(id -u)/com.lrghomes.esign
+  Logs:     ~/Projects/logs/esign.log
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.lrghomes.esign</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/opt/homebrew/bin/node</string>
+    <string>server.mjs</string>
+  </array>
+  <key>WorkingDirectory</key><string>/Users/ryanlarocca/Projects/PROJECTS/mission-control/esign</string>
+  <key>EnvironmentVariables</key>
+  <dict><key>PATH</key><string>/opt/homebrew/bin:/usr/bin:/bin</string></dict>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>ThrottleInterval</key><integer>10</integer>
+  <key>StandardOutPath</key><string>/Users/ryanlarocca/Projects/logs/esign.log</string>
+  <key>StandardErrorPath</key><string>/Users/ryanlarocca/Projects/logs/esign.log</string>
+</dict>
+</plist>
