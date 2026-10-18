@@ -7,7 +7,7 @@ import { Hono } from "hono"
 import { serve } from "@hono/node-server"
 import { getConnInfo } from "@hono/node-server/conninfo"
 import { getCookie, setCookie, deleteCookie } from "hono/cookie"
-import { APP_ROOT, env, ensureDataDirs } from "./lib/env.mjs"
+import { env, ensureDataDirs } from "./lib/env.mjs"
 import { getDb, getEnvelope, getSigners, getSigner, getEvents, listEnvelopes, addEvent } from "./lib/db.mjs"
 import { geoLookup, geoLabel, clientIp, deviceLabel } from "./lib/geo.mjs"
 import { notify, esc as tesc } from "./lib/notify.mjs"
@@ -16,20 +16,17 @@ import * as E from "./lib/envelope.mjs"
 import * as V from "./views/pages.mjs"
 import { SIGNATURE_FONTS } from "./lib/fonts.mjs"
 import { TEMPLATE } from "./lib/pdf.mjs"
+import { loadAssets, assetResponse } from "./lib/assets.mjs"
 
 ensureDataDirs()
 getDb()
+loadAssets()
 const app = new Hono()
 
 // ------------------------------------------------------------ helpers
 
-const PUBLIC = path.join(APP_ROOT, "public")
-const MIME = { ".png": "image/png", ".css": "text/css; charset=utf-8", ".js": "text/javascript; charset=utf-8" }
-function staticFile(name) {
-  const p = path.join(PUBLIC, name)
-  if (!fs.existsSync(p)) return null
-  return new Response(fs.readFileSync(p), { headers: { "content-type": MIME[path.extname(name)] || "application/octet-stream", "cache-control": "public, max-age=3600" } })
-}
+/** Content-hashed static file: immutable when ?v= matches, no-cache otherwise (lib/assets.mjs). */
+const staticFile = (c, urlPath) => assetResponse(urlPath, c.req.query("v")) ?? c.notFound()
 
 const geoCache = new Map()
 async function ctxOf(c) {
@@ -100,14 +97,15 @@ function signSpot(envelope, signer) {
 
 app.get("/", (c) => c.redirect("/admin"))
 app.get("/healthz", (c) => c.json({ ok: true, at: new Date().toISOString() }))
-app.get("/logo.png", () => staticFile("logo.png"))
-app.get("/style.css", () => staticFile("style.css"))
-app.get("/sign.js", () => staticFile("sign.js"))
-app.get("/admin.js", () => staticFile("admin.js"))
+app.get("/logo.png", (c) => staticFile(c, "/logo.png"))
+app.get("/logo-email.png", (c) => staticFile(c, "/logo-email.png")) // logo on opaque white, for dark-mode mail clients
+app.get("/style.css", (c) => staticFile(c, "/style.css"))
+app.get("/sign.js", (c) => staticFile(c, "/sign.js"))
+app.get("/admin.js", (c) => staticFile(c, "/admin.js"))
 app.get("/fonts/:file", (c) => {
   const f = Object.values(SIGNATURE_FONTS).find((x) => x.file === c.req.param("file"))
   if (!f) return c.notFound()
-  return new Response(fs.readFileSync(path.join(APP_ROOT, "assets", "fonts", f.file)), { headers: { "content-type": "font/ttf", "cache-control": "public, max-age=86400" } })
+  return staticFile(c, `/fonts/${f.file}`)
 })
 app.get("/robots.txt", (c) => c.text("User-agent: *\nDisallow: /\n"))
 

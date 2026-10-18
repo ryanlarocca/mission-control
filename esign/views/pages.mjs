@@ -5,16 +5,18 @@ import { consentParagraphs } from "../lib/consent.mjs"
 import { fmtTsPT, fmtLongDatePT, fmtDatePT } from "../lib/pdf.mjs"
 import { geoLabel, deviceLabel } from "../lib/geo.mjs"
 import { SIGNATURE_FONTS, DEFAULT_FONT } from "../lib/fonts.mjs"
+import { asset } from "../lib/assets.mjs"
 
 export const esc = (s) => String(s ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;")
 const first = (name) => String(name || "").split(/\s+/)[0]
 
+// Every static URL is content-hashed (?v=…) so a deploy never leaves a phone on an old stylesheet.
 export function layout({ title, body, who = "", scripts = [] }) {
   return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1">
 <meta name="robots" content="noindex,nofollow"><title>${esc(title)} · ${esc(env.businessName)}</title>
-<link rel="icon" href="/logo.png"><link rel="stylesheet" href="/style.css"></head><body>
-<header class="brand"><img src="/logo.png" alt="${esc(env.businessName)}">${who ? `<div class="who">${who}</div>` : ""}</header>
-<main>${body}</main>${scripts.map((s) => `<script src="${s}"></script>`).join("")}</body></html>`
+<link rel="icon" href="${asset("/logo.png")}"><link rel="stylesheet" href="${asset("/style.css")}"></head><body>
+<header class="brand"><img src="${asset("/logo.png")}" alt="${esc(env.businessName)}">${who ? `<div class="who">${who}</div>` : ""}</header>
+<main>${body}</main>${scripts.map((s) => `<script src="${asset(s)}"></script>`).join("")}</body></html>`
 }
 
 export function errorPage(title, text) {
@@ -66,7 +68,7 @@ export function reviewPage({ envelope, signer, token, error, spot }) {
   const tab = `<button type="button" class="signtab" id="signtab" aria-label="Sign here"><span class="flag">Sign here</span><span class="sigpreview" id="sigpreview"></span></button>`
   const pages = Array.from({ length: envelope.page_count }, (_, i) =>
     `<div class="pagewrap"><img class="page" src="/s/${token}/pages/${i + 1}.png" alt="Page ${i + 1}" loading="${i < 2 ? "eager" : "lazy"}">${pct && spot.page === i + 1 ? `<div class="spot" style="left:${pct.left}%;top:${pct.top}%;width:${pct.width}%;height:${pct.height}%">${tab}</div>` : ""}</div><div class="pageno">Page ${i + 1} of ${envelope.page_count}</div>`).join("")
-  const fontFaces = Object.values(SIGNATURE_FONTS).map((f) => `@font-face{font-family:"${f.css}";src:url(/fonts/${f.file}) format("truetype");font-display:swap}`).join("")
+  const fontFaces = Object.values(SIGNATURE_FONTS).map((f) => `@font-face{font-family:"${f.css}";src:url(${asset(`/fonts/${f.file}`)}) format("truetype");font-display:swap}`).join("")
   const fontCards = Object.entries(SIGNATURE_FONTS).map(([k, f]) => `<label class="fontcard"><input type="radio" name="fontpick" value="${k}" ${k === DEFAULT_FONT ? "checked" : ""}><span class="fontprev" style="font-family:'${f.css}';font-size:${f.webSize}px" data-font="${k}">${esc(signer.name)}</span><span class="fontlabel">${f.label}</span></label>`).join("")
   const roleLabel = signer.role === "buyer" ? "Buyer" : "Seller"
   const addendumCard = !spot ? `<div class="card" id="addcard"><h2>Your signature</h2><p class="muted">Your signature goes on the Signature Addendum attached to this agreement, with the other ${roleLabel.toLowerCase()}s.</p><div class="addline"><div class="spot inline">${tab}</div><div class="linebar"></div><div class="muted" style="font-size:14px">${roleLabel} · ${esc(signer.name)}</div></div></div>` : ""
