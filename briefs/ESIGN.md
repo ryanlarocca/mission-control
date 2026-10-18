@@ -11,7 +11,16 @@ a Certificate of Completion is emailed to everyone and filed in Drive.
   `127.0.0.1:5877`. No router ports opened; Cloudflare terminates HTTPS.
 - Email: Gmail API as `ryan@lrghomes.com` through the Workspace service
   account (`GOOGLE_SERVICE_ACCOUNT_KEY`, same as Mission Control). Plain +
-  HTML, logo hosted on the signing domain.
+  HTML, dark-mode safe (every cell has an explicit `bgcolor`, every text run
+  an explicit colour); the logo is `public/logo-email.png` — the logo
+  flattened onto opaque white with 16px padding — inside a white tile, so
+  Gmail's dark theme can't make it vanish.
+- Static assets (`/style.css`, `/sign.js`, `/admin.js`, `/logo*.png`,
+  `/fonts/*`) are content-hashed at startup (`lib/assets.mjs`): pages link
+  `/style.css?v=<sha256 prefix>` and a matching `?v=` is served
+  `public, max-age=31536000, immutable`; a bare or stale URL is `no-cache`.
+  A deploy therefore never leaves a phone on an old stylesheet (Safari kept
+  the previous CSS for an hour under the old `max-age=3600`).
 - Alerts: Marketing bot → Ryan (`CAMPAIGN_BOT_TOKEN` / `TELEGRAM_CHAT_ID`).
 
 ## Flow
@@ -29,7 +38,10 @@ a Certificate of Completion is emailed to everyone and filed in Drive.
    `lib/consent.mjs`; "I'd rather sign on paper" declines + alerts Ryan) →
    review (every page as a PNG, `pdftoppm` 110 dpi, plus a PDF link) with a
    yellow **Sign here** tab overlaid on the agreement's own signature line
-   (template signers; addendum signers get a "Your signature" card) → tap →
+   (template signers; addendum signers get a "Your signature" card). The tab
+   is 48px tall with its bottom edge exactly on the line: `.pagewrap` is
+   the page image itself, the `.spot` anchor's top is the line in % of the
+   page (`(792 − lineY) / 792`) and the tab hangs above it → tap →
    bottom sheet: full legal name (must contain a space), **Choose a style**
    (Great Vibes / Allura / Homemade Apple / Alex Brush, served as web fonts
    from `/fonts/`) or **Draw with your finger** → Adopt → signature shows on
@@ -80,6 +92,15 @@ a Certificate of Completion is emailed to everyone and filed in Drive.
 - Dry runs: `ESIGN_DRY_MAIL=1 ESIGN_QUIET=1 ESIGN_DATA_DIR=/tmp/x ESIGN_PORT=5878
   node server.mjs` logs emails/notices instead of sending; signing links
   print in the log.
+- Tests: `cd esign && npm install && npm run test:e2e` (`node --test
+  tests/e2e.spec.mjs`). Boots a dry server on a free port with a temp data
+  dir and drives the whole flow in Playwright's iPhone 13 emulation: admin
+  upload → consent → typed (non-default style, tab on the seller line) →
+  drawn (addendum card) → buyer invited only after both → completion →
+  `final.pdf` fingerprint-matched → verify page → admin detail. Needs
+  Node ≥ 22.5, `pdftoppm` and Playwright's Chromium (`npx playwright
+  install chromium` once on a new machine; the Mac mini has Homebrew
+  poppler). ~10 s.
 - JSON API: `POST /api/envelopes` with `Authorization: Bearer $ESIGN_API_SECRET`
   `{ title, property_address, agreement_date, message, drive_file_id |
   pdf_base64, signers:[{name,email,phone,role,order}] }` → `{ id, sent,
@@ -107,3 +128,15 @@ templates, bulk send, user accounts, reminders.
 - Headless Chrome won't lay out narrower than ~500 px; a 390-px screenshot
   is a cropped 500-px page, not an overflow bug.
 - A `hidden` attribute loses to `display:flex` in CSS — `[hidden]{display:none!important}`.
+- Playwright's iPhone device emulation *does* lay out at 390 px (plain
+  headless Chrome doesn't) — use `devices['iPhone 13']` for signer checks.
+- HTTP header values must be ASCII: a `Content-Disposition` filename built
+  from a title with an en dash (`Purchase Agreement – 1234 Main St`) made
+  `writeHead` throw. `server.mjs contentDisposition()` sends an ASCII
+  fallback plus `filename*=UTF-8''…`.
+- Hidden text never triggers a web-font download, so the style cards in the
+  closed sheet measured with the fallback font and clipped once the real
+  one landed. `sign.js` calls `document.fonts.load()` for all four up front
+  and re-fits the previews on `document.fonts.ready`.
+- Percentage offsets inside `.pagewrap` are relative to its padding box —
+  any margin/border on the `<img>` inside skews the tab by that much.
