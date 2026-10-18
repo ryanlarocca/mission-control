@@ -55,8 +55,13 @@ function tooManyMisses(ip) {
 }
 
 const html = (c, body, status = 200) => c.html(body, status)
+/** Header values must be ASCII (a title like "Purchase Agreement – 1234 Main St" crashed writeHead); the full name rides along RFC 5987-encoded. */
+function contentDisposition(name, inline) {
+  const ascii = String(name).replace(/[\u2010-\u2015]/g, "-").replace(/[^\x20-\x7e]/g, "").replace(/["\\]/g, "").trim() || "document.pdf"
+  return `${inline ? "inline" : "attachment"}; filename="${ascii}"; filename*=UTF-8''${encodeURIComponent(name)}`
+}
 const pdfResponse = (file, name, inline = false) => new Response(fs.readFileSync(file), {
-  headers: { "content-type": "application/pdf", "content-disposition": `${inline ? "inline" : "attachment"}; filename="${name.replace(/"/g, "")}"`, "cache-control": "private, no-store" },
+  headers: { "content-type": "application/pdf", "content-disposition": contentDisposition(name, inline), "cache-control": "private, no-store" },
 })
 
 function sign(v) { return crypto.createHmac("sha256", env.cookieSecret()).update(v).digest("base64url") }
