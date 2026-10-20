@@ -1,7 +1,30 @@
 # E-sign v2 — see earlier signatures, addendum box, Expiration clause
 
-Status: **brief only, nothing built** (Ryan asked 2026-10-19 8:25 PM: "before
-you build, brief me"). Three asks from his first real signing run on
+Status: **built 2026-10-20 on branch `esign-v2`** (Ryan approved the brief
+as written on 2026-10-20: Expiration default 3 calendar days, clause wording
+as below, the page-2 box prints the extra signers' names). Commits:
+
+- `93b5820` feat(esign): rebuild the agreement template from a script — term 4 Expiration, addendum checkbox (D)
+- `22765e6` feat(esign): interim signed view; addendum box ticked (A + B)
+- `05301df` test(esign): e2e proves the interim view, the ticked box and the original fingerprint
+- `8096952` feat(offer-bot): term 4 Expiration in the parser, card, Mini App and PDF fill (C)
+- docs: `briefs/ESIGN.md`, `briefs/OFFER_BOT.md`, this file
+
+Still to do from the Mac mini (needs Drive + `.env.local`): upload
+`esign/assets/template-reference.pdf` with Drive `files.update` on
+`1ACbeyT4mC4u_fUCBZ1YnhVs-tpEFBR2F` (`esign/template/README.md`), `git pull`
++ restart e-sign, run `npm run test:e2e` and an offer-bot dry run, then a
+phone test. Envelopes in flight keep their own `original.pdf`; the builds
+skip the addendum box when the template lacks it.
+
+Implementation notes beyond the plan: the interim is also built at creation
+when the envelope has addendum signers, so the first signer already sees the
+ticked box and the addendum page (a signer who hasn't signed yet gets an
+empty line there); page 1 of the template uses 11.4pt leading / 3pt term gap
+(page 2 keeps 12 / 4 and every coordinate below the terms); the drawn
+coordinates are in `briefs/ESIGN.md` → "Template coordinates".
+
+Original brief follows. Three asks from his first real signing run on
 576 Apple St (seller signed first, Ryan signed second as Buyer).
 
 ## What Ryan saw and why
