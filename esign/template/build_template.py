@@ -8,12 +8,13 @@ Build the LRG Homes Real Estate Purchase & Sale Agreement template PDF.
 ReportLab draws the two letter pages (text, the light-blue field boxes, the
 signature lines, the footer) and pypdf adds the AcroForm: 15 text fields
 (the 13 the offer bot fills — briefs/OFFER_BOT.md — plus expiration_date and
-expiration_days) and the addendum_attached checkbox + addendum_names text.
+expiration_days) and the addendum_attached checkbox.
 
 This reproduces the one-off 2026-10-15 document line for line, plus the
 2026-10-20 changes (briefs/ESIGN_V2.md): term 4 Expiration (old 4–22 are now
 5–23, the two cross-references moved with them), and the "Additional
-Seller(s) / Buyer(s)" checkbox line under the Seller block on page 2. Body
+Seller(s) and/or Buyer(s)" checkbox line under the Seller block on page 2
+(checkbox only — the extra signers' names are on the Signature Addendum). Body
 leading is 11.4pt (was 12) and the gap between terms 3pt (was 4) so page 1
 absorbs the new term; page 2 keeps the original 12pt/4pt and everything from
 the stipulations box down is anchored at its original coordinates, so the
@@ -163,7 +164,8 @@ TERMS = [
 ]
 PAGE2_FIRST_TERM = 16  # 1-based number of the first term on page 2 ("Remedies")
 
-ADDENDUM_LINE = "Additional Seller(s) / Buyer(s) sign on the attached Signature Addendum, which is part of this Agreement."
+ADDENDUM_LINE = ("Additional Seller(s) and/or Buyer(s) have signed the attached Signature Addendum, which is incorporated into "
+                 "and made a part of this Agreement.")
 
 # Anchored page-2 geometry (unchanged from the 2026-10-15 document).
 STIPS_RECT = (67.0, 335.0, 558.0, 395.0)
@@ -175,9 +177,7 @@ SIG_X0, SIG_X1 = 309.0, 558.0     # signature lines
 LABEL_X, VALUE_X = 269.0, 309.0   # Name:/Tel:/Email: labels and values
 ROW = 16.2                        # label row spacing in the signature blocks
 CHECKBOX_RECT = (54.0, 124.0, 64.0, 134.0)
-ADDENDUM_TEXT_Y = 128.0           # baseline of the checkbox sentence
-NAMES_Y = 112.0                   # baseline of "Names:"
-NAMES_RECT = (100.0, NAMES_Y - FIELD_DROP, 558.0, NAMES_Y - FIELD_DROP + FIELD_H)
+ADDENDUM_TEXT_Y = 128.0           # baseline of the checkbox sentence (wraps to a second line at 128 - LEAD2)
 
 
 # ---------------------------------------------------------------- layout
@@ -344,15 +344,14 @@ def build_pages():
         p.fields.append({"name": name, "rect": r, "multiline": False})
         yy -= ROW
 
-    # Additional signers line (ticked + filled by e-sign when the envelope has addendum signers)
+    # Additional signers line (ticked by e-sign when the envelope has addendum signers)
     x0, y0, x1, y1 = CHECKBOX_RECT
     p.field_box(x0, y0, x1 - x0, y1 - y0)
     p.fields.append({"name": "addendum_attached", "rect": CHECKBOX_RECT, "checkbox": True})
-    p.text(x1 + 4, ADDENDUM_TEXT_Y, ADDENDUM_LINE)
-    p.text(x1 + 4, NAMES_Y, "Names:")
-    x0, y0, x1, y1 = NAMES_RECT
-    p.field_box(x0, y0, x1 - x0, y1 - y0)
-    p.fields.append({"name": "addendum_names", "rect": NAMES_RECT, "multiline": False})
+    yy = ADDENDUM_TEXT_Y
+    for line in wrap(tokens(ADDENDUM_LINE), x1 + 4, x1 + 4):
+        p.draw_line(line, yy)
+        yy -= LEAD2
 
     p.footer()
     pages.append(p)
@@ -476,7 +475,6 @@ def main():
     print(f"  buyer signature line   x {SIG_X0:.0f}–{SIG_X1:.0f}  y {BUYER_LINE_Y}")
     print(f"  seller signature line  x {SIG_X0:.0f}–{SIG_X1:.0f}  y {SELLER_LINE_Y}")
     print(f"  addendum_attached box  {CHECKBOX_RECT}")
-    print(f"  addendum_names field   {NAMES_RECT}")
 
 
 if __name__ == "__main__":

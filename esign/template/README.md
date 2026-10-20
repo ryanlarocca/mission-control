@@ -44,8 +44,7 @@ pick up the new template. After an upload, restart e-sign and run
 |---|---|---|
 | `expiration_date` | text, MM/DD/YYYY | offer bot (term 4) |
 | `expiration_days` | text, integer | offer bot (term 4) |
-| `addendum_attached` | checkbox | e-sign, when the envelope has addendum signers |
-| `addendum_names` | text | e-sign, "Name (Role), …" of the addendum signers |
+| `addendum_attached` | checkbox | e-sign, when the envelope has addendum signers (their names are on the Signature Addendum) |
 
 The light-blue boxes are page content *and* the widgets' appearance, as in
 the 2026-10-15 original, so they stay on the flattened signed copy.

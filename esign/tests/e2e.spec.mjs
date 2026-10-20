@@ -3,8 +3,8 @@
 // admin upload → two sellers (typed + drawn) → buyer invited only after both
 // → completion → final.pdf → verify page. Along the way: the interim build
 // (later signers review the document with the earlier signatures on it) and
-// the template's addendum box (ticked + names when a signer is on the
-// Signature Addendum).
+// the template's addendum box (ticked when a signer is on the Signature
+// Addendum).
 //
 //   cd esign && npm run test:e2e        (node --test tests/e2e.spec.mjs)
 //
@@ -147,7 +147,6 @@ test("original.pdf is the uploaded file byte for byte, and the interim build alr
   const interim = path.join(envDir(), "interim.pdf")
   assert.ok(fs.existsSync(interim), "interim.pdf built at creation (envelope has an addendum signer)")
   const text = pdfText(interim)
-  assert.match(text, /Names: Harold Thompson \(Seller\)/)
   assert.match(text, /SIGNATURE ADDENDUM[\s\S]*Referenced by the checked box on page 2 of the Agreement[\s\S]*Harold Thompson/)
   assert.doesNotMatch(text, /e-signed/, "nobody has signed yet")
   assert.ok(await darkPixels(interim, 2, CHECKBOX) > await darkPixels(TEMPLATE_PDF, 2, CHECKBOX) + 20, "the checkbox is ticked")
@@ -256,7 +255,6 @@ test("second tier: the buyer reviews the document with both sellers' signatures 
   assert.match(bytes.toString("latin1"), /\/Subtype \/Image/, "Harold's drawn signature is embedded as an image")
   const text = pdfText(path.join(envDir(), "interim.pdf"))
   assert.equal((text.match(/e-signed/g) || []).length, 2, "two signatures so far (Margaret on the line, Harold on the addendum)")
-  assert.match(text, /Names: Harold Thompson \(Seller\)/)
   assert.ok((await page.request.get(`${buyerLink}/pages/3.png`)).ok(), "addendum page image is served")
   assert.equal((await page.request.get(`${buyerLink}/pages/4.png`)).status(), 404)
 })
@@ -293,12 +291,11 @@ test("buyer signs last and the envelope completes with a downloadable final.pdf"
   assert.equal(stdout.match(/subject="Completed: Purchase Agreement/g).length, 3, "one completion email per email signer + Ryan")
 })
 
-test("final.pdf: addendum box ticked with the addendum signer's name, three signatures, original fingerprint in the certificate", async () => {
+test("final.pdf: addendum box ticked, the addendum signer named on the addendum, three signatures, original fingerprint in the certificate", async () => {
   const signedPath = path.join(envDir(), "signed.pdf"), finalPath = path.join(envDir(), "final.pdf")
   const text = pdfText(finalPath)
-  assert.match(text, /Additional Seller\(s\) \/ Buyer\(s\) sign on the attached Signature Addendum/)
-  assert.match(text, /Names: Harold Thompson \(Seller\)/)
-  assert.match(text, /Referenced by the checked box on page 2 of the Agreement/)
+  assert.match(text, /Additional Seller\(s\) and\/or Buyer\(s\) have signed the attached Signature Addendum/)
+  assert.match(text, /SIGNATURE ADDENDUM[\s\S]*Referenced by the checked box on page 2 of the Agreement[\s\S]*Name:\s+Harold Thompson/)
   assert.equal((text.match(/e-signed/g) || []).length, 3)
   assert.match(text, /Pages \(original\)\s+2/, "the certificate quotes the original page count, not the interim's 3")
   assert.match(text, new RegExp(`Original document\\s+${sha(fs.readFileSync(TEMPLATE_PDF))}`), "certificate's original fingerprint is the sent file's")

@@ -35,19 +35,16 @@ export function sha256(bytes) {
  * buyer_date, signature lines at known spots on page 2. Coordinates are PDF
  * points, origin bottom-left, measured from the 2026-10-20 build — the lines
  * are where the 2026-10-15 document had them, so envelopes created from the
- * older template still sign in the right place. The addendum box (checkbox
- * + names line under the Seller block) only exists from 2026-10-20 on; the
- * builds tick it when the field is there and skip it otherwise.
+ * older template still sign in the right place. The addendum checkbox under
+ * the Seller block only exists from 2026-10-20 on; the builds tick it when
+ * the field is there and skip it otherwise.
  */
 export const TEMPLATE = {
   page: 1,
   buyer: { x: 309, lineY: 280.2, w: 249 },
   seller: { x: 309, lineY: 200.8, w: 249 },
   dateField: { buyer: "buyer_date", seller: "seller_date" },
-  addendum: {
-    checkbox: "addendum_attached", // rect 54 124 64 134
-    names: "addendum_names",       // rect 100 109 558 121
-  },
+  addendum: { checkbox: "addendum_attached" }, // rect 54 124 64 134
 }
 
 export async function inspectPdf(bytes) {
@@ -153,11 +150,6 @@ function stampText(page, fonts, signer, envelopeId, { x, y, w }) {
 
 function roleLabel(s) { return s.role === "buyer" ? "Buyer" : "Seller" }
 
-/** "Jane Doe (Seller), Bob Roe (Buyer)" — what goes in the template's addendum_names box. */
-export function addendumNames(signers) {
-  return signers.map((s) => `${s.name} (${roleLabel(s)})`).join(", ")
-}
-
 async function loadForDrawing(originalBytes, title) {
   const doc = await PDFDocument.load(originalBytes, { updateMetadata: false })
   doc.registerFontkit(fontkit)
@@ -179,8 +171,8 @@ async function loadForDrawing(originalBytes, title) {
  * Shared by the interim build (after every signature — what later signers
  * review) and the final build (which then appends the certificate).
  * `signers` is every signer on the envelope; only the signed ones leave ink,
- * but the addendum box and the addendum page list all addendum signers so a
- * reader can see whose signatures are still to come.
+ * but the addendum box is ticked and the addendum page lists all addendum
+ * signers so a reader can see whose signatures are still to come.
  */
 async function applySignatures(doc, fonts, envelope, signers) {
   const signed = signers.filter((s) => s.status === "signed")
@@ -209,13 +201,7 @@ async function applySignatures(doc, fonts, envelope, signers) {
       }
       if (onAddendum.length) {
         try {
-          const box = form.getCheckBox(TEMPLATE.addendum.checkbox)
-          const names = form.getTextField(TEMPLATE.addendum.names)
-          const text = addendumNames(onAddendum)
-          if (names.getMaxLength() !== undefined) names.setMaxLength(undefined)
-          if (fonts.helv.widthOfTextAtSize(text, 9) > 450) names.setFontSize(0) // auto-size a long list
-          names.setText(text)
-          box.check()
+          form.getCheckBox(TEMPLATE.addendum.checkbox).check()
           boxTicked = true
         } catch { /* template predates the box (envelopes created before 2026-10-20) */ }
       }

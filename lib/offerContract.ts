@@ -422,7 +422,7 @@ export function finishParse(raw: Record<string, unknown>, sourceText: string, no
 // ------------------------------------------------------------ PDF fill
 
 /** The 15 template fields → their string values. seller_date stays blank; the
- *  addendum box (addendum_attached / addendum_names) is e-sign's, left alone. */
+ *  addendum checkbox (addendum_attached) is e-sign's, left alone. */
 export function pdfFieldValues(fields: OfferFields): Record<string, string> {
   const expiration = resolveExpiration(fields)
   return {

@@ -1,14 +1,19 @@
 # E-sign v2 — see earlier signatures, addendum box, Expiration clause
 
 Status: **built 2026-10-20 on branch `esign-v2`** (Ryan approved the brief
-as written on 2026-10-20: Expiration default 3 calendar days, clause wording
-as below, the page-2 box prints the extra signers' names). Commits:
+on 2026-10-20: Expiration default 3 calendar days, clause wording as below;
+scope change relayed by the bridge session the same day: the page-2 line is a
+**checkbox only** — no names field, the extra signers are named on the
+Signature Addendum — with the wording "Additional Seller(s) and/or Buyer(s)
+have signed the attached Signature Addendum, which is incorporated into and
+made a part of this Agreement."). Commits:
 
 - `93b5820` feat(esign): rebuild the agreement template from a script — term 4 Expiration, addendum checkbox (D)
 - `22765e6` feat(esign): interim signed view; addendum box ticked (A + B)
 - `05301df` test(esign): e2e proves the interim view, the ticked box and the original fingerprint
 - `8096952` feat(offer-bot): term 4 Expiration in the parser, card, Mini App and PDF fill (C)
-- docs: `briefs/ESIGN.md`, `briefs/OFFER_BOT.md`, this file
+- `e79ed70` docs: `briefs/ESIGN.md`, `briefs/OFFER_BOT.md`, this file
+- follow-up: checkbox only (drops `addendum_names`, new wording)
 
 Still to do from the Mac mini (needs Drive + `.env.local`): upload
 `esign/assets/template-reference.pdf` with Drive `files.update` on
