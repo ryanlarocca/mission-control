@@ -103,8 +103,8 @@ TERMS = [
     # Ryan's wording (2026-10-20, replaces the CAR-style either/or draft). The
     # [[…]] run never breaks across lines, so neither blank can start a line.
     ("Expiration.", "This Agreement is an offer by Buyer and shall be deemed revoked unless it is signed by Seller and a "
-                    "signed copy is delivered to Buyer, electronically or otherwise, [[by {field:expiration_time:55} "
-                    "(Pacific time) on {field:expiration_date:70} (the \"Expiration Date\").]]"),
+                    "signed copy is delivered to Buyer, electronically or otherwise, [[by {field:expiration_time:55} (Pacific time)]] "
+                    "[[on {field:expiration_date:70} (the \"Expiration Date\").]]"),
     ("Prorations.", "Real property taxes and assessments, interest, rents, homeowners' association regular dues and regular "
                     "assessments, premiums on insurance assumed by Buyer, payments on bonds and assessments assumed by Buyer "
                     "shall be paid current by Seller from the proceeds of sale (if needed) and prorated between Buyer and Seller "
