@@ -19,6 +19,7 @@ import {
   parseExpirationDate,
   parseExpirationDays,
   parseMoney,
+  ordinal,
   pdfFieldValues,
   resolveExpiration,
   streetFromAddress,
@@ -319,11 +320,12 @@ describe("pdfFieldValues", () => {
     expect(v.agreement_date).toBe("10/16/2026")
     expect(v.buyer_date).toBe("10/16/2026")
     expect(v.expiration_date).toBe("10/19/2026") // 3 calendar days after the agreement date
-    expect(v.expiration_days).toBe("3")
+    expect(v.expiration_days).toBe("3rd")
     const e = pdfFieldValues(full({ expiration: "2026-10-24" }))
     expect(e.expiration_date).toBe("10/24/2026")
-    expect(e.expiration_days).toBe("8")
+    expect(e.expiration_days).toBe("8th")
     expect(pdfFieldValues(full({ expiration: "5 days" })).expiration_date).toBe("10/21/2026")
+    expect([1, 2, 3, 4, 11, 12, 13, 21, 22, 23, 101, 111].map(ordinal)).toEqual(["1st", "2nd", "3rd", "4th", "11th", "12th", "13th", "21st", "22nd", "23rd", "101st", "111th"])
     expect(v).not.toHaveProperty("addendum_attached") // e-sign's box, left blank by the offer bot
     expect(v.seller_date).toBe("")
     expect(v.governing_state).toBe("California")

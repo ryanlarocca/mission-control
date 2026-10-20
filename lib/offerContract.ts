@@ -423,6 +423,13 @@ export function finishParse(raw: Record<string, unknown>, sourceText: string, no
 
 /** The 15 template fields → their string values. seller_date stays blank; the
  *  addendum checkbox (addendum_attached) is e-sign's, left alone. */
+/** 1 → "1st", 2 → "2nd", 3 → "3rd", 11 → "11th", 22 → "22nd" (term 4: "on the Nth calendar day"). */
+export function ordinal(n: number): string {
+  const mod100 = n % 100
+  const suffix = mod100 >= 11 && mod100 <= 13 ? "th" : n % 10 === 1 ? "st" : n % 10 === 2 ? "nd" : n % 10 === 3 ? "rd" : "th"
+  return `${n}${suffix}`
+}
+
 export function pdfFieldValues(fields: OfferFields): Record<string, string> {
   const expiration = resolveExpiration(fields)
   return {
@@ -433,7 +440,7 @@ export function pdfFieldValues(fields: OfferFields): Record<string, string> {
     earnest_money: fields.earnest_money === null ? "" : formatMoney(fields.earnest_money),
     closing_days: String(fields.closing_days),
     expiration_date: formatDateMMDDYYYY(expiration.date),
-    expiration_days: String(expiration.days),
+    expiration_days: ordinal(expiration.days), // "on the 3rd calendar day after …"
     special_stipulations: fields.special_stipulations.join("\n"),
     governing_state: GOVERNING_STATE,
     seller_signer_name: fields.seller_signer_name ?? fields.seller_name ?? "",

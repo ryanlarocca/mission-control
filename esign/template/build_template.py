@@ -30,6 +30,7 @@ import sys
 
 from pypdf import PdfReader, PdfWriter
 from pypdf.generic import (
+    PdfObject,
     ArrayObject,
     DictionaryObject,
     FloatObject,
@@ -40,6 +41,22 @@ from pypdf.generic import (
 )
 from reportlab.pdfbase.pdfmetrics import stringWidth
 from reportlab.pdfgen import canvas
+
+class DAString(PdfObject):
+    """A /DA literal written verbatim. pypdf's TextStringObject escapes "/" as
+    \\057, which is valid PDF but pdf-lib's default-appearance parser reads
+    the raw literal and then cannot find the font or size — the offer bot's
+    fill fell back to auto-size (giant stipulations) on 2026-10-19."""
+
+    def __init__(self, text):
+        self.text = text
+
+    def write_to_stream(self, stream, encryption_key=None):
+        stream.write(b"(" + self.text.encode("latin-1") + b")")
+
+    def clone(self, pdf_dest, force_duplicate=False, ignore_fields=None):
+        return DAString(self.text)
+
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 DEFAULT_OUT = os.path.normpath(os.path.join(HERE, "..", "assets", "template-reference.pdf"))
@@ -412,7 +429,7 @@ def add_form(pdf_bytes, fields_per_page):
                 a.update({
                     NameObject("/FT"): NameObject("/Btn"), NameObject("/Ff"): NumberObject(0),
                     NameObject("/V"): NameObject("/Off"), NameObject("/AS"): NameObject("/Off"),
-                    NameObject("/DA"): TextStringObject("/ZaDb 0 Tf 0 g"),
+                    NameObject("/DA"): DAString("/ZaDb 0 Tf 0 g"),
                     NameObject("/BS"): DictionaryObject({NameObject("/S"): NameObject("/S"), NameObject("/W"): FloatObject(0.6)}),
                     NameObject("/AP"): DictionaryObject({NameObject("/N"): DictionaryObject({
                         NameObject("/Off"): xobject(writer, (0, 0, w, h), box),
@@ -429,7 +446,7 @@ def add_form(pdf_bytes, fields_per_page):
                 a.update({
                     NameObject("/FT"): NameObject("/Tx"), NameObject("/Ff"): NumberObject(4096 if f.get("multiline") else 0),
                     NameObject("/V"): TextStringObject(value), NameObject("/DV"): TextStringObject(value),
-                    NameObject("/DA"): TextStringObject("/Helv 9 Tf 0 0 0 rg"),
+                    NameObject("/DA"): DAString("/Helv 9 Tf 0 0 0 rg"),
                     NameObject("/BS"): DictionaryObject({NameObject("/S"): NameObject("/U"), NameObject("/W"): FloatObject(0.6)}),
                     NameObject("/AP"): DictionaryObject({NameObject("/N"): xobject(writer, (0, 0, w, h), ap, helv)}),
                 })
@@ -438,7 +455,7 @@ def add_form(pdf_bytes, fields_per_page):
             field_refs.append(ref)
     acro = DictionaryObject({
         NameObject("/Fields"): field_refs,
-        NameObject("/DA"): TextStringObject("/Helv 0 Tf 0 g"),
+        NameObject("/DA"): DAString("/Helv 0 Tf 0 g"),
         NameObject("/DR"): DictionaryObject({NameObject("/Font"): DictionaryObject({NameObject("/Helv"): helv, NameObject("/ZaDb"): zadb})}),
     })
     writer._root_object[NameObject("/AcroForm")] = writer._add_object(acro)
