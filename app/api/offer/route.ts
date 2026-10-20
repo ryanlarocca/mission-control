@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server"
 import { validateTelegramInitData } from "@/lib/telegramWebApp"
-import { FIELD_LABELS, blankFields, fieldsFromInput, formatMoney, validateFields } from "@/lib/offerContract"
+import { FIELD_LABELS, blankFields, fieldsFromInput, formatExpirationTime, formatMoney, validateFields } from "@/lib/offerContract"
 import {
   clearOfferDraft,
   generateAndDeliver,
@@ -57,6 +57,7 @@ function draftForForm(draft: OfferDraft | null) {
       closing_days: String(f.closing_days),
       agreement_date: f.agreement_date,
       expiration: f.expiration ?? "",
+      expiration_time: f.expiration_time ? formatExpirationTime(f.expiration_time) : "",
       seller_signer_name: f.seller_signer_name ?? "",
       seller_tel: f.seller_tel ?? "",
       seller_email: f.seller_email ?? "",

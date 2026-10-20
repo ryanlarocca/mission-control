@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react"
 import Script from "next/script"
 import { formatMoney, parseMoney } from "@/lib/offerMoney"
-import { DEFAULT_EXPIRATION_DAYS, expirationMMDDYYYY, normalizeExpiration, resolveExpiration } from "@/lib/offerExpiration"
+import { DEFAULT_EXPIRATION_DAYS, expirationLabel, formatExpirationTime, normalizeExpiration, normalizeExpirationTime, resolveExpiration } from "@/lib/offerExpiration"
 
 // Offer bot Mini App (briefs/OFFER_BOT.md): the form Ryan taps into from
 // the review card's 📝 button (or from `/offer` with no terms). Reads
@@ -21,6 +21,8 @@ type FormFields = {
   agreement_date: string
   /** "N days" or YYYY-MM-DD; empty = the default */
   expiration: string
+  /** "5:00 p.m." style (parsed back to HH:MM by the API); empty = the default */
+  expiration_time: string
   seller_signer_name: string
   seller_tel: string
   seller_email: string
@@ -56,6 +58,7 @@ const EMPTY: FormFields = {
   closing_days: "45",
   agreement_date: "",
   expiration: "",
+  expiration_time: "",
   seller_signer_name: "",
   seller_tel: "",
   seller_email: "",
@@ -140,17 +143,21 @@ export default function OfferFormPage() {
     setFields((f) => ({ ...f, [k]: formatMoney(n) }))
   }
 
-  /** Normalise "5" / "5 days" / "10/24/2026" and show the resolved date; bad input is flagged, not sent. */
+  /** Normalise "5" / "5 days" / "10/24/2026" and "5pm" / "noon" / "end of day", then show the
+   *  resolved "10/22/2026 at 5:00 p.m."; bad input is flagged, not sent. Both term-4 boxes share it. */
   const blurExpiration = () => {
     const agreementDate = /^\d{4}-\d{2}-\d{2}$/.test(fields.agreement_date) ? fields.agreement_date : new Date().toISOString().slice(0, 10)
     const n = normalizeExpiration(fields.expiration, agreementDate)
-    if (n.problem) {
-      setExpirationHint(`⚠️ ${n.problem}`)
+    const t = normalizeExpirationTime(fields.expiration_time)
+    const problems = [n.problem, t.problem].filter((p): p is string => Boolean(p))
+    if (problems.length) {
+      setExpirationHint(`⚠️ ${problems.join(" · ")}`)
       return
     }
-    const r = resolveExpiration({ agreement_date: agreementDate, expiration: n.value })
-    setFields((f) => ({ ...f, expiration: n.value ?? "" }))
-    setExpirationHint(`${expirationMMDDYYYY(r.date)} · ${r.days} day${r.days === 1 ? "" : "s"} after the agreement date${n.value ? "" : " (default)"}`)
+    const input = { agreement_date: agreementDate, expiration: n.value, expiration_time: t.value }
+    const r = resolveExpiration(input)
+    setFields((f) => ({ ...f, expiration: n.value ?? "", expiration_time: t.value ? formatExpirationTime(t.value) : "" }))
+    setExpirationHint(`${expirationLabel(input)} · ${r.days} day${r.days === 1 ? "" : "s"} after the agreement date${n.value || t.value ? "" : " (default)"}`)
   }
 
   const post = async (action: "save" | "generate" | "cancel") => {
@@ -275,8 +282,16 @@ export default function OfferFormPage() {
               </div>
             </div>
             <div>
-              {label("Offer expires (term 4)")}
-              <input className={INPUT} value={fields.expiration} onChange={set("expiration")} onBlur={blurExpiration} autoComplete="off" placeholder={`${DEFAULT_EXPIRATION_DAYS} days (default) or a date like 10/24/2026`} />
+              <div className="grid grid-cols-5 gap-3">
+                <div className="col-span-3">
+                  {label("Offer expires (term 4)")}
+                  <input className={INPUT} value={fields.expiration} onChange={set("expiration")} onBlur={blurExpiration} autoComplete="off" placeholder={`${DEFAULT_EXPIRATION_DAYS} days (default) or 10/24/2026`} />
+                </div>
+                <div className="col-span-2">
+                  {label("Time")}
+                  <input className={INPUT} value={fields.expiration_time} onChange={set("expiration_time")} onBlur={blurExpiration} autoComplete="off" placeholder="5:00 p.m. (default)" />
+                </div>
+              </div>
               {expirationHint ? <p className={`text-xs mt-1 ${expirationHint.startsWith("⚠️") ? "text-red-400" : "text-zinc-400"}`}>{expirationHint}</p> : null}
             </div>
             <div>

@@ -2,24 +2,28 @@ import { describe, it, expect } from "vitest"
 import { PDFDocument, StandardFonts } from "pdf-lib"
 import {
   DEFAULT_EXPIRATION_DAYS,
+  DEFAULT_EXPIRATION_TIME,
   addDays,
   blankFields,
   daysBetween,
+  expirationLabel,
   fieldsFromInput,
   fillOfferPdf,
   finishParse,
   formatDateMMDDYYYY,
+  formatExpirationTime,
   formatMoney,
   formatPhone,
   missingFields,
   normalizeExpiration,
+  normalizeExpirationTime,
   normalizeModelOffer,
   offerDriveRelPath,
   offerFilename,
   parseExpirationDate,
   parseExpirationDays,
+  parseExpirationTime,
   parseMoney,
-  ordinal,
   pdfFieldValues,
   resolveExpiration,
   streetFromAddress,
@@ -29,6 +33,7 @@ import {
   type OfferFields,
 } from "@/lib/offerContract"
 import { signTelegramInitData, validateTelegramInitData } from "@/lib/telegramWebApp"
+import { newDraft, renderOfferCard } from "@/lib/offerBot"
 
 // briefs/OFFER_BOT.md — Tests section. Everything here is offline: the PDF
 // fixture is built in the test with pdf-lib, initData is signed with a fake
@@ -147,12 +152,16 @@ describe("expiration — term 4 (days parsed in code, default 3 calendar days af
     expect(past.problem).toMatch(/not after the agreement date/)
   })
 
-  it("resolves to a date + day count: default, a count, a date", () => {
+  it("resolves to a date + day count + time: default, a count, a date", () => {
     expect(DEFAULT_EXPIRATION_DAYS).toBe(3)
-    expect(resolveExpiration({ agreement_date: "2026-10-16", expiration: null })).toEqual({ date: "2026-10-19", days: 3 })
-    expect(resolveExpiration({ agreement_date: "2026-10-16", expiration: "5 days" })).toEqual({ date: "2026-10-21", days: 5 })
-    expect(resolveExpiration({ agreement_date: "2026-10-16", expiration: "2026-10-24" })).toEqual({ date: "2026-10-24", days: 8 })
+    expect(DEFAULT_EXPIRATION_TIME).toBe("17:00")
+    expect(resolveExpiration({ agreement_date: "2026-10-16", expiration: null })).toEqual({ date: "2026-10-19", days: 3, time: "17:00" })
+    expect(resolveExpiration({ agreement_date: "2026-10-16", expiration: "5 days" })).toEqual({ date: "2026-10-21", days: 5, time: "17:00" })
+    expect(resolveExpiration({ agreement_date: "2026-10-16", expiration: "2026-10-24" })).toEqual({ date: "2026-10-24", days: 8, time: "17:00" })
+    expect(resolveExpiration({ agreement_date: "2026-10-16", expiration: null, expiration_time: "12:00" })).toEqual({ date: "2026-10-19", days: 3, time: "12:00" })
+    expect(resolveExpiration({ agreement_date: "2026-10-16", expiration: "2026-10-24", expiration_time: "23:59" }).time).toBe("23:59")
     expect(blankFields().expiration).toBeNull()
+    expect(blankFields().expiration_time).toBeNull()
   })
 
   it("flows from the model (a day name already converted to a date) and from the form", () => {
@@ -167,6 +176,95 @@ describe("expiration — term 4 (days parsed in code, default 3 calendar days af
     expect(form.unclear[0]).toMatch(/not after the agreement date/)
     expect(form.fields.expiration).toBeNull()
     expect(fieldsFromInput({ agreement_date: "2026-11-02", expiration: "4" }, { now }).fields.expiration).toBe("4 days")
+  })
+})
+
+describe("expiration time — term 4 (parsed in code, default 5:00 p.m.)", () => {
+  it.each([
+    ["noon", "12:00"],
+    ["12 noon", "12:00"],
+    ["at noon", "12:00"],
+    ["5pm", "17:00"],
+    ["5 pm", "17:00"],
+    ["5PM", "17:00"],
+    ["5:00 p.m.", "17:00"],
+    ["5:00pm", "17:00"],
+    ["5:30 p.m.", "17:30"],
+    ["by 5pm", "17:00"],
+    ["5pm Pacific", "17:00"],
+    ["5:00 p.m. (Pacific time)", "17:00"],
+    ["end of day", "23:59"],
+    ["end of the day", "23:59"],
+    ["EOD", "23:59"],
+    ["midnight", "23:59"],
+    ["close of business", "23:59"],
+    ["9am", "09:00"],
+    ["9:15 a.m.", "09:15"],
+    ["12pm", "12:00"],
+    ["12am", "00:00"],
+    ["17:00", "17:00"],
+    ["00:30", "00:30"],
+    ["12:00", "12:00"],
+  ])("%s → %s", (raw, expected) => {
+    expect(parseExpirationTime(raw)).toBe(expected)
+  })
+
+  it("rejects what it can't read (ask instead): garbage, 13pm, a bare ambiguous clock time", () => {
+    expect(parseExpirationTime("whenever")).toBeNull()
+    expect(parseExpirationTime("13pm")).toBeNull()
+    expect(parseExpirationTime("0pm")).toBeNull()
+    expect(parseExpirationTime("5:60 pm")).toBeNull()
+    expect(parseExpirationTime("5:00")).toBeNull() // 5 a.m. or p.m.? ask
+    expect(parseExpirationTime("5")).toBeNull()
+    expect(parseExpirationTime("24:00")).toBeNull()
+    expect(parseExpirationTime("")).toBeNull()
+    expect(parseExpirationTime(null)).toBeNull()
+  })
+
+  it("normalises to HH:MM, keeps the default for nothing, flags garbage as unclear", () => {
+    expect(normalizeExpirationTime(null)).toEqual({ value: null, problem: null })
+    expect(normalizeExpirationTime("")).toEqual({ value: null, problem: null })
+    expect(normalizeExpirationTime("noon")).toEqual({ value: "12:00", problem: null })
+    expect(normalizeExpirationTime("5:00 p.m.")).toEqual({ value: "17:00", problem: null })
+    expect(normalizeExpirationTime("EOD")).toEqual({ value: "23:59", problem: null })
+    const bad = normalizeExpirationTime("teatime")
+    expect(bad.value).toBeNull()
+    expect(bad.problem).toMatch(/offer expiration time: "teatime"/)
+  })
+
+  it("renders lower-case a.m./p.m. with no leading zero", () => {
+    expect(formatExpirationTime("17:00")).toBe("5:00 p.m.")
+    expect(formatExpirationTime("12:00")).toBe("12:00 p.m.")
+    expect(formatExpirationTime("23:59")).toBe("11:59 p.m.")
+    expect(formatExpirationTime("09:00")).toBe("9:00 a.m.")
+    expect(formatExpirationTime("00:00")).toBe("12:00 a.m.")
+    expect(expirationLabel({ agreement_date: "2026-10-19", expiration: null })).toBe("10/22/2026 at 5:00 p.m.")
+    expect(expirationLabel({ agreement_date: "2026-10-19", expiration: "2026-10-24", expiration_time: "12:00" })).toBe("10/24/2026 at 12:00 p.m.")
+  })
+
+  it("flows from the model and from the form; an unreadable time is asked about, the default stands meanwhile", () => {
+    const now = new Date("2026-10-16T18:00:00Z")
+    expect(normalizeModelOffer({ expiration: "2026-10-23", expiration_time: "12:00" }, { now }).fields.expiration_time).toBe("12:00")
+    expect(normalizeModelOffer({ expiration_time: "5pm" }, { now }).fields.expiration_time).toBe("17:00") // model ignored the HH:MM rule — code still reads it
+    expect(normalizeModelOffer({ expiration_time: null }, { now }).fields.expiration_time).toBeNull()
+    const odd = normalizeModelOffer({ expiration_time: "after lunch" }, { now })
+    expect(odd.fields.expiration_time).toBeNull()
+    expect(odd.unclear).toHaveLength(1)
+    expect(odd.unclear[0]).toMatch(/offer expiration time: "after lunch"/)
+    const both = normalizeModelOffer({ expiration: "whenever", expiration_time: "after lunch" }, { now })
+    expect(both.unclear).toHaveLength(2) // the date question and the time question are separate
+    const form = fieldsFromInput({ agreement_date: "2026-11-02", expiration: "4", expiration_time: "5:00 p.m." }, { now })
+    expect(form.fields.expiration_time).toBe("17:00")
+    expect(form.unclear).toEqual([])
+    expect(fieldsFromInput({ agreement_date: "2026-11-02", expiration_time: "5:00" }, { now }).unclear[0]).toMatch(/expiration time: "5:00"/)
+  })
+
+  it("review card: 'Expires: 10/19/2026 at 5:00 p.m. (3 days, default)' — default only when neither date nor time was stated", () => {
+    const card = (over: Partial<OfferFields>) => renderOfferCard({ ...newDraft(), fields: full(over) })
+    expect(card({})).toContain("<b>Expires:</b> 10/19/2026 at 5:00 p.m. (3 days, default)")
+    expect(card({ expiration: "5 days" })).toContain("<b>Expires:</b> 10/21/2026 at 5:00 p.m. (5 days)")
+    expect(card({ expiration_time: "12:00" })).toContain("<b>Expires:</b> 10/19/2026 at 12:00 p.m. (3 days)")
+    expect(card({ expiration: "2026-10-17", expiration_time: "23:59" })).toContain("<b>Expires:</b> 10/17/2026 at 11:59 p.m. (1 day)")
   })
 })
 
@@ -320,12 +418,13 @@ describe("pdfFieldValues", () => {
     expect(v.agreement_date).toBe("10/16/2026")
     expect(v.buyer_date).toBe("10/16/2026")
     expect(v.expiration_date).toBe("10/19/2026") // 3 calendar days after the agreement date
-    expect(v.expiration_days).toBe("3rd")
-    const e = pdfFieldValues(full({ expiration: "2026-10-24" }))
+    expect(v.expiration_time).toBe("5:00 p.m.") // default
+    expect(v).not.toHaveProperty("expiration_days")
+    const e = pdfFieldValues(full({ expiration: "2026-10-24", expiration_time: "12:00" }))
     expect(e.expiration_date).toBe("10/24/2026")
-    expect(e.expiration_days).toBe("8th")
+    expect(e.expiration_time).toBe("12:00 p.m.")
+    expect(pdfFieldValues(full({ expiration: "5 days", expiration_time: "23:59" })).expiration_time).toBe("11:59 p.m.")
     expect(pdfFieldValues(full({ expiration: "5 days" })).expiration_date).toBe("10/21/2026")
-    expect([1, 2, 3, 4, 11, 12, 13, 21, 22, 23, 101, 111].map(ordinal)).toEqual(["1st", "2nd", "3rd", "4th", "11th", "12th", "13th", "21st", "22nd", "23rd", "101st", "111th"])
     expect(v).not.toHaveProperty("addendum_attached") // e-sign's box, left blank by the offer bot
     expect(v.seller_date).toBe("")
     expect(v.governing_state).toBe("California")
@@ -358,6 +457,7 @@ describe("fillOfferPdf — pdf-lib fixture", () => {
     expect(out.filled.sort()).toEqual(["seller_name", "special_stipulations"])
     expect(out.absent).toContain("purchase_price")
     expect(out.absent).toContain("expiration_date")
+    expect(out.absent).toContain("expiration_time")
     expect(out.absent).toHaveLength(13)
 
     const reloaded = await PDFDocument.load(out.bytes)
