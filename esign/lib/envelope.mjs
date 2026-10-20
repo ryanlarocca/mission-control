@@ -6,7 +6,7 @@ import fs from "node:fs"
 import path from "node:path"
 import { env } from "./env.mjs"
 import { getDb, now, run, one, addEvent, getEnvelope, getSigners, getSigner, getEvents } from "./db.mjs"
-import { sha256, inspectPdf, renderPages, buildFinalPdf } from "./pdf.mjs"
+import { sha256, inspectPdf, renderPages, buildFinalPdf, buildInterimPdf } from "./pdf.mjs"
 import { CONSENT_VERSION } from "./consent.mjs"
 import { fontKey } from "./fonts.mjs"
 import { sendMail, driveClient, driveDownload, driveMeta, driveResolvePath, driveUpload } from "./google.mjs"
@@ -24,6 +24,17 @@ export function envelopeDir(id) {
 
 function readOnly(file) {
   try { fs.chmodSync(file, 0o444) } catch { /* best effort */ }
+}
+
+/** envelopes/<id>/interim.pdf when it exists — the document with every signature so far, no certificate. */
+export function interimPath(envelope) {
+  const p = path.join(envelopeDir(envelope.id), "interim.pdf")
+  return fs.existsSync(p) ? p : null
+}
+
+/** How many pages the signers see (interim build: original + addendum pages); page_count stays the original's. */
+export function viewPageCount(envelope) {
+  return envelope.view_page_count || envelope.page_count
 }
 
 export function normalizeSigners(input) {
@@ -90,13 +101,13 @@ export async function createEnvelope({ title, propertyAddress, agreementDate, me
 
   const ts = now()
   const insertEnv = db.prepare(`INSERT INTO envelopes (id, title, property_address, agreement_date, message, source, drive_file_id, drive_folder_id,
-    original_sha256, original_path, page_count, is_template, status, created_at, created_by)
-    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+    original_sha256, original_path, page_count, view_page_count, is_template, status, created_at, created_by)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
   const insertSigner = db.prepare(`INSERT INTO signers (id, envelope_id, order_index, role, name, email, phone, delivery, placement, status) VALUES (?,?,?,?,?,?,?,?,?,?)`)
   db.exec("BEGIN")
   try {
     insertEnv.run(id, title, propertyAddress || null, agreementDate || null, message || null, driveFileId ? "drive" : "upload", driveFileId || null, driveFolderId,
-      sha256(bytes), originalPath, pageCount, info.isTemplate ? 1 : 0, "in_progress", ts, createdBy || "admin")
+      sha256(bytes), originalPath, pageCount, pageCount, info.isTemplate ? 1 : 0, "in_progress", ts, createdBy || "admin")
     for (const s of cleanSigners) {
       const placement = s === firstSeller || s === firstBuyer ? "template" : "addendum"
       insertSigner.run(crypto.randomBytes(6).toString("hex"), id, s.order, s.role, s.name, s.email, s.phone, s.delivery, placement, "waiting")
@@ -107,8 +118,46 @@ export async function createEnvelope({ title, propertyAddress, agreementDate, me
     throw e
   }
   addEvent(id, "created", { details: { title, pages: pageCount, template: info.isTemplate, source: driveFileId ? "drive" : "upload", signers: cleanSigners.length } })
+  await refreshInterim(id) // the addendum box + page are there from the first signer on
   const sent = await sendPending(id)
   return { id, sent }
+}
+
+/**
+ * Rebuild envelopes/<id>/interim.pdf (original + every signature so far; the
+ * addendum box ticked and the addendum page listed as soon as the envelope has
+ * addendum signers) and re-render the page images from it. Nothing to show
+ * yet → leaves the original's render in place. Never throws: the signature
+ * that triggered it is already recorded, so a failure is logged and the next
+ * signer simply reviews the previous render.
+ */
+export async function refreshInterim(envelopeId) {
+  const envelope = getEnvelope(envelopeId)
+  if (!envelope || envelope.status !== "in_progress") return null
+  const signers = getSigners(envelopeId)
+  if (!signers.some((s) => s.status === "signed" || s.placement === "addendum")) return null
+  try {
+    const originalBytes = fs.readFileSync(envelope.original_path)
+    if (sha256(originalBytes) !== envelope.original_sha256) throw new Error("Original document fingerprint mismatch — refusing to build")
+    const { bytes, pageCount } = await buildInterimPdf({ originalBytes, envelope, signers })
+    const dir = envelopeDir(envelopeId)
+    const file = path.join(dir, "interim.pdf")
+    fs.writeFileSync(file, bytes)
+    // Render into a fresh folder and swap, so a signer mid-review never sees a half-written set.
+    const fresh = path.join(dir, "pages.new"), pages = path.join(dir, "pages"), old = path.join(dir, "pages.old")
+    fs.rmSync(fresh, { recursive: true, force: true })
+    const n = await renderPages(file, fresh)
+    fs.rmSync(old, { recursive: true, force: true })
+    if (fs.existsSync(pages)) fs.renameSync(pages, old)
+    fs.renameSync(fresh, pages)
+    fs.rmSync(old, { recursive: true, force: true })
+    run("UPDATE envelopes SET view_page_count = ? WHERE id = ?", n, envelopeId)
+    return { file, pageCount: n }
+  } catch (e) {
+    console.error("[esign] interim build failed:", e)
+    addEvent(envelopeId, "interim_failed", { details: { error: String(e?.message || e) } })
+    return null
+  }
 }
 
 /** Email every signer in the lowest unsigned order tier that hasn't been sent yet. */
@@ -258,6 +307,7 @@ export async function recordSign(signer, envelope, { typedName, method, signatur
     const remaining = getSigners(envelope.id).filter((s) => s.status !== "signed")
     if (!remaining.length) await completeEnvelope(envelope.id)
     else {
+      await refreshInterim(envelope.id) // later signers review the document with this signature on it
       const sent = await sendPending(envelope.id)
       if (sent.length) await notify(`➡️ Next up on <b>${esc(envelope.title)}</b>: ${esc(sent.join(", "))} (invitation sent)`)
     }

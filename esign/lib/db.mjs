@@ -23,7 +23,8 @@ CREATE TABLE IF NOT EXISTS envelopes (
   signed_sha256 TEXT,              -- document with signatures, before the certificate
   final_sha256 TEXT,               -- the file everyone receives
   final_path TEXT,
-  page_count INTEGER NOT NULL,
+  page_count INTEGER NOT NULL,     -- pages of original.pdf (the certificate quotes it)
+  view_page_count INTEGER,         -- pages of interim.pdf = what the signers review (original + addendum pages)
   is_template INTEGER NOT NULL DEFAULT 0,
   status TEXT NOT NULL,            -- 'in_progress' | 'completed' | 'voided' | 'declined'
   created_at TEXT NOT NULL,
@@ -93,6 +94,8 @@ export function getDb() {
   const cols = db.prepare("PRAGMA table_info(signers)").all().map((c) => c.name)
   if (!cols.includes("signature_font")) db.exec("ALTER TABLE signers ADD COLUMN signature_font TEXT")
   if (!cols.includes("delivery")) db.exec("ALTER TABLE signers ADD COLUMN delivery TEXT NOT NULL DEFAULT 'email'")
+  const ecols = db.prepare("PRAGMA table_info(envelopes)").all().map((c) => c.name)
+  if (!ecols.includes("view_page_count")) db.exec("ALTER TABLE envelopes ADD COLUMN view_page_count INTEGER")
   return db
 }
 

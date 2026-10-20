@@ -71,8 +71,10 @@ export function reviewPage({ envelope, signer, token, error, spot }) {
   // The anchor's top is the signature line itself (letter page, 612×792pt); the tab hangs above it.
   const pct = spot ? { left: (spot.x / 612) * 100, top: ((792 - spot.lineY) / 792) * 100, width: (spot.w / 612) * 100 } : null
   const tab = `<button type="button" class="signtab" id="signtab" aria-label="Sign here"><span class="flag">Sign here</span><span class="sigpreview" id="sigpreview"></span></button>`
-  const pages = Array.from({ length: envelope.page_count }, (_, i) =>
-    `<div class="pagewrap"><img class="page" src="/s/${token}/pages/${i + 1}.png" alt="Page ${i + 1}" loading="${i < 2 ? "eager" : "lazy"}">${pct && spot.page === i + 1 ? `<div class="spot" style="left:${pct.left.toFixed(3)}%;top:${pct.top.toFixed(3)}%;width:${pct.width.toFixed(3)}%">${tab}</div>` : ""}</div><div class="pageno">Page ${i + 1} of ${envelope.page_count}</div>`).join("")
+  // The page images come from interim.pdf once anyone has signed (original + addendum pages), so count those, not the original's pages.
+  const pageCount = envelope.view_page_count || envelope.page_count
+  const pages = Array.from({ length: pageCount }, (_, i) =>
+    `<div class="pagewrap"><img class="page" src="/s/${token}/pages/${i + 1}.png" alt="Page ${i + 1}" loading="${i < 2 ? "eager" : "lazy"}">${pct && spot.page === i + 1 ? `<div class="spot" style="left:${pct.left.toFixed(3)}%;top:${pct.top.toFixed(3)}%;width:${pct.width.toFixed(3)}%">${tab}</div>` : ""}</div><div class="pageno">Page ${i + 1} of ${pageCount}</div>`).join("")
   const fontFaces = Object.values(SIGNATURE_FONTS).map((f) => `@font-face{font-family:"${f.css}";src:url(${asset(`/fonts/${f.file}`)}) format("truetype");font-display:swap}`).join("")
   const fontCards = Object.entries(SIGNATURE_FONTS).map(([k, f]) => `<label class="fontcard"><input type="radio" name="fontpick" value="${k}" ${k === DEFAULT_FONT ? "checked" : ""}><span class="fontbody"><span class="fontprev" style="font-family:'${f.css}';font-size:${f.webSize}px" data-font="${k}">${esc(signer.name)}</span><span class="fontlabel">${f.label}</span></span></label>`).join("")
   const roleLabel = signer.role === "buyer" ? "Buyer" : "Seller"
@@ -86,7 +88,7 @@ export function reviewPage({ envelope, signer, token, error, spot }) {
   <div class="step">Step 2 of 2 · Review, then sign</div>
   <h1>${esc(envelope.title)}</h1>
   ${envelope.property_address ? `<p class="muted">${esc(envelope.property_address)}</p>` : ""}
-  <p>Read all ${envelope.page_count} page${envelope.page_count === 1 ? "" : "s"}, then tap the yellow <strong>Sign here</strong> tab${spot ? ` on page ${spot.page}` : " below"}. <a class="link" href="/s/${token}/document.pdf" target="_blank">Open as a PDF</a></p>
+  <p>Read all ${pageCount} page${pageCount === 1 ? "" : "s"}, then tap the yellow <strong>Sign here</strong> tab${spot ? ` on page ${spot.page}` : " below"}. <a class="link" href="/s/${token}/document.pdf" target="_blank">Open as a PDF</a></p>
   ${error ? `<div class="error">${esc(error)}</div>` : ""}
 </div>
 <div class="pages">${pages}</div>
@@ -196,7 +198,7 @@ export function adminNew({ prefill = {}, offers = [], error, offersError }) {
   })
 }
 
-export function adminDetail({ envelope, signers, events, flash, error, freshLinks = {} }) {
+export function adminDetail({ envelope, signers, events, flash, error, freshLinks = {}, hasInterim = false }) {
   const open = envelope.status === "in_progress"
   const tier = Math.min(...signers.filter((s) => s.status !== "signed").map((s) => s.order_index), Infinity)
   const rows = signers.map((s) => {
@@ -208,7 +210,7 @@ export function adminDetail({ envelope, signers, events, flash, error, freshLink
   }).join("")
   const byId = Object.fromEntries(signers.map((s) => [s.id, s.name]))
   const ev = events.map((e) => `<div class="ev">${esc(fmtTsPT(e.at))} — <strong>${esc(e.kind.replace(/_/g, " "))}</strong> ${e.signer_id ? esc(byId[e.signer_id] || "") : ""} ${e.ip ? `· ${esc(e.ip)}` : ""}${e.geo ? ` · ${esc(geoLabel(e.geo))}` : ""}</div>`).join("")
-  const files = `<p class="row"><a class="btn small secondary" href="/admin/e/${envelope.id}/original.pdf">Original PDF</a>${envelope.final_path ? `<a class="btn small" href="/admin/e/${envelope.id}/final.pdf">Signed PDF + certificate</a><a class="btn small secondary" href="/admin/e/${envelope.id}/signed.pdf">Signed PDF (no certificate)</a>` : ""}${envelope.drive_final_link ? `<a class="btn small secondary" href="${esc(envelope.drive_final_link)}" target="_blank">Open in Drive</a>` : ""}</p>`
+  const files = `<p class="row"><a class="btn small secondary" href="/admin/e/${envelope.id}/original.pdf">Original PDF</a>${hasInterim && !envelope.final_path ? `<a class="btn small" href="/admin/e/${envelope.id}/interim.pdf">Signed so far</a>` : ""}${envelope.final_path ? `<a class="btn small" href="/admin/e/${envelope.id}/final.pdf">Signed PDF + certificate</a><a class="btn small secondary" href="/admin/e/${envelope.id}/signed.pdf">Signed PDF (no certificate)</a>` : ""}${envelope.drive_final_link ? `<a class="btn small secondary" href="${esc(envelope.drive_final_link)}" target="_blank">Open in Drive</a>` : ""}</p>`
   const actions = open
     ? `<form method="post" action="/admin/e/${envelope.id}/void" onsubmit="return confirm('Cancel this signing request? Links stop working.')"><button class="btn small danger" type="submit">Cancel request</button></form>`
     : envelope.status === "completed" && !envelope.drive_final_id ? `<form method="post" action="/admin/e/${envelope.id}/retry"><button class="btn small secondary" type="submit">Retry delivery (Drive / email)</button></form>` : ""

@@ -191,7 +191,7 @@ app.get("/s/:token/pages/:n", async (c) => {
   const r = await loadToken(c)
   if (r.resp) return r.resp
   const n = Number(String(c.req.param("n")).replace(/\.png$/, ""))
-  if (!Number.isInteger(n) || n < 1 || n > r.envelope.page_count) return c.notFound()
+  if (!Number.isInteger(n) || n < 1 || n > E.viewPageCount(r.envelope)) return c.notFound()
   const file = path.join(E.envelopeDir(r.envelope.id), "pages", `page-${n}.png`)
   if (!fs.existsSync(file)) return c.notFound()
   return new Response(fs.readFileSync(file), { headers: { "content-type": "image/png", "cache-control": "private, max-age=600" } })
@@ -201,7 +201,8 @@ app.get("/s/:token/document.pdf", async (c) => {
   const r = await loadToken(c)
   if (r.resp) return r.resp
   const e = r.envelope
-  const file = e.status === "completed" && e.final_path ? e.final_path : e.original_path
+  // Completed → the final; in progress → the interim (every signature so far) when there is one, else the original as sent.
+  const file = e.status === "completed" && e.final_path ? e.final_path : E.interimPath(e) || e.original_path
   return pdfResponse(file, `${e.title}${e.status === "completed" ? " - SIGNED" : ""}.pdf`, true)
 })
 app.get("/s/:token/final.pdf", async (c) => {
@@ -296,16 +297,16 @@ app.post("/admin/envelopes", async (c) => {
 const detail = (c, id, extra = {}) => {
   const envelope = getEnvelope(id)
   if (!envelope) return html(c, V.errorPage("Not found", "No such signing request."), 404)
-  return html(c, V.adminDetail({ envelope, signers: getSigners(id), events: getEvents(id), flash: c.req.query("flash"), ...extra }))
+  return html(c, V.adminDetail({ envelope, signers: getSigners(id), events: getEvents(id), flash: c.req.query("flash"), hasInterim: !!E.interimPath(envelope), ...extra }))
 }
 app.get("/admin/e/:id", (c) => detail(c, c.req.param("id")))
-app.get("/admin/e/:id/:file{(original|signed|final)\\.pdf}", (c) => {
+app.get("/admin/e/:id/:file{(original|interim|signed|final)\\.pdf}", (c) => {
   const e = getEnvelope(c.req.param("id"))
   if (!e) return c.notFound()
   const which = c.req.param("file").replace(".pdf", "")
-  const file = which === "original" ? e.original_path : which === "final" ? e.final_path : e.final_path && path.join(E.envelopeDir(e.id), "signed.pdf")
+  const file = which === "original" ? e.original_path : which === "interim" ? E.interimPath(e) : which === "final" ? e.final_path : e.final_path && path.join(E.envelopeDir(e.id), "signed.pdf")
   if (!file || !fs.existsSync(file)) return c.notFound()
-  return pdfResponse(file, `${e.title}${which === "original" ? "" : " - SIGNED"}${which === "signed" ? " (no certificate)" : ""}.pdf`)
+  return pdfResponse(file, `${e.title}${which === "original" ? "" : which === "interim" ? " - signed so far" : " - SIGNED"}${which === "signed" ? " (no certificate)" : ""}.pdf`)
 })
 app.post("/admin/e/:id/resend/:sid", async (c) => {
   const id = c.req.param("id")

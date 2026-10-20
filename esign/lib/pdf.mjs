@@ -1,5 +1,6 @@
-// PDF work: fingerprints, page images for the phone view, and the final
-// assembly (signatures on the agreement, signature addendum, certificate).
+// PDF work: fingerprints, page images for the phone view, the interim build
+// (what later signers review) and the final assembly (signatures on the
+// agreement, signature addendum, certificate).
 import crypto from "node:crypto"
 import fs from "node:fs"
 import path from "node:path"
@@ -29,15 +30,24 @@ export function sha256(bytes) {
 }
 
 /**
- * Ryan's Purchase & Sale Agreement template: 2 letter pages, text fields
- * including seller_signer_name / seller_date / buyer_date, signature lines
- * at known spots on page 2 (measured 2026-10-17 from the Drive template).
+ * Ryan's Purchase & Sale Agreement template (esign/template/build_template.py):
+ * 2 letter pages, text fields including seller_signer_name / seller_date /
+ * buyer_date, signature lines at known spots on page 2. Coordinates are PDF
+ * points, origin bottom-left, measured from the 2026-10-20 build — the lines
+ * are where the 2026-10-15 document had them, so envelopes created from the
+ * older template still sign in the right place. The addendum box (checkbox
+ * + names line under the Seller block) only exists from 2026-10-20 on; the
+ * builds tick it when the field is there and skip it otherwise.
  */
 export const TEMPLATE = {
   page: 1,
-  buyer: { x: 309, lineY: 280, w: 248 },
-  seller: { x: 309, lineY: 201, w: 248 },
+  buyer: { x: 309, lineY: 280.2, w: 249 },
+  seller: { x: 309, lineY: 200.8, w: 249 },
   dateField: { buyer: "buyer_date", seller: "seller_date" },
+  addendum: {
+    checkbox: "addendum_attached", // rect 54 124 64 134
+    names: "addendum_names",       // rect 100 109 558 121
+  },
 }
 
 export async function inspectPdf(bytes) {
@@ -141,11 +151,14 @@ function stampText(page, fonts, signer, envelopeId, { x, y, w }) {
 
 // ---------------------------------------------------------------- assembly
 
-/**
- * Build the signed document and the final (signed + certificate) document.
- * Returns { signedBytes, finalBytes, signedSha256, finalSha256 }.
- */
-export async function buildFinalPdf({ originalBytes, envelope, signers, events }) {
+function roleLabel(s) { return s.role === "buyer" ? "Buyer" : "Seller" }
+
+/** "Jane Doe (Seller), Bob Roe (Buyer)" — what goes in the template's addendum_names box. */
+export function addendumNames(signers) {
+  return signers.map((s) => `${s.name} (${roleLabel(s)})`).join(", ")
+}
+
+async function loadForDrawing(originalBytes, title) {
   const doc = await PDFDocument.load(originalBytes, { updateMetadata: false })
   doc.registerFontkit(fontkit)
   const fonts = {
@@ -153,15 +166,29 @@ export async function buildFinalPdf({ originalBytes, envelope, signers, events }
     bold: await doc.embedFont(StandardFonts.HelveticaBold),
     mono: await doc.embedFont(StandardFonts.Courier),
   }
-  doc.setTitle(`${envelope.title} — signed`)
+  doc.setTitle(title)
   doc.setProducer(`${env.businessName} e-sign`)
   doc.setModificationDate(new Date())
+  return { doc, fonts }
+}
 
+/**
+ * Everything the signers have done so far, drawn onto a loaded copy of the
+ * original: the template's date fields and the addendum box, flatten, the
+ * signatures on the agreement's own lines, the Signature Addendum page(s).
+ * Shared by the interim build (after every signature — what later signers
+ * review) and the final build (which then appends the certificate).
+ * `signers` is every signer on the envelope; only the signed ones leave ink,
+ * but the addendum box and the addendum page list all addendum signers so a
+ * reader can see whose signatures are still to come.
+ */
+async function applySignatures(doc, fonts, envelope, signers) {
   const signed = signers.filter((s) => s.status === "signed")
   const onTemplate = signed.filter((s) => s.placement === "template")
-  const onAddendum = signed.filter((s) => s.placement === "addendum")
+  const onAddendum = signers.filter((s) => s.placement === "addendum")
+  let boxTicked = false
 
-  // 1. Fill the date fields next to the template's signature lines, then flatten.
+  // 1. Fill the date fields next to the template's signature lines (+ tick the addendum box), then flatten.
   let form = null
   try { form = doc.getForm() } catch { form = null }
   if (form) {
@@ -179,6 +206,18 @@ export async function buildFinalPdf({ originalBytes, envelope, signers, events }
             if (!f.getText()) f.setText(s.name)
           } catch { /* ignore */ }
         }
+      }
+      if (onAddendum.length) {
+        try {
+          const box = form.getCheckBox(TEMPLATE.addendum.checkbox)
+          const names = form.getTextField(TEMPLATE.addendum.names)
+          const text = addendumNames(onAddendum)
+          if (names.getMaxLength() !== undefined) names.setMaxLength(undefined)
+          if (fonts.helv.widthOfTextAtSize(text, 9) > 450) names.setFontSize(0) // auto-size a long list
+          names.setText(text)
+          box.check()
+          boxTicked = true
+        } catch { /* template predates the box (envelopes created before 2026-10-20) */ }
       }
     }
     try {
@@ -203,7 +242,30 @@ export async function buildFinalPdf({ originalBytes, envelope, signers, events }
   }
 
   // 3. Signature addendum for everyone else.
-  if (onAddendum.length) await drawAddendum(doc, fonts, envelope, onAddendum)
+  if (onAddendum.length) await drawAddendum(doc, fonts, envelope, onAddendum, { referenced: boxTicked })
+  return { boxTicked }
+}
+
+/**
+ * The document as it stands: original + everyone who has signed so far, no
+ * certificate. Written to envelopes/<id>/interim.pdf after every signature
+ * and rendered to the page images later signers review. Returns the bytes
+ * and the page count (original pages + addendum pages).
+ */
+export async function buildInterimPdf({ originalBytes, envelope, signers }) {
+  const { doc, fonts } = await loadForDrawing(originalBytes, `${envelope.title} — in progress`)
+  await applySignatures(doc, fonts, envelope, signers)
+  const bytes = await doc.save({ useObjectStreams: false })
+  return { bytes, pageCount: doc.getPageCount() }
+}
+
+/**
+ * Build the signed document and the final (signed + certificate) document.
+ * Returns { signedBytes, finalBytes, signedSha256, finalSha256 }.
+ */
+export async function buildFinalPdf({ originalBytes, envelope, signers, events }) {
+  const { doc, fonts } = await loadForDrawing(originalBytes, `${envelope.title} — signed`)
+  await applySignatures(doc, fonts, envelope, signers)
 
   const signedBytes = await doc.save({ useObjectStreams: false })
   const signedSha256 = sha256(signedBytes)
@@ -221,7 +283,8 @@ export async function buildFinalPdf({ originalBytes, envelope, signers, events }
   return { signedBytes, finalBytes, signedSha256, finalSha256: sha256(finalBytes) }
 }
 
-async function drawAddendum(doc, fonts, envelope, signers) {
+/** Signature Addendum page(s): one block per addendum signer; a signer who hasn't signed yet gets an empty line. */
+async function drawAddendum(doc, fonts, envelope, signers, { referenced = false } = {}) {
   const W = 612, H = 792, M = 54
   const logo = await embedLogo(doc)
   let page, y
@@ -237,6 +300,7 @@ async function drawAddendum(doc, fonts, envelope, signers) {
     ? `to the Real Estate Purchase & Sale Agreement dated ${fmtDatePT(envelope.agreement_date)}${envelope.property_address ? ` for the property at ${envelope.property_address}` : ""}`
     : `to: ${envelope.title}${envelope.property_address ? ` (${envelope.property_address})` : ""}`
   for (const line of wrap(fonts.helv, 10.5, what, W - 2 * M)) { page.drawText(line, { x: M, y, size: 10.5, font: fonts.helv }); y -= 14 }
+  if (referenced) { page.drawText("Referenced by the checked box on page 2 of the Agreement.", { x: M, y, size: 9.5, font: fonts.helv, color: rgb(0.3, 0.3, 0.3) }); y -= 14 }
   y -= 6
   const body =
     `Each person signing below is a party to the above Agreement in the capacity shown, has reviewed the entire ` +
@@ -248,14 +312,14 @@ async function drawAddendum(doc, fonts, envelope, signers) {
 
   for (const s of signers) {
     if (y < M + 110) newPage()
-    const roleLabel = s.role === "buyer" ? "Buyer" : "Seller"
-    page.drawText(`${roleLabel}:`, { x: M, y, size: 10, font: fonts.bold })
+    const signedHere = s.status === "signed"
+    page.drawText(`${roleLabel(s)}:`, { x: M, y, size: 10, font: fonts.bold })
     const lineX = M + 90, lineW = 300, lineY = y - 26
-    await drawSignature(doc, page, fonts, s, { x: lineX, baseY: lineY + 2, maxW: 200, maxH: 28 })
+    if (signedHere) await drawSignature(doc, page, fonts, s, { x: lineX, baseY: lineY + 2, maxW: 200, maxH: 28 })
     page.drawLine({ start: { x: lineX, y: lineY }, end: { x: lineX + lineW, y: lineY }, thickness: 0.7, color: rgb(0, 0, 0) })
     page.drawText("Signature", { x: lineX, y: lineY - 9, size: 6.5, font: fonts.helv, color: rgb(0.4, 0.4, 0.4) })
-    stampText(page, fonts, s, envelope.id, { x: lineX, y: lineY - 9, w: lineW })
-    page.drawText(`Dated: ${fmtDatePT(s.signed_at)}`, { x: lineX + lineW + 16, y: lineY + 4, size: 9.5, font: fonts.helv })
+    if (signedHere) stampText(page, fonts, s, envelope.id, { x: lineX, y: lineY - 9, w: lineW })
+    page.drawText(`Dated: ${signedHere ? fmtDatePT(s.signed_at) : "____________"}`, { x: lineX + lineW + 16, y: lineY + 4, size: 9.5, font: fonts.helv })
     page.drawText(`Name:  ${s.name}`, { x: lineX, y: lineY - 24, size: 9.5, font: fonts.helv })
     page.drawText(`Email:  ${s.email}${s.phone ? `     Tel:  ${s.phone}` : ""}`, { x: lineX, y: lineY - 38, size: 9.5, font: fonts.helv })
     y = lineY - 66
