@@ -375,6 +375,19 @@ async function backlogFor(sender) {
   return count ?? 0
 }
 
+// Every un-sent row for a sender, whatever its slot. The queue is bounded at
+// two days of cap (today's pile + tomorrow's): the midnight respread moves
+// overdue rows into today's window, which hides them from backlogFor(), so
+// without this bound the mint refilled on top of a 46-row weekend glut and
+// the glut never drained (2026-10-20).
+async function unsentFor(sender) {
+  const q = sb.from("campaign_sends").select("id", { count: "exact", head: true }).in("status", ["draft", "approved"])
+  const { count, error } = await senderFilter(q, sender)
+  if (error) throw new Error(`unsent count for ${sender.email}: ${error.message}`)
+  return count ?? 0
+}
+const QUEUE_DAYS = 2
+
 // ---------- DRAFT pass ----------
 // Gated (non-auto) touches mint ONCE per day in a single batch → one review
 // ping, not a drip of them every 20 minutes (Ryan 2026-07-31: T2 approval
@@ -404,9 +417,39 @@ function markGatedMinted() {
   fs.writeFileSync(GATED_DRAFT_STATE, JSON.stringify({ last: `${p.year}-${p.month}-${p.day}` }))
 }
 
+// Sends are Mon-Fri only (randomSendSlot skips weekends), so a weekend mint
+// just stacks up: Fri/Sat/Sun midnight batches all landed on Monday, the cap
+// sent 15 of 46, and the midnight "starved" alert fired on a healthy sender
+// (2026-10-20). Auto touches now mint on weekdays only, like the gated batch.
+function autoMintAllowedToday() {
+  if (args.includes("--mint-now")) return true // rehearsal flag (use with --dry-run)
+  const wd = laWeekdayNow()
+  return wd !== "Sat" && wd !== "Sun"
+}
+
+/** Sends recorded on the most recent weekday before today (PT). */
+async function sentOnPreviousWeekday() {
+  const now = new Date()
+  for (let back = 1; back <= 4; back++) {
+    const p = ptDateParts(new Date(now.getTime() - back * 86400_000))
+    if (p.weekday === "Sat" || p.weekday === "Sun") continue
+    const start = ptSlotToUtcIso(Number(p.year), Number(p.month), Number(p.day), 0, 0)
+    const end = new Date(new Date(start).getTime() + 86400_000).toISOString()
+    const { count, error } = await sb.from("campaign_sends").select("id", { count: "exact", head: true }).eq("status", "sent").gte("sent_at", start).lt("sent_at", end)
+    if (error) throw new Error(`count previous-weekday sends: ${error.message}`)
+    return { day: `${p.year}-${p.month}-${p.day}`, sent: count ?? 0 }
+  }
+  return { day: null, sent: 0 }
+}
+
 async function draftPass() {
-  const sets = await fetchSuppressionSets()
   const gatedAllowed = gatedMintAllowedToday()
+  const autoAllowed = autoMintAllowedToday()
+  if (!gatedAllowed && !autoAllowed) {
+    log("draft pass: weekend — no mint (sends are Mon-Fri; the Friday batch covers Monday)")
+    return
+  }
+  const sets = await fetchSuppressionSets()
   // Expire earlier un-tapped batch(es) BEFORE the backlog count — a batch
   // Ryan never approved must not linger (and send later by surprise), nor
   // block tonight's mint by filling the cap. (Bug found 2026-08-21: the 195
@@ -433,10 +476,11 @@ async function draftPass() {
     // eat the day's mint budget (2026-10-02 re-mint onto the composed path).
     const drafted = await countSendsTodayFor(s, "created_at", ["draft", "approved", "sent", "failed"])
     const backlog = await backlogFor(s)
+    const unsent = await unsentFor(s)
     draftedTotal += drafted
     backlogTotal += backlog
-    budgets.set(s.email, Math.max(0, Math.min(cap - drafted, cap - backlog)))
-    budgetNotes.push(`${s.label} ${budgets.get(s.email)} (cap ${cap}, ${drafted} drafted, ${backlog} backlog)`)
+    budgets.set(s.email, Math.max(0, Math.min(cap - drafted, cap - backlog, QUEUE_DAYS * cap - unsent)))
+    budgetNotes.push(`${s.label} ${budgets.get(s.email)} (cap ${cap}, ${drafted} drafted, ${backlog} backlog, ${unsent} queued)`)
   }
   let totalBudget = Math.max(0, Math.min(TOTAL_DRAFT_CEILING - draftedTotal, [...budgets.values()].reduce((a, b) => a + b, 0)))
   if (limit !== null) totalBudget = Math.min(totalBudget, limit)
@@ -450,13 +494,21 @@ async function draftPass() {
     // daytime slots is NOT a stall.
     const capTotal = SENDERS.reduce((a, s) => a + senderCap(s), 0)
     if (draftedTotal === 0 && backlogTotal >= capTotal && capTotal > 0) {
+      // A backlog that the cap is still working through (the previous weekday
+      // sent) is a queue, not a stall — the Monday-after-a-weekend case paged
+      // Ryan on a healthy sender (2026-10-20). Only a silent send day alerts.
+      const prev = await sentOnPreviousWeekday()
+      if (prev.sent > 0) {
+        log(`draft pass: backlog ${backlogTotal} ≥ caps ${capTotal} but ${prev.day} sent ${prev.sent} — queue is draining, no mint today`)
+        return
+      }
       const starveFile = "scripts/.campaign-draft-starved-state.json"
       const day = new Date().toLocaleDateString("en-CA")
       let last = null
       try { last = JSON.parse(fs.readFileSync(starveFile, "utf-8")).last } catch {}
       if (last !== day) {
         fs.writeFileSync(starveFile, JSON.stringify({ last: day }))
-        await telegram(`⚠️ Campaign drafts starved: ${backlogTotal} un-sent draft/approved rows fill today's ${capTotal}/day caps — check the send pass.`)
+        await telegram(`⚠️ Campaign drafts starved: ${backlogTotal} un-sent draft/approved rows fill today's ${capTotal}/day caps and ${prev.day ?? "the last weekday"} sent 0 — check the send pass.`)
       }
     }
     return
@@ -558,6 +610,7 @@ async function draftPass() {
     }
     const auto = AUTO_SEND.touches.has(touch)
     if (!auto && !gatedAllowed) continue // gated touches mint once daily, first pass after MINT_HOUR PT
+    if (auto && !autoAllowed) continue // auto touches mint on weekdays only (sends are Mon-Fri)
     // Which mailbox carries this contact: sticky to the thread's mailbox,
     // else the understudy's segment claim, else the workhorse, else (once the
     // workhorse budget is spent) an overflow-enabled sender with budget left.
