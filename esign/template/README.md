@@ -42,9 +42,15 @@ pick up the new template. After an upload, restart e-sign and run
 
 | field | type | filled by |
 |---|---|---|
-| `expiration_date` | text, MM/DD/YYYY | offer bot (term 4) |
-| `expiration_days` | text, integer | offer bot (term 4) |
+| `expiration_time` | text, e.g. `5:00 p.m.` (55pt) | offer bot (term 4, default 5:00 p.m.) |
+| `expiration_date` | text, MM/DD/YYYY (70pt) | offer bot (term 4) |
 | `addendum_attached` | checkbox | e-sign, when the envelope has addendum signers (their names are on the Signature Addendum) |
 
 The light-blue boxes are page content *and* the widgets' appearance, as in
 the 2026-10-15 original, so they stay on the flattened signed copy.
+
+Term 4 (2026-10-20 rewrite, Ryan's wording) is one sentence with the two
+blanks inline: *"… delivered to Buyer, electronically or otherwise, by
+[time] (Pacific time) on [date] (the "Expiration Date")."* The script's
+`[[…]]` markup keeps that run on one line, so a blank can never start a line
+on its own (the first build had the date blank dangling after "on").

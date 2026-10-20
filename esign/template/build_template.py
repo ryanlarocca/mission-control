@@ -7,12 +7,13 @@ Build the LRG Homes Real Estate Purchase & Sale Agreement template PDF.
 
 ReportLab draws the two letter pages (text, the light-blue field boxes, the
 signature lines, the footer) and pypdf adds the AcroForm: 15 text fields
-(the 13 the offer bot fills — briefs/OFFER_BOT.md — plus expiration_date and
-expiration_days) and the addendum_attached checkbox.
+(the 13 the offer bot fills — briefs/OFFER_BOT.md — plus expiration_time and
+expiration_date) and the addendum_attached checkbox.
 
 This reproduces the one-off 2026-10-15 document line for line, plus the
 2026-10-20 changes (briefs/ESIGN_V2.md): term 4 Expiration (old 4–22 are now
-5–23, the two cross-references moved with them), and the "Additional
+5–23, the two cross-references moved with them; wording rewritten the same
+day — one sentence with a time blank and a date blank), and the "Additional
 Seller(s) and/or Buyer(s)" checkbox line under the Seller block on page 2
 (checkbox only — the extra signers' names are on the Signature Addendum). Body
 leading is 11.4pt (was 12) and the gap between terms 3pt (was 4) so page 1
@@ -77,7 +78,9 @@ TITLE = "REAL ESTATE PURCHASE & SALE AGREEMENT"
 FOOTER = "Real Estate Purchase & Sale Agreement  |  Page {n}"
 
 # ---------------------------------------------------------------- content
-# Inline markup: {field:NAME:WIDTH} is a text field box; **bold** is bold.
+# Inline markup: {field:NAME:WIDTH} is a text field box; **bold** is bold;
+# [[…]] is a run of words the wrap never splits across lines (a blank and the
+# words around it stay on one line).
 
 PREAMBLE = (
     "This Real Estate Purchase & Sale Agreement is entered into this {field:agreement_date:95} [date] between "
@@ -97,11 +100,11 @@ TERMS = [
                  "information: Phone: (408) 354-6737."),
     ("Earnest money.", "Buyer shall deliver an earnest money deposit in the amount of $ {field:earnest_money:85} to Escrow "
                        "Company prior to Closing."),
-    ("Expiration.", "This offer shall be deemed revoked and any earnest money deposit returned to Buyer unless this Agreement "
-                    "is signed by Seller and a signed copy is delivered to Buyer by 5:00 p.m. Pacific time on "
-                    "{field:expiration_date:95} (the \"Expiration Date\"). If no Expiration Date is entered, this offer expires "
-                    "at 5:00 p.m. Pacific time on the {field:expiration_days:32} calendar day after the date Buyer signs this "
-                    "Agreement."),
+    # Ryan's wording (2026-10-20, replaces the CAR-style either/or draft). The
+    # [[…]] run never breaks across lines, so neither blank can start a line.
+    ("Expiration.", "This Agreement is an offer by Buyer and shall be deemed revoked unless it is signed by Seller and a "
+                    "signed copy is delivered to Buyer, electronically or otherwise, [[by {field:expiration_time:55} "
+                    "(Pacific time) on {field:expiration_date:70} (the \"Expiration Date\").]]"),
     ("Prorations.", "Real property taxes and assessments, interest, rents, homeowners' association regular dues and regular "
                     "assessments, premiums on insurance assumed by Buyer, payments on bonds and assessments assumed by Buyer "
                     "shall be paid current by Seller from the proceeds of sale (if needed) and prorated between Buyer and Seller "
@@ -203,19 +206,28 @@ FIELD_RE = re.compile(r"\{field:([a-z_]+):(\d+(?:\.\d+)?)\}")
 
 
 def tokens(markup, font=REG):
-    """'a **b c** {field:x:95} d' → [(text|field, ...)] one word per token."""
+    """'a **b c** {field:x:95} [[d e]]' → [(text|field, ..., group)] one word per
+    token; `group` is None or an id shared by the words of a [[…]] run."""
     out = []
-    for chunk in re.split(r"(\*\*.*?\*\*)", markup):
-        if not chunk:
+    group = 0
+    for run in re.split(r"(\[\[.*?\]\])", markup):
+        if not run:
             continue
-        f = font
-        if chunk.startswith("**") and chunk.endswith("**"):
-            chunk, f = chunk[2:-2], BOLD
-        for word in chunk.split(" "):
-            if not word:
+        gid = None
+        if run.startswith("[[") and run.endswith("]]"):
+            group += 1
+            run, gid = run[2:-2], group
+        for chunk in re.split(r"(\*\*.*?\*\*)", run):
+            if not chunk:
                 continue
-            m = FIELD_RE.fullmatch(word)
-            out.append(("field", m.group(1), float(m.group(2))) if m else ("text", word, f))
+            f = font
+            if chunk.startswith("**") and chunk.endswith("**"):
+                chunk, f = chunk[2:-2], BOLD
+            for word in chunk.split(" "):
+                if not word:
+                    continue
+                m = FIELD_RE.fullmatch(word)
+                out.append(("field", m.group(1), float(m.group(2)), gid) if m else ("text", word, f, gid))
     return out
 
 
@@ -224,12 +236,19 @@ def width(tok, size=BODY):
 
 
 def wrap(toks, x_first, x_cont, x_max=RIGHT, size=BODY):
-    """Greedy word wrap → list of lines, each [(x, token), …]."""
+    """Greedy word wrap → list of lines, each [(x, token), …]. A [[…]] group
+    is measured as a whole at its first word, so the line breaks before the
+    group rather than inside it."""
     space = stringWidth(" ", REG, size)
     lines, cur, x = [], [], x_first
-    for t in toks:
+    for i, t in enumerate(toks):
         w = width(t, size)
-        if cur and x + w > x_max + 0.01:
+        gid = t[3] if len(t) > 3 else None
+        need = w
+        if gid is not None and (i == 0 or toks[i - 1][3] != gid):
+            rest = [u for u in toks[i:] if u[3] == gid]
+            need = sum(width(u, size) for u in rest) + space * (len(rest) - 1)
+        if cur and x + need > x_max + 0.01:
             lines.append(cur)
             cur, x = [], x_cont
         cur.append((x, t))
@@ -276,7 +295,7 @@ class Page:
 
 
 def term_tokens(n, heading, body):
-    return [("text", f"{n}.", REG), ("text", heading, BOLD)] + tokens(body)
+    return [("text", f"{n}.", REG, None), ("text", heading, BOLD, None)] + tokens(body)
 
 
 def draw_terms(page, y, numbered, lead=LEAD, gap=GAP):
