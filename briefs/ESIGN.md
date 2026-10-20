@@ -163,7 +163,7 @@ them, so envelopes created from the older template still sign in place.
 | seller signature line | 2 | 309 → 558 | 200.8 | 249 |
 | `buyer_date` / `seller_date` | 2 | 88 → 198 | 303–315 / 200.8–212.8 | 110 |
 | `addendum_attached` checkbox | 2 | 54 → 64 | 124–134 | 10 |
-| `expiration_date` / `expiration_days` (offer bot) | 1 | 67 → 162 / 116 → 148 | 509.4–521.4 / 498–510 | 95 / 32 |
+| `expiration_time` / `expiration_date` (offer bot, term 4) | 1 | 79.54 → 134.54 / 207.15 → 277.15 | 509.4–521.4 (both) | 55 / 70 |
 
 ## Gotchas learned
 

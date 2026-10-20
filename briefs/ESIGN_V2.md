@@ -14,6 +14,24 @@ made a part of this Agreement."). Commits:
 - `8096952` feat(offer-bot): term 4 Expiration in the parser, card, Mini App and PDF fill (C)
 - `e79ed70` docs: `briefs/ESIGN.md`, `briefs/OFFER_BOT.md`, this file
 - follow-up: checkbox only (drops `addendum_names`, new wording)
+- follow-up (branch `esign-expiration-v2`, 2026-10-20): **term 4 rewritten**
+  after Ryan reviewed the deployed wording and rejected it. It is now one
+  sentence with two inline blanks, time and date: *"This Agreement is an
+  offer by Buyer and shall be deemed revoked unless it is signed by Seller
+  and a signed copy is delivered to Buyer, electronically or otherwise, by
+  ______ (Pacific time) on ______ (the "Expiration Date")."* Ryan's reasons:
+  the time must be settable (he says "expires Friday at noon", "by 5pm
+  Wednesday", "end of day 10/24"), and the CAR-style either/or fallback
+  ("If no Expiration Date is entered … the Nth calendar day …") was dead
+  text because the bot always fills both blanks. Template field
+  `expiration_days` → `expiration_time` (55pt, "5:00 p.m."; default 5:00
+  p.m.), `expiration_date` stays (70pt); the build script's `[[…]]` markup
+  keeps "by [time] (Pacific time) on [date] (the "Expiration Date")." on one
+  line so a blank never starts a line. Offer bot: new stored field
+  `expiration_time` ("HH:MM" | null), phrases parsed in code
+  (`lib/offerExpiration.ts`), card line `Expires: 10/22/2026 at 5:00 p.m.
+  (3 days, default)`, a Time box in the Mini App. Page-2 geometry is
+  byte-identical; the Drive upload + live run still happen from the Mac mini.
 
 Still to do from the Mac mini (needs Drive + `.env.local`): upload
 `esign/assets/template-reference.pdf` with Drive `files.update` on
