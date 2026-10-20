@@ -14,6 +14,7 @@ import {
   offerFilename,
   parseOfferTerms,
   patchOfferTerms,
+  resolveExpiration,
   streetFromAddress,
   validateFields,
   type OfferFields,
@@ -211,6 +212,7 @@ export function renderOfferCard(draft: OfferDraft): string {
   const f = draft.fields
   const money = (n: number | null) => (n === null ? "⚠️ <i>missing</i>" : `$${formatMoney(n)}`)
   const text = (s: string | null) => (s ? esc(s) : "—")
+  const expiration = resolveExpiration(f)
   const lines = [
     `📄 <b>Purchase Agreement — draft</b>`,
     ``,
@@ -220,6 +222,7 @@ export function renderOfferCard(draft: OfferDraft): string {
     `<b>Earnest money:</b> ${money(f.earnest_money)}`,
     `<b>Close:</b> ${f.closing_days} days`,
     `<b>Agreement date:</b> ${formatDateMMDDYYYY(f.agreement_date)}`,
+    `<b>Expires:</b> ${formatDateMMDDYYYY(expiration.date)} (${expiration.days} day${expiration.days === 1 ? "" : "s"}${f.expiration ? "" : ", default"})`,
     `<b>Seller signer:</b> ${text(f.seller_signer_name ?? f.seller_name)}`,
     `<b>Seller phone:</b> ${text(f.seller_tel)}`,
     `<b>Seller email:</b> ${text(f.seller_email)}`,

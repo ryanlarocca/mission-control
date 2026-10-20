@@ -1,7 +1,10 @@
 import { describe, it, expect } from "vitest"
 import { PDFDocument, StandardFonts } from "pdf-lib"
 import {
+  DEFAULT_EXPIRATION_DAYS,
+  addDays,
   blankFields,
+  daysBetween,
   fieldsFromInput,
   fillOfferPdf,
   finishParse,
@@ -9,11 +12,15 @@ import {
   formatMoney,
   formatPhone,
   missingFields,
+  normalizeExpiration,
   normalizeModelOffer,
   offerDriveRelPath,
   offerFilename,
+  parseExpirationDate,
+  parseExpirationDays,
   parseMoney,
   pdfFieldValues,
+  resolveExpiration,
   streetFromAddress,
   todayPT,
   traceStipulations,
@@ -92,6 +99,73 @@ describe("formatting", () => {
     expect(todayPT(new Date("2026-10-17T07:30:00Z"))).toBe("2026-10-17")
     expect(blankFields(new Date("2026-10-17T03:30:00Z")).agreement_date).toBe("2026-10-16")
     expect(blankFields().closing_days).toBe(45)
+  })
+})
+
+describe("expiration — term 4 (days parsed in code, default 3 calendar days after the agreement date)", () => {
+  it("parses a plain number of days and nothing else", () => {
+    expect(parseExpirationDays("5 days")).toBe(5)
+    expect(parseExpirationDays("good for 5 days")).toBe(5)
+    expect(parseExpirationDays("within 10 days")).toBe(10)
+    expect(parseExpirationDays("3")).toBe(3)
+    expect(parseExpirationDays("1 day")).toBe(1)
+    expect(parseExpirationDays(7)).toBe(7)
+    expect(parseExpirationDays("Friday")).toBeNull()
+    expect(parseExpirationDays("0 days")).toBeNull()
+    expect(parseExpirationDays("5 business days")).toBeNull()
+    expect(parseExpirationDays("")).toBeNull()
+    expect(parseExpirationDays(null)).toBeNull()
+  })
+
+  it("reads a date as ISO or MM/DD/YYYY", () => {
+    expect(parseExpirationDate("2026-10-24")).toBe("2026-10-24")
+    expect(parseExpirationDate("10/24/2026")).toBe("2026-10-24")
+    expect(parseExpirationDate("1/5/2027")).toBe("2027-01-05")
+    expect(parseExpirationDate("Friday")).toBeNull()
+    expect(parseExpirationDate("2026-13-01")).toBeNull()
+  })
+
+  it("calendar arithmetic never shifts a day", () => {
+    expect(addDays("2026-10-16", 3)).toBe("2026-10-19")
+    expect(addDays("2026-10-30", 3)).toBe("2026-11-02")
+    expect(addDays("2026-12-31", 1)).toBe("2027-01-01")
+    expect(daysBetween("2026-10-16", "2026-10-19")).toBe(3)
+  })
+
+  it("normalises a phrase to 'N days' or a date, flags what it can't read, keeps the default meanwhile", () => {
+    expect(normalizeExpiration(null, "2026-10-16")).toEqual({ value: null, problem: null })
+    expect(normalizeExpiration("", "2026-10-16")).toEqual({ value: null, problem: null })
+    expect(normalizeExpiration("good for 5 days", "2026-10-16")).toEqual({ value: "5 days", problem: null })
+    expect(normalizeExpiration("10/24/2026", "2026-10-16")).toEqual({ value: "2026-10-24", problem: null })
+    expect(normalizeExpiration("2026-10-24", "2026-10-16")).toEqual({ value: "2026-10-24", problem: null })
+    const bad = normalizeExpiration("end of the week", "2026-10-16")
+    expect(bad.value).toBeNull()
+    expect(bad.problem).toMatch(/offer expiration: "end of the week"/)
+    const past = normalizeExpiration("2026-10-16", "2026-10-16")
+    expect(past.value).toBeNull()
+    expect(past.problem).toMatch(/not after the agreement date/)
+  })
+
+  it("resolves to a date + day count: default, a count, a date", () => {
+    expect(DEFAULT_EXPIRATION_DAYS).toBe(3)
+    expect(resolveExpiration({ agreement_date: "2026-10-16", expiration: null })).toEqual({ date: "2026-10-19", days: 3 })
+    expect(resolveExpiration({ agreement_date: "2026-10-16", expiration: "5 days" })).toEqual({ date: "2026-10-21", days: 5 })
+    expect(resolveExpiration({ agreement_date: "2026-10-16", expiration: "2026-10-24" })).toEqual({ date: "2026-10-24", days: 8 })
+    expect(blankFields().expiration).toBeNull()
+  })
+
+  it("flows from the model (a day name already converted to a date) and from the form", () => {
+    const now = new Date("2026-10-16T18:00:00Z")
+    expect(normalizeModelOffer({ expiration: "2026-10-23" }, { now }).fields.expiration).toBe("2026-10-23")
+    expect(normalizeModelOffer({ expiration: "5 days" }, { now }).fields.expiration).toBe("5 days")
+    expect(normalizeModelOffer({ expiration: null }, { now }).fields.expiration).toBeNull()
+    const odd = normalizeModelOffer({ expiration: "whenever" }, { now })
+    expect(odd.fields.expiration).toBeNull()
+    expect(odd.unclear.some((u) => u.includes("offer expiration"))).toBe(true)
+    const form = fieldsFromInput({ agreement_date: "2026-11-02", expiration: "10/24/2026" }, { now })
+    expect(form.unclear[0]).toMatch(/not after the agreement date/)
+    expect(form.fields.expiration).toBeNull()
+    expect(fieldsFromInput({ agreement_date: "2026-11-02", expiration: "4" }, { now }).fields.expiration).toBe("4 days")
   })
 })
 
@@ -239,11 +313,18 @@ describe("fieldsFromInput — the Mini App form", () => {
 })
 
 describe("pdfFieldValues", () => {
-  it("renders the 13 template fields; seller_date blank, governing_state California", () => {
+  it("renders the 15 template fields; seller_date blank, governing_state California, expiration resolved", () => {
     const v = pdfFieldValues(full())
-    expect(Object.keys(v)).toHaveLength(13)
+    expect(Object.keys(v)).toHaveLength(15)
     expect(v.agreement_date).toBe("10/16/2026")
     expect(v.buyer_date).toBe("10/16/2026")
+    expect(v.expiration_date).toBe("10/19/2026") // 3 calendar days after the agreement date
+    expect(v.expiration_days).toBe("3")
+    const e = pdfFieldValues(full({ expiration: "2026-10-24" }))
+    expect(e.expiration_date).toBe("10/24/2026")
+    expect(e.expiration_days).toBe("8")
+    expect(pdfFieldValues(full({ expiration: "5 days" })).expiration_date).toBe("10/21/2026")
+    expect(v).not.toHaveProperty("addendum_attached") // e-sign's box, left blank by the offer bot
     expect(v.seller_date).toBe("")
     expect(v.governing_state).toBe("California")
     expect(v.purchase_price).toBe("1,200,000.00")
@@ -274,7 +355,8 @@ describe("fillOfferPdf — pdf-lib fixture", () => {
     const out = await fillOfferPdf(template, full({ special_stipulations: ["Seller may leave the furniture.", "Buyer may close in 14 days."] }))
     expect(out.filled.sort()).toEqual(["seller_name", "special_stipulations"])
     expect(out.absent).toContain("purchase_price")
-    expect(out.absent).toHaveLength(11)
+    expect(out.absent).toContain("expiration_date")
+    expect(out.absent).toHaveLength(13)
 
     const reloaded = await PDFDocument.load(out.bytes)
     const form = reloaded.getForm()

@@ -1,8 +1,10 @@
 import { PDFBool, PDFDocument, PDFName, StandardFonts } from "pdf-lib"
 import { SONNET, completeText, extractJsonObject } from "@/lib/llm"
 import { formatMoney, formatPhone, parseMoney } from "@/lib/offerMoney"
+import { DEFAULT_EXPIRATION_DAYS, normalizeExpiration, resolveExpiration } from "@/lib/offerExpiration"
 
 export { formatMoney, formatPhone, parseMoney }
+export { DEFAULT_EXPIRATION_DAYS, addDays, daysBetween, normalizeExpiration, parseExpirationDate, parseExpirationDays, resolveExpiration } from "@/lib/offerExpiration"
 
 // Offer bot — purchase & sale agreement fill (briefs/OFFER_BOT.md, 2026-10-15).
 //
@@ -32,6 +34,8 @@ export interface OfferFields {
   special_stipulations: string[]
   /** YYYY-MM-DD */
   agreement_date: string
+  /** term 4: "N days" | "YYYY-MM-DD" | null (= DEFAULT_EXPIRATION_DAYS after agreement_date); resolveExpiration() gives the date + days */
+  expiration: string | null
   seller_signer_name: string | null
   seller_tel: string | null
   seller_email: string | null
@@ -49,6 +53,7 @@ export const FIELD_LABELS: Record<keyof OfferFields, string> = {
   closing_days: "closing days",
   special_stipulations: "special stipulations",
   agreement_date: "agreement date",
+  expiration: "offer expiration",
   seller_signer_name: "seller signer name",
   seller_tel: "seller phone",
   seller_email: "seller email",
@@ -64,6 +69,8 @@ export interface ModelOffer {
   closing_days: number | null
   special_stipulations: string[]
   agreement_date: string | null
+  /** "YYYY-MM-DD" for a date or day name, "N days" for a count, null if not stated */
+  expiration: string | null
   seller_signer_name: string | null
   seller_tel: string | null
   seller_email: string | null
@@ -122,6 +129,7 @@ export function blankFields(now: Date = new Date()): OfferFields {
     closing_days: DEFAULT_CLOSING_DAYS,
     special_stipulations: [],
     agreement_date: todayPT(now),
+    expiration: null,
     seller_signer_name: null,
     seller_tel: null,
     seller_email: null,
@@ -175,6 +183,8 @@ export function normalizeModelOffer(
     return n
   }
 
+  const expiration = normalizeExpiration(r.expiration, agreementDate)
+  if (expiration.problem && !unclear.some((u) => u.toLowerCase().includes("expiration"))) unclear.push(expiration.problem)
   const fields: OfferFields = {
     seller_name: sellerName,
     property_address: str(r.property_address),
@@ -184,6 +194,7 @@ export function normalizeModelOffer(
     closing_days: normalizeClosingDays(r.closing_days),
     special_stipulations: stringList(r.special_stipulations),
     agreement_date: agreementDate,
+    expiration: expiration.value,
     seller_signer_name: str(r.seller_signer_name) ?? sellerName,
     seller_tel: formatPhone(str(r.seller_tel)),
     seller_email: str(r.seller_email),
@@ -219,6 +230,9 @@ export function fieldsFromInput(
     return n
   }
   const sellerName = str(input.seller_name)
+  const agreementDate = isIsoDate(input.agreement_date) ? input.agreement_date : todayPT(now)
+  const expiration = normalizeExpiration(input.expiration, agreementDate)
+  if (expiration.problem) unclear.push(expiration.problem)
   const fields: OfferFields = {
     seller_name: sellerName,
     property_address: str(input.property_address),
@@ -227,7 +241,8 @@ export function fieldsFromInput(
     earnest_money: money("earnest_money"),
     closing_days: normalizeClosingDays(input.closing_days),
     special_stipulations: stringList(input.special_stipulations),
-    agreement_date: isIsoDate(input.agreement_date) ? input.agreement_date : todayPT(now),
+    agreement_date: agreementDate,
+    expiration: expiration.value,
     seller_signer_name: str(input.seller_signer_name) ?? sellerName,
     seller_tel: formatPhone(str(input.seller_tel)),
     seller_email: str(input.seller_email),
@@ -280,6 +295,7 @@ const JSON_SHAPE = `{
   "closing_days": integer | null,
   "special_stipulations": string[],
   "agreement_date": "YYYY-MM-DD" | null,
+  "expiration": "YYYY-MM-DD" | "N days" | null,
   "seller_signer_name": string | null,
   "seller_tel": string | null,
   "seller_email": string | null,
@@ -297,6 +313,7 @@ Field rules:
 - closing_days: an integer number of days. If Ryan gives a closing date instead, convert to days from the agreement date. null if not stated.
 - special_stipulations: one entry per term Ryan stated beyond price, deposit and closing. Rewrite each ONLY for clarity, as a short, plain contract sentence that says exactly what he said. Never add a term, condition, contingency, credit, deadline, or detail he did not state. Nothing stated → [].
 - agreement_date: YYYY-MM-DD only if Ryan names a date for the agreement; null otherwise (code defaults to today).
+- expiration: when the offer expires (term 4). A number of days ("good for 5 days", "5 day expiration") → "5 days" exactly as a count, do not convert it to a date. A date or a day name ("expires Friday", "by end of day 10/24") → that date as YYYY-MM-DD, resolved from today's date above (the next such weekday). null if not stated (code defaults to ${DEFAULT_EXPIRATION_DAYS} calendar days after the agreement date).
 - seller_signer_name: only if Ryan names a different signer than the seller; otherwise null.
 - seller_tel / seller_email: as given, null if not given.
 - unclear: one short question per thing you could not resolve from his words (an ambiguous number, two candidate sellers, a term you could not understand). Name the field. Empty when nothing is unclear.
@@ -345,6 +362,7 @@ export function fieldsToModelOffer(fields: OfferFields, unclear: string[]): Mode
     closing_days: fields.closing_days,
     special_stipulations: [...fields.special_stipulations],
     agreement_date: fields.agreement_date,
+    expiration: fields.expiration,
     seller_signer_name: fields.seller_signer_name === fields.seller_name ? null : fields.seller_signer_name,
     seller_tel: fields.seller_tel,
     seller_email: fields.seller_email,
@@ -403,8 +421,10 @@ export function finishParse(raw: Record<string, unknown>, sourceText: string, no
 
 // ------------------------------------------------------------ PDF fill
 
-/** The 13 template fields → their string values. seller_date stays blank. */
+/** The 15 template fields → their string values. seller_date stays blank; the
+ *  addendum box (addendum_attached / addendum_names) is e-sign's, left alone. */
 export function pdfFieldValues(fields: OfferFields): Record<string, string> {
+  const expiration = resolveExpiration(fields)
   return {
     agreement_date: formatDateMMDDYYYY(fields.agreement_date),
     seller_name: fields.seller_name ?? "",
@@ -412,6 +432,8 @@ export function pdfFieldValues(fields: OfferFields): Record<string, string> {
     purchase_price: fields.purchase_price === null ? "" : formatMoney(fields.purchase_price),
     earnest_money: fields.earnest_money === null ? "" : formatMoney(fields.earnest_money),
     closing_days: String(fields.closing_days),
+    expiration_date: formatDateMMDDYYYY(expiration.date),
+    expiration_days: String(expiration.days),
     special_stipulations: fields.special_stipulations.join("\n"),
     governing_state: GOVERNING_STATE,
     seller_signer_name: fields.seller_signer_name ?? fields.seller_name ?? "",

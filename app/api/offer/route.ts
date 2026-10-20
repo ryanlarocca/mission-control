@@ -56,6 +56,7 @@ function draftForForm(draft: OfferDraft | null) {
       earnest_money: f.earnest_money === null ? "" : formatMoney(f.earnest_money),
       closing_days: String(f.closing_days),
       agreement_date: f.agreement_date,
+      expiration: f.expiration ?? "",
       seller_signer_name: f.seller_signer_name ?? "",
       seller_tel: f.seller_tel ?? "",
       seller_email: f.seller_email ?? "",

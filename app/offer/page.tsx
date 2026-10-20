@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react"
 import Script from "next/script"
 import { formatMoney, parseMoney } from "@/lib/offerMoney"
+import { DEFAULT_EXPIRATION_DAYS, expirationMMDDYYYY, normalizeExpiration, resolveExpiration } from "@/lib/offerExpiration"
 
 // Offer bot Mini App (briefs/OFFER_BOT.md): the form Ryan taps into from
 // the review card's 📝 button (or from `/offer` with no terms). Reads
@@ -18,6 +19,8 @@ type FormFields = {
   earnest_money: string
   closing_days: string
   agreement_date: string
+  /** "N days" or YYYY-MM-DD; empty = the default */
+  expiration: string
   seller_signer_name: string
   seller_tel: string
   seller_email: string
@@ -52,6 +55,7 @@ const EMPTY: FormFields = {
   earnest_money: "",
   closing_days: "45",
   agreement_date: "",
+  expiration: "",
   seller_signer_name: "",
   seller_tel: "",
   seller_email: "",
@@ -67,6 +71,7 @@ export default function OfferFormPage() {
   const [notice, setNotice] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [moneyHint, setMoneyHint] = useState<{ purchase_price?: string; earnest_money?: string }>({})
+  const [expirationHint, setExpirationHint] = useState<string | null>(null)
   const [result, setResult] = useState<{ driveUrl: string | null; drivePath: string; filename: string } | null>(null)
   const webApp = useRef<TelegramWebApp | null>(null)
   const booted = useRef(false)
@@ -133,6 +138,19 @@ export default function OfferFormPage() {
     }
     setMoneyHint((h) => ({ ...h, [k]: undefined }))
     setFields((f) => ({ ...f, [k]: formatMoney(n) }))
+  }
+
+  /** Normalise "5" / "5 days" / "10/24/2026" and show the resolved date; bad input is flagged, not sent. */
+  const blurExpiration = () => {
+    const agreementDate = /^\d{4}-\d{2}-\d{2}$/.test(fields.agreement_date) ? fields.agreement_date : new Date().toISOString().slice(0, 10)
+    const n = normalizeExpiration(fields.expiration, agreementDate)
+    if (n.problem) {
+      setExpirationHint(`⚠️ ${n.problem}`)
+      return
+    }
+    const r = resolveExpiration({ agreement_date: agreementDate, expiration: n.value })
+    setFields((f) => ({ ...f, expiration: n.value ?? "" }))
+    setExpirationHint(`${expirationMMDDYYYY(r.date)} · ${r.days} day${r.days === 1 ? "" : "s"} after the agreement date${n.value ? "" : " (default)"}`)
   }
 
   const post = async (action: "save" | "generate" | "cancel") => {
@@ -255,6 +273,11 @@ export default function OfferFormPage() {
                 {label("Agreement date")}
                 <input className={INPUT} type="date" value={fields.agreement_date} onChange={set("agreement_date")} />
               </div>
+            </div>
+            <div>
+              {label("Offer expires (term 4)")}
+              <input className={INPUT} value={fields.expiration} onChange={set("expiration")} onBlur={blurExpiration} autoComplete="off" placeholder={`${DEFAULT_EXPIRATION_DAYS} days (default) or a date like 10/24/2026`} />
+              {expirationHint ? <p className={`text-xs mt-1 ${expirationHint.startsWith("⚠️") ? "text-red-400" : "text-zinc-400"}`}>{expirationHint}</p> : null}
             </div>
             <div>
               {label("Seller signer name")}
