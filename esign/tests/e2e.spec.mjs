@@ -1,7 +1,10 @@
 // End-to-end: boots a dry server (no Google / Telegram / sidecar) on a free
 // port with a temp data dir, then drives the whole flow on iPhone emulation:
 // admin upload → two sellers (typed + drawn) → buyer invited only after both
-// → completion → final.pdf → verify page.
+// → completion → final.pdf → verify page. Along the way: the interim build
+// (later signers review the document with the earlier signatures on it) and
+// the template's addendum box (ticked + names when a signer is on the
+// Signature Addendum).
 //
 //   cd esign && npm run test:e2e        (node --test tests/e2e.spec.mjs)
 //
@@ -14,6 +17,7 @@ import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
 import crypto from "node:crypto"
+import { execFileSync } from "node:child_process"
 import { fileURLToPath } from "node:url"
 import { chromium, devices } from "playwright"
 
@@ -32,6 +36,32 @@ const waitFor = async (fn, what, ms = 15000) => {
   const t0 = Date.now()
   while (Date.now() - t0 < ms) { const v = fn(); if (v) return v; await new Promise((r) => setTimeout(r, 100)) }
   throw new Error(`timed out waiting for ${what}`)
+}
+const sha = (bytes) => crypto.createHash("sha256").update(bytes).digest("hex")
+const envDir = () => path.join(dataDir, "envelopes", envelopeId)
+const pdfText = (file) => execFileSync("pdftotext", ["-layout", file, "-"], { encoding: "utf8" })
+/** Dark pixels inside a PDF-point rectangle of a rendered page (pdftoppm at `dpi`), counted in the browser. */
+async function darkPixels(pdfFile, pageNo, rect, dpi = 100) {
+  const prefix = path.join(dataDir, `px-${crypto.randomBytes(3).toString("hex")}`)
+  execFileSync("pdftoppm", ["-r", String(dpi), "-f", String(pageNo), "-l", String(pageNo), "-png", pdfFile, prefix])
+  const png = fs.readdirSync(dataDir).find((f) => f.startsWith(path.basename(prefix)) && f.endsWith(".png"))
+  const p = await ctx.newPage()
+  await p.goto(`file://${path.join(dataDir, png)}`)
+  const k = dpi / 72
+  const n = await p.evaluate(([x, y, w, h]) => new Promise((res) => {
+    const img = document.querySelector("img")
+    const go = () => {
+      const c = document.createElement("canvas"); c.width = img.naturalWidth; c.height = img.naturalHeight
+      const g = c.getContext("2d"); g.drawImage(img, 0, 0)
+      const d = g.getImageData(Math.round(x), Math.round(y), Math.round(w), Math.round(h)).data
+      let dark = 0
+      for (let i = 0; i < d.length; i += 4) if (d[i] + d[i + 1] + d[i + 2] < 300) dark++
+      res(dark)
+    }
+    if (img.complete) go(); else img.onload = go
+  }), [rect.x * k, (792 - rect.y - rect.h) * k, rect.w * k, rect.h * k])
+  await p.close()
+  return n
 }
 
 before(async () => {
@@ -61,7 +91,8 @@ after(async () => {
   if (dataDir) fs.rmSync(dataDir, { recursive: true, force: true })
 })
 
-let envelopeId, sellerLinks, buyerLink
+let envelopeId, sellerLinks, buyerLink, page2AtCreation
+const CHECKBOX = { x: 54, y: 124, w: 10, h: 10 } // addendum_attached, PDF points (esign/template/build_template.py)
 
 test("static assets are content-hashed and cached immutably only when the hash matches", async () => {
   const html = await (await fetch(`${base}/admin/login`)).text()
@@ -106,6 +137,27 @@ test("admin creates a request by uploading the template with three signers", asy
   assert.equal((await page.evaluate(() => document.documentElement.scrollWidth)), 390, "no horizontal scroll on the admin page")
 })
 
+test("original.pdf is the uploaded file byte for byte, and the interim build already carries the addendum box", async () => {
+  const templateSha = sha(fs.readFileSync(TEMPLATE_PDF))
+  assert.equal(sha(fs.readFileSync(path.join(envDir(), "original.pdf"))), templateSha, "original.pdf == the sent file")
+  const served = await page.request.get(`${base}/admin/e/${envelopeId}/original.pdf`)
+  assert.equal(sha(await served.body()), templateSha, "the admin's Original PDF download is the sent file")
+  assert.match(await page.locator("main").innerText(), new RegExp(`Original SHA-256: ${templateSha}`))
+  // Harold signs on the addendum, so the box on page 2 is ticked and the addendum page exists before anyone has signed.
+  const interim = path.join(envDir(), "interim.pdf")
+  assert.ok(fs.existsSync(interim), "interim.pdf built at creation (envelope has an addendum signer)")
+  const text = pdfText(interim)
+  assert.match(text, /Names: Harold Thompson \(Seller\)/)
+  assert.match(text, /SIGNATURE ADDENDUM[\s\S]*Referenced by the checked box on page 2 of the Agreement[\s\S]*Harold Thompson/)
+  assert.doesNotMatch(text, /e-signed/, "nobody has signed yet")
+  assert.ok(await darkPixels(interim, 2, CHECKBOX) > await darkPixels(TEMPLATE_PDF, 2, CHECKBOX) + 20, "the checkbox is ticked")
+  assert.ok(fs.existsSync(path.join(envDir(), "pages", "page-3.png")), "the addendum page is rendered for review")
+  assert.match(await page.locator("main").innerText(), /Signed so far/, "admin detail links the interim file")
+  const i = await page.request.get(`${base}/admin/e/${envelopeId}/interim.pdf`)
+  assert.equal(sha(await i.body()), sha(fs.readFileSync(interim)))
+  page2AtCreation = sha(fs.readFileSync(path.join(envDir(), "pages", "page-2.png")))
+})
+
 async function consent(link) {
   await page.goto(link)
   assert.match(await page.locator("h1").innerText(), /sent you a document to sign/)
@@ -122,9 +174,11 @@ test("seller 1 consents, then types a signature in a non-default style on the se
   await tab.scrollIntoViewIfNeeded()
   const t = await tab.boundingBox(), p2 = await page.locator(".pagewrap").nth(1).boundingBox()
   assert.ok(t.height >= 44, `tab is a comfortable tap target (${t.height}px)`)
-  const lineY = p2.y + p2.height * ((792 - 201) / 792) // TEMPLATE.seller.lineY
+  const lineY = p2.y + p2.height * ((792 - 200.8) / 792) // TEMPLATE.seller.lineY
   assert.ok(Math.abs(t.y + t.height - lineY) <= 2.5, `tab bottom (${t.y + t.height}) sits on the seller line (${lineY})`)
   assert.ok(Math.abs(t.x - (p2.x + p2.width * (309 / 612))) <= 2.5, "tab starts at the line's left edge")
+  assert.equal(await page.locator(".pagewrap").count(), 3, "review shows the 2 agreement pages + the addendum page")
+  assert.match(await page.locator("main").innerText(), /Read all 3 pages/)
   assert.ok(await page.locator("#finish").isDisabled(), "Finish is disabled before signing")
   await tab.click()
   await page.fill("#typed_name", "Margaret")
@@ -146,6 +200,20 @@ test("seller 1 consents, then types a signature in a non-default style on the se
   assert.match(await page.locator("h1").innerText(), /Thank you, Margaret/)
   assert.match(await page.locator("main").innerText(), /Once everyone has signed/)
   assert.equal(links().length, 2, "buyer is not invited while a seller is still outstanding")
+})
+
+test("after the first signature the interim view carries it: new page image, document.pdf with the signature, original untouched", async () => {
+  const interim = path.join(envDir(), "interim.pdf")
+  const text = pdfText(interim)
+  assert.match(text, new RegExp(`e-signed .* ${envelopeId.slice(0, 8)}`), "Margaret's stamp is on the agreement")
+  assert.match(text, /Dated:\s+\d\d\/\d\d\/\d{4}\s+Seller:/, "seller_date filled next to her line")
+  assert.notEqual(sha(fs.readFileSync(path.join(envDir(), "pages", "page-2.png"))), page2AtCreation, "page-2.png re-rendered from the interim")
+  assert.equal(sha(fs.readFileSync(path.join(envDir(), "original.pdf"))), sha(fs.readFileSync(TEMPLATE_PDF)), "original.pdf unchanged")
+  assert.equal(fs.statSync(path.join(envDir(), "original.pdf")).mode & 0o222, 0, "original.pdf still read-only")
+  // Harold (same tier, link already out) now opens the signed-so-far document.
+  const res = await page.request.get(`${sellerLinks[1]}/document.pdf`)
+  assert.equal(res.status(), 200)
+  assert.equal(sha(await res.body()), sha(fs.readFileSync(interim)), "document.pdf serves the interim file")
 })
 
 test("seller 2 signs the addendum card with a drawn signature", async () => {
@@ -179,12 +247,27 @@ test("seller 2 signs the addendum card with a drawn signature", async () => {
   buyerLink = (await waitFor(() => { const l = links(); return l.length === 3 ? l : null }, "buyer invitation after both sellers signed"))[2]
 })
 
-test("buyer signs last and the envelope completes with a downloadable final.pdf", async () => {
+test("second tier: the buyer reviews the document with both sellers' signatures on it", async () => {
   await consent(buyerLink)
+  assert.equal(await page.locator(".pagewrap").count(), 3)
+  const res = await page.request.get(`${buyerLink}/document.pdf`)
+  const bytes = await res.body()
+  assert.equal(sha(bytes), sha(fs.readFileSync(path.join(envDir(), "interim.pdf"))), "the buyer's PDF link is the interim file")
+  assert.match(bytes.toString("latin1"), /\/Subtype \/Image/, "Harold's drawn signature is embedded as an image")
+  const text = pdfText(path.join(envDir(), "interim.pdf"))
+  assert.equal((text.match(/e-signed/g) || []).length, 2, "two signatures so far (Margaret on the line, Harold on the addendum)")
+  assert.match(text, /Names: Harold Thompson \(Seller\)/)
+  assert.ok((await page.request.get(`${buyerLink}/pages/3.png`)).ok(), "addendum page image is served")
+  assert.equal((await page.request.get(`${buyerLink}/pages/4.png`)).status(), 404)
+})
+
+test("buyer signs last and the envelope completes with a downloadable final.pdf", async () => {
+  await page.goto(buyerLink)
+  await page.waitForLoadState("networkidle")
   const tab = page.locator("#signtab")
   await tab.scrollIntoViewIfNeeded()
   const t = await tab.boundingBox(), p2 = await page.locator(".pagewrap").nth(1).boundingBox()
-  const lineY = p2.y + p2.height * ((792 - 280) / 792) // TEMPLATE.buyer.lineY
+  const lineY = p2.y + p2.height * ((792 - 280.2) / 792) // TEMPLATE.buyer.lineY
   assert.ok(Math.abs(t.y + t.height - lineY) <= 2.5, "buyer tab sits on the buyer line")
   await tab.click()
   await page.fill("#typed_name", "Ryan LaRocca")
@@ -208,6 +291,19 @@ test("buyer signs last and the envelope completes with a downloadable final.pdf"
   assert.equal(crypto.createHash("sha256").update(bytes).digest("hex"), crypto.createHash("sha256").update(fs.readFileSync(finalPath)).digest("hex"))
   assert.equal(fs.statSync(finalPath).mode & 0o222, 0, "final.pdf is read-only")
   assert.equal(stdout.match(/subject="Completed: Purchase Agreement/g).length, 3, "one completion email per email signer + Ryan")
+})
+
+test("final.pdf: addendum box ticked with the addendum signer's name, three signatures, original fingerprint in the certificate", async () => {
+  const signedPath = path.join(envDir(), "signed.pdf"), finalPath = path.join(envDir(), "final.pdf")
+  const text = pdfText(finalPath)
+  assert.match(text, /Additional Seller\(s\) \/ Buyer\(s\) sign on the attached Signature Addendum/)
+  assert.match(text, /Names: Harold Thompson \(Seller\)/)
+  assert.match(text, /Referenced by the checked box on page 2 of the Agreement/)
+  assert.equal((text.match(/e-signed/g) || []).length, 3)
+  assert.match(text, /Pages \(original\)\s+2/, "the certificate quotes the original page count, not the interim's 3")
+  assert.match(text, new RegExp(`Original document\\s+${sha(fs.readFileSync(TEMPLATE_PDF))}`), "certificate's original fingerprint is the sent file's")
+  assert.ok(await darkPixels(signedPath, 2, CHECKBOX) > await darkPixels(TEMPLATE_PDF, 2, CHECKBOX) + 20, "the checkbox is ticked on the signed copy")
+  assert.equal((await page.request.get(`${buyerLink}/document.pdf`)).headers()["content-disposition"].includes("SIGNED"), true, "document.pdf is the final once completed")
 })
 
 test("verify page shows status, signers and the fingerprint of the served file", async () => {
