@@ -1,6 +1,6 @@
 # Lead intake hardening — Sonnet 5 everywhere, triage validator, email dedupe, mail-match re-link
 
-> **Status:** SPEC 2026-10-21 — cloud build requested by Ryan after the NOO Q4 pre-wire audit.
+> **Status:** BUILT + DEPLOYED 2026-10-21 — cloud session `session_01ESxJ7UoJ17cnH1D9dB1rL1` (~24 min on the credit) → branch `cloud/triage-sonnet-dedupe-matchlink` → bridge added the Mac mini scripts (§1 repo-wide) → merged to `main` as `4173ca9`, migration applied to prod, deployed 16:41 PT, verified by prod probes (email dedupe + triage + candidates, recording replay, §6 reset). tsc clean, 608/608. Narrative: `../lead-pipeline/CHANGELOG.md` 2026-10-21.
 > **Owner memo:** `../lead-pipeline/PROJECT_MEMO.md`. Background: `BRIEF_NOO_Q4_AB_PLUMBING_2026-10-12.md`,
 > `BRIEF_DM_ABSENTEE_Q4_2026_2026-10-08.md`.
 > **Branch:** `cloud/triage-sonnet-dedupe-matchlink`. No PR, no merge, no deploy — Ryan's bridge merges, applies the
