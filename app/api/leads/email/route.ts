@@ -10,7 +10,11 @@ export const maxDuration = 60
 import { CAMPAIGN_INBOXES, processCampaignInbox } from "@/lib/campaignInbox"
 import {
   EMAIL_CAMPAIGN_MAP,
+  RESET_TO_NEW_SUFFIX,
+  clusterHasDnc,
   dedupeClusterStamps,
+  isSourceOverrideLabel,
+  resolveIntakeStatus,
   getEmailCampaign,
   addressesForMailbox,
   resolveRecipientCampaign,
@@ -629,6 +633,16 @@ async function handleAppsScript(payload: AppsScriptPayload): Promise<NextRespons
     sb, phone, threadId: null, senderEmail,
   })
   const inheritedStatus = cluster?.status ?? "new"
+  // §6 (2026-10-21): mail to a NOO Q4 alias (source label is a
+  // SOURCE_OVERRIDE label) from a known sender is a new lead — "new",
+  // is_junk false — unless the cluster has a DNC row. Other aliases inherit.
+  const overrideAlias = isSourceOverrideLabel(campaign.source)
+  const intake = resolveIntakeStatus({
+    override: overrideAlias,
+    hasPriorRow: !!cluster,
+    inheritedStatus,
+    clusterDnc: overrideAlias && cluster ? await clusterHasDnc(sb, { caller_phone: phone, email: senderEmail }) : false,
+  })
 
   // Phase 7B: pick the drip campaign by source bucket. google_ads_email_only
   // upgrades to google_ads_form when caller_phone arrives; direct_mail_email
@@ -683,7 +697,9 @@ async function handleAppsScript(payload: AppsScriptPayload): Promise<NextRespons
     suggested_reply: triage?.suggestedReply || null,
     moment: triage?.moment ?? null,
     moment_at: triage?.moment ? new Date().toISOString() : null,
-    status: triage?.is_dead ? "dead" : inheritedStatus,
+    // Triage's dead verdict (hostile / wrong person) still wins over the
+    // §6 reset — unchanged.
+    status: triage?.is_dead ? "dead" : intake.status,
     temperature: triage?.temperature ?? null,
     // /api/follow-ups keys off recommended_followup_date, so these are what
     // let an inbound email reach the worklist at all. Null unless the
@@ -691,7 +707,9 @@ async function handleAppsScript(payload: AppsScriptPayload): Promise<NextRespons
     recommended_followup_date: triage?.recommended_followup_date ?? null,
     followup_reason: triage?.followup_reason ?? null,
     followup_generated_at: triage ? new Date().toISOString() : null,
-    is_junk: isJunkAddr || undefined,
+    // This mail's own junk signal (mobile-home address) wins; otherwise a
+    // §6 reset writes false so the old cluster's junk flag doesn't bury it.
+    is_junk: isJunkAddr ? true : intake.isJunk === false ? false : undefined,
     // Suspected-fake review banner (suggested_status + reason). {} when
     // the lead is clean or is a re-engagement — spreads harmlessly.
     ...(spam ? spamReviewColumns(spam) : {}),
@@ -744,7 +762,7 @@ async function handleAppsScript(payload: AppsScriptPayload): Promise<NextRespons
   }
 
   const lines = [
-    "📧 New email lead",
+    `📧 New email lead${intake.reset ? RESET_TO_NEW_SUFFIX : ""}`,
     `[${formatCampaignLabel(campaign.source)}]`,
     `👤 ${name || "(no name)"}`,
     `📧 ${senderEmail}`,
@@ -911,6 +929,17 @@ async function processSingleMessage(args: {
     sb, phone, threadId: message.threadId || null, senderEmail,
   })
   const inheritedStatus = cluster?.status ?? "new"
+  // §6 (2026-10-21): see handleAppsScript — a NOO Q4 alias resets a known
+  // sender to New unless the cluster is DNC.
+  const overrideAlias = isSourceOverrideLabel(campaign.source)
+  const intake = resolveIntakeStatus({
+    override: overrideAlias,
+    hasPriorRow: !!cluster,
+    inheritedStatus,
+    clusterDnc: overrideAlias && cluster
+      ? await clusterHasDnc(sb, { caller_phone: phone, email: senderEmail, gmail_thread_id: message.threadId || null })
+      : false,
+  })
 
   // Phase 7B: same drip-campaign mapping as handleAppsScript above.
   const freshDripCampaignType = campaign.source_type === "google_ads"
@@ -957,7 +986,9 @@ async function processSingleMessage(args: {
     suggested_reply: triage?.suggestedReply || null,
     moment: triage?.moment ?? null,
     moment_at: triage?.moment ? new Date().toISOString() : null,
-    status: triage?.is_dead ? "dead" : inheritedStatus,
+    // Triage's dead verdict (hostile / wrong person) still wins over the
+    // §6 reset — unchanged.
+    status: triage?.is_dead ? "dead" : intake.status,
     temperature: triage?.temperature ?? null,
     // /api/follow-ups keys off recommended_followup_date, so these are what
     // let an inbound email reach the worklist at all. Null unless the
@@ -965,7 +996,9 @@ async function processSingleMessage(args: {
     recommended_followup_date: triage?.recommended_followup_date ?? null,
     followup_reason: triage?.followup_reason ?? null,
     followup_generated_at: triage ? new Date().toISOString() : null,
-    is_junk: isJunkAddr || undefined,
+    // This mail's own junk signal (mobile-home address) wins; otherwise a
+    // §6 reset writes false so the old cluster's junk flag doesn't bury it.
+    is_junk: isJunkAddr ? true : intake.isJunk === false ? false : undefined,
     // Suspected-fake review banner — {} when clean or a re-engagement.
     ...(spam ? spamReviewColumns(spam) : {}),
     // Persist the Gmail threadId so the Leads-tab card can pull the full
@@ -1025,7 +1058,7 @@ async function processSingleMessage(args: {
   }
 
   const lines = [
-    "📧 New email lead",
+    `📧 New email lead${intake.reset ? RESET_TO_NEW_SUFFIX : ""}`,
     `[${formatCampaignLabel(campaign.source)}]`,
     `👤 ${name || "(no name)"}`,
     `📧 ${senderEmail}`,

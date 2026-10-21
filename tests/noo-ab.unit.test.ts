@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest"
 import type { SupabaseClient } from "@supabase/supabase-js"
-import { CAMPAIGN_MAP, EMAIL_CAMPAIGN_MAP, SOURCE_OVERRIDE_NUMBERS, resolveMailbox, resolveRecipientCampaign } from "@/lib/leads"
+import { CAMPAIGN_MAP, EMAIL_CAMPAIGN_MAP, RESET_TO_NEW_SUFFIX, SOURCE_OVERRIDE_LABELS, SOURCE_OVERRIDE_NUMBERS, clusterHasDnc, isSourceOverrideLabel, resolveIntakeStatus, resolveMailbox, resolveRecipientCampaign } from "@/lib/leads"
 import { autoLinkMailRecord, isPieceMismatch, mailSearchCampaignId } from "@/lib/mailMatch"
 
 // NOO Q4 2026 A/B piece plumbing (briefs/BRIEF_NOO_Q4_AB_PLUMBING_2026-10-12.md).
@@ -181,5 +181,86 @@ describe("autoLinkMailRecord on an A/B child campaign", () => {
     await autoLinkMailRecord(sb, LEAD)
     expect(log.some(c => c.table === "campaigns")).toBe(false)
     for (const q of log.filter(c => c.table === "mail_records")) expect(eqValue(q, "campaign_id")).toBeUndefined()
+  })
+})
+
+// §6 (BRIEF_TRIAGE_SONNET_DEDUPE_MATCHLINK_2026-10-21, added after Ryan's
+// 10/21 live test): a response on a NOO Q4 line/alias comes back as New.
+// +19492438530 called 418-6294, had called the MFM-A line in May and that
+// cluster was dead + junk, so the new row inherited "dead" and the card was
+// buried. Ryan's rule: a response to the new letter is a new lead. DNC wins.
+describe("a response on a NOO Q4 line/alias comes back as New", () => {
+  it("the override labels are exactly the CAMPAIGN_MAP values of the override lines", () => {
+    expect(Array.from(SOURCE_OVERRIDE_LABELS).sort()).toEqual(["NOO-Q4-2026-A", "NOO-Q4-2026-B"])
+    expect(isSourceOverrideLabel(EMAIL_CAMPAIGN_MAP["ryansvx@lrghomes.com"].source)).toBe(true)
+    expect(isSourceOverrideLabel(EMAIL_CAMPAIGN_MAP["ryansvy@lrghomes.com"].source)).toBe(true)
+    // The hub's bare parent label, Legacy DM and MFM are not overrides.
+    expect(isSourceOverrideLabel(EMAIL_CAMPAIGN_MAP[HUB].source)).toBe(false)
+    expect(isSourceOverrideLabel("Legacy DM")).toBe(false)
+    expect(isSourceOverrideLabel("MFM-A")).toBe(false)
+    expect(isSourceOverrideLabel(null)).toBe(false)
+  })
+
+  it("override line + prior dead cluster → new, is_junk false, alert suffix", () => {
+    const d = resolveIntakeStatus({ override: SOURCE_OVERRIDE_NUMBERS.has(LINE_A), hasPriorRow: true, inheritedStatus: "dead", clusterDnc: false })
+    expect(d).toEqual({ status: "new", isJunk: false, reset: true })
+    expect(RESET_TO_NEW_SUFFIX).toBe(" (returning caller, reset to New)")
+  })
+
+  it("override line + DNC anywhere in the cluster → inherited, no reset, no alert change", () => {
+    const d = resolveIntakeStatus({ override: true, hasPriorRow: true, inheritedStatus: "dead", clusterDnc: true })
+    expect(d).toEqual({ status: "dead", isJunk: undefined, reset: false })
+  })
+
+  it("legacy line + prior dead cluster → inherited (untouched)", () => {
+    const legacy = "+14083573440"
+    expect(SOURCE_OVERRIDE_NUMBERS.has(legacy)).toBe(false)
+    const d = resolveIntakeStatus({ override: SOURCE_OVERRIDE_NUMBERS.has(legacy), hasPriorRow: true, inheritedStatus: "dead", clusterDnc: false })
+    expect(d).toEqual({ status: "dead", isJunk: undefined, reset: false })
+  })
+
+  it("override alias email (ryansvx@ / ryansvy@) + prior dead cluster → new", () => {
+    for (const alias of ["ryansvx@lrghomes.com", "ryansvy@lrghomes.com"]) {
+      const d = resolveIntakeStatus({ override: isSourceOverrideLabel(EMAIL_CAMPAIGN_MAP[alias].source), hasPriorRow: true, inheritedStatus: "dead", clusterDnc: false })
+      expect(d.status).toBe("new")
+      expect(d.isJunk).toBe(false)
+      expect(d.reset).toBe(true)
+    }
+  })
+
+  it("a brand-new caller on an override line is simply new — no reset, no suffix", () => {
+    const d = resolveIntakeStatus({ override: true, hasPriorRow: false, inheritedStatus: "new", clusterDnc: false })
+    expect(d).toEqual({ status: "new", isJunk: undefined, reset: false })
+  })
+
+  it("a returning caller whose cluster is already New gets no suffix", () => {
+    const d = resolveIntakeStatus({ override: true, hasPriorRow: true, inheritedStatus: "new", clusterDnc: false })
+    expect(d).toEqual({ status: "new", isJunk: false, reset: false })
+  })
+
+  it("clusterHasDnc keys on phone / thread / email and reads any is_dnc row", async () => {
+    const calls: { or: string; dnc: unknown }[] = []
+    const mk = (rows: unknown[]) => {
+      const q: Record<string, unknown> = {}
+      const chain = new Proxy(q, {
+        get(_t, prop) {
+          if (prop === "then") return (res: (v: unknown) => void) => res({ data: rows, error: null })
+          return (...args: unknown[]) => {
+            if (prop === "or") calls.push({ or: String(args[0]), dnc: null })
+            if (prop === "eq") calls[calls.length - 1].dnc = args[1]
+            return chain
+          }
+        },
+      })
+      return { from: () => chain } as unknown as SupabaseClient
+    }
+    expect(await clusterHasDnc(mk([{ id: "x" }]), { caller_phone: "+19492438530" })).toBe(true)
+    expect(calls[0].or).toBe("caller_phone.eq.+19492438530")
+    expect(calls[0].dnc).toBe(true)
+    expect(await clusterHasDnc(mk([]), { caller_phone: "+19492438530", email: "A@B.com", gmail_thread_id: "t1" })).toBe(false)
+    expect(calls[1].or).toBe("caller_phone.eq.+19492438530,gmail_thread_id.eq.t1,email.eq.a@b.com")
+    // Anonymous placeholder phones are never a cluster key.
+    expect(await clusterHasDnc(mk([{ id: "x" }]), { caller_phone: "Anonymous" })).toBe(false)
+    expect(calls).toHaveLength(2)
   })
 })

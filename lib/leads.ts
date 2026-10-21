@@ -79,6 +79,78 @@ export const OFFICE_NUMBERS = new Set(["+14084585442", "+14084930632"])
 // counts for both campaigns. Both A/B lines (418-6294 = A, 418-8450 = B).
 export const SOURCE_OVERRIDE_NUMBERS = new Set(["+14084186294", "+14084188450"])
 
+// The labels those lines carry (their CAMPAIGN_MAP values). An email alias
+// whose config/email-campaigns.json source is one of these labels is an
+// override intake too (ryansvx@ = NOO-Q4-2026-A, ryansvy@ = -B), so the
+// phone and email sides stay in sync by construction — add a number above
+// and its alias follows.
+export const SOURCE_OVERRIDE_LABELS: ReadonlySet<string> = new Set(
+  Array.from(SOURCE_OVERRIDE_NUMBERS).map((n) => CAMPAIGN_MAP[n]).filter((l): l is string => !!l)
+)
+export function isSourceOverrideLabel(source: string | null | undefined): boolean {
+  return !!source && SOURCE_OVERRIDE_LABELS.has(source)
+}
+
+// A response on a NOO Q4 line/alias comes back as New (brief
+// BRIEF_TRIAGE_SONNET_DEDUPE_MATCHLINK_2026-10-21 §6, Ryan's 10/21 live
+// test): +19492438530 called 418-6294, had called the MFM-A line in May and
+// that cluster was dead + junk, so the new row inherited status "dead" and
+// the card was buried under the Dead filter. Ryan's rule: a response to the
+// new letter is a new lead. Scope is ONLY override intakes; legacy lines keep
+// today's inheritance. DNC wins: a cluster with any is_dnc row keeps today's
+// behaviour entirely. Drip-stamp inheritance is untouched by this decision.
+export const RESET_TO_NEW_SUFFIX = " (returning caller, reset to New)"
+
+export interface IntakeStatusInput {
+  /** The dialed line / emailed alias is a SOURCE_OVERRIDE line or label. */
+  override: boolean
+  /** A prior inbound row exists for this caller / sender (the cluster). */
+  hasPriorRow: boolean
+  /** What the cluster's latest inbound row would hand the new row. */
+  inheritedStatus: LeadStatus
+  /** Any row in the cluster has is_dnc = true (see clusterHasDnc). */
+  clusterDnc: boolean
+}
+
+export interface IntakeStatusDecision {
+  status: LeadStatus
+  /** `false` = write is_junk = false on the new row; undefined = leave it alone. */
+  isJunk: false | undefined
+  /** A returning caller was reset to New — append RESET_TO_NEW_SUFFIX to the alert. */
+  reset: boolean
+}
+
+/** Pure: what status / is_junk the new intake row gets. */
+export function resolveIntakeStatus(input: IntakeStatusInput): IntakeStatusDecision {
+  if (!input.override || !input.hasPriorRow || input.clusterDnc) {
+    return { status: input.inheritedStatus, isJunk: undefined, reset: false }
+  }
+  return { status: "new", isJunk: false, reset: input.inheritedStatus !== "new" }
+}
+
+/**
+ * Does any row sharing this cluster key carry is_dnc = true? Same key
+ * cascade as the cluster lookups (phone → gmail thread → email); anonymous
+ * placeholder phones are never a key. False on a query error (the DNC
+ * check must never block an intake).
+ */
+export async function clusterHasDnc(
+  sb: SupabaseClient,
+  keys: { caller_phone?: string | null; email?: string | null; gmail_thread_id?: string | null }
+): Promise<boolean> {
+  const ors: string[] = []
+  if (keys.caller_phone && !isAnonymousCaller(keys.caller_phone)) ors.push(`caller_phone.eq.${keys.caller_phone}`)
+  if (keys.gmail_thread_id) ors.push(`gmail_thread_id.eq.${keys.gmail_thread_id}`)
+  if (keys.email) ors.push(`email.eq.${keys.email.toLowerCase()}`)
+  if (!ors.length) return false
+  const { data, error } = await sb.from("leads").select("id").or(ors.join(",")).eq("is_dnc", true).limit(1)
+  if (error) {
+    console.warn("[intake] cluster DNC check failed:", error.message)
+    return false
+  }
+  return !!data?.length
+}
+
 // Inbound calls/SMS to this number are almost always a lead returning Ryan's
 // outreach, not a fresh intake. The voice + sms webhooks dedup against the
 // existing lead group instead of starting a new drip cycle.

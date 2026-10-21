@@ -3,7 +3,10 @@ import { triggerTelegramDraft } from "@/lib/reply/telegram"
 import {
   OFFICE_NUMBERS,
   OUTBOUND_TWILIO_NUMBER,
+  RESET_TO_NEW_SUFFIX,
   SOURCE_OVERRIDE_NUMBERS,
+  clusterHasDnc,
+  resolveIntakeStatus,
   dedupeClusterStamps,
   getCampaignSource,
   getLeadsClient,
@@ -137,6 +140,9 @@ export async function POST(request: Request) {
     // carries a name yet); the alert falls back to the phone number.
     let leadName: string | null = null
     let newLeadId: string | null = null
+    // §6 (2026-10-21): a returning texter on a NOO Q4 line was reset to New —
+    // read again at the Telegram alert below.
+    let resetToNew = false
     try {
       const sb = getLeadsClient()
 
@@ -227,8 +233,19 @@ export async function POST(request: Request) {
 
       // A text to a SOURCE_OVERRIDE_NUMBERS line (NOO Q4 2026) is a response to
       // that mailer even from a known caller — the new row takes the line's
-      // label; status / drip stamp still inherit from the cluster.
+      // label; the drip stamp still inherits from the cluster. Status: a
+      // response to the new letter is a new lead (§6, 2026-10-21) — "new",
+      // is_junk false, unless any row in the cluster is DNC (DNC wins and
+      // today's inheritance applies). Legacy lines inherit as before. The
+      // STOP path above never reaches here.
       const overrideSource = SOURCE_OVERRIDE_NUMBERS.has(to)
+      const intake = resolveIntakeStatus({
+        override: overrideSource,
+        hasPriorRow: !!existingRow,
+        inheritedStatus,
+        clusterDnc: overrideSource && existingRow ? await clusterHasDnc(sb, { caller_phone: from }) : false,
+      })
+      resetToNew = intake.reset
       const insertRow: Record<string, unknown> = {
         source: overrideSource ? source : existingRow?.source || source,
         source_type: overrideSource
@@ -238,9 +255,11 @@ export async function POST(request: Request) {
         caller_phone: from,
         lead_type: "sms",
         message: bodyText,
-        status: inheritedStatus,
+        status: intake.status,
       }
+      // This text's own junk signal (mobile-home address) still wins.
       if (isJunkAddr) insertRow.is_junk = true
+      else if (intake.isJunk === false) insertRow.is_junk = false
 
       if (!existingRow) {
         if (!isOutboundCallback) {
@@ -343,7 +362,7 @@ export async function POST(request: Request) {
     // The phone stays in the alert regardless — the Telegram reply handler
     // parses it out of this text to know who to SMS back.
     const who = leadName ? `<b>${leadName}</b> — ${from}` : from
-    const smsAlert = [`💬 New lead text — <b>${source}</b> — ${who}\n"${escaped}"`]
+    const smsAlert = [`💬 New lead text — <b>${source}</b> — ${who}${resetToNew ? RESET_TO_NEW_SUFFIX : ""}\n"${escaped}"`]
     // Append the fake-lead warning to the same note — no-op when clean.
     if (spam) smsAlert.push(...spamAlertLines(spam))
     await sendTelegramAlert(smsAlert.join("\n"))

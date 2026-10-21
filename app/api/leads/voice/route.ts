@@ -3,7 +3,10 @@ import {
   FORWARD_TO,
   OFFICE_NUMBERS,
   OUTBOUND_TWILIO_NUMBER,
+  RESET_TO_NEW_SUFFIX,
   SOURCE_OVERRIDE_NUMBERS,
+  clusterHasDnc,
+  resolveIntakeStatus,
   dedupeClusterStamps,
   getCampaignSource,
   getLeadsClient,
@@ -135,6 +138,9 @@ export async function POST(request: Request) {
     // Lead name for the Telegram alert label — resolved inside the try once
     // we have a client; null for an unknown / anonymous caller.
     let leadName: string | null = null
+    // §6 (2026-10-21): a returning caller on a NOO Q4 line was reset to New —
+    // read again at the Telegram alert below.
+    let resetToNew = false
     // AWAIT the insert — must complete before the function exits.
     try {
       const sb = getLeadsClient()
@@ -167,8 +173,18 @@ export async function POST(request: Request) {
 
       // A call to a SOURCE_OVERRIDE_NUMBERS line (NOO Q4 2026) is a response to
       // that mailer even from a known caller — the new row takes the line's
-      // label; status / drip stamp still inherit from the cluster.
+      // label; the drip stamp still inherits from the cluster. Status: a
+      // response to the new letter is a new lead (§6, 2026-10-21) — "new",
+      // is_junk false, unless any row in the cluster is DNC (DNC wins and
+      // today's inheritance applies). Legacy lines inherit as before.
       const overrideSource = SOURCE_OVERRIDE_NUMBERS.has(twilioNumber)
+      const intake = resolveIntakeStatus({
+        override: overrideSource,
+        hasPriorRow: !!existingRow,
+        inheritedStatus,
+        clusterDnc: overrideSource && existingRow ? await clusterHasDnc(sb, { caller_phone: callerPhone }) : false,
+      })
+      resetToNew = intake.reset
       const insertRow: Record<string, unknown> = {
         source: overrideSource ? source : existingRow?.source || source,
         // Office lines are neither a mailer nor an ad — "office" keeps
@@ -180,8 +196,9 @@ export async function POST(request: Request) {
         twilio_number: twilioNumber,
         caller_phone: callerPhone,
         lead_type: "call",
-        status: inheritedStatus,
+        status: intake.status,
       }
+      if (intake.isJunk === false) insertRow.is_junk = false
       if (isAnon) {
         // Junk by default — most blocked-ID calls are spam, and you can't
         // text/call back a withheld number so there's no drip path. If they
@@ -272,7 +289,7 @@ export async function POST(request: Request) {
     }
     // Await so Vercel doesn't kill the in-flight fetch when the response returns.
     const callWho = leadName ? `<b>${leadName}</b> — ${callerPhone}` : callerPhone
-    const callAlert = [`📞 New lead call — <b>${source}</b> — ${callWho}`]
+    const callAlert = [`📞 New lead call — <b>${source}</b> — ${callWho}${resetToNew ? RESET_TO_NEW_SUFFIX : ""}`]
     // Append the fake-lead warning to the same note — no-op when clean.
     if (spam) callAlert.push(...spamAlertLines(spam))
     await sendTelegramAlert(callAlert.join("\n"))
