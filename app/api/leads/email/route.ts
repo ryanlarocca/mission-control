@@ -25,6 +25,7 @@ import {
 } from "@/lib/leads"
 import { scoreLeadSpam, spamAlertLines, spamReviewColumns } from "@/lib/lead-spam"
 import { isBounceEmail, parseBounce } from "@/lib/emailBounce"
+import { appsScriptMessageId, insertEmailLead } from "@/lib/emailDedupe"
 
 // Gmail Push → Pub/Sub → this route. Pub/Sub HTTP push delivers an
 // envelope of the form:
@@ -259,6 +260,8 @@ async function ingestGoogleVoice(args: {
   body: string
   mailbox: string
   threadId: string | null
+  /** Gmail message id (Pub/Sub) or the Apps Script hash — the unique dedupe key. */
+  gmailMessageId: string | null
 }): Promise<{ skipped?: string; leadId?: string }> {
   const { sb, subject, body, mailbox, threadId } = args
   const parsed = parseGoogleVoiceForward(subject, body)
@@ -367,41 +370,46 @@ async function ingestGoogleVoice(args: {
       ? null
       : await triageEmailLead(subject, content, { sender: phone })
 
-  const { data: inserted, error: insertErr } = await sb
-    .from("leads")
-    .insert({
-      lead_type: "email",
-      source_type: "direct_mail",
-      source: "Legacy DM",
-      twilio_number: `email:${mailbox}`,
-      caller_phone: phone,
-      name,
-      email: null,
-      message: messageText,
-      ai_notes: triage?.summary ?? null,
-      // Lets autoLinkMailRecord (called after insert) match the mailed record.
-      property_address: triage?.property_address ?? null,
-      suggested_reply: triage?.suggestedReply || null,
-      moment: triage?.moment ?? null,
-      moment_at: triage?.moment ? new Date().toISOString() : null,
-      status: triage?.is_dead ? "dead" : inheritedStatus,
-      temperature: triage?.temperature ?? null,
-      // /api/follow-ups keys off recommended_followup_date, so these are what
-      // let an inbound email reach the worklist at all. Null unless the
-      // sender's own words justified a date (see triageEmailLead).
-      recommended_followup_date: triage?.recommended_followup_date ?? null,
-      followup_reason: triage?.followup_reason ?? null,
-      followup_generated_at: triage ? new Date().toISOString() : null,
-      gmail_thread_id: threadId,
-      ...dripFields,
-    })
-    .select("id")
-    .single()
-  if (insertErr) {
-    console.error(`[email][gv] Insert failed:`, insertErr)
+  // Atomic dedupe (2026-10-21): the partial unique index on gmail_message_id
+  // rejects the second notification for the same forward; the fuzzy
+  // last-hour check above stays as the second line.
+  const ins = await insertEmailLead(sb, {
+    lead_type: "email",
+    source_type: "direct_mail",
+    source: "Legacy DM",
+    twilio_number: `email:${mailbox}`,
+    caller_phone: phone,
+    name,
+    email: null,
+    message: messageText,
+    gmail_message_id: args.gmailMessageId,
+    ai_notes: triage?.summary ?? null,
+    // Lets autoLinkMailRecord (called after insert) match the mailed record.
+    property_address: triage?.property_address ?? null,
+    suggested_reply: triage?.suggestedReply || null,
+    moment: triage?.moment ?? null,
+    moment_at: triage?.moment ? new Date().toISOString() : null,
+    status: triage?.is_dead ? "dead" : inheritedStatus,
+    temperature: triage?.temperature ?? null,
+    // /api/follow-ups keys off recommended_followup_date, so these are what
+    // let an inbound email reach the worklist at all. Null unless the
+    // sender's own words justified a date (see triageEmailLead).
+    recommended_followup_date: triage?.recommended_followup_date ?? null,
+    followup_reason: triage?.followup_reason ?? null,
+    followup_generated_at: triage ? new Date().toISOString() : null,
+    gmail_thread_id: threadId,
+    ...dripFields,
+  })
+  if (ins.duplicate) {
+    console.log(`[email][gv] duplicate notification for ${args.gmailMessageId} — ${parsed.kind} from ${phone}`)
+    return { skipped: "duplicate" }
+  }
+  if (ins.error) {
+    console.error(`[email][gv] Insert failed:`, ins.error)
     return { skipped: "insert_failed" }
   }
-  console.log(`[email][gv] Inserted Legacy DM lead ${inserted?.id} — ${parsed.kind} from ${phone}`)
+  const insertedId = ins.id as string
+  console.log(`[email][gv] Inserted Legacy DM lead ${insertedId} — ${parsed.kind} from ${phone}`)
 
   if (cluster?.dripCampaignType) {
     try {
@@ -411,13 +419,13 @@ async function ingestGoogleVoice(args: {
     }
   }
 
-  if (inserted?.id) {
+  if (insertedId) {
     try {
       const { resolveCampaignId } = await import("@/lib/campaigns")
       const campaignId = await resolveCampaignId({
         source: "Legacy DM", source_type: "direct_mail", created_at: new Date(),
       })
-      if (campaignId) await sb.from("leads").update({ campaign_id: campaignId }).eq("id", inserted.id)
+      if (campaignId) await sb.from("leads").update({ campaign_id: campaignId }).eq("id", insertedId)
     } catch (e) {
       console.warn("[email][gv] campaign attribution failed:", e instanceof Error ? e.message : String(e))
     }
@@ -436,9 +444,9 @@ async function ingestGoogleVoice(args: {
   await sendTelegramAlert(lines.join("\n"))
   // Reply Planner: post the plan + draft as a second Telegram message,
   // without blocking the webhook (the target route keeps running).
-  if (triage && !triage.is_dead) await triggerTelegramDraft(inserted?.id)
+  if (triage && !triage.is_dead) await triggerTelegramDraft(insertedId)
 
-  return { leadId: inserted?.id }
+  return { leadId: insertedId }
 }
 
 export async function POST(request: Request) {
@@ -553,12 +561,18 @@ async function handleAppsScript(payload: AppsScriptPayload): Promise<NextRespons
     return NextResponse.json({ ok: true, skipped: "bounce" })
   }
 
+  // Apps Script carries no Gmail message id: derive the dedupe key from
+  // sender + subject + the first 200 chars of the body so the unique index on
+  // leads.gmail_message_id covers this path too (lib/emailDedupe).
+  const gmailMessageId = appsScriptMessageId(senderEmail, subject, bodyText)
+
   // Google Voice forwards (legacy DM line) get their own parse/cluster/spam
   // path — see ingestGoogleVoice. The generic email-lead flow below would
   // merge them all under voice-noreply@ and bleed addresses across callers.
   if (isGoogleVoice(senderEmail)) {
     const res = await ingestGoogleVoice({
       sb: getLeadsClient(), subject, body: bodyText, mailbox, threadId: null,
+      gmailMessageId,
     })
     return NextResponse.json({ ok: true, ...res })
   }
@@ -634,51 +648,55 @@ async function handleAppsScript(payload: AppsScriptPayload): Promise<NextRespons
     cluster || campaign.source_type !== "google_ads"
       ? null
       : scoreLeadSpam({ name, email: senderEmail, phone })
-  const { data: inserted, error: insertErr } = await sb
-    .from("leads")
-    .insert({
-      lead_type: "email",
-      source_type: campaign.source_type,
-      source: campaign.source,
-      // `email:<receiving-mailbox>` (NOT null) — `isOutbound()` keys off
-      // null === outbound. Email leads from a sender are inbound, so we
-      // need a non-null value. Encoding the receiving mailbox lets the
-      // /api/leads/email-reply route know which mailbox to send replies
-      // from without an extra lookup.
-      twilio_number: `email:${mailbox}`,
-      caller_phone: phone,
-      name,
-      email: senderEmail,
-      message: messageText,
-      ai_notes: triage?.summary ?? null,
-      // Lets autoLinkMailRecord (called after insert) match the mailed record.
-      property_address: triage?.property_address ?? null,
-      suggested_reply: triage?.suggestedReply || null,
-      moment: triage?.moment ?? null,
-      moment_at: triage?.moment ? new Date().toISOString() : null,
-      status: triage?.is_dead ? "dead" : inheritedStatus,
-      temperature: triage?.temperature ?? null,
-      // /api/follow-ups keys off recommended_followup_date, so these are what
-      // let an inbound email reach the worklist at all. Null unless the
-      // sender's own words justified a date (see triageEmailLead).
-      recommended_followup_date: triage?.recommended_followup_date ?? null,
-      followup_reason: triage?.followup_reason ?? null,
-      followup_generated_at: triage ? new Date().toISOString() : null,
-      is_junk: isJunkAddr || undefined,
-      // Suspected-fake review banner (suggested_status + reason). {} when
-      // the lead is clean or is a re-engagement — spreads harmlessly.
-      ...(spam ? spamReviewColumns(spam) : {}),
-      ...dripFields,
-    })
-    .select("id")
-    .single()
-
-  if (insertErr) {
-    console.error(`[email] Insert failed:`, insertErr)
+  // Atomic dedupe (2026-10-21): gmail_message_id is the "as:<sha1>" key
+  // computed above; the partial unique index rejects a second delivery of
+  // the same mail. The fuzzy last-hour check above is the second line.
+  const ins = await insertEmailLead(sb, {
+    lead_type: "email",
+    source_type: campaign.source_type,
+    source: campaign.source,
+    // `email:<receiving-mailbox>` (NOT null) — `isOutbound()` keys off
+    // null === outbound. Email leads from a sender are inbound, so we
+    // need a non-null value. Encoding the receiving mailbox lets the
+    // /api/leads/email-reply route know which mailbox to send replies
+    // from without an extra lookup.
+    twilio_number: `email:${mailbox}`,
+    caller_phone: phone,
+    name,
+    email: senderEmail,
+    message: messageText,
+    gmail_message_id: gmailMessageId,
+    ai_notes: triage?.summary ?? null,
+    // Lets autoLinkMailRecord (called after insert) match the mailed record.
+    property_address: triage?.property_address ?? null,
+    suggested_reply: triage?.suggestedReply || null,
+    moment: triage?.moment ?? null,
+    moment_at: triage?.moment ? new Date().toISOString() : null,
+    status: triage?.is_dead ? "dead" : inheritedStatus,
+    temperature: triage?.temperature ?? null,
+    // /api/follow-ups keys off recommended_followup_date, so these are what
+    // let an inbound email reach the worklist at all. Null unless the
+    // sender's own words justified a date (see triageEmailLead).
+    recommended_followup_date: triage?.recommended_followup_date ?? null,
+    followup_reason: triage?.followup_reason ?? null,
+    followup_generated_at: triage ? new Date().toISOString() : null,
+    is_junk: isJunkAddr || undefined,
+    // Suspected-fake review banner (suggested_status + reason). {} when
+    // the lead is clean or is a re-engagement — spreads harmlessly.
+    ...(spam ? spamReviewColumns(spam) : {}),
+    ...dripFields,
+  })
+  if (ins.duplicate) {
+    console.log(`[email] duplicate notification for ${gmailMessageId} from ${senderEmail}`)
+    return NextResponse.json({ ok: true, deduplicated: true })
+  }
+  if (ins.error) {
+    console.error(`[email] Insert failed:`, ins.error)
     return NextResponse.json({ ok: false, error: "insert_failed" }, { status: 500 })
   }
+  const insertedId = ins.id as string
 
-  console.log(`[email] Inserted email lead ${inserted?.id} from ${senderEmail} (${campaign.source})`)
+  console.log(`[email] Inserted email lead ${insertedId} from ${senderEmail} (${campaign.source})`)
 
   // Re-engagement carried the cluster's drip stamp onto this new event
   // row. Sweep so exactly ONE row drives the drip engine (same fix as the
@@ -692,23 +710,23 @@ async function handleAppsScript(payload: AppsScriptPayload): Promise<NextRespons
   }
 
   // Campaign attribution — best-effort, doesn't fail ingest if it returns null.
-  if (inserted?.id) {
+  if (insertedId) {
     try {
       const { resolveCampaignId } = await import("@/lib/campaigns")
       const campaignId = await resolveCampaignId({ source: campaign.source, source_type: campaign.source_type, created_at: new Date() })
       if (campaignId) {
-        await sb.from("leads").update({ campaign_id: campaignId }).eq("id", inserted.id)
+        await sb.from("leads").update({ campaign_id: campaignId }).eq("id", insertedId)
       }
     } catch (e) {
       console.warn("[email] campaign attribution failed:", e instanceof Error ? e.message : String(e))
     }
   }
-  if (inserted?.id) {
+  if (insertedId) {
     // Mailed-record link (direct-mail tracking): a returning caller inherits
     // the cluster's record; a fresh row waits for triage to fill name/address.
     try {
       const { autoLinkMailRecord } = await import("@/lib/mailMatch")
-      await autoLinkMailRecord(sb, inserted.id)
+      await autoLinkMailRecord(sb, insertedId)
     } catch (e) {
       console.warn("[email] mail-record link failed:", e instanceof Error ? e.message : String(e))
     }
@@ -730,9 +748,9 @@ async function handleAppsScript(payload: AppsScriptPayload): Promise<NextRespons
   if (spam) lines.push(...spamAlertLines(spam))
   await sendTelegramAlert(lines.join("\n"))
   // Reply Planner: plan + draft as a second message (non-blocking).
-  if (triage && !triage.is_dead && !(spam && spam.suspicious)) await triggerTelegramDraft(inserted?.id)
+  if (triage && !triage.is_dead && !(spam && spam.suspicious)) await triggerTelegramDraft(insertedId)
 
-  return NextResponse.json({ ok: true, leadId: inserted?.id })
+  return NextResponse.json({ ok: true, leadId: insertedId })
 }
 
 async function processEmailNotification(args: {
@@ -832,6 +850,7 @@ async function processSingleMessage(args: {
     await ingestGoogleVoice({
       sb: getLeadsClient(), subject, body: bodyText,
       mailbox: emailAddress, threadId: message.threadId || null,
+      gmailMessageId: messageId,
     })
     return
   }
@@ -904,52 +923,59 @@ async function processSingleMessage(args: {
     cluster || campaign.source_type !== "google_ads"
       ? null
       : scoreLeadSpam({ name, email: senderEmail, phone })
-  const { data: inserted, error: insertErr } = await sb
-    .from("leads")
-    .insert({
-      lead_type: "email",
-      source_type: campaign.source_type,
-      source: campaign.source,
-      // See twilio_number explanation in handleAppsScript above — non-null
-      // string with the receiving mailbox so isOutbound() returns false and
-      // the email-reply route knows which address to send from (an alias
-      // resolves to its real mailbox via resolveMailbox).
-      twilio_number: `email:${replyAddress}`,
-      caller_phone: phone,
-      name,
-      email: senderEmail,
-      message: messageText,
-      ai_notes: triage?.summary ?? null,
-      // Lets autoLinkMailRecord (called after insert) match the mailed record.
-      property_address: triage?.property_address ?? null,
-      suggested_reply: triage?.suggestedReply || null,
-      moment: triage?.moment ?? null,
-      moment_at: triage?.moment ? new Date().toISOString() : null,
-      status: triage?.is_dead ? "dead" : inheritedStatus,
-      temperature: triage?.temperature ?? null,
-      // /api/follow-ups keys off recommended_followup_date, so these are what
-      // let an inbound email reach the worklist at all. Null unless the
-      // sender's own words justified a date (see triageEmailLead).
-      recommended_followup_date: triage?.recommended_followup_date ?? null,
-      followup_reason: triage?.followup_reason ?? null,
-      followup_generated_at: triage ? new Date().toISOString() : null,
-      is_junk: isJunkAddr || undefined,
-      // Suspected-fake review banner — {} when clean or a re-engagement.
-      ...(spam ? spamReviewColumns(spam) : {}),
-      // Persist the Gmail threadId so the Leads-tab card can pull the full
-      // back-and-forth via /api/leads/sync-email when Ryan expands it. Falls
-      // back to null when the message has no thread (rare — Gmail always
-      // assigns one for inbound mail).
-      gmail_thread_id: message.threadId || null,
-      ...dripFields,
-    })
-    .select("id")
-    .single()
-  if (insertErr) {
-    console.error(`[email] Insert failed for ${messageId}:`, insertErr)
+  // Atomic dedupe (2026-10-21): the Gmail message id goes on the row and
+  // the partial unique index rejects the second Pub/Sub delivery of the
+  // same message — the race the fuzzy last-hour check above let through.
+  const ins = await insertEmailLead(sb, {
+    lead_type: "email",
+    source_type: campaign.source_type,
+    source: campaign.source,
+    // See twilio_number explanation in handleAppsScript above — non-null
+    // string with the receiving mailbox so isOutbound() returns false and
+    // the email-reply route knows which address to send from (an alias
+    // resolves to its real mailbox via resolveMailbox).
+    twilio_number: `email:${replyAddress}`,
+    caller_phone: phone,
+    name,
+    email: senderEmail,
+    message: messageText,
+    gmail_message_id: messageId,
+    ai_notes: triage?.summary ?? null,
+    // Lets autoLinkMailRecord (called after insert) match the mailed record.
+    property_address: triage?.property_address ?? null,
+    suggested_reply: triage?.suggestedReply || null,
+    moment: triage?.moment ?? null,
+    moment_at: triage?.moment ? new Date().toISOString() : null,
+    status: triage?.is_dead ? "dead" : inheritedStatus,
+    temperature: triage?.temperature ?? null,
+    // /api/follow-ups keys off recommended_followup_date, so these are what
+    // let an inbound email reach the worklist at all. Null unless the
+    // sender's own words justified a date (see triageEmailLead).
+    recommended_followup_date: triage?.recommended_followup_date ?? null,
+    followup_reason: triage?.followup_reason ?? null,
+    followup_generated_at: triage ? new Date().toISOString() : null,
+    is_junk: isJunkAddr || undefined,
+    // Suspected-fake review banner — {} when clean or a re-engagement.
+    ...(spam ? spamReviewColumns(spam) : {}),
+    // Persist the Gmail threadId so the Leads-tab card can pull the full
+    // back-and-forth via /api/leads/sync-email when Ryan expands it. Falls
+    // back to null when the message has no thread (rare — Gmail always
+    // assigns one for inbound mail).
+    gmail_thread_id: message.threadId || null,
+    ...dripFields,
+  })
+  if (ins.duplicate) {
+    // Normal: Pub/Sub re-delivered, or two notifications covered one
+    // message. Not an alert.
+    console.log(`[email] duplicate notification for ${messageId} from ${senderEmail}`)
     return
   }
-  console.log(`[email] Inserted email lead ${inserted?.id} from ${senderEmail} (${campaign.source})`)
+  if (ins.error) {
+    console.error(`[email] Insert failed for ${messageId}:`, ins.error)
+    return
+  }
+  const insertedId = ins.id as string
+  console.log(`[email] Inserted email lead ${insertedId} from ${senderEmail} (${campaign.source})`)
 
   // Re-engagement carried the cluster's drip stamp onto this new event
   // row — sweep so the engine sees one driver row.
@@ -965,23 +991,23 @@ async function processSingleMessage(args: {
     }
   }
 
-  if (inserted?.id) {
+  if (insertedId) {
     try {
       const { resolveCampaignId } = await import("@/lib/campaigns")
       const campaignId = await resolveCampaignId({ source: campaign.source, source_type: campaign.source_type, created_at: new Date() })
       if (campaignId) {
-        await sb.from("leads").update({ campaign_id: campaignId }).eq("id", inserted.id)
+        await sb.from("leads").update({ campaign_id: campaignId }).eq("id", insertedId)
       }
     } catch (e) {
       console.warn("[email] campaign attribution failed:", e instanceof Error ? e.message : String(e))
     }
   }
-  if (inserted?.id) {
+  if (insertedId) {
     // Mailed-record link (direct-mail tracking): a returning caller inherits
     // the cluster's record; a fresh row waits for triage to fill name/address.
     try {
       const { autoLinkMailRecord } = await import("@/lib/mailMatch")
-      await autoLinkMailRecord(sb, inserted.id)
+      await autoLinkMailRecord(sb, insertedId)
     } catch (e) {
       console.warn("[email] mail-record link failed:", e instanceof Error ? e.message : String(e))
     }
@@ -1002,7 +1028,7 @@ async function processSingleMessage(args: {
   if (spam) lines.push(...spamAlertLines(spam))
   await sendTelegramAlert(lines.join("\n"))
   // Reply Planner: plan + draft as a second message (non-blocking).
-  if (triage && !triage.is_dead && !(spam && spam.suspicious)) await triggerTelegramDraft(inserted?.id)
+  if (triage && !triage.is_dead && !(spam && spam.suspicious)) await triggerTelegramDraft(insertedId)
 }
 
 // ─── Gmail helpers (lib/leads.ts owns the JWT client; helpers here stay
