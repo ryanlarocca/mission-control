@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server"
 import { getLeadsClient, clampOwedFollowup } from "@/lib/leads"
-import { completeText, extractJsonObject, hasLlmKey, HAIKU } from "@/lib/llm"
+import { completeText, extractJsonObject, hasLlmKey, SONNET } from "@/lib/llm"
 
 export async function POST(
   request: NextRequest,
@@ -38,7 +38,7 @@ If no follow-up timeframe is mentioned, respond with:
 
   let content = ""
   try {
-    const out = await completeText({ model: HAIKU, prompt, maxTokens: 200, tag: "[extract-followup]" })
+    const out = await completeText({ model: SONNET, prompt, maxTokens: 200, thinking: false, tag: "[extract-followup]" })
     content = extractJsonObject(out.text)
   } catch (e) {
     return NextResponse.json({ error: `model call failed: ${e instanceof Error ? e.message : String(e)}` }, { status: 502 })

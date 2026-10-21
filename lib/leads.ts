@@ -3,7 +3,7 @@ import { google, gmail_v1 } from "googleapis"
 import emailCampaigns from "@/config/email-campaigns.json"
 import { isAnonymousCaller } from "./anonymous"
 import { LEAD_MOMENT_RUBRIC, isLeadMoment } from "@/lib/reply/moments"
-import { completeText, extractJsonObject, hasLlmKey, HAIKU } from "./llm"
+import { completeText, extractJsonObject, hasLlmKey, SONNET } from "./llm"
 import { autoLinkMailRecord } from "./mailMatch"
 import { OWED_PREFIX } from "./next-touch"
 
@@ -750,7 +750,7 @@ export async function detectOfferFromText(
   const trimmed = (text || "").trim()
   if (trimmed.length < 10) return null
   // Cheap regex pre-filter — bail if there's no $-amount + Ryan-cue at all.
-  // Saves a Haiku call on routine "thanks for the info" / "calling you back"
+  // Saves a model call on routine "thanks for the info" / "calling you back"
   // type messages.
   const hasMoney = /\$\s*[\d,]+(?:\.\d+)?\s*[kKmM]?|\b\d+(?:\.\d+)?\s*(?:million|thousand|[kKmM])\b|\b\d{3},\d{3}\b/.test(trimmed)
   if (!hasMoney) return { offer_amount: null, offer_verbalized: false }
@@ -779,7 +779,7 @@ ${trimmed}
 
 Respond with ONLY the JSON object.`
   try {
-    const out = await completeText({ model: HAIKU, prompt, maxTokens: 150, tag: "[detect-offer]" })
+    const out = await completeText({ model: SONNET, prompt, maxTokens: 150, thinking: false, tag: "[detect-offer]" })
     const parsed = JSON.parse(extractJsonObject(out.text)) as { offer_amount?: unknown; offer_verbalized?: unknown }
     return {
       offer_amount: typeof parsed.offer_amount === "number" && Number.isFinite(parsed.offer_amount) && parsed.offer_amount > 0
@@ -1982,7 +1982,7 @@ TRANSCRIPT:
 "${transcription}"`
 
   try {
-    const out = await completeText({ model: HAIKU, prompt, maxTokens: 700, tag: "[summarize]" })
+    const out = await completeText({ model: SONNET, prompt, maxTokens: 700, thinking: false, tag: "[summarize]" })
     const content = out.text
     if (!content) return null
     // Strip surrounding quote marks if the model wrapped its response.
@@ -1994,7 +1994,7 @@ TRANSCRIPT:
 }
 
 
-// Phase 7D — single Haiku pass per call transcript. Replaces the older
+// Phase 7D — single Sonnet pass per call transcript. Replaces the older
 // triage/analyze split. Extracts:
 //   - temperature (hot/warm/cold) — drives the read-only badge in the UI
 //   - summary — 2-6 sentence plain paragraph, rendered as the AI block on
@@ -2190,7 +2190,7 @@ export async function fetchClusterHistory(
   // call transcript can run 3-8k chars and the older 400-char cap was
   // truncating mid-conversation, making the analyzer treat clearly-rich
   // calls as "just getting started." 20 rows × 4000 chars ≈ 20k tokens
-  // worst case, well inside Haiku's context.
+  // worst case, well inside the model's context.
   return rows
     .slice(-20)
     .map((r) => {
@@ -2460,11 +2460,13 @@ ${historyBlock}FRESH TRANSCRIPT (this is the current call):
 "${transcript}"`
 
   try {
-    // 400 → 700 → 2500 (2026-09-09). The JSON carries a 2-6 sentence summary
-    // plus a property_details array; a long seller call overran 700 and the
-    // truncated object failed the parse, so the analysis was dropped and the
-    // lead kept stale notes. completeText retries once at 3x on max_tokens.
-    const out = await completeText({ model: HAIKU, prompt, maxTokens: 2500, tag: "[analyze-call]" })
+    // 400 → 700 → 2500 (2026-09-09) → 4096 (2026-10-21, Sonnet 5: adaptive
+    // thinking shares the budget, so it stays on and the ceiling goes up).
+    // The JSON carries a 2-6 sentence summary plus a property_details array;
+    // a long seller call overran 700 and the truncated object failed the
+    // parse, so the analysis was dropped and the lead kept stale notes.
+    // completeText retries once at 3x on max_tokens.
+    const out = await completeText({ model: SONNET, prompt, maxTokens: 4096, tag: "[analyze-call]" })
     const content = out.text
     if (!content) return null
     if (out.truncated) {
@@ -2856,7 +2858,7 @@ export async function applyAnalyzeCallResult(
   // dead, clear the recommended follow-up date. This halts the drip engine
   // (its WHERE clause filters is_dnc=true) and removes the row from the
   // active queue. Prompt is conservative on this flag; false positives lose
-  // real leads, so we trust Haiku here.
+  // real leads, so we trust the model here.
   if (result.is_dnc) {
     update.is_dnc = true
     update.status = "dead"
@@ -3017,7 +3019,7 @@ export async function applyColdNoSignalDefault(leadId: string): Promise<void> {
   if (error) console.error(`[cold-default] update failed for ${leadId}:`, error.message)
 }
 
-// Email-lead triage — same Haiku model as the call/voicemail path, but the
+// Email-lead triage — same Sonnet model as the call/voicemail path, but the
 // prompt is tuned for written replies and also asks the model to draft a
 // short text-message-style reply that Ryan can edit and send from the
 // lead card. Returns null on any failure (non-fatal).
@@ -3153,7 +3155,7 @@ PROPERTY ADDRESS
     // fields pushed it to 700, and a truncated object reads as "triage
     // returned null" rather than an error. 1500 + the 3x retry in
     // completeText closes that hole.
-    const out = await completeText({ model: HAIKU, prompt, maxTokens: 1500, tag: "[triage-email]" })
+    const out = await completeText({ model: SONNET, prompt, maxTokens: 1500, thinking: false, tag: "[triage-email]" })
     const content = out.text
     if (!content) return null
 

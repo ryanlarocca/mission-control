@@ -1,12 +1,12 @@
 // Coach mode, learning loop step 3 (briefs/BRIEF_COACHED_DRAFT_2026-10-15.md
-// §F3): facts land on the card. After a coached draft is SENT, one Haiku
+// §F3): facts land on the card. After a coached draft is SENT, one Sonnet
 // call over the gist + the final body pulls out the number Ryan stated and a
 // one-line reasoning. Leads: offer_amount + offer_verbalized_at are stamped
 // on the whole cluster (like stampLeadMoment) and a dated line goes on the
 // card's notes. Relationships: the notes line only. Never throws — a missed
 // fact must not fail a send.
 
-import { completeText, extractJsonObject, HAIKU, hasLlmKey } from "@/lib/llm"
+import { completeText, extractJsonObject, SONNET, hasLlmKey } from "@/lib/llm"
 import { getLeadsClient } from "@/lib/leads"
 
 export interface CoachFacts {
@@ -25,7 +25,7 @@ export function appendNote(existing: string | null | undefined, line: string): s
   return prev ? `${prev}\n${line}` : line
 }
 
-/** Haiku: what did this coached message establish? Exported for the dry run. */
+/** Sonnet: what did this coached message establish? Exported for the dry run. */
 export async function extractCoachFacts(args: { gist: string; body: string; kind: "lead" | "relationship"; name?: string | null; property?: string | null }): Promise<CoachFacts | null> {
   if (!hasLlmKey()) return null
   const prompt = `Ryan (a cash home buyer in the Bay Area) dictated a gist to an assistant and then sent the message below${args.name ? ` to ${args.name}` : ""}${args.property ? ` about ${args.property}` : ""}. Pull out the facts the card should remember.
@@ -51,7 +51,7 @@ RULES
 - reasoning: ONE line, under 160 characters, in note shorthand, with what the message establishes: his number if any, the reasoning behind it, and their stated position. Example shape: "At $950K; renovated comps $1.2–1.3M; he is at $1.6M." If the message establishes nothing worth a note (a thank-you, a scheduling line), return null.
 - Never invent. Only what the gist and the message say.`
   try {
-    const out = await completeText({ model: HAIKU, prompt, maxTokens: 300, tag: "[reply/facts]" })
+    const out = await completeText({ model: SONNET, prompt, maxTokens: 300, thinking: false, tag: "[reply/facts]" })
     const parsed = JSON.parse(extractJsonObject(out.text)) as { offer_amount?: unknown; reasoning?: unknown }
     const offer = typeof parsed.offer_amount === "number" && Number.isFinite(parsed.offer_amount) && parsed.offer_amount > 0 ? Math.round(parsed.offer_amount) : null
     const reasoning = typeof parsed.reasoning === "string" && parsed.reasoning.trim() ? parsed.reasoning.trim() : null

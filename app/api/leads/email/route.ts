@@ -3,8 +3,10 @@ import { gmail_v1 } from "googleapis"
 import { triggerTelegramDraft } from "@/lib/reply/telegram"
 
 // Pub/Sub push ack timeout is 10s by default; Gmail history.list + message.get
-// + Haiku triage + Supabase insert can blow past Vercel's 10s default. Bump it.
-export const maxDuration = 30
+// + Sonnet triage + Supabase insert can blow past Vercel's 10s default. Bump it.
+// 30 → 60 (2026-10-21): triage moved from Haiku to Sonnet 5 (~2-3× slower)
+// and runs inline (`await triageEmailLead`).
+export const maxDuration = 60
 import { CAMPAIGN_INBOXES, processCampaignInbox } from "@/lib/campaignInbox"
 import {
   EMAIL_CAMPAIGN_MAP,
@@ -35,7 +37,7 @@ import { isBounceEmail, parseBounce } from "@/lib/emailBounce"
 // production that waitUntil silently drops the work and produces no logs,
 // matching the project-wide rule "always await load-bearing writes in
 // Vercel route handlers." Push subscription deadline is 10s by default;
-// maxDuration=30 above gives us headroom for Gmail+Haiku+Supabase+Telegram.
+// maxDuration=60 above gives us headroom for Gmail+Sonnet+Supabase+Telegram.
 //
 // Auth: this endpoint is whitelisted in middleware.ts because Pub/Sub
 // hits it without a session cookie. Pub/Sub itself can be configured
@@ -592,7 +594,7 @@ async function handleAppsScript(payload: AppsScriptPayload): Promise<NextRespons
     return NextResponse.json({ ok: true, deduplicated: true })
   }
 
-  // Haiku triage — non-fatal
+  // Sonnet triage — non-fatal
   const triage = await triageEmailLead(subject, bodyText)
 
   // Inherit cluster status + drip metadata so re-engagement doesn't reset to
@@ -870,7 +872,7 @@ async function processSingleMessage(args: {
     return
   }
 
-  // Triage with Haiku — non-fatal; null leaves the lead with the inherited
+  // Triage with Sonnet — non-fatal; null leaves the lead with the inherited
   // cluster status (or "new" for fresh callers) and Ryan sees it untouched.
   const triage = await triageEmailLead(subject, bodyText)
 

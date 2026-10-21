@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server"
 import { getLeadsClient, getMailboxForSource } from "@/lib/leads"
-import { completeText, extractJsonObject, hasLlmKey, HAIKU } from "@/lib/llm"
+import { completeText, extractJsonObject, hasLlmKey, SONNET } from "@/lib/llm"
 
 // Phase 7C — Part 7: on-demand draft generator. Click "Draft Text" or
 // "Draft Email" on a lead card → AI returns a contextual draft. NOT
@@ -250,9 +250,11 @@ Respond as JSON only (no markdown):
 ${sharedContext}`
 
     const out = await completeText({
-      model: HAIKU,
+      model: SONNET,
       prompt,
       maxTokens: channel === "email" ? 1500 : 400,
+      // Short draft, interactive: the thinking budget would eat the answer.
+      thinking: false,
       tag: "[draft-message]",
     })
     const content = out.text

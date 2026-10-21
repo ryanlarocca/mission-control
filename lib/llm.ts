@@ -7,10 +7,13 @@ import Anthropic from "@anthropic-ai/sdk"
 // truncated response — which is what was silently cutting off the call notes
 // on long seller conversations (max_tokens hit → half a summary saved).
 
-export const HAIKU = "claude-haiku-4-5"
+// Sonnet 5 is the floor for every lead-reading call (2026-10-21, NOO Q4
+// pre-wire audit): the Haiku 4.5 constant was removed on purpose so nothing
+// can regress to it. Sonnet runs adaptive thinking by default and the
+// thinking budget shares max_tokens — short JSON sites pass thinking:false.
 export const SONNET = "claude-sonnet-5"
 // Coach mode (briefs/BRIEF_COACHED_DRAFT_2026-10-15.md §B): Opus reads the
-// whole history plus Ryan's gist. Auto keeps Haiku + Sonnet.
+// whole history plus Ryan's gist. Auto keeps Sonnet.
 export const OPUS = "claude-opus-5-5"
 
 export function hasLlmKey(): boolean {
@@ -23,8 +26,9 @@ export interface CompleteTextArgs {
   model?: string
   maxTokens: number
   // Sonnet 5 runs adaptive thinking by default and it shares max_tokens with
-  // the answer. Short, interactive outputs (the CRMS composer) turn it off;
-  // Haiku 4.5 never thinks unless asked, so the flag is a no-op there.
+  // the answer. Short JSON / interactive outputs (triage, the CRMS composer)
+  // turn it off so the budget goes to the answer. No sampling params
+  // (temperature / top_p) are ever sent — Sonnet 5 rejects them.
   // Opus 5.5 is the same as Sonnet for the budget (thinking shares
   // max_tokens, so coach calls pass >= 8192) but it cannot be switched off:
   // the API rejects thinking:disabled on that model, so the flag is ignored
@@ -56,7 +60,7 @@ function getClient(): Anthropic {
 /** One user-turn completion. Throws `Anthropic.APIError` (or a plain Error on
  *  refusal) — callers already wrap their model calls in try/catch. */
 export async function completeText(args: CompleteTextArgs): Promise<CompleteTextResult> {
-  const model = args.model ?? HAIKU
+  const model = args.model ?? SONNET
   const tag = args.tag ?? "[llm]"
   const retry = args.retryOnTruncate ?? true
   const disableThinking = model === SONNET && args.thinking === false
@@ -92,7 +96,7 @@ export async function completeText(args: CompleteTextArgs): Promise<CompleteText
 }
 
 /** Strip ``` fences and return the first {...} block, for prompts that ask
- *  for JSON only. Haiku occasionally appends a sentence after the object. */
+ *  for JSON only. Models occasionally append a sentence after the object. */
 export function extractJsonObject(text: string): string {
   const cleaned = text.replace(/^```(?:json)?\s*/i, "").replace(/```\s*$/i, "").trim()
   const start = cleaned.indexOf("{")

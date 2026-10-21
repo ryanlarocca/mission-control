@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server"
 import { getLeadsClient, mergePropertyDetails, parsePropertyDetails, isPlaceholderName } from "@/lib/leads"
-import { completeText, extractJsonObject, hasLlmKey, HAIKU } from "@/lib/llm"
+import { completeText, extractJsonObject, hasLlmKey, SONNET } from "@/lib/llm"
 
 // Phase 7D — cached lead summary, multi-event variant.
 //
@@ -8,7 +8,7 @@ import { completeText, extractJsonObject, hasLlmKey, HAIKU } from "@/lib/llm"
 //   * If ai_summary is set AND ai_summary_generated_at is newer than the
 //     most recent lead-event timestamp on this contact → return cached.
 //   * Otherwise: gather all events for the contact (phone OR email),
-//     call Haiku, store ai_summary + ai_summary_generated_at, return it.
+//     call Sonnet, store ai_summary + ai_summary_generated_at, return it.
 //
 // SUMMARY-ONLY: this endpoint does NOT write `temperature`. Temperature is
 // owned exclusively by analyzeCallTranscript / triageEmailLead so the badge
@@ -129,7 +129,7 @@ export async function POST(
     // can run 3-8k chars, and truncating to 400 made the model hedge
     // with phrases like "the call log ends here" because it was literally
     // seeing the opening sentence and nothing else. 30 rows × 4000 chars
-    // ≈ 30k tokens worst case, well inside Haiku's 200k context.
+    // ≈ 30k tokens worst case, well inside the model's context.
     const transcript = rows
       .filter(r => (r.message || "").trim().length > 0)
       .slice(-30)
@@ -222,9 +222,11 @@ ${transcript}`
 
     // 400 → 700 → 1200 → 2500 over the summer as the property_details array
     // and its `notes` field kept overrunning the budget; a truncated object
-    // fails JSON.parse. completeText also retries once at 3x if the model
-    // still hits the ceiling, so a long cluster can't clip the summary.
-    const out = await completeText({ model: HAIKU, prompt, maxTokens: 2500, tag: "[summary]" })
+    // fails JSON.parse. 4096 on Sonnet 5 (2026-10-21): adaptive thinking
+    // shares max_tokens and stays on for this long read. completeText also
+    // retries once at 3x if the model still hits the ceiling, so a long
+    // cluster can't clip the summary.
+    const out = await completeText({ model: SONNET, prompt, maxTokens: 4096, tag: "[summary]" })
     const content = out.text
     if (!content) {
       return NextResponse.json({ error: "empty model response" }, { status: 502 })

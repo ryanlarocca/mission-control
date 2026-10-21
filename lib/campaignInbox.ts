@@ -4,7 +4,7 @@ import { getGmailClient, getLeadsClient } from "@/lib/leads"
 import { sendCampaignAlert, sendCampaignDocument } from "@/lib/campaignAlerts"
 import { buildEmailMime, toGmailRaw } from "@/lib/emailMime"
 import { addSuppression } from "@/lib/suppression"
-import { completeText, extractJsonObject, hasLlmKey, HAIKU } from "@/lib/llm"
+import { completeText, extractJsonObject, hasLlmKey, SONNET } from "@/lib/llm"
 import { normalizeAltPhones, parseUsPhone10, to10Digit } from "@/lib/relationships"
 import {
   type AgentContact,
@@ -677,7 +677,7 @@ export function describeReplyPhones(
 
 const TRIAGE_LABELS = new Set(["deal", "interested", "question", "not_now", "remove", "retired_or_wrong_person", "other"])
 
-/** One Haiku call per genuine reply. Null when the key is missing or the
+/** One Sonnet call per genuine reply. Null when the key is missing or the
  * model fails — the alert then goes out untagged, never dropped. */
 async function triageAgentReply(args: { name: string | null; subject: string; body: string }): Promise<ReplyTriage | null> {
   if (!hasLlmKey()) return null
@@ -704,7 +704,7 @@ SUBJECT: ${args.subject}
 REPLY:
 "${text}"`
   try {
-    const out = await completeText({ model: HAIKU, prompt, maxTokens: 300, tag: "[campaign-inbox triage]" })
+    const out = await completeText({ model: SONNET, prompt, maxTokens: 300, thinking: false, tag: "[campaign-inbox triage]" })
     const j = JSON.parse(extractJsonObject(out.text)) as { label?: unknown; address?: unknown; summary?: unknown; phones?: unknown }
     const label = typeof j.label === "string" && TRIAGE_LABELS.has(j.label) ? (j.label as ReplyTriage["label"]) : "other"
     const address = typeof j.address === "string" && j.address.trim() && j.address.trim().toLowerCase() !== "null" ? j.address.trim().slice(0, 160) : null

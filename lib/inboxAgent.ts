@@ -1,7 +1,7 @@
 import Anthropic from "@anthropic-ai/sdk"
 import { createHash } from "node:crypto"
 import { getLeadsClient } from "@/lib/leads"
-import { HAIKU, SONNET, completeText, extractJsonObject } from "@/lib/llm"
+import { SONNET, completeText, extractJsonObject } from "@/lib/llm"
 import { INBOX_MAILBOX, fetchAttachment, fetchInboxMessage, fetchInboxThread, renderThread, searchInbox, sendThreadedReply } from "@/lib/inboxGmail"
 import { VOICE_SYSTEM } from "@/lib/reply/draft"
 // Shared with the Mac mini worker (plain ESM, no deps) so a link is judged the
@@ -201,14 +201,14 @@ async function threadTextFor(ref: InboxRef): Promise<{ text: string; subject: st
 export async function answerInboxQuestion(ref: InboxRef, question: string): Promise<string> {
   if (ref.kind === "rules") {
     const r = await getSetting("rules")
-    const out = await completeText({ model: HAIKU, maxTokens: 500, tag: "[inbox-q]", prompt: `Ryan is asking about his Drive filing convention.\n\nCONVENTION:\n"""\n${String(r.md || "(none yet)")}\n"""\n\nQUESTION: ${question}\n\nAnswer in ≤ 6 short lines, plain text, no markdown.` })
+    const out = await completeText({ model: SONNET, maxTokens: 500, thinking: false, tag: "[inbox-q]", prompt: `Ryan is asking about his Drive filing convention.\n\nCONVENTION:\n"""\n${String(r.md || "(none yet)")}\n"""\n\nQUESTION: ${question}\n\nAnswer in ≤ 6 short lines, plain text, no markdown.` })
     return out.text || "I don't have an answer for that."
   }
   if (ref.kind === "teachback") return "Reply to a specific card, or type `rules` to see the convention."
   const t = await threadTextFor(ref)
   if (!t) return "I can't find the email behind that card."
   const out = await completeText({
-    model: HAIKU, maxTokens: 600, tag: "[inbox-q]",
+    model: SONNET, maxTokens: 600, thinking: false, tag: "[inbox-q]",
     system: "You answer Ryan LaRocca's questions about one email thread from his real-estate business. Use only the thread; if it isn't there, say so. Plain text, ≤ 8 short lines, no markdown, no preamble. Quote the exact figure/date when there is one.",
     prompt: `THREAD “${t.subject}”:\n${t.text}\n\nQUESTION: ${question}`,
   })
@@ -697,7 +697,7 @@ export async function handleInboxCommand(body: string): Promise<{ text: string; 
   }
   if ((m = /^find\s+(.+)$/i.exec(t))) {
     // Plain-English descriptions ("the net sheet Lisa sent last week") are
-    // turned into a Gmail query by Haiku; anything that already looks like
+    // turned into a Gmail query by Sonnet; anything that already looks like
     // Gmail syntax (from:, has:, quotes, newer_than:) runs as-is.
     const ask = m[1].trim()
     const looksLikeSyntax = /\b(from|to|subject|has|filename|newer_than|older_than|after|before|label|in|is):/i.test(ask) || ask.split(/\s+/).length <= 2
@@ -705,7 +705,7 @@ export async function handleInboxCommand(body: string): Promise<{ text: string; 
     if (!looksLikeSyntax) {
       const today = new Date().toISOString().slice(0, 10)
       const out = await completeText({
-        model: HAIKU, maxTokens: 200, tag: "[inbox-find]",
+        model: SONNET, maxTokens: 200, thinking: false, tag: "[inbox-find]",
         system: `Translate a plain-English description of an email into ONE Gmail search query. Today is ${today}. Use from:, to:, subject:, has:attachment, filename:, newer_than:Nd, after:YYYY/MM/DD and quoted phrases. Prefer few, distinctive terms over many. People: use a name fragment (from:lisa) not a guessed address. Escrow/title people are at ctt.com; lenders kiavi.com. Respond with the query only.`,
         prompt: ask,
       })

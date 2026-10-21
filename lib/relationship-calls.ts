@@ -11,7 +11,7 @@
 // contact's notes (same format Log Call writes) and bumps the cadence.
 
 import { getLeadsClient, fetchTwilioAudio, transcribeAudio, sendTelegramAlert, FORWARD_TO } from "./leads"
-import { completeText, hasLlmKey, HAIKU } from "./llm"
+import { completeText, hasLlmKey, SONNET } from "./llm"
 import { isPlaceholderName } from "./office-inbound"
 import { sendCampaignAlert } from "./campaignAlerts"
 import { isValidCategory } from "./crms"
@@ -99,7 +99,7 @@ Capture, when present: what's going on in their life or business right now, any 
 TRANSCRIPT:
 "${transcript}"`
   try {
-    const out = await completeText({ model: HAIKU, prompt, maxTokens: 600, tag: "[crms/call summarize]" })
+    const out = await completeText({ model: SONNET, prompt, maxTokens: 600, thinking: false, tag: "[crms/call summarize]" })
     return out.text?.replace(/^["'`]+|["'`]+$/g, "").trim() || null
   } catch (e) {
     console.error("[crms/call] summarize failed:", e instanceof Error ? e.message : String(e))
@@ -120,7 +120,7 @@ Reply with ONLY a JSON object: {"name": "<first and last name as spoken, or null
 TRANSCRIPT:
 "${transcript.slice(0, 4000)}"`
   try {
-    const out = await completeText({ model: HAIKU, prompt, maxTokens: 120, tag: "[crms/call identify]" })
+    const out = await completeText({ model: SONNET, prompt, maxTokens: 120, thinking: false, tag: "[crms/call identify]" })
     const m = out.text?.match(/\{[\s\S]*\}/)
     if (!m) return { name: null, category: null }
     const j = JSON.parse(m[0]) as { name?: unknown; category?: unknown }
@@ -168,7 +168,7 @@ export async function processRelationshipRecording(args: {
 
   // Under MIN_TRANSCRIBE_SEC there was no conversation — a voicemail
   // greeting, a wrong-number hang-up, a test call. Not worth a Whisper +
-  // Haiku round trip; stamp the touch and leave notes alone (Ryan, 2026-09-23).
+  // model round trip; stamp the touch and leave notes alone (Ryan, 2026-09-23).
   const floor = kind === "voicemail" ? MIN_VOICEMAIL_TRANSCRIBE_SEC : MIN_TRANSCRIBE_SEC
   if (recordingDurationSec !== null && recordingDurationSec < floor) {
     const short = kind === "voicemail"

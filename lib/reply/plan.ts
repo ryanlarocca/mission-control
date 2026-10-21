@@ -1,9 +1,9 @@
 // Reply Planner — step one: propose the plan (moment, temperature, next
-// action) before anything is drafted. Cheap Haiku call over the full
+// action) before anything is drafted. One short Sonnet call (thinking off) over the full
 // context. The card shows these as three chips Ryan can change; the draft
 // is always generated from whatever the chips say.
 
-import { completeText, extractJsonObject, HAIKU, hasLlmKey } from "@/lib/llm"
+import { completeText, extractJsonObject, SONNET, hasLlmKey } from "@/lib/llm"
 import { TEMPERATURE_RUBRIC, VALID_TEMPERATURES, getLeadsClient } from "@/lib/leads"
 import {
   LEAD_MOMENT_RUBRIC, LEAD_NEXT_ACTIONS, RELATIONSHIP_MOMENTS, RELATIONSHIP_NEXT_ACTIONS,
@@ -84,7 +84,7 @@ moment:
   check_in      — light touch, no ask.`
 
   try {
-    const out = await completeText({ model: HAIKU, prompt, maxTokens: 400, tag: "[reply/plan]" })
+    const out = await completeText({ model: SONNET, prompt, maxTokens: 400, thinking: false, tag: "[reply/plan]" })
     const parsed = JSON.parse(extractJsonObject(out.text)) as Partial<Plan>
     const okMoment = ctx.kind === "lead" ? isLeadMoment(parsed.moment) : isRelationshipMoment(parsed.moment)
     if (!okMoment) return null
