@@ -429,6 +429,17 @@ async function ingestGoogleVoice(args: {
     } catch (e) {
       console.warn("[email][gv] campaign attribution failed:", e instanceof Error ? e.message : String(e))
     }
+    // Mailed-record link (direct-mail tracking): a returning caller inherits
+    // the cluster's record; a fresh row matches on the triaged
+    // property_address. This path never called the linker before 2026-10-21
+    // (the insert comment claimed it did). After campaign_id so the search
+    // scopes to the right list. Non-fatal.
+    try {
+      const { autoLinkMailRecord } = await import("@/lib/mailMatch")
+      await autoLinkMailRecord(sb, insertedId)
+    } catch (e) {
+      console.warn("[email][gv] mail-record link failed:", e instanceof Error ? e.message : String(e))
+    }
   }
 
   const lines = [

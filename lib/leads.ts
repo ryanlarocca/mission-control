@@ -2743,7 +2743,12 @@ export async function applyFollowupOnlyResult(
   const { error } = await sb.from("leads").update(update).eq("id", leadId)
   // Mailed-record auto-link once triage has a name / address to match on
   // (direct-mail tracking, 2026-10-08). Best-effort, never fails the write.
-  if (!error && (update.name || update.property_address)) {
+  // Runs whenever the analysis carried a name or address (2026-10-21), not
+  // only when this write changed one: a caller who says their address on a
+  // voicemail must get the link even if the row already held the address
+  // from an earlier pass. autoLinkMailRecord returns at once when the row
+  // is already linked, so the re-run is cheap.
+  if (!error && (update.name || update.property_address || result.name || result.property_address)) {
     try {
       await autoLinkMailRecord(sb, leadId)
     } catch (e) {
@@ -2893,7 +2898,12 @@ export async function applyAnalyzeCallResult(
   const { error } = await sb.from("leads").update(update).eq("id", leadId)
   // Mailed-record auto-link once triage has a name / address to match on
   // (direct-mail tracking, 2026-10-08). Best-effort, never fails the write.
-  if (!error && (update.name || update.property_address)) {
+  // Runs whenever the analysis carried a name or address (2026-10-21), not
+  // only when this write changed one: a caller who says their address on a
+  // voicemail must get the link even if the row already held the address
+  // from an earlier pass. autoLinkMailRecord returns at once when the row
+  // is already linked, so the re-run is cheap.
+  if (!error && (update.name || update.property_address || result.name || result.property_address)) {
     try {
       await autoLinkMailRecord(sb, leadId)
     } catch (e) {
