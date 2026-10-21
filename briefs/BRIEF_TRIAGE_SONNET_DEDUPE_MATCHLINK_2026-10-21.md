@@ -85,9 +85,29 @@ In `triageEmailLead` (and check `analyzeCallTranscript` ~2205 for the same patte
 - Test: extend `tests/mailMatch.unit.test.ts` only if a pure helper is extracted; otherwise an integration-free unit
   test that the recording pipeline invokes the linker when `property_address` is set (mock the module).
 
+### 6. A response on a NOO Q4 line/alias comes back as New (added 2026-10-21 after Ryan's live test)
+Observed: +19492438530 called 408-418-6294 on 10/21. The number had called the MFM-A line in May 2026 and that
+cluster was marked dead + junk, so the new row inherited `status = "dead"` (voice route ~165: `inheritedStatus` =
+latest row for the caller with a non-null `twilio_number`). The card is buried under the Dead filter. Ryan's rule:
+**a response to the new letter is a new lead.**
+- Scope: ONLY intakes attributed to the NOO Q4 lines/aliases — `SOURCE_OVERRIDE_NUMBERS` for calls/texts
+  (`app/api/leads/voice/route.ts`, `app/api/leads/sms/route.ts`) and the aliases whose `config/email-campaigns.json`
+  source is `NOO-Q4-2026-A` / `NOO-Q4-2026-B` (both email paths). Legacy lines keep today's inheritance untouched.
+  Make the email side table-driven too: treat any alias whose source label is a `SOURCE_OVERRIDE` label as an
+  override (add a small `isSourceOverrideLabel(source)` helper in `lib/leads.ts` next to `SOURCE_OVERRIDE_NUMBERS`
+  so the two stay in sync; the labels are the `CAMPAIGN_MAP` values for those numbers).
+- Behaviour when the override applies: insert the new row with `status = "new"`, `is_junk = false`; do NOT change
+  the old rows. Keep the drip-stamp inheritance exactly as today (don't restart a drip that is already running).
+- DNC wins: if any row in the cluster has `is_dnc = true` (or the caller is on the suppression path), keep today's
+  behaviour entirely — no reset, no alert change.
+- Triage/analyze may still set `dead` afterwards (hostile / wrong number) — unchanged.
+- Alert text: append " (returning caller, reset to New)" to the Telegram alert line when the reset happened.
+- Tests: unit-test the decision helper (override line + prior dead → new; override line + DNC → inherited; legacy
+  line + prior dead → inherited; override alias email → new) in `tests/noo-ab.unit.test.ts`.
+
 ### 5. Gates
 `npx tsc --noEmit` clean, `npx vitest run` green (42 files today), no `HAIKU` left, migration file present, branch
-pushed. Report: the per-site `maxTokens`/`thinking` table you ended up with, and the exact migration SQL.
+pushed. Section 6 is in scope. Report: the per-site `maxTokens`/`thinking` table you ended up with, and the exact migration SQL.
 
 ## Out of scope
 Deploying, applying the migration, Telegram/Twilio config, the Reply Planner prompts themselves, any voice/UI copy,
