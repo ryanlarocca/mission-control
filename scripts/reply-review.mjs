@@ -7,7 +7,7 @@
 // 1. Scoreboard: share of drafts sent untouched, per surface × moment
 //    (last 7 days and all-time) — the one production number.
 // 2. New whys since the last review, grouped by moment.
-// 3. Candidate principles: Haiku clusters each moment's whys into themes;
+// 3. Candidate principles: Sonnet clusters each moment's whys into themes;
 //    a theme with ≥3 whys is proposed. Nothing is written to the playbook —
 //    the agent brings candidates to Ryan and edits REPLY_PLAYBOOK.md on his yes.
 // Output: briefs/tests/reply-review-<date>.md + a Telegram summary.
@@ -96,7 +96,7 @@ ${list.map((t, i) => `${i + 1}. ${t}`).join("\n")}
 
 Respond in JSON only: { "themes": [ { "name": "...", "count": n, "indices": [..], "principle": "..." | null } ] }`
     try {
-      const res = await client.messages.create({ model: "claude-haiku-4-5", max_tokens: 1200, messages: [{ role: "user", content: prompt }] })
+      const res = await client.messages.create({ model: "claude-sonnet-5", max_tokens: 1200, thinking: { type: "disabled" }, messages: [{ role: "user", content: prompt }] })
       const text = res.content.filter((b) => b.type === "text").map((b) => b.text).join("")
       const cleaned = text.replace(/^```(?:json)?\s*/i, "").replace(/```\s*$/i, "")
       const parsed = JSON.parse(cleaned.slice(cleaned.indexOf("{"), cleaned.lastIndexOf("}") + 1))

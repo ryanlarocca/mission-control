@@ -64,13 +64,14 @@ Both null when the sender declined, opted out, is hostile, or gave nothing to
 act on. Never invent a date to look useful. If you set one field, set both.`
 
   const res = await anthropic.messages.create({
-    model: "claude-haiku-4-5",
+    model: "claude-sonnet-5",
     max_tokens: 400,
+    thinking: { type: "disabled" },
     messages: [{ role: "user", content: prompt }],
   })
   if (res.stop_reason === "refusal") throw new Error("model declined")
   const raw = res.content.filter((b) => b.type === "text").map((b) => b.text).join("").trim().replace(/^```(?:json)?\s*/i, "").replace(/```\s*$/i, "")
-  // Haiku sometimes appends a sentence of commentary after the object, which
+  // The model sometimes appends a sentence of commentary after the object, which
   // makes a bare JSON.parse throw. Take the first {...} block instead.
   const block = raw.match(/\{[\s\S]*?\}/)
   if (!block) throw new Error(`no JSON object in response: ${raw.slice(0, 120)}`)

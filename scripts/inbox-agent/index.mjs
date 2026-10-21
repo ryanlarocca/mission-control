@@ -58,7 +58,7 @@ import { childFolderByPrefix, downloadFile, driveClient, findExtraRoots, findFil
 import { esc, tgClearButtons, tgEditText, tgSend, tgSendDocument } from "./telegram.mjs"
 import { advisorSummary, fixRlsDisabled, isSupabaseSecurityAlert } from "./supabase-advisor.mjs"
 import {
-  CLASSIFY_SYSTEM, FILING_SYSTEM, HAIKU, RULES_SYSTEM, SCREEN_SYSTEM, SONNET, VERIFY_SYSTEM,
+  CLASSIFY_SYSTEM, FILING_SYSTEM, RULES_SYSTEM, SCREEN_SYSTEM, SONNET, VERIFY_SYSTEM,
   BAY_AREA_RE, CONDO_RE, blastSignalsPass,
   changePrompt, classifyPrompt, complete, completeJson, filingPrompt, rulesPrompt, screenPrompt, verifyPrompt, WHITELIST } from "./llm.mjs"
 import { destinationFor, driveDuplicateOf, filingDecision, isPurchaseDoc, nextSequence, refineDocType, stageOf, vendorFilename, vendorPropertyFolder, withTimeSuffix } from "./filing.mjs"
@@ -368,7 +368,7 @@ async function applyPhotoPropertyAnswer(iv, f) {
 async function classify(ctx, msg) {
   const attachments = msg.attachments.filter((a) => !a.inline || !/^image\//.test(a.mime))
   const hints = await hintsFor(ctx, msg.from.email)
-  const out = await completeJson({ model: HAIKU, system: CLASSIFY_SYSTEM, prompt: classifyPrompt({ msg, attachments, hints }), maxTokens: 1800, tag: "[classify]" })
+  const out = await completeJson({ model: SONNET, thinking: false, system: CLASSIFY_SYSTEM, prompt: classifyPrompt({ msg, attachments, hints }), maxTokens: 1800, tag: "[classify]" })
   return out
 }
 
@@ -444,7 +444,7 @@ async function recordIgnored(msg, att, why, { source = "attachment", fetchId = n
 async function verifyProperty(ctx, bytes, filename) {
   await loadTree(ctx)
   const candidates = ctx.propFolders.filter((f) => !/^(19|20)\d{2}$|^old$|^_unsorted$|^pitched/i.test(f.name)).map((f) => f.name)
-  return completeJson({ model: HAIKU, system: VERIFY_SYSTEM, prompt: verifyPrompt({ filename, candidates }), docs: [{ kind: "pdf", data: bytes, mime: "application/pdf", name: filename }], maxTokens: 300, tag: "[verify]" })
+  return completeJson({ model: SONNET, thinking: false, system: VERIFY_SYSTEM, prompt: verifyPrompt({ filename, candidates }), docs: [{ kind: "pdf", data: bytes, mime: "application/pdf", name: filename }], maxTokens: 300, tag: "[verify]" })
 }
 function labelFromVerify(v) {
   if (!v) return null
@@ -591,7 +591,7 @@ async function proposeFor(ctx, row, bytes, cls) {
   const docs = []
   if (!row.property_label && bytes && /^application\/pdf$/.test(row.mime || "")) docs.push({ kind: "pdf", data: bytes, mime: row.mime, name: row.filename })
   const file = { ...row, description: cls?.attachments?.find((a) => a.filename === row.filename)?.description, property_address: cls?.property?.address, knowledge: await knowledgeText() }
-  const out = await completeJson({ model: HAIKU, system: FILING_SYSTEM, prompt: filingPrompt({ rulesMd: ctx.rulesMd, rules: ctx.rules, tree: ctx.tree, file, propertyFolder: pf }), docs, maxTokens: 600, tag: "[propose]" })
+  const out = await completeJson({ model: SONNET, thinking: false, system: FILING_SYSTEM, prompt: filingPrompt({ rulesMd: ctx.rulesMd, rules: ctx.rules, tree: ctx.tree, file, propertyFolder: pf }), docs, maxTokens: 600, tag: "[propose]" })
   if (!out?.folder || !out?.name) return out?.question ? { question: out.question, folder: null, name: null } : null
   const rule = out.rule_id ? ctx.rules.find((r) => r.id.startsWith(String(out.rule_id).slice(0, 8))) : null
   let name = sanitizeFilename(out.name)
@@ -759,7 +759,7 @@ async function applyDecisions(ctx) {
   const { data: changed } = await sb().from("inbox_files").select("*").eq("status", "changed").order("resolved_at").limit(20)
   for (const row of changed || []) {
     await loadTree(ctx)
-    const out = await completeJson({ model: HAIKU, prompt: changePrompt({ changeText: row.change_text, proposedFolder: row.proposed_folder, proposedName: row.proposed_name, tree: ctx.tree, filename: row.filename }), maxTokens: 400, tag: "[change]" })
+    const out = await completeJson({ model: SONNET, thinking: false, prompt: changePrompt({ changeText: row.change_text, proposedFolder: row.proposed_folder, proposedName: row.proposed_name, tree: ctx.tree, filename: row.filename }), maxTokens: 400, tag: "[change]" })
     if (!out?.folder || !out?.name) {
       await tgSend(`⚠️ I couldn't turn “${esc(row.change_text)}” into a folder + name. Reply again with e.g. “Properties/Halleck/Prelim 5764 Halleck.pdf”.`, { replyTo: row.tg_message_id, dryRun: DRY })
       if (!DRY) await sb().from("inbox_files").update({ status: "change_requested" }).eq("id", row.id)
@@ -2232,7 +2232,7 @@ async function screenDeal(ctx, msg, cls, pdfDocs) {
   const { data: past } = await sb().from("inbox_deal_screens").select("address, verdict, ryan_verdict, summary").not("ryan_verdict", "is", null).order("created_at", { ascending: false }).limit(20)
   const calibration = (past || []).map((p) => `- ${p.address || "?"}: model said ${p.verdict}, Ryan said ${p.ryan_verdict}${p.summary ? ` (${p.summary})` : ""}`).join("\n")
   const out = await completeJson({
-    model: tier === "direct" ? SONNET : HAIKU, system: SCREEN_SYSTEM + (calibration ? `\n\nCALIBRATION — Ryan's own verdicts on recent screens (match his taste, not the model's):\n${calibration}` : ""),
+    model: SONNET, system: SCREEN_SYSTEM + (calibration ? `\n\nCALIBRATION — Ryan's own verdicts on recent screens (match his taste, not the model's):\n${calibration}` : ""),
     prompt: screenPrompt({ tier, msg, deal: cls.deal, attachmentsText: (cls.attachments || []).map((a) => a.description).filter(Boolean).join("; "), signals }),
     docs, maxTokens: 2500, tag: "[screen]", thinking: true,
   })

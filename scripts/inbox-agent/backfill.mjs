@@ -16,7 +16,7 @@ import crypto from "node:crypto"
 import { loadEnvLocal, MAILBOX, keysMatch, log, propertyKey, sb, warn } from "./env.mjs"
 import { addLabel, getAttachmentBytes, getMessage, gmailClient, listMessageIds } from "./gmail.mjs"
 import { downloadFile, driveClient, findFileByName, findRoot, listChildren, resolvePath, uploadFile } from "./drive.mjs"
-import { CLASSIFY_SYSTEM, HAIKU, VERIFY_SYSTEM, classifyPrompt, completeJson, verifyPrompt } from "./llm.mjs"
+import { CLASSIFY_SYSTEM, VERIFY_SYSTEM, classifyPrompt, completeJson, verifyPrompt } from "./llm.mjs"
 import { destinationFor, filingDecision, isPurchaseDoc, nextSequence, refineDocType, stageOf, withTimeSuffix } from "./filing.mjs"
 
 loadEnvLocal()
@@ -81,7 +81,7 @@ for (const id of ids) {
   }
   const atts = msg.attachments.filter((a) => !(a.inline && /^image\//.test(a.mime)) && !SKIP_NAME_RE.test(a.filename) && /\.(pdf|docx?|xlsx?|csv)$/i.test(a.filename) && (a.size || 0) > 10 * 1024)
   if (!atts.length) continue
-  const cls = await completeJson({ model: HAIKU, system: CLASSIFY_SYSTEM, prompt: classifyPrompt({ msg, attachments: atts, hints: { knownSender: true, knowledge: "", senderProperties: [PROPERTY], activeProperties: [PROPERTY], propertyFolders: [PROPERTY] } }), maxTokens: 1800, tag: "[backfill-classify]" })
+  const cls = await completeJson({ model: SONNET, thinking: false, system: CLASSIFY_SYSTEM, prompt: classifyPrompt({ msg, attachments: atts, hints: { knownSender: true, knowledge: "", senderProperties: [PROPERTY], activeProperties: [PROPERTY], propertyFolders: [PROPERTY] } }), maxTokens: 1800, tag: "[backfill-classify]" })
   const byName = new Map((cls?.attachments || []).map((a) => [a.filename, a]))
   for (const a of atts) {
     const c = byName.get(a.filename) || {}
@@ -125,7 +125,7 @@ for (const id of ids) {
     // Property comes from the document, not the subject line.
     let verify = null
     if (/^application\/pdf$/.test(a.mime)) {
-      verify = await completeJson({ model: HAIKU, system: VERIFY_SYSTEM, prompt: verifyPrompt({ filename: cleanName, candidates: [PROPERTY] }), docs: [{ kind: "pdf", data: bytes, mime: a.mime, name: cleanName }], maxTokens: 300, tag: "[backfill-verify]" })
+      verify = await completeJson({ model: SONNET, thinking: false, system: VERIFY_SYSTEM, prompt: verifyPrompt({ filename: cleanName, candidates: [PROPERTY] }), docs: [{ kind: "pdf", data: bytes, mime: a.mime, name: cleanName }], maxTokens: 300, tag: "[backfill-verify]" })
       const vk = propertyKey(verify?.label || verify?.address || "")
       const ok = (verify?.matches && keysMatch(propertyKey(verify.matches), propKey)) || (vk && keysMatch(vk, propKey))
       if (verify?.address && !ok) {

@@ -550,11 +550,12 @@ function detectSoftSignals(lead, history) {
   return reasons
 }
 
-// ─── content generation (Haiku via the Anthropic SDK) ───────────────────────
+// ─── content generation (Sonnet 5 via the Anthropic SDK) ────────────────────
 // Moved off OpenRouter 2026-09-09 — it was the last recurring charge on that
-// account. Same model, same prompt; only the transport changed.
+// account. Haiku → Sonnet 5 on 2026-10-21 (Ryan: Sonnet everywhere); thinking is
+// disabled on the 400-token generation call so the budget goes to the text.
 
-const HAIKU_MODEL = "claude-haiku-4-5"
+const DRIP_MODEL = "claude-sonnet-5"
 
 function buildResponsivenessBlock(sig) {
   if (!sig) return ""
@@ -880,7 +881,7 @@ async function recordDripDraft(sb, { lead, queueId, channel, message, subject, c
       plan_json: { moment: lead.moment || null, campaign: lead.drip_campaign_type || null },
       draft_subject: subject || null,
       draft_body: message,
-      model: model || HAIKU_MODEL,
+      model: model || DRIP_MODEL,
       prompt_version: DRIP_PROMPT_VERSION,
       playbook_version: loadPlaybook().version,
       critic_json: critic || null,
@@ -929,8 +930,9 @@ async function generateMessage(args) {
   const systemPrompt = buildSystemPrompt(args)
   try {
     const res = await getAnthropic().messages.create({
-      model: HAIKU_MODEL,
+      model: DRIP_MODEL,
       max_tokens: 400,
+      thinking: { type: "disabled" },
       system: systemPrompt,
       messages: [{ role: "user", content: `Generate touch #${args.touchNumber} for this lead.` }],
     })

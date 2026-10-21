@@ -1,11 +1,11 @@
-// Inbox Agent — model calls. Anthropic SDK only (lib/llm.ts policy). Haiku for
+// Inbox Agent — model calls. Anthropic SDK only (lib/llm.ts policy). Sonnet 5 for
 // per-email classification and filing proposals, Sonnet for the rules doc and
 // deal screens. PDFs go to the model as document blocks (no local PDF parser
 // in the repo), capped by MAX_PDF_TO_MODEL_BYTES.
 import Anthropic from "@anthropic-ai/sdk"
 import { MAX_PDF_TO_MODEL_BYTES, warn } from "./env.mjs"
 
-export const HAIKU = "claude-haiku-4-5"
+// The Haiku constant was removed 2026-10-21 (Ryan: Sonnet everywhere) — short JSON sites pass thinking:false.
 export const SONNET = "claude-sonnet-5"
 
 let client = null
@@ -22,7 +22,7 @@ function extractJson(text) {
 }
 
 /** One user turn. `docs` = [{kind:"pdf"|"image", data:Buffer, mime, name}]. */
-export async function complete({ model = HAIKU, system, prompt, docs = [], maxTokens = 1500, tag = "[llm]", thinking = true }) {
+export async function complete({ model = SONNET, system, prompt, docs = [], maxTokens = 1500, tag = "[llm]", thinking = true }) {
   const content = []
   for (const d of docs) {
     if (!d?.data) continue
