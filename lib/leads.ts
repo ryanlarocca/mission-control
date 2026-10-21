@@ -2468,20 +2468,43 @@ ${historyBlock}FRESH TRANSCRIPT (this is the current call):
     // completeText retries once at 3x on max_tokens.
     const out = await completeText({ model: SONNET, prompt, maxTokens: 4096, tag: "[analyze-call]" })
     const content = out.text
-    if (!content) return null
+    if (!content) {
+      console.error("[analyze-call] empty model response")
+      return null
+    }
     if (out.truncated) {
-      console.error("[analyze-call] response truncated even after retry; dropping")
+      // A clipped object never parses; the caller alerts Telegram on null.
+      console.error("[analyze-call] response truncated even after retry; dropping. raw:", content.slice(0, 500))
       return null
     }
     const parsed = JSON.parse(extractJsonObject(content)) as Partial<AnalyzeCallResult>
-    if (
-      !parsed.temperature ||
-      !(VALID_TEMPERATURES as readonly string[]).includes(parsed.temperature)
-    ) {
+    if (!parsed || typeof parsed !== "object") {
+      console.error("[analyze-call] no JSON object in response:", content.slice(0, 500))
       return null
     }
-    if (!parsed.summary || typeof parsed.summary !== "string" || !parsed.summary.trim()) {
-      return null
+    // Validator (2026-10-21, same rule as triageEmailLead): an off-list
+    // temperature or a missing summary no longer drops the whole analysis —
+    // name / property_address / follow-up / property_details survive, the
+    // bad field is defaulted, and the raw text is logged. Null now only
+    // means the call threw or no JSON object came back.
+    const defaulted: string[] = []
+    let temperature: Temperature = "cold"
+    if (
+      typeof parsed.temperature === "string" &&
+      (VALID_TEMPERATURES as readonly string[]).includes(parsed.temperature)
+    ) {
+      temperature = parsed.temperature as Temperature
+    } else {
+      defaulted.push(`temperature=${JSON.stringify(parsed.temperature ?? null)} → "cold"`)
+    }
+    let summary = transcript.trim().slice(0, 160)
+    if (typeof parsed.summary === "string" && parsed.summary.trim()) {
+      summary = parsed.summary.trim()
+    } else {
+      defaulted.push("summary missing → first 160 chars of transcript")
+    }
+    if (defaulted.length) {
+      console.warn(`[analyze-call] field defaulted: ${defaulted.join("; ")}`, content.slice(0, 500))
     }
     // Follow-up guards run here, where `today` (the string the prompt saw)
     // is in scope: long-horizon first, then the owed-deliverable clamp
@@ -2503,9 +2526,9 @@ ${historyBlock}FRESH TRANSCRIPT (this is the current call):
       today
     )
     return {
-      temperature: parsed.temperature as Temperature,
+      temperature,
       moment: isLeadMoment(parsed.moment) ? parsed.moment : null,
-      summary: parsed.summary.trim(),
+      summary,
       name:
         typeof parsed.name === "string" && parsed.name.trim()
           ? parsed.name.trim()
@@ -2529,7 +2552,9 @@ ${historyBlock}FRESH TRANSCRIPT (this is the current call):
       property_details: parsePropertyDetails(parsed.property_details),
     }
   } catch (e) {
-    console.error("[analyze-call] threw:", e)
+    // The recording pipeline alerts Telegram when this returns null on a
+    // real transcript (processRecordingBackground), so no second alert here.
+    console.error("[analyze-call] threw:", e instanceof Error ? e.message : String(e))
     return null
   }
 }
@@ -3060,14 +3085,28 @@ export interface EmailTriageResult {
   property_address: string | null
 }
 
+// Validator (2026-10-21): keeps every valid field and defaults the rest.
+// Before, one off-list value (`suggestedReply: null` on a "please ignore"
+// probe, an unknown temperature) returned null and the card lost the
+// summary, the property_address and the moment — silently. Now null only
+// means the model call threw or no JSON object came back, and both of
+// those log the raw text and alert Telegram (`context.sender` names the
+// lead in the alert).
 export async function triageEmailLead(
   subject: string,
-  body: string
+  body: string,
+  context?: { sender?: string | null }
 ): Promise<EmailTriageResult | null> {
   if (!hasLlmKey()) {
     console.warn("[triage-email] ANTHROPIC_API_KEY not set; skipping triage")
     return null
   }
+  const sender = context?.sender?.trim() || "unknown sender"
+  const failAlert = (why: string) =>
+    sendTelegramAlert(
+      `⚠️ Email triage failed — lead from ${sender} inserted without AI notes (${why}). ` +
+        `Subject: ${subject.slice(0, 80)}. The card has the message; summary / temperature / address were not extracted.`
+    ).catch(() => {})
 
   const today = new Date().toISOString().slice(0, 10)
   const prompt = `You are triaging an email response to a real estate direct mail campaign. The sender received a mailer about selling their home.
@@ -3150,20 +3189,26 @@ PROPERTY ADDRESS
     Never use Ryan's own address, a return address, or an address in a
     signature block.`
 
+  let rawText = ""
   try {
     // 200 was already tight for summary + suggestedReply; the two follow-up
     // fields pushed it to 700, and a truncated object reads as "triage
     // returned null" rather than an error. 1500 + the 3x retry in
-    // completeText closes that hole.
+    // completeText closes that hole. Thinking is off: short JSON, and the
+    // budget would otherwise go to reasoning instead of the object.
     const out = await completeText({ model: SONNET, prompt, maxTokens: 1500, thinking: false, tag: "[triage-email]" })
-    const content = out.text
-    if (!content) return null
+    rawText = out.text
+    if (!rawText) {
+      console.error("[triage-email] empty model response")
+      await failAlert("empty model response")
+      return null
+    }
 
-    const parsed = JSON.parse(extractJsonObject(content)) as {
-      temperature?: string
+    const parsed = JSON.parse(extractJsonObject(rawText)) as {
+      temperature?: unknown
       is_dead?: unknown
-      summary?: string
-      suggestedReply?: string
+      summary?: unknown
+      suggestedReply?: unknown
       offer_amount?: unknown
       offer_verbalized?: unknown
       recommended_followup_date?: unknown
@@ -3171,14 +3216,42 @@ PROPERTY ADDRESS
       moment?: unknown
       property_address?: unknown
     }
-    if (
-      !parsed.temperature ||
-      !(VALID_TEMPERATURES as readonly string[]).includes(parsed.temperature)
-    ) {
+    if (!parsed || typeof parsed !== "object") {
+      console.error("[triage-email] no JSON object in response:", rawText.slice(0, 500))
+      await failAlert("no JSON object in the response")
       return null
     }
-    if (!parsed.summary || typeof parsed.summary !== "string") return null
-    if (!parsed.suggestedReply || typeof parsed.suggestedReply !== "string") return null
+
+    const defaulted: string[] = []
+    let temperature: Temperature = "cold"
+    if (
+      typeof parsed.temperature === "string" &&
+      (VALID_TEMPERATURES as readonly string[]).includes(parsed.temperature)
+    ) {
+      temperature = parsed.temperature as Temperature
+    } else {
+      defaulted.push(`temperature=${JSON.stringify(parsed.temperature ?? null)} → "cold"`)
+    }
+    let summary = body.trim().slice(0, 160)
+    if (typeof parsed.summary === "string" && parsed.summary.trim()) {
+      summary = parsed.summary.trim()
+    } else {
+      defaulted.push("summary missing → first 160 chars of body")
+    }
+    // The drafter runs separately (Reply Planner), so an empty reply is
+    // fine here; the email route stores "" as null and triggerTelegramDraft
+    // never reads this field.
+    let suggestedReply = ""
+    if (typeof parsed.suggestedReply === "string" && parsed.suggestedReply.trim()) {
+      suggestedReply = parsed.suggestedReply.trim()
+    } else {
+      defaulted.push('suggestedReply missing → ""')
+    }
+    const moment = isLeadMoment(parsed.moment) ? parsed.moment : null
+    if (!moment && parsed.moment != null) defaulted.push(`moment=${JSON.stringify(parsed.moment)} → null`)
+    if (defaulted.length) {
+      console.warn(`[triage-email] field defaulted: ${defaulted.join("; ")}`, rawText.slice(0, 500))
+    }
 
     // Same shape + guard the call path uses: a date only counts with a
     // reason beside it, and the long-horizon check clears "call back in a
@@ -3205,10 +3278,10 @@ PROPERTY ADDRESS
     )
 
     return {
-      temperature: parsed.temperature as Temperature,
+      temperature,
       is_dead: parsed.is_dead === true,
-      summary: parsed.summary.trim(),
-      suggestedReply: parsed.suggestedReply.trim(),
+      summary,
+      suggestedReply,
       offer_amount:
         typeof parsed.offer_amount === "number" && Number.isFinite(parsed.offer_amount) && parsed.offer_amount > 0
           ? parsed.offer_amount
@@ -3216,14 +3289,19 @@ PROPERTY ADDRESS
       offer_verbalized: parsed.offer_verbalized === true,
       recommended_followup_date: followupDate,
       followup_reason: followupReason,
-      moment: isLeadMoment(parsed.moment) ? parsed.moment : null,
+      moment,
+      // Always carried through when it is a non-empty string — this is the
+      // key autoLinkMailRecord matches the mailed record on.
       property_address:
         typeof parsed.property_address === "string" && parsed.property_address.trim()
           ? parsed.property_address.trim().slice(0, 200)
           : null,
     }
   } catch (e) {
-    console.error("[triage-email] Threw:", e)
+    // Model call threw, or JSON.parse found no object. Both are the
+    // "card inserted without AI notes" case Ryan has to hear about.
+    console.error("[triage-email] Threw:", e instanceof Error ? e.message : String(e), "raw:", rawText.slice(0, 500))
+    await failAlert(e instanceof Error ? e.message.slice(0, 120) : "model call threw")
     return null
   }
 }

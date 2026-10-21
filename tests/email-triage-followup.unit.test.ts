@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
-import { triageEmailLead } from "@/lib/leads"
+import { triageEmailLead, analyzeCallTranscript } from "@/lib/leads"
 import { completeText } from "@/lib/llm"
 
 // BRIEF_LEAD_RECOVERY_2026-09-02 Phase 1. Before this, an inbound email could
@@ -132,5 +132,129 @@ describe("triageEmailLead property_address", () => {
       const r = await triageEmailLead("Re: letter", "Not interested, thanks.")
       expect(r?.property_address).toBeNull()
     }
+  })
+})
+
+// 2026-10-21 — the validator keeps what it got. Seen live on the NOO Q4
+// probe emails: the model (correctly) returned `suggestedReply: null` for a
+// "please ignore" mail and the whole triage was dropped — no summary, no
+// property_address, no moment on the card, and nothing in the logs. Null is
+// now reserved for a thrown call / no JSON object, and both alert Telegram.
+const PROBE = {
+  temperature: "cold",
+  is_dead: false,
+  summary: "Test probe from the mail house asking Ryan to ignore this message.",
+  suggestedReply: null,
+  offer_amount: null,
+  offer_verbalized: false,
+  recommended_followup_date: null,
+  followup_reason: null,
+  moment: "junk_wrong_person",
+  property_address: "4032 Ross Park Ct, San Jose",
+}
+
+describe("triageEmailLead keeps valid fields and defaults the rest", () => {
+  it("probe JSON: suggestedReply null → \"\", address + summary + moment survive", async () => {
+    ok(PROBE)
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
+    const r = await triageEmailLead("Please ignore", "This is a probe from the mail house — please ignore.")
+    expect(r).not.toBeNull()
+    expect(r?.property_address).toBe("4032 Ross Park Ct, San Jose")
+    expect(r?.summary).toBe(PROBE.summary)
+    expect(r?.temperature).toBe("cold")
+    expect(r?.moment).toBe("junk_wrong_person")
+    expect(r?.suggestedReply).toBe("")
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining("[triage-email] field defaulted"), expect.any(String))
+    warn.mockRestore()
+  })
+
+  it("off-list temperature → cold, everything else kept", async () => {
+    ok({ ...PROBE, temperature: "lukewarm", suggestedReply: "Thanks — what's your timeline?" })
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
+    const r = await triageEmailLead("s", "b")
+    expect(r?.temperature).toBe("cold")
+    expect(r?.property_address).toBe("4032 Ross Park Ct, San Jose")
+    expect(r?.suggestedReply).toBe("Thanks — what's your timeline?")
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('temperature="lukewarm"'), expect.any(String))
+    warn.mockRestore()
+  })
+
+  it("missing summary → first 160 chars of the body", async () => {
+    ok({ ...PROBE, summary: null })
+    vi.spyOn(console, "warn").mockImplementation(() => {})
+    const body = "x".repeat(300)
+    const r = await triageEmailLead("s", body)
+    expect(r?.summary).toBe("x".repeat(160))
+    expect(r?.property_address).toBe("4032 Ross Park Ct, San Jose")
+    vi.mocked(console.warn).mockRestore()
+  })
+
+  it("off-list moment → null without dropping the result", async () => {
+    ok({ ...PROBE, moment: "excited" })
+    vi.spyOn(console, "warn").mockImplementation(() => {})
+    const r = await triageEmailLead("s", "b")
+    expect(r).not.toBeNull()
+    expect(r?.moment).toBeNull()
+    vi.mocked(console.warn).mockRestore()
+  })
+
+  it("a thrown model call → null AND a Telegram alert naming the sender", async () => {
+    vi.stubEnv("TELEGRAM_BOT_TOKEN", "t")
+    vi.stubEnv("TELEGRAM_CHAT_ID", "c")
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("{}", { status: 200 }))
+    const err = vi.spyOn(console, "error").mockImplementation(() => {})
+    model.mockRejectedValue(new Error("overloaded"))
+    const r = await triageEmailLead("Your letter", "body", { sender: "seller@example.com" })
+    expect(r).toBeNull()
+    const call = fetchSpy.mock.calls.find(([url]) => String(url).includes("api.telegram.org"))
+    expect(call).toBeTruthy()
+    const body = JSON.parse(String((call?.[1] as RequestInit).body))
+    expect(body.text).toContain("Email triage failed")
+    expect(body.text).toContain("seller@example.com")
+    fetchSpy.mockRestore()
+    err.mockRestore()
+  })
+
+  it("no JSON object in the response → null AND a Telegram alert", async () => {
+    vi.stubEnv("TELEGRAM_BOT_TOKEN", "t")
+    vi.stubEnv("TELEGRAM_CHAT_ID", "c")
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("{}", { status: 200 }))
+    const err = vi.spyOn(console, "error").mockImplementation(() => {})
+    model.mockResolvedValue({ text: "I cannot triage this email.", stopReason: "end_turn", truncated: false })
+    const r = await triageEmailLead("s", "b", { sender: "+14085551212" })
+    expect(r).toBeNull()
+    expect(err).toHaveBeenCalledWith(expect.stringContaining("[triage-email] Threw"), expect.any(String), "raw:", expect.stringContaining("I cannot triage"))
+    const call = fetchSpy.mock.calls.find(([url]) => String(url).includes("api.telegram.org"))
+    expect(JSON.parse(String((call?.[1] as RequestInit).body)).text).toContain("+14085551212")
+    fetchSpy.mockRestore()
+    err.mockRestore()
+  })
+})
+
+describe("analyzeCallTranscript keeps valid fields and defaults the rest", () => {
+  it("off-list temperature + missing summary → cold + transcript head; address and name survive", async () => {
+    ok({
+      temperature: "lukewarm",
+      summary: "",
+      name: "Brian",
+      property_address: "2127 Los Gatos Almaden Rd",
+      email: null,
+      recommended_followup_date: null,
+      followup_reason: null,
+      is_dnc: false,
+      offer_amount: null,
+      offer_verbalized: false,
+      property_details: [],
+    })
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
+    const transcript = "Hi this is Brian calling about the duplex at 2127 Los Gatos Almaden Rd, give me a call back."
+    const r = await analyzeCallTranscript(transcript)
+    expect(r).not.toBeNull()
+    expect(r?.temperature).toBe("cold")
+    expect(r?.summary).toBe(transcript.slice(0, 160))
+    expect(r?.name).toBe("Brian")
+    expect(r?.property_address).toBe("2127 Los Gatos Almaden Rd")
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining("[analyze-call] field defaulted"), expect.any(String))
+    warn.mockRestore()
   })
 })

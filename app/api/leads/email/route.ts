@@ -365,7 +365,7 @@ async function ingestGoogleVoice(args: {
   const triage =
     parsed.kind === "missed_call" && !parsed.content
       ? null
-      : await triageEmailLead(subject, content)
+      : await triageEmailLead(subject, content, { sender: phone })
 
   const { data: inserted, error: insertErr } = await sb
     .from("leads")
@@ -381,7 +381,7 @@ async function ingestGoogleVoice(args: {
       ai_notes: triage?.summary ?? null,
       // Lets autoLinkMailRecord (called after insert) match the mailed record.
       property_address: triage?.property_address ?? null,
-      suggested_reply: triage?.suggestedReply ?? null,
+      suggested_reply: triage?.suggestedReply || null,
       moment: triage?.moment ?? null,
       moment_at: triage?.moment ? new Date().toISOString() : null,
       status: triage?.is_dead ? "dead" : inheritedStatus,
@@ -595,7 +595,7 @@ async function handleAppsScript(payload: AppsScriptPayload): Promise<NextRespons
   }
 
   // Sonnet triage — non-fatal
-  const triage = await triageEmailLead(subject, bodyText)
+  const triage = await triageEmailLead(subject, bodyText, { sender: senderEmail })
 
   // Inherit cluster status + drip metadata so re-engagement doesn't reset to
   // "new" and doesn't double-stamp drip. Apps Script payloads carry no Gmail
@@ -653,7 +653,7 @@ async function handleAppsScript(payload: AppsScriptPayload): Promise<NextRespons
       ai_notes: triage?.summary ?? null,
       // Lets autoLinkMailRecord (called after insert) match the mailed record.
       property_address: triage?.property_address ?? null,
-      suggested_reply: triage?.suggestedReply ?? null,
+      suggested_reply: triage?.suggestedReply || null,
       moment: triage?.moment ?? null,
       moment_at: triage?.moment ? new Date().toISOString() : null,
       status: triage?.is_dead ? "dead" : inheritedStatus,
@@ -874,7 +874,7 @@ async function processSingleMessage(args: {
 
   // Triage with Sonnet — non-fatal; null leaves the lead with the inherited
   // cluster status (or "new" for fresh callers) and Ryan sees it untouched.
-  const triage = await triageEmailLead(subject, bodyText)
+  const triage = await triageEmailLead(subject, bodyText, { sender: senderEmail })
 
   // Inherit cluster status + drip metadata (see lookupEmailCluster above).
   const cluster = await lookupEmailCluster({
@@ -922,7 +922,7 @@ async function processSingleMessage(args: {
       ai_notes: triage?.summary ?? null,
       // Lets autoLinkMailRecord (called after insert) match the mailed record.
       property_address: triage?.property_address ?? null,
-      suggested_reply: triage?.suggestedReply ?? null,
+      suggested_reply: triage?.suggestedReply || null,
       moment: triage?.moment ?? null,
       moment_at: triage?.moment ? new Date().toISOString() : null,
       status: triage?.is_dead ? "dead" : inheritedStatus,
