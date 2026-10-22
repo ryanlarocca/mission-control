@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server"
 import { getLeadsClient } from "@/lib/leads"
-import { listSenders } from "@/lib/campaignSenders"
+import { listSenders, GENUINE_REPLY_OR } from "@/lib/campaignSenders"
 
 // Campaign Performance tab data: health counts, the send-time experiment
 // (reply rate by PT send hour since 7/31), touch funnel, recent replies.
@@ -39,10 +39,11 @@ export async function GET() {
     const sends = await pageAll<SendRow>((off) =>
       sb.from("campaign_sends").select("contact_id, touch_number, sent_at, variant, sender").eq("status", "sent").order("id", { ascending: true }).range(off, off + 999)
     )
-    // triage null = genuine replies only (auto_reply / dead_mailbox /
-    // unsubscribe rows are also kind=email_reply and must not count).
+    // Genuine replies only: auto_reply / dead_mailbox / unsubscribe rows are
+    // also kind=email_reply and must not count; AI-labelled replies (deal,
+    // interested, question, …) do (2026-10-22).
     const replies = await pageAll<{ contact_id: string | null; occurred_at: string }>((off) =>
-      sb.from("campaign_events").select("contact_id, occurred_at").eq("kind", "email_reply").is("triage", null).order("id", { ascending: true }).range(off, off + 999)
+      sb.from("campaign_events").select("contact_id, occurred_at").eq("kind", "email_reply").or(GENUINE_REPLY_OR).order("id", { ascending: true }).range(off, off + 999)
     )
     const replyTimes = new Map<string, number[]>()
     for (const r of replies) {
@@ -107,7 +108,7 @@ export async function GET() {
       .from("campaign_events")
       .select("body, occurred_at, contact:campaign_contacts (name)")
       .eq("kind", "email_reply")
-      .is("triage", null)
+      .or(GENUINE_REPLY_OR)
       .order("occurred_at", { ascending: false })
       .limit(10)
 

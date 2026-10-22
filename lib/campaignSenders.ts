@@ -48,6 +48,14 @@ export interface SenderState {
 export type CanaryVerdict = "primary" | "promotions" | "spam"
 export type PostmasterLevel = "HIGH" | "MEDIUM" | "LOW" | "BAD"
 export const CANARY_VERDICTS: CanaryVerdict[] = ["primary", "promotions", "spam"]
+
+// What counts as a campaign reply (2026-10-22): any email_reply row except
+// these opt-out / machine triage labels. AI triage labels every genuine reply
+// (deal / interested / question / not_now / other), so "triage is null" missed
+// them. Mirror of NON_REPLY_TRIAGE in scripts/campaign-senders.mjs.
+export const NON_REPLY_TRIAGE = ["unsubscribe", "auto_reply", "dead_mailbox"] as const
+/** PostgREST `.or()` filter for genuine replies (null triage needs its own arm). */
+export const GENUINE_REPLY_OR = `triage.is.null,triage.not.in.(${NON_REPLY_TRIAGE.join(",")})`
 export const POSTMASTER_LEVELS: PostmasterLevel[] = ["HIGH", "MEDIUM", "LOW", "BAD"]
 
 const PT = "America/Los_Angeles"

@@ -187,3 +187,42 @@ describe("understudy overflow (Ryan 2026-09-16, rebuild Q3)", () => {
     expect(assignSender({ contact: stranger, senders, relEmails, lastSender, budgets })).toBe(workhorse)
   })
 })
+
+// What counts as a reply (2026-10-22): AI triage labels every genuine reply,
+// so only the opt-out / machine labels are excluded — not "triage is null".
+describe("genuine reply + deal definition", () => {
+  const { isGenuineReply, isDealReply, NON_REPLY_TRIAGE, GENUINE_REPLY_OR } = sendersModule as unknown as Record<string, any>
+  const reply = (triage: string | null) => ({ kind: "email_reply", triage })
+
+  it("counts untriaged and every AI-labelled reply", () => {
+    for (const t of [null, "deal", "interested", "question", "not_now", "other"]) expect(isGenuineReply(reply(t))).toBe(true)
+  })
+
+  it("excludes removes, auto-replies, dead mailboxes, and non-reply events", () => {
+    for (const t of ["unsubscribe", "auto_reply", "dead_mailbox"]) expect(isGenuineReply(reply(t))).toBe(false)
+    expect(isGenuineReply({ kind: "bounce", triage: null })).toBe(false)
+    expect(isGenuineReply({ kind: "note", triage: "pending_draft" })).toBe(false)
+  })
+
+  it("a deal is a reply labelled deal, nothing else", () => {
+    expect(isDealReply(reply("deal"))).toBe(true)
+    for (const t of [null, "interested", "unsubscribe"]) expect(isDealReply(reply(t))).toBe(false)
+    expect(isDealReply({ kind: "note", triage: "deal" })).toBe(false)
+  })
+
+  it("PostgREST filter keeps the null arm and lists the excluded labels", () => {
+    expect(GENUINE_REPLY_OR).toBe("triage.is.null,triage.not.in.(unsubscribe,auto_reply,dead_mailbox)")
+  })
+
+  it("the Vercel-side mirror matches the engine", async () => {
+    const lib = await import("../lib/campaignSenders")
+    expect([...lib.NON_REPLY_TRIAGE]).toEqual(NON_REPLY_TRIAGE)
+    expect(lib.GENUINE_REPLY_OR).toBe(GENUINE_REPLY_OR)
+  })
+
+  it("deal-only replies clear the 'no replies' ramp warning", () => {
+    const tr = { sent: 44, bounces: 0, replies: 2 }
+    const ev = evaluateSenderDay({ sender: buys, state: freshState(), day: "2026-10-22", metrics: greenDay(10), trailing: tr, gates })
+    expect(ev.warnings.some((w: string) => /no replies/.test(w))).toBe(false)
+  })
+})

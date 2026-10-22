@@ -64,7 +64,7 @@ import path from "node:path"
 import { fileURLToPath } from "node:url"
 import { createClient } from "@supabase/supabase-js"
 import { TOUCHES, renderTouch, nextOffsetDays } from "./campaign-touches.mjs"
-import { loadSenderConfig, loadSenderStates, saveSenderState, capFor, evaluateSenderDay, fetchRelationshipEmails, fetchReplierIds, fetchLastSenderByContact, fetchLastSendByContact, assignSender, priorityOf, isSenderPaused, pauseLabel, withPause, withResume, withCanaryVerdict } from "./campaign-senders.mjs"
+import { loadSenderConfig, loadSenderStates, saveSenderState, capFor, evaluateSenderDay, fetchRelationshipEmails, fetchReplierIds, GENUINE_REPLY_OR, isGenuineReply, isDealReply, fetchLastSenderByContact, fetchLastSendByContact, assignSender, priorityOf, isSenderPaused, pauseLabel, withPause, withResume, withCanaryVerdict } from "./campaign-senders.mjs"
 import { judgeConfigured, connectJudge, disconnectJudge, readCanaryMessages, newestCanary, describePlacement, decideVerdict, canaryOldEnough, planBackfill, stallReason, verdictWord, isJudgeAuthError, judgeErrorText, JUDGE_SEARCH_DAYS, BACKFILL_SEARCH_DAYS } from "./canary-judge.mjs"
 import { AUTO_SEND_KEY, resolveAutoSend, withTouchRegated, removeTripwire, describeRemovedSends, touchesOfRemoves, bounceBreaker, isDayStopped, withDayStop, partitionTouchOne, t1Supply, describeT1Supply, CANARY2_REMINDER_KEY, canary2ReminderDue, canary2ReminderText, withCanary2Reminder, windowStartIso, respreadSlot } from "./campaign-gates.mjs"
 import { checkRecipientDomain, dnsBlocks, readDnsCache } from "./campaign-dns.mjs"
@@ -1353,20 +1353,52 @@ function patchHealthDay(day, patch) {
 async function dayMetrics(dayStr) {
   const start = new Date(`${dayStr}T00:00:00-07:00`).toISOString()
   const end = new Date(`${dayStr}T23:59:59-07:00`).toISOString()
-  const cnt = async (table, col, mods) => {
+  const cnt = async (table, col, mods, or = null) => {
     let q = sb.from(table).select("id", { count: "exact", head: true }).gte(col, start).lte(col, end)
     for (const [k, v] of Object.entries(mods)) q = Array.isArray(v) ? q.in(k, v) : v === null ? q.is(k, null) : q.eq(k, v)
+    if (or) q = q.or(or)
     const { count } = await q
     return count ?? 0
   }
   const sent = await cnt("campaign_sends", "sent_at", { status: "sent" })
   const failed = await cnt("campaign_sends", "created_at", { status: "failed" })
   const bounces = await cnt("campaign_events", "occurred_at", { kind: "bounce" })
-  const replies = await cnt("campaign_events", "occurred_at", { kind: "email_reply", triage: null })
+  const replies = await cnt("campaign_events", "occurred_at", { kind: "email_reply" }, GENUINE_REPLY_OR)
+  const deals = await cnt("campaign_events", "occurred_at", { kind: "email_reply", triage: "deal" })
   const unsubs = await cnt("campaign_events", "occurred_at", { kind: "email_reply", triage: "unsubscribe" })
   const autoReplies = await cnt("campaign_events", "occurred_at", { kind: "email_reply", triage: ["auto_reply", "dead_mailbox"] })
   const local = readHealthState()[dayStr] || {}
-  return { day: dayStr, sent, failed, bounces, replies, unsubs, autoReplies, lint_rejected: local.lint_rejected || 0, dns_no_mx: local.dns_no_mx || 0, verified: local.verified || 0, verify_undeliverable: local.verify_undeliverable || 0, canary: local.canary || null }
+  return { day: dayStr, sent, failed, bounces, replies, deals, unsubs, autoReplies, lint_rejected: local.lint_rejected || 0, dns_no_mx: local.dns_no_mx || 0, verified: local.verified || 0, verify_undeliverable: local.verify_undeliverable || 0, canary: local.canary || null }
+}
+
+/**
+ * Scoreboard counts over [startIso, endIso] straight from the tables (2026-10-22).
+ * Read live instead of summing stored health:<day> snapshots: the snapshots
+ * before today counted replies the old way (triage null only), so a live read
+ * is the backfill. startIso null = all time. Deals carry who + what for the card.
+ */
+async function scoreboardRange(startIso, endIso) {
+  const span = (q, col) => (startIso ? q.gte(col, startIso) : q).lte(col, endIso)
+  const head = () => ({ count: "exact", head: true })
+  const [{ count: sent }, { count: bounces }, { count: replies }, { count: unsubs }] = await Promise.all([
+    span(sb.from("campaign_sends").select("id", head()).eq("status", "sent"), "sent_at"),
+    span(sb.from("campaign_events").select("id", head()).eq("kind", "bounce"), "occurred_at"),
+    span(sb.from("campaign_events").select("id", head()).eq("kind", "email_reply").or(GENUINE_REPLY_OR), "occurred_at"),
+    span(sb.from("campaign_events").select("id", head()).eq("kind", "email_reply").eq("triage", "unsubscribe"), "occurred_at"),
+  ])
+  const { data: dealRows, error } = await span(sb.from("campaign_events").select("occurred_at, ai_summary, contact:campaign_contacts (name, email)").eq("kind", "email_reply").eq("triage", "deal"), "occurred_at").order("occurred_at", { ascending: true }).limit(500)
+  if (error) throw new Error(`scoreboard deals: ${error.message}`)
+  const deals = (dealRows ?? []).map((r) => ({ at: r.occurred_at, name: r.contact?.name ?? r.contact?.email ?? "unknown", summary: r.ai_summary ?? "" }))
+  return { sent: sent ?? 0, bounces: bounces ?? 0, replies: replies ?? 0, unsubs: unsubs ?? 0, deals }
+}
+
+/** "1 deal" / "2 deals" — the scoreboard reads as counts. */
+const plural = (n, one, many = `${one}s`) => `${n} ${n === 1 ? one : many}`
+
+/** One card line per deal reply: who, and what they offered (AI summary, trimmed). */
+function dealLine(d) {
+  const what = d.summary.replace(/\s+/g, " ").trim()
+  return `🏠 <b>${escHtml(d.name)}</b>${what ? `: ${escHtml(what.length > 140 ? `${what.slice(0, 137)}…` : what)}` : ""}`
 }
 
 /** T1 remaining (active contacts with an email still at touch 0) and days of supply at today's caps (Task 6). */
@@ -1404,7 +1436,7 @@ async function catchAllSentCount(startIso, endIso) {
 // variant / subject, from the remove event's raw.send stamp or the
 // contact's latest sent row), so the tripwire can say which copy to check.
 async function senderMetricsRange(startIso, endIso) {
-  const out = new Map(SENDERS.map((s) => [s.email, { sent: 0, failed: 0, bounces: 0, bouncesFirstHour: 0, replies: 0, unsubs: 0, autoReplies: 0, unsubDetails: [], firstSentAt: null }]))
+  const out = new Map(SENDERS.map((s) => [s.email, { sent: 0, failed: 0, bounces: 0, bouncesFirstHour: 0, replies: 0, deals: 0, unsubs: 0, autoReplies: 0, unsubDetails: [], firstSentAt: null }]))
   for (const s of SENDERS) {
     const m = out.get(s.email)
     const { count: sent } = await senderFilter(sb.from("campaign_sends").select("id", { count: "exact", head: true }).eq("status", "sent").gte("sent_at", startIso).lte("sent_at", endIso), s)
@@ -1436,8 +1468,10 @@ async function senderMetricsRange(startIso, endIso) {
       if (!(sentAt >= new Date(startIso).getTime() && sentAt <= new Date(endIso).getTime())) continue
       m.bounces++
       if (m.firstSentAt && new Date(e.occurred_at).getTime() - new Date(m.firstSentAt).getTime() <= 3_600_000) m.bouncesFirstHour++
-    } else if (e.triage === null) m.replies++
-    else if (e.triage === "unsubscribe") {
+    } else if (isGenuineReply(e)) {
+      m.replies++
+      if (isDealReply(e)) m.deals++
+    } else if (e.triage === "unsubscribe") {
       m.unsubs++
       const send = e.raw?.send ?? (last ? { touch_number: last.touch_number, prompt_version: last.prompt_version, variant: last.variant, subject: last.subject } : null)
       m.unsubDetails.push(send)
@@ -1669,15 +1703,13 @@ async function healthPass() {
   const { data: existing } = await sb.from("campaign_settings").select("key").eq("key", `health:${day}`).maybeSingle()
   if (existing && !rehearsal) return
   const m = await dayMetrics(day)
-  // 7-day trailing window for context
-  const days = []
-  for (let i = 1; i <= 7; i++) {
-    const d = new Date(now.getTime() - i * 86_400_000)
-    const p = ptDateParts(d)
-    days.push(`${p.year}-${p.month}-${p.day}`)
-  }
-  const { data: hist } = await sb.from("campaign_settings").select("value").in("key", days.map((d) => `health:${d}`))
-  const agg = (hist ?? []).map((r) => r.value).reduce((a, v) => ({ sent: a.sent + (v.sent || 0), bounces: a.bounces + (v.bounces || 0), replies: a.replies + (v.replies || 0), unsubs: a.unsubs + (v.unsubs || 0) }), { sent: 0, bounces: 0, replies: 0, unsubs: 0 })
+  // Rolling 7 days (today + the 6 before) and all-time, read live (2026-10-22).
+  const dayEndIso = new Date(`${day}T23:59:59-07:00`).toISOString()
+  const weekStartIso = new Date(new Date(`${day}T00:00:00-07:00`).getTime() - 6 * 86_400_000).toISOString()
+  const agg = await scoreboardRange(weekStartIso, dayEndIso)
+  const allTime = await scoreboardRange(null, dayEndIso)
+  const dayStartMs = new Date(`${day}T00:00:00-07:00`).getTime()
+  const dealsToday = agg.deals.filter((d) => new Date(d.at).getTime() >= dayStartMs)
   const pause = await getPause()
   const pct = (n, d) => (d ? `${((n / d) * 100).toFixed(1)}%` : "—")
   const warnings = []
@@ -1752,11 +1784,11 @@ async function healthPass() {
     const canaryLine = needVerdict
       ? ` · 🐤 ${canaryToday[s.email]} sent — where did it land? reply "canary ${s.label} primary|promotions|spam"`
       : ev.canary.today ? ` · 🐤 ${ev.canary.today}` : ""
-    senderLines.push(`${ev.status} <b>${escHtml(s.label)}</b> ${escHtml(s.email)}: ${sm.sent}/${ev.cap} sent · ${sm.bounces} bounced (${pct(sm.bounces, sm.sent)}) · ${sm.replies} replies · ${sm.unsubs} removes · ${sm.failed} failed · healthy ${ev.state.healthy_days}/${SENDER_CFG.gates.minHealthyDays}${isSenderPaused(saved) ? ` · ⏸ PAUSED ${escHtml(pauseLabel(saved))}` : ""}${isDayStopped(saved, day) ? ` · 🛑 DAY-STOP ${escHtml(saved.day_stop?.reason ?? "")}` : ""}${escHtml(canaryLine)} → ${escHtml(verdict)}`)
+    senderLines.push(`${ev.status} <b>${escHtml(s.label)}</b> ${escHtml(s.email)}: ${sm.sent}/${ev.cap} sent · ${sm.bounces} bounced (${pct(sm.bounces, sm.sent)}) · ${plural(sm.replies, "reply", "replies")} · ${plural(sm.deals, "deal")} · ${plural(sm.unsubs, "remove")} · ${sm.failed} failed · healthy ${ev.state.healthy_days}/${SENDER_CFG.gates.minHealthyDays}${isSenderPaused(saved) ? ` · ⏸ PAUSED ${escHtml(pauseLabel(saved))}` : ""}${isDayStopped(saved, day) ? ` · 🛑 DAY-STOP ${escHtml(saved.day_stop?.reason ?? "")}` : ""}${escHtml(canaryLine)} → ${escHtml(verdict)}`)
   }
   const status = warnings.length ? (warnings.some((w) => /PAUSED|^RED:/.test(w)) ? "🔴" : "🟡") : worst
   const capTotal = SENDERS.reduce((a, s) => a + senderCap(s), 0)
-  const snapshot = { ...m, catch_all_sent: catchAllSent, t1_remaining: supply.remaining, t1_supply_days: supply.days, auto_touches: [...AUTO_SEND.touches], warnings, sender: SENDERS.map((s) => s.email).join(","), cap: capTotal, senders: senderSnap, recorded_at: now.toISOString() }
+  const snapshot = { ...m, week: { sent: agg.sent, bounces: agg.bounces, replies: agg.replies, deals: agg.deals.length, unsubs: agg.unsubs }, catch_all_sent: catchAllSent, t1_remaining: supply.remaining, t1_supply_days: supply.days, auto_touches: [...AUTO_SEND.touches], warnings, sender: SENDERS.map((s) => s.email).join(","), cap: capTotal, senders: senderSnap, recorded_at: now.toISOString() }
   if (!rehearsal) await sb.from("campaign_settings").upsert({ key: `health:${day}`, value: snapshot, updated_at: now.toISOString() })
   const rampNote = senderLines.length ? `\n\n${senderLines.join("\n")}` : ""
   if (m.sent === 0 && !warnings.length && !rehearsal) { log("health: no sends today, snapshot stored, no card"); return }
@@ -1764,10 +1796,15 @@ async function healthPass() {
   const card =
     (stallLines.length ? `${stallLines.join("\n")}\n\n` : "") +
     `🩺 <b>Campaign health ${status} — ${wd} ${day.slice(5)}</b>\n` +
-      `📤 ${m.sent} sent (caps ${capTotal}) · 🪣 ${catchAllSent} catch-all · ↩️ ${m.bounces} bounced (${pct(m.bounces, m.sent)}) · 💬 ${m.replies} replies · 🚫 ${m.unsubs} removes · 🤖 ${m.autoReplies} auto-replies · ⚠️ ${m.failed} failed · 🧹 ${m.lint_rejected} lint-rejected · 🌐 ${m.dns_no_mx} no-MX` +
+      // Scoreboard (Ryan 2026-10-22): counts, not rates — bounces keep their %.
+      // Rare counters only print when they are not zero.
+      `📤 Today: ${m.sent} sent (caps ${capTotal}) · ↩️ ${m.bounces} bounced (${pct(m.bounces, m.sent)}) · 💬 ${plural(m.replies, "reply", "replies")} · 🏠 ${plural(m.deals, "deal")} · 🚫 ${plural(m.unsubs, "remove")}` +
+      [[m.autoReplies, "🤖", "auto-replies"], [m.failed, "⚠️", "failed"], [catchAllSent, "🪣", "catch-all"], [m.lint_rejected, "🧹", "lint-rejected"], [m.dns_no_mx, "🌐", "no-MX"]].filter(([n]) => n).map(([n, icon, word]) => ` · ${icon} ${n} ${word}`).join("") +
       (m.verified ? ` · 🔎 ${m.verified} verified (${m.verify_undeliverable} invalid)` : "") +
       (canaryNote ? ` · 🐤 canary ${escHtml(canaryNote)} sent` : "") +
-      `\n📈 7-day: ${agg.sent} sent, bounces ${pct(agg.bounces, agg.sent)}, replies ${pct(agg.replies, agg.sent)}, ${agg.unsubs} removes` +
+      (dealsToday.length ? `\n${dealsToday.map(dealLine).join("\n")}` : "") +
+      `\n📈 Last 7 days: ${agg.sent} sent · ${agg.bounces} bounced (${pct(agg.bounces, agg.sent)}) · ${plural(agg.replies, "reply", "replies")} · ${plural(agg.deals.length, "deal")} · ${plural(agg.unsubs, "remove")}` +
+      `\n🏁 All time: ${allTime.sent} sent · ${plural(allTime.replies, "reply", "replies")} · ${plural(allTime.deals.length, "deal")}` +
       `\n📚 ${escHtml(describeT1Supply(supply))} · 🔁 auto: ${AUTO_SEND.touches.size ? [...AUTO_SEND.touches].map((t) => `T${t}`).join("/") : "none"}${AUTO_SEND.pinned ? ` (pinned ${escHtml(AUTO_SEND.pinned)})` : ""}` +
       (warnings.length ? `\n\n${warnings.map((w) => `• ${escHtml(w)}`).join("\n")}` : "\n\nAll clear.") + rampNote
   if (rehearsal) { log(`health rehearsal — card that WOULD post (nothing saved, nothing sent):\n${card}`); await canary2Reminder(supply); return }
@@ -1838,7 +1875,7 @@ async function scorecardPass() {
       .from("campaign_events")
       .select("contact_id, occurred_at")
       .eq("kind", "email_reply")
-      .is("triage", null) // genuine replies only — not OOO/dead-mailbox/unsub rows
+      .or(GENUINE_REPLY_OR) // genuine replies only — not OOO/dead-mailbox/unsub rows
       .gte("occurred_at", EXPERIMENT_START)
       .order("id", { ascending: true })
       .range(off, off + 999)

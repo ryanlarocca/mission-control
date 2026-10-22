@@ -259,7 +259,7 @@ export function evaluateSenderDay({ sender, state, day, metrics, trailing, gates
   if (removeTrip.level === "red") warnings.push({ level: "yellow", text: `copy tripwire RED: ${removeTrip.text} — day-stopped, touch re-gated` })
   else if (removeTrip.level === "yellow") warnings.push({ level: "yellow", text: `copy tripwire: ${removeTrip.text} — check the copy` })
   if (extra.paused) warnings.push({ level: "yellow", text: `paused: ${extra.paused}` }) // a pause holds the rung; only bounces drop it
-  if (tr.sent >= gates.replyCheckMinSends && tr.replies === 0) warnings.push({ level: "yellow", text: `no genuine replies on the last ${tr.sent} sends (7 days)` })
+  if (tr.sent >= gates.replyCheckMinSends && tr.replies === 0) warnings.push({ level: "yellow", text: `no replies on the last ${tr.sent} sends (7 days)` })
   // Canary placement (brief: expect some week-1 spam-foldering; the 2-in-a-row
   // rule decides, not a single bad day). Two Spam verdicts running = pause.
   if (canary.spamStreak >= 2 && canary.newest === day) warnings.push({ level: "red", text: `canary in Spam ${canary.spamStreak} days running` })
@@ -319,7 +319,7 @@ export function evaluateSenderDay({ sender, state, day, metrics, trailing, gates
     next.held_reason = status === "🟡" ? warnings[0].text : checks.filter((c) => !c.pass).map((c) => `${c.name} (${c.note})`).join("; ")
   }
   if (!next.entered_step && !gap) next.entered_step = day
-  const entry = { day, step: st.step, cap, sent: m.sent, bounces: m.bounces, replies: m.replies, status, decision, ...(canary.today ? { canary: canary.today } : {}) }
+  const entry = { day, step: st.step, cap, sent: m.sent, bounces: m.bounces, replies: m.replies, deals: m.deals ?? 0, status, decision, ...(canary.today ? { canary: canary.today } : {}) }
   next.history = [...(st.history ?? []).filter((h) => h.day !== day), entry].sort((a, b) => (a.day < b.day ? -1 : 1)).slice(-40)
   return { status, warnings: warnings.map((w) => w.text), checks, decision, cap, nextCap: capFor(sender, next), state: next, autoPause, canary, breaker, removeTrip }
 }
@@ -340,11 +340,29 @@ export async function fetchRelationshipEmails(sb, tiers = ["A", "B", "C"]) {
   return out
 }
 
-/** Contact ids with at least one genuine (triage-null) email reply — the July repliers lead the ramp. */
+// What counts as a reply (2026-10-22). AI triage labels every genuine reply
+// within minutes (deal / interested / question / not_now / other), so the old
+// "triage is null" test dropped nearly all of them: the health card read
+// 0 replies on deal days and the ramp held buys for "no genuine replies".
+// A reply is any email_reply row EXCEPT these opt-out / machine labels.
+// Mirrored in lib/campaignSenders.ts (unit test keeps the two in sync).
+export const NON_REPLY_TRIAGE = ["unsubscribe", "auto_reply", "dead_mailbox"]
+/** PostgREST `.or()` filter for genuine replies (null triage needs its own arm — `not.in` drops nulls). */
+export const GENUINE_REPLY_OR = `triage.is.null,triage.not.in.(${NON_REPLY_TRIAGE.join(",")})`
+/** A campaign_events row is a human reply (any AI label but opt-out / machine). */
+export function isGenuineReply(e) {
+  return e?.kind === "email_reply" && !NON_REPLY_TRIAGE.includes(e.triage ?? null)
+}
+/** A reply AI triage read as a deal: a specific property on offer — the campaign's lead. */
+export function isDealReply(e) {
+  return e?.kind === "email_reply" && e.triage === "deal"
+}
+
+/** Contact ids with at least one genuine email reply — the July repliers lead the ramp. */
 export async function fetchReplierIds(sb) {
   const out = new Set()
   for (let from = 0; ; from += 1000) {
-    const { data, error } = await sb.from("campaign_events").select("contact_id").eq("kind", "email_reply").is("triage", null).order("id", { ascending: true }).range(from, from + 999)
+    const { data, error } = await sb.from("campaign_events").select("contact_id").eq("kind", "email_reply").or(GENUINE_REPLY_OR).order("id", { ascending: true }).range(from, from + 999)
     if (error) throw new Error(`repliers fetch: ${error.message}`)
     for (const r of data ?? []) if (r.contact_id) out.add(r.contact_id)
     if (!data || data.length < 1000) break

@@ -13,6 +13,7 @@ import fs from "node:fs"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
 import { createClient } from "@supabase/supabase-js"
+import { GENUINE_REPLY_OR } from "./campaign-senders.mjs"
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const REPO_ROOT = path.resolve(__dirname, "..")
@@ -53,14 +54,14 @@ const [drafts, approvedQ, sentToday, sentTotal, failed] = await Promise.all([
 ])
 const [bouncesToday, repliesToday, alertFailures] = await Promise.all([
   count("campaign_events", (q) => q.eq("kind", "bounce").gte("occurred_at", today)),
-  count("campaign_events", (q) => q.eq("kind", "email_reply").is("triage", null).gte("occurred_at", today)),
+  count("campaign_events", (q) => q.eq("kind", "email_reply").or(GENUINE_REPLY_OR).gte("occurred_at", today)),
   count("campaign_events", (q) => q.eq("triage", "alert_failure")),
 ])
 const { data: recentReplies } = await sb
   .from("campaign_events")
   .select("occurred_at, body, contact:campaign_contacts (name, email)")
   .eq("kind", "email_reply")
-  .is("triage", null)
+  .or(GENUINE_REPLY_OR)
   .order("occurred_at", { ascending: false })
   .limit(5)
 
