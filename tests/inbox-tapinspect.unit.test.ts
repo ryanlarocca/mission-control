@@ -80,6 +80,8 @@ describe("tapinspect flow — clicks and the gate", () => {
     expect(gateFromReportText("Payment is required to view the results.")).toBe("payment")
     expect(gateFromReportText("Please sign the pre-inspection agreement to continue.")).toBe("payment")
     expect(gateFromReportText("")).toBeNull()
+    // Live 2026-10-24 (Quito): the unpaid share page has no Reports section — only this banner.
+    expect(gateFromReportText("2116 Quito Rd\nPayment is required before you can access your inspection results\nNew Ca Agreement\nInvoice 11275730 - $475.00\nPlease Pay")).toBe("payment")
   })
   it("fetchDocuments still refuses unknown providers without a browser", async () => {
     const r = await fetchDocuments({ url: "https://disclosures.io/x", provider: null, log: () => {} })

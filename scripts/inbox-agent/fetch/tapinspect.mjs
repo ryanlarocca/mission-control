@@ -190,7 +190,13 @@ export async function fetchTapInspect({ url, jobId = "job", log = () => {}, head
       await shooter.shot("no-report-entry")
       const text = await bodyText(page)
       if (/not found|no longer available|expired|invalid/i.test(text)) return fail(null, "the share page is gone (not found / expired)")
-      return fail(null, "no Home Inspection Report entry on the share page")
+      // Live 2026-10-24 (Quito): before the invoice is paid the share page has no
+      // `Reports` section at all — just "Payment is required before you can access
+      // your inspection results" over the agreement + invoice. A live share page
+      // with no report entry is "not released yet", never a failure: park it.
+      steps.push(gateFromReportText(text) ? "share-gated" : "share-no-report")
+      log(`[fetch] tapinspect: ${steps.join(" → ")} — no report on the share page yet`)
+      return fail("payment", NEEDS_WHY.payment)
     }
     steps.push("share")
     let view = page
