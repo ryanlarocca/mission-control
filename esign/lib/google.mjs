@@ -79,7 +79,7 @@ export async function driveChildren(drive, folderId, { mime, orderBy = "name" } 
   return out
 }
 
-/** "Offers/1234 Main St" under rootId; creates missing levels. */
+/** "Offers/Drafts/1234 Main St" under rootId; creates missing levels. */
 export async function driveResolvePath(drive, rootId, relPath, { create = true } = {}) {
   let parent = rootId
   for (const name of String(relPath).split("/").map((s) => s.trim()).filter(Boolean)) {
@@ -103,9 +103,9 @@ export async function driveUpload(drive, folderId, name, bytes, mime = "applicat
   return { id: data.id, webViewLink: data.webViewLink ?? null, name: data.name ?? name }
 }
 
-/** Recent PDFs under Business Operations/Offers/<street>/ for the admin picker. */
+/** Recent PDFs under Business Operations/Offers/Drafts/<street>/ for the admin picker. */
 export async function listRecentOffers(drive, limit = 25) {
-  const offersId = await driveResolvePath(drive, env.driveRootId, "Offers", { create: false })
+  const offersId = await driveResolvePath(drive, env.driveRootId, env.draftsPath, { create: false })
   if (!offersId) return []
   const folders = await driveChildren(drive, offersId, { mime: FOLDER_MIME, orderBy: "modifiedTime desc" })
   const out = []

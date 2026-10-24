@@ -62,7 +62,7 @@ export async function listDriveChildren(drive: Drive, folderId: string): Promise
   return out.sort((a, b) => a.name.localeCompare(b.name))
 }
 
-/** "Offers/1234 Main St" → folder id under `rootId`, creating missing levels
+/** "Offers/Drafts/1234 Main St" → folder id under `rootId`, creating missing levels
  *  when `create` is set. Case-insensitive name match, like the .mjs original. */
 export async function resolveDrivePath(
   drive: Drive,

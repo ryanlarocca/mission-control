@@ -1,4 +1,6 @@
-// Nightly offsite backup → Google Drive (Business Operations/E-Sign Backups).
+// RETIRED 2026-10-24 as a nightly job — the Mac mini backup (scripts/mini-backup/)
+// now snapshots esign.sqlite + data/envelopes/. Kept for a manual one-off run.
+// Offsite backup → Google Drive (Business Operations/E-Sign Backups).
 //   - a consistent SQLite snapshot (VACUUM INTO), one per day, kept 14 days locally
 //   - every envelope file (original.pdf, signed.pdf, final.pdf, pages, a JSON
 //     export of the rows + events) uploaded once, tracked in the `backups` table

@@ -5,6 +5,7 @@ import {
   OFFER_DRIVE_ROOT_ID,
   OFFER_DRIVE_ROOT_NAME,
   OFFER_MINIAPP_URL,
+  OFFER_DRIVE_SUBFOLDER,
   OFFER_TEMPLATE_FILE_ID,
   blankFields,
   expirationLabel,
@@ -59,7 +60,7 @@ export const OFFER_EXAMPLE =
 
 export const OFFER_HELP_TEXT = `📄 <b>/offer</b> — fill the Purchase &amp; Sale Agreement from plain English.
 
-Send <code>/offer</code> followed by the terms in one message: property address, seller name(s), price, earnest money, closing days, any special terms, seller phone/email. Money shorthand works (1.2M, 1520k, $10,000). Anything missing or unclear, I ask about that one thing. You get a review card, then ✅ makes the PDF, sends it here and files it in Drive under ${OFFER_DRIVE_ROOT_NAME}/Offers/&lt;street&gt;.
+Send <code>/offer</code> followed by the terms in one message: property address, seller name(s), price, earnest money, closing days, any special terms, seller phone/email. Money shorthand works (1.2M, 1520k, $10,000). Anything missing or unclear, I ask about that one thing. You get a review card, then ✅ makes the PDF, sends it here and files it in Drive under ${OFFER_DRIVE_ROOT_NAME}/${OFFER_DRIVE_SUBFOLDER}/&lt;street&gt;.
 
 Example:
 <code>${esc(OFFER_EXAMPLE)}</code>

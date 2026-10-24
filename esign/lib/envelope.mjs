@@ -357,11 +357,15 @@ export async function deliver(envelopeId) {
   if (!envelope.drive_final_id) {
     try {
       const drive = await driveClient()
-      let folderId = envelope.drive_folder_id
-      if (!folderId) {
-        const street = (envelope.property_address || envelope.title).split(",")[0].trim().replace(/[\\/:*?"<>|]+/g, "-")
-        folderId = await driveResolvePath(drive, env.driveRootId, `E-Sign/${street}`)
+      // Signed copies live in Offers/Signed/<street>/, mirroring the draft's
+      // Offers/Drafts/<street>/ folder (drive_folder_id = the draft's folder until filed).
+      let street = (envelope.property_address || envelope.title).split(",")[0].trim()
+      if (envelope.source === "drive" && envelope.drive_folder_id) {
+        const draftFolder = await driveMeta(drive, envelope.drive_folder_id).catch(() => null)
+        const name = draftFolder?.name?.trim()
+        if (name && name.toLowerCase() !== env.draftsPath.split("/").pop().toLowerCase()) street = name
       }
+      const folderId = await driveResolvePath(drive, env.driveRootId, `${env.signedPath}/${street.replace(/[\\/:*?"<>|]+/g, "-")}`)
       const up = await driveUpload(drive, folderId, filename, finalBytes)
       run("UPDATE envelopes SET drive_final_id = ?, drive_final_link = ?, drive_folder_id = ? WHERE id = ?", up.id, up.webViewLink, folderId, envelopeId)
       addEvent(envelopeId, "filed_to_drive", { details: { fileId: up.id, link: up.webViewLink } })

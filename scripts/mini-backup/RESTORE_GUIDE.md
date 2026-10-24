@@ -12,7 +12,7 @@ This folder is a nightly mirror of everything on Ryan's Mac mini that exists now
 2. Turn it on, sign in with your Apple ID (the same one your iPhone uses). Say yes to iCloud and keep "Messages in iCloud" **off** (that matches how the old mini ran).
 3. Open the Mac App Store and install nothing yet. Open **System Settings → General → Software Update** and let it finish.
 4. Install Claude Code: open Terminal once, paste the one line from https://claude.com/claude-code, and sign in with your Google account when the browser opens.
-5. In Google Drive on the new Mac (or your laptop), open **Business Operations → Mac Mini Backup**, right-click the folder, **Download**. Unzip it. Move the unzipped folder to your Desktop.
+5. In Google Drive on the new Mac (or your laptop), open **Business Operations → System → Mac Mini Backup**, right-click the folder, **Download**. Unzip it. Move the unzipped folder to your Desktop.
 6. Open Claude Code in Terminal (type `claude`) and say:
 
    > Restore this Mac mini from the backup folder on my Desktop. Read RESTORE_GUIDE.md in it and follow the agent section. Ask me only for the clicks only I can do.
@@ -57,7 +57,8 @@ Work top to bottom. Verify each step before the next. The old machine's exact st
 | `gog/config.json` | `~/Library/Application Support/gogcli/config.json` — tokens are NOT here, see clicks below |
 | `sidecar/*` | `~/Projects/PROJECTS/comprehensive-relationship-management/phase2/` (gitignored sidecar + helpers) |
 | `data/iphone_sms.db`, `data/unified_messages.db` | `~/Projects/PROJECTS/comprehensive-relationship-management/data/` |
-| `esign/esign.sqlite` | `~/Projects/PROJECTS/esign/data/esign.sqlite` (envelopes/PDFs are in Drive → E-Sign Backups) |
+| `esign/esign.sqlite` | `~/Projects/PROJECTS/esign/data/esign.sqlite` (a consistent snapshot; delete any stale `esign.sqlite-wal` / `-shm` next to it before starting the server) |
+| `esign/envelopes/*` | `~/Projects/PROJECTS/esign/data/envelopes/` (every request's PDFs + page images; completed ones were chmod 444, re-apply with `chmod 444 */final.pdf */signed.pdf */original.pdf`) |
 | `state/mission-control/scripts/*.json` | `~/Projects/PROJECTS/mission-control/scripts/` |
 | `claude/memory/<dir>/*` | `~/.claude/projects/<dir>/memory/` — same directory names; the main one is `-Users-ryanlarocca-Projects-PROJECTS-mission-control` |
 | `claude/skills/*` | `~/.claude/skills/` |
@@ -91,6 +92,6 @@ Known trap: `.env.local` values are single-quoted; scripts that read it strip th
 ### 7. What is NOT in this folder (and where it is)
 - Live texts (`chat.db`), call history, contacts: on the iPhone and iCloud; they re-sync to the new Mac after the clicks above.
 - Mission Control code: GitHub. Leads, relationships, campaigns, transcripts: Supabase. Documents: Drive. Call recordings: Twilio. DNS: Cloudflare. Vercel env vars: Vercel (the secrets file is a superset).
-- E-sign envelopes and signed PDFs: Drive → Business Operations → E-Sign Backups (its own nightly job).
+- Finished signed contracts (with the signing certificate): Drive → Business Operations → Offers → Signed. Drafts: Offers → Drafts.
 - The Pile's search index, if one exists by then: rebuildable from the sources above; only its config and corrections are backed up here.
 - Claude Code session transcripts: not backed up (large, and the memory files are the distilled version).

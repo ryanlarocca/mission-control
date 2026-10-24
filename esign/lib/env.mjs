@@ -62,7 +62,10 @@ export const env = {
   ownerPhone: process.env.ESIGN_OWNER_PHONE || "(408) 500-6293",
   businessName: process.env.ESIGN_BUSINESS_NAME || "LRG Homes",
   linkDays: Number(process.env.ESIGN_LINK_DAYS || 14),
-  /** Drive: Business Operations root (same as the offer bot). */
+  /** Drive: Business Operations root (same as the offer bot). Drafts come from
+   *  Offers/Drafts/<street>/ (the offer bot), signed copies go to Offers/Signed/<street>/. */
+  draftsPath: "Offers/Drafts",
+  signedPath: "Offers/Signed",
   driveRootId: process.env.ESIGN_DRIVE_ROOT_ID || "1FOKTLfIP1cLW3HStneb2IWEvWSfOIzA5",
   driveSubject: process.env.ESIGN_DRIVE_SUBJECT || "ryan@lrghomes.com",
   tz: "America/Los_Angeles",

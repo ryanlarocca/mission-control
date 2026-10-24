@@ -280,7 +280,7 @@ describe("filename + Drive path", () => {
     expect(offerFilename({ property_address: "1234 Main St, San Jose, CA 95125", agreement_date: "2026-10-16" })).toBe(
       "Purchase Agreement - 1234 Main St - 2026-10-16.pdf"
     )
-    expect(offerDriveRelPath({ property_address: "1234 Main St, San Jose, CA 95125" })).toBe("Offers/1234 Main St")
+    expect(offerDriveRelPath({ property_address: "1234 Main St, San Jose, CA 95125" })).toBe("Offers/Drafts/1234 Main St")
   })
 })
 

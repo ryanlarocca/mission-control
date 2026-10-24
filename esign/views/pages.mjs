@@ -179,7 +179,7 @@ export function adminNew({ prefill = {}, offers = [], error, offersError }) {
 <form method="post" action="/admin/envelopes" enctype="multipart/form-data" id="newform">
   <div class="field"><span>Document</span>
     <label class="check" style="margin:6px 0"><input type="radio" name="source" value="drive" ${prefill.source !== "upload" ? "checked" : ""}> From Drive — recent offers</label>
-    <div id="src-drive">${offersError ? `<div class="error">Couldn't list Drive: ${esc(offersError)}</div>` : `<select name="drive_file_id" id="drive_file_id"><option value="">— pick a PDF from Business Operations/Offers —</option>${opts}</select>`}</div>
+    <div id="src-drive">${offersError ? `<div class="error">Couldn't list Drive: ${esc(offersError)}</div>` : `<select name="drive_file_id" id="drive_file_id"><option value="">— pick a PDF from Business Operations/Offers/Drafts —</option>${opts}</select>`}</div>
     <label class="check" style="margin:6px 0"><input type="radio" name="source" value="upload" ${prefill.source === "upload" ? "checked" : ""}> Upload a PDF</label>
     <div id="src-upload"><input type="file" name="pdf" accept="application/pdf"></div>
   </div>

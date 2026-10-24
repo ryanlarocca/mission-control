@@ -7,7 +7,7 @@
 //   npx tsx scripts/offer-dry-run.ts fill [out.pdf]
 //       → download the real template, fill it with sample terms, write the PDF locally
 //   npx tsx scripts/offer-dry-run.ts drive
-//       → resolve Business Operations/Offers/<sample street> (creates the folders), upload nothing
+//       → resolve Business Operations/Offers/Drafts/<sample street> (creates the folders), upload nothing
 //   npx tsx scripts/offer-dry-run.ts telegram [out.pdf]
 //       → sendDocument the local PDF to TELEGRAM_CHAT_ID (the only recipient there is)
 //   npx tsx scripts/offer-dry-run.ts initdata

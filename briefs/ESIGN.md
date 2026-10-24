@@ -35,7 +35,7 @@ a Certificate of Completion is emailed to everyone and filed in Drive.
 ## Flow
 
 1. Ryan creates a request at `/admin/new` — pick a PDF from Drive
-   `Business Operations/Offers/<street>/` (or upload one), title, property,
+   `Business Operations/Offers/Drafts/<street>/` (or upload one), title, property,
    agreement date, note, signers (name, email, phone, Seller/Buyer, order).
    The offer bot's "📁 Saved to Drive" message carries a **✍️ Send for
    signature** button that opens this page pre-filled (seller + Ryan as buyer).
@@ -100,8 +100,8 @@ a Certificate of Completion is emailed to everyone and filed in Drive.
    — no route can change it afterwards. The admin detail page links the
    original, "Signed so far" (`/admin/e/<id>/interim.pdf`, while in
    progress) and, once completed, the signed + final files.
-6. `final.pdf` is uploaded next to the offer in Drive (or
-   `Business Operations/E-Sign/<street>/` for uploads), emailed with the
+6. `final.pdf` is uploaded to Drive `Business Operations/Offers/Signed/<street>/`
+   (same street folder name as the draft), emailed with the
    attachment to every signer + Ryan, and announced on Telegram. Delivery is
    idempotent: **Retry delivery** on the admin page redoes only what failed.
 7. Signers can download their copy from the done page / completion email;
@@ -113,14 +113,15 @@ a Certificate of Completion is emailed to everyone and filed in Drive.
 |---|---|---|
 | server | `com.lrghomes.esign` — `node server.mjs`, KeepAlive | `~/Projects/logs/esign.log` |
 | tunnel | `com.lrghomes.esign-tunnel` — `cloudflared --config ~/.cloudflared/esign.yml tunnel run`, KeepAlive | `~/Projects/logs/esign-tunnel.log` |
-| backup | `com.lrghomes.esign-backup` — 2:40 AM daily `scripts/backup.mjs` | `~/Projects/logs/esign-backup.log` |
 
 - Restart server: `launchctl kickstart -k gui/$(id -u)/com.lrghomes.esign`
   (after `git pull` on main; no build step).
-- Backup = `VACUUM INTO` SQLite snapshot per day + every envelope's
-  original/signed/final PDF and `record.json` (rows + events) uploaded once
-  each (tracked in the `backups` table) to Drive
-  `Business Operations/E-Sign Backups/`. Telegram alert only on failure.
+- Backup (since 2026-10-24) = the Mac mini nightly backup
+  (`scripts/mini-backup/`): a `VACUUM INTO` snapshot of `esign.sqlite` + the
+  whole `data/envelopes/` tree → Drive `Business Operations/System/Mac Mini Backup/esign/`.
+  The old `com.lrghomes.esign-backup` job (→ `E-Sign Backups/`) is retired;
+  `scripts/backup.mjs` stays for a manual one-off. Drive filing: drafts
+  `Offers/Drafts/<street>/`, signed copies `Offers/Signed/<street>/`.
 - Secrets: `esign/.env.local` (gitignored) — `ESIGN_ADMIN_PASSWORD`,
   `ESIGN_API_SECRET`, `ESIGN_COOKIE_SECRET`, `ESIGN_BASE_URL`, `ESIGN_PORT`.
   Google + Telegram keys come from `mission-control/.env.local`.

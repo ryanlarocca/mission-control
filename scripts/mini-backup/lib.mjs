@@ -8,7 +8,8 @@ export const HOME = os.homedir()
 export const MC_ROOT = "/Users/ryanlarocca/Projects/PROJECTS/mission-control"
 export const PROJECTS_ROOT = "/Users/ryanlarocca/Projects"
 export const STATE_DIR = path.join(HOME, ".mini-backup")
-export const BACKUP_FOLDER_NAME = "Mac Mini Backup"
+// Business Operations/System/Mac Mini Backup (moved under System/ 2026-10-24).
+export const BACKUP_FOLDER_NAME = "System/Mac Mini Backup"
 // Business Operations (owned by Ryan's personal Drive, shared Editor to ryan@).
 export const BUSINESS_OPS_ID = process.env.ESIGN_DRIVE_ROOT_ID || "1FOKTLfIP1cLW3HStneb2IWEvWSfOIzA5"
 export const FOLDER_MIME = "application/vnd.google-apps.folder"

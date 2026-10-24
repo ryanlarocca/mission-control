@@ -1,4 +1,4 @@
-// Nightly Mac mini backup → Google Drive "Business Operations/Mac Mini Backup".
+// Nightly Mac mini backup → Google Drive "Business Operations/System/Mac Mini Backup".
 // Plain mirror (Ryan's call, 2026-10-23: no encryption). Uploads only files whose
 // sha256 changed since the last run; updates in place so Drive keeps versions.
 // Usage: node scripts/mini-backup/backup.mjs [--dry-run] [--status] [--restore-drill [dir]]
@@ -7,6 +7,7 @@ import path from "node:path"
 import crypto from "node:crypto"
 import { execSync } from "node:child_process"
 import { Readable } from "node:stream"
+import { DatabaseSync } from "node:sqlite"
 import { HOME, MC_ROOT, PROJECTS_ROOT, STATE_DIR, BACKUP_FOLDER_NAME, BUSINESS_OPS_ID, driveClient, driveChildren, resolveFolder, sendTelegram } from "./lib.mjs"
 import { buildInventory } from "./inventory.mjs"
 
@@ -38,7 +39,13 @@ function sources() {
   add("sidecar", path.join(crm, "phase2"), { dir: true, skip: /node_modules|\.log$/ })
   add("data/iphone_sms.db", path.join(crm, "data/iphone_sms.db"))
   add("data/unified_messages.db", path.join(crm, "data/unified_messages.db"))
-  add("esign/esign.sqlite", path.join(PROJECTS_ROOT, "PROJECTS/esign/data/esign.sqlite"))
+  // e-sign: the DB runs in WAL mode (recent rows sit in esign.sqlite-wal), so a
+  // raw copy of esign.sqlite is incomplete — back up a VACUUM INTO snapshot.
+  // envelopes/ = every request's original/interim/final PDFs + page images.
+  const esignData = path.join(PROJECTS_ROOT, "PROJECTS/esign/data")
+  const esignSnap = esignSnapshot(path.join(esignData, "esign.sqlite"))
+  if (esignSnap) add("esign/esign.sqlite", esignSnap)
+  add("esign/envelopes", path.join(esignData, "envelopes"), { dir: true })
   // Claude Code agent: memory, skills, settings
   const projDir = path.join(HOME, ".claude/projects")
   if (fs.existsSync(projDir)) for (const d of fs.readdirSync(projDir)) add(`claude/memory/${d}`, path.join(projDir, d, "memory"), { dir: true })
@@ -50,6 +57,17 @@ function sources() {
   // gitignored runtime state in mission-control
   for (const f of fs.readdirSync(path.join(MC_ROOT, "scripts")).filter((f) => /^\..*\.json$/.test(f))) add(`state/mission-control/scripts/${f}`, path.join(MC_ROOT, "scripts", f))
   return S
+}
+
+/** Consistent single-file copy of a WAL-mode SQLite DB (into STATE_DIR/tmp); null if absent. */
+function esignSnapshot(dbPath) {
+  if (!fs.existsSync(dbPath)) return null
+  fs.mkdirSync(TMP, { recursive: true })
+  const out = path.join(TMP, "esign.sqlite")
+  if (fs.existsSync(out)) fs.unlinkSync(out)
+  const db = new DatabaseSync(dbPath, { readOnly: true })
+  try { db.exec(`VACUUM INTO '${out.replace(/'/g, "''")}'`) } finally { db.close() }
+  return out
 }
 
 function walk(abs, rel, o, out) {
@@ -169,7 +187,7 @@ async function main() {
   if (!DRY) { fs.writeFileSync(MANIFEST, JSON.stringify(manifest, null, 1)); await uploadText(drive, rootId, "manifest.json", JSON.stringify(manifest, null, 1), manifest) }
   log(`done: uploaded ${uploaded} (${(bytes / 1e6).toFixed(1)} MB), unchanged ${unchanged}, failed ${failed.length}, ${run.seconds}s`)
   if (failed.length) await sendTelegram(`🔴 <b>Mac mini backup</b>: ${failed.length} file(s) failed\n${failed.slice(0, 5).join("\n")}`)
-  else if (new Date().getDate() === 1 || args.has("--notify")) await sendTelegram(`🟢 <b>Mac mini backup</b> ran: ${files.length} files mirrored, ${uploaded} updated (${(bytes / 1e6).toFixed(1)} MB), ${run.seconds}s. Folder: Business Operations / ${BACKUP_FOLDER_NAME}`)
+  else if (new Date().getDate() === 1 || args.has("--notify")) await sendTelegram(`🟢 <b>Mac mini backup</b> ran: ${files.length} files mirrored, ${uploaded} updated (${(bytes / 1e6).toFixed(1)} MB), ${run.seconds}s. Folder: Business Operations / ${BACKUP_FOLDER_NAME.replace("/", " / ")}`)
 }
 
 // Pull the whole Drive folder down and check it against the manifest — proves the backup restores.
