@@ -1,3 +1,4 @@
+import { sidecarHeaders } from "./sidecar"
 // Live iMessage/SMS thread for a Relationships contact, read from the Mac
 // mini's chat.db through the CRMS sidecar (POST /sync-imessage). Nothing is
 // stored — this is a read-through so the Relationships card can show the
@@ -22,7 +23,7 @@ export async function fetchThread(phone: string, timeoutMs = 10000): Promise<Thr
   try {
     const res = await fetch(`${sidecarUrl}/sync-imessage`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: sidecarHeaders(),
       body: JSON.stringify({ phone: norm }),
       signal: AbortSignal.timeout(timeoutMs),
       cache: "no-store",

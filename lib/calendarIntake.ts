@@ -1,4 +1,5 @@
 import Anthropic from "@anthropic-ai/sdk"
+import { sidecarHeaders } from "./sidecar"
 import type { ImageMediaType } from "@/lib/contactIntake"
 
 // Telegram → Google Calendar (2026-08-21). Replaces the Thadius/OpenClaw
@@ -146,7 +147,7 @@ export async function createCalendarEvent(ev: ExtractedEvent): Promise<CreatedEv
   try {
     const res = await fetch(`${SIDECAR_URL}/calendar/create`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: sidecarHeaders(),
       body: JSON.stringify({
         summary: ev.summary, start: ev.start, end: ev.end, allDay: ev.allDay,
         location: ev.location, description: ev.description,

@@ -5,6 +5,7 @@
 // actually said, right now.
 
 import { getLeadsClient, getMailboxForSource } from "@/lib/leads"
+import { sidecarHeaders } from "../sidecar"
 import { fetchThread } from "@/lib/relationship-messages"
 
 export interface ThreadItem {
@@ -95,7 +96,7 @@ async function fetchLiveLeadMessages(anchor: {
     try {
       const res = await fetch(`${base}/sync-imessage`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: sidecarHeaders(),
         body: JSON.stringify({ phone: anchor.caller_phone }),
         signal: AbortSignal.timeout(SIDECAR_TIMEOUT_MS),
       })
@@ -120,7 +121,7 @@ async function fetchLiveLeadMessages(anchor: {
       try {
         const res = await fetch(`${base}/sync-email`, {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: sidecarHeaders(),
           body: JSON.stringify({ threadId: anchor.gmail_thread_id, mailbox }),
           signal: AbortSignal.timeout(SIDECAR_TIMEOUT_MS + 4000),
         })
