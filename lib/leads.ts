@@ -1,4 +1,5 @@
 import { createClient, type SupabaseClient } from "@supabase/supabase-js"
+import { sidecarHeaders } from "./sidecar"
 import { google, gmail_v1 } from "googleapis"
 import emailCampaigns from "@/config/email-campaigns.json"
 import { isAnonymousCaller } from "./anonymous"
@@ -1367,7 +1368,7 @@ async function sendLeadViaSidecar(
   try {
     const res = await fetch(`${sidecarUrl}/send`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: sidecarHeaders(),
       body: JSON.stringify({ phone: ten, message }),
       signal: controller.signal,
     })
