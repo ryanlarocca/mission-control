@@ -2,7 +2,8 @@
 // The Pile — one search across Ryan's texts (2017→live), cell call log, contacts,
 // CRMS names, and personal Gmail. Read-only. Runs on the Mac mini.
 //
-//   node scripts/pile/ask.mjs texts "<words>" [--with <name|phone>] [--since 2026-01-01] [--until ...] [--limit 50] [--mine|--theirs]
+//   node scripts/pile/ask.mjs texts "<words>" [--with <name|phone>] [--since 2026-01-01] [--until ...] [--limit 50] [--mine|--theirs] [--no-groups]
+//     (--with includes the group chats that person is in, labelled [Group: …]; --no-groups = private thread only)
 //   node scripts/pile/ask.mjs calls [--with <name|phone>] [--since ...] [--limit 50]
 //   node scripts/pile/ask.mjs who "<name|phone|email>"            → every identifier we know for a person
 //   node scripts/pile/ask.mjs email "<words>" [--with <name|email>] [--since ...] [--limit 20]
@@ -74,7 +75,10 @@ async function searchEmail({ words, from, since, limit }) {
   } finally { await client.logout().catch(() => {}) }
 }
 
-function printTexts(rows, names) { for (const r of rows) console.log(`${fmt(r.at).padEnd(22)} ${(r.name || names.get(last10(r.number)) || r.number || "?").slice(0, 22).padEnd(22)} ${r.from_me ? "→" : "←"} ${String(r.text).replace(/\s+/g, " ").slice(0, 110)}`) }
+function printTexts(rows, names) { for (const r of rows) console.log(`${fmt(r.at).padEnd(22)} ${(r.group && r.from_me ? "me" : r.name || names.get(last10(r.number)) || r.number || "?").slice(0, 22).padEnd(22)} ${r.from_me ? "→" : "←"} ${r.group ? `[${r.group.label.slice(0, 40)}] ` : ""}${String(r.text).replace(/\s+/g, " ").slice(0, 110)}`) }
+// A person with two numbers in the same group chat returns that chat twice — keep one copy.
+const dedupeTexts = (rows) => { const seen = new Set(); return rows.filter((r) => { const k = `${r.at}|${r.group?.chat || ""}|${r.text}`; if (seen.has(k)) return false; seen.add(k); return true }) }
+const groupsParam = () => (flags["no-groups"] ? "0" : "")
 function printCalls(rows, names) { for (const r of rows) console.log(`${fmt(r.at).padEnd(22)} ${(r.name || names.get(last10(r.number)) || r.number || "?").slice(0, 22).padEnd(22)} ${r.direction === "outgoing" ? "→" : r.missed ? "✗" : "←"} ${r.type} ${r.seconds ? Math.round(r.seconds / 60) + "m" + (r.seconds % 60) + "s" : r.missed ? "missed" : "no answer"}`) }
 function printEmail(rows) { for (const r of rows) console.log(`${fmt(r.at).padEnd(22)} ${String(r.from || "").slice(0, 28).padEnd(28)} ${String(r.subject || "").slice(0, 60)}\n${"".padEnd(23)}${r.snippet}\n${"".padEnd(23)}${r.link}`) }
 
@@ -85,9 +89,9 @@ async function main() {
   if (cmd === "texts") {
     const who = flags.with ? await resolve(flags.with) : null
     let rows = []
-    if (who && who.phones.length) for (const p of who.phones) rows.push(...await sc("/pile/texts", { q, phone: p, since: flags.since, until: flags.until, limit, from_me: flags.mine ? "1" : flags.theirs ? "0" : "" }))
-    else rows = await sc("/pile/texts", { q, since: flags.since, until: flags.until, limit, from_me: flags.mine ? "1" : flags.theirs ? "0" : "" })
-    rows.sort((a, b) => (a.at < b.at ? 1 : -1)); rows = rows.slice(0, limit)
+    if (who && who.phones.length) for (const p of who.phones) rows.push(...await sc("/pile/texts", { q, phone: p, since: flags.since, until: flags.until, limit, from_me: flags.mine ? "1" : flags.theirs ? "0" : "", groups: groupsParam() }))
+    else rows = await sc("/pile/texts", { q, since: flags.since, until: flags.until, limit, from_me: flags.mine ? "1" : flags.theirs ? "0" : "", groups: groupsParam() })
+    rows = dedupeTexts(rows); rows.sort((a, b) => (a.at < b.at ? 1 : -1)); rows = rows.slice(0, limit)
     if (JSON_OUT) return console.log(JSON.stringify(rows))
     console.log(`${rows.length} texts${q ? ` matching "${q}"` : ""}${who ? ` with ${who.names[0] || flags.with}` : ""}`); printTexts(rows, names); return
   }
@@ -109,12 +113,14 @@ async function main() {
   if (cmd === "person") {
     const who = await resolve(q)
     console.log(`== ${q} → ${who.names.join("; ") || "no name match"} | phones ${who.phones.join(", ") || "—"} | emails ${who.emails.join(", ") || "—"}`)
-    const texts = []; for (const p of who.phones) texts.push(...await sc("/pile/texts", { phone: p, since: flags.since, limit }))
+    let texts = []; for (const p of who.phones) texts.push(...await sc("/pile/texts", { phone: p, since: flags.since, limit, groups: groupsParam() }))
+    texts = dedupeTexts(texts)
     const calls = []; for (const p of who.phones) calls.push(...await sc("/pile/calls", { phone: p, since: flags.since, limit }))
     const emails = who.emails.length ? await searchEmail({ from: who.emails[0], since: flags.since, limit: Math.min(limit, 20) }).catch((e) => { console.error("email:", e.message); return [] }) : []
     texts.sort((a, b) => (a.at < b.at ? 1 : -1)); calls.sort((a, b) => (a.at < b.at ? 1 : -1))
     if (JSON_OUT) return console.log(JSON.stringify({ who, texts, calls, emails }))
-    console.log(`\n-- ${texts.length} texts (newest first, limit ${limit})`); printTexts(texts.slice(0, limit), names)
+    const shown = texts.slice(0, limit), inGroups = shown.filter((t) => t.group)
+    console.log(`\n-- ${shown.length} texts (newest first, limit ${limit}): ${shown.length - inGroups.length} private, ${inGroups.length} in ${new Set(inGroups.map((t) => t.group.chat)).size} group chats`); printTexts(shown, names)
     console.log(`\n-- ${calls.length} calls`); printCalls(calls.slice(0, limit), names)
     console.log(`\n-- ${emails.length} emails`); printEmail(emails); return
   }
