@@ -2638,9 +2638,12 @@ ${historyBlock}${freshLabel}
         ? parsed.followup_reason.trim()
         : null
     const guarded = validateFollowupAgainstReason(rawDate, rawReason)
-    const { date: followupDate, reason: followupReason } = clampOwedFollowup(
-      guarded.date,
-      guarded.reason,
+    const owed = clampOwedFollowup(guarded.date, guarded.reason, today)
+    const { date: followupDate, reason: followupReason } = clampOfferRequestedFollowup(
+      isLeadMoment(parsed.moment) ? parsed.moment : null,
+      parsed.offer_verbalized === true,
+      owed.date,
+      owed.reason,
       today
     )
     return {
@@ -2784,6 +2787,28 @@ export function clampOwedFollowup(
     `[followup] owed clamp: Ryan promised a deliverable but date was ${date} — set to ${tomorrow}. reason="${reason}"`
   )
   return { date: tomorrow, reason: prefixed }
+}
+
+// Seller asked for a number (Ryan 2026-10-24): "someone asking for a number
+// should be followed up within the next day." When the moment is
+// offer_requested and Ryan hasn't stated a price yet, the follow-up is due
+// TOMORROW no matter what timeline the seller gave ("next couple of months"
+// had put a hot texter 60 days out). Pure; runs after the owed clamp.
+export const OFFER_ASK_PREFIX = "Send a number — "
+export function clampOfferRequestedFollowup(
+  moment: string | null | undefined,
+  offerVerbalized: boolean,
+  date: string | null,
+  reason: string | null,
+  today: string
+): { date: string | null; reason: string | null } {
+  if (moment !== "offer_requested" || offerVerbalized) return { date, reason }
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(today)) return { date, reason }
+  const tomorrow = addDaysIso(today, 1)
+  // Already due by tomorrow under the owed rule (or this one) — leave it.
+  if (date && date <= tomorrow && (reason?.startsWith(OFFER_ASK_PREFIX) || reason?.startsWith(OWED_PREFIX))) return { date, reason }
+  const base = reason || "seller asked what Ryan would offer"
+  return { date: date && date <= tomorrow ? date : tomorrow, reason: base.startsWith(OFFER_ASK_PREFIX) ? base : OFFER_ASK_PREFIX + base }
 }
 
 // Outbound variant: persist follow-up fields + opportunistically fill
@@ -3399,9 +3424,12 @@ PROPERTY ADDRESS
     )
     // Owed clamp after the long-horizon guard — Ryan's "I'll get you a
     // number this week" comes due tomorrow, not at the end of the week.
-    const { date: followupDate, reason: followupReason } = clampOwedFollowup(
-      guarded.date,
-      guarded.reason,
+    const owed = clampOwedFollowup(guarded.date, guarded.reason, today)
+    const { date: followupDate, reason: followupReason } = clampOfferRequestedFollowup(
+      moment,
+      parsed.offer_verbalized === true,
+      owed.date,
+      owed.reason,
       today
     )
 

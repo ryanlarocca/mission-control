@@ -170,7 +170,9 @@ describe("analyzeCallTranscript applies the owed clamp", () => {
   it("leaves a seller-timeline follow-up alone", async () => {
     const reason = "Caller asked Ryan to 'call me back next week' — follow up in 7 days."
     const week = new Date(Date.now() + 7 * 86_400_000).toISOString().slice(0, 10)
-    ok({ ...BASE, recommended_followup_date: week, followup_reason: reason })
+    // invitation_to_talk: an offer_requested moment is pulled to tomorrow by
+    // clampOfferRequestedFollowup (2026-10-24), which is not this case.
+    ok({ ...BASE, moment: "invitation_to_talk", recommended_followup_date: week, followup_reason: reason })
     const r = await analyzeCallTranscript("Call me back next week.")
     expect(r?.recommended_followup_date).toBe(week)
     expect(r?.followup_reason).toBe(reason)
