@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server"
+import { waitUntil } from "@vercel/functions"
 import { gmail_v1 } from "googleapis"
 import { triggerTelegramDraft } from "@/lib/reply/telegram"
 
@@ -445,6 +446,12 @@ async function ingestGoogleVoice(args: {
       console.warn("[email][gv] mail-record link failed:", e instanceof Error ? e.message : String(e))
     }
   }
+  // Automatic status (2026-10-24): read the person's whole history and move
+  // New / Active / Nurture. Background so the lead alert isn't held up.
+  if (insertedId) {
+    const leadIdForStatus = insertedId
+    waitUntil(import("@/lib/leadStatus").then(({ runAutoStatusForLead }) => runAutoStatusForLead(leadIdForStatus)).then(() => undefined))
+  }
 
   const lines = [
     "📞 New Legacy DM lead (Google Voice)",
@@ -760,6 +767,12 @@ async function handleAppsScript(payload: AppsScriptPayload): Promise<NextRespons
       console.warn("[email] mail-record link failed:", e instanceof Error ? e.message : String(e))
     }
   }
+  // Automatic status (2026-10-24): read the person's whole history and move
+  // New / Active / Nurture. Background so the lead alert isn't held up.
+  if (insertedId) {
+    const leadIdForStatus = insertedId
+    waitUntil(import("@/lib/leadStatus").then(({ runAutoStatusForLead }) => runAutoStatusForLead(leadIdForStatus)).then(() => undefined))
+  }
 
   const lines = [
     `📧 New email lead${intake.reset ? RESET_TO_NEW_SUFFIX : ""}`,
@@ -1055,6 +1068,12 @@ async function processSingleMessage(args: {
     } catch (e) {
       console.warn("[email] mail-record link failed:", e instanceof Error ? e.message : String(e))
     }
+  }
+  // Automatic status (2026-10-24): read the person's whole history and move
+  // New / Active / Nurture. Background so the lead alert isn't held up.
+  if (insertedId) {
+    const leadIdForStatus = insertedId
+    waitUntil(import("@/lib/leadStatus").then(({ runAutoStatusForLead }) => runAutoStatusForLead(leadIdForStatus)).then(() => undefined))
   }
 
   const lines = [

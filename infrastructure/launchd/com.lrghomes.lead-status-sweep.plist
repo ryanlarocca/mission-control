@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Daily lead-status pass (2026-10-24): 30-day quiet rule + the one daily
+  Telegram summary of automatic status moves. 8:05am PT.
+
+  Install (Mac mini):
+    cp infrastructure/launchd/com.lrghomes.lead-status-sweep.plist ~/Library/LaunchAgents/
+    launchctl load ~/Library/LaunchAgents/com.lrghomes.lead-status-sweep.plist
+  Run once:  launchctl start com.lrghomes.lead-status-sweep
+  Logs:      /tmp/lrg-lead-status-sweep.log, /tmp/lrg-lead-status-sweep-err.log
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.lrghomes.lead-status-sweep</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/opt/homebrew/bin/node</string>
+    <string>scripts/lead-status-sweep.mjs</string>
+  </array>
+  <key>WorkingDirectory</key>
+  <string>/Users/ryanlarocca/Projects/PROJECTS/mission-control</string>
+  <key>StartCalendarInterval</key>
+  <dict>
+    <key>Hour</key>
+    <integer>8</integer>
+    <key>Minute</key>
+    <integer>5</integer>
+  </dict>
+  <key>StandardOutPath</key>
+  <string>/tmp/lrg-lead-status-sweep.log</string>
+  <key>StandardErrorPath</key>
+  <string>/tmp/lrg-lead-status-sweep-err.log</string>
+  <key>RunAtLoad</key>
+  <false/>
+</dict>
+</plist>

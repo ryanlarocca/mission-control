@@ -94,6 +94,13 @@ interface Lead {
   // Campaign Performance — offer-detection columns added 2026-05-17.
   offer_amount?: number | null
   offer_verbalized_at?: string | null
+  // Funnel milestones (2026-10-24), written cluster-wide by
+  // POST /api/leads/[id]/milestone. became_lead_at = first time Active.
+  appointment_at?: string | null
+  pending_at?: string | null
+  deal_closed_at?: string | null
+  deal_value?: number | null
+  became_lead_at?: string | null
   campaign_id?: string | null
   // campaigns.piece of campaign_id ("A" / "B" on A/B children), joined onto
   // the row by GET /api/leads (2026-10-12) for the piece-mismatch chip.
@@ -177,6 +184,11 @@ interface LeadGroup {
   // (hands-off — only writes when null). UI lets Ryan pencil-edit.
   offerAmount: number | null
   offerVerbalizedAt: string | null
+  appointmentAt: string | null
+  pendingAt: string | null
+  closedAt: string | null
+  dealValue: number | null
+  becameLeadAt: string | null
   // Direct-mail match — the mailed record this cluster responded to (newest
   // row that has one), how it was matched, and the auto-matcher's unresolved
   // near-misses when it found several and attached none.
@@ -455,6 +467,11 @@ function groupLeads(leads: Lead[]): LeadGroup[] {
       // any sibling, that wins via newest-first walk.
       offerAmount: newestFirst.find(r => typeof r.offer_amount === "number" && r.offer_amount > 0)?.offer_amount ?? null,
       offerVerbalizedAt: newestFirst.find(r => r.offer_verbalized_at)?.offer_verbalized_at ?? null,
+      appointmentAt: newestFirst.find(r => r.appointment_at)?.appointment_at ?? null,
+      pendingAt: newestFirst.find(r => r.pending_at)?.pending_at ?? null,
+      closedAt: newestFirst.find(r => r.deal_closed_at)?.deal_closed_at ?? null,
+      dealValue: newestFirst.find(r => typeof r.deal_value === "number" && r.deal_value > 0)?.deal_value ?? null,
+      becameLeadAt: newestFirst.find(r => r.became_lead_at)?.became_lead_at ?? null,
       mailRecordId: mailRow?.mail_record_id ?? null,
       mailMatchMethod: mailRow?.mail_match_method ?? null,
       mailMatchCandidates: mailRow ? [] : (candidateRow?.mail_match_candidates ?? []),
@@ -1269,6 +1286,32 @@ export function LeadsTab() {
   // Phase 7C — Part 6 actions. Each one optimistic-patches local state
   // (so the UI moves immediately) and refetches in the background to
   // catch any server-side derivations (DNC list write, drip auto-route).
+  // Funnel milestone tap (Appointment / Pending / Closed). Optimistic on
+  // every row of the person, then a silent refetch — the route may also
+  // have moved the status to Active.
+  async function saveMilestoneOnGroup(group: LeadGroup, m: Milestone, date: string | null, dealValue?: number | null) {
+    const col = MILESTONE_COLUMN[m]
+    const ids = new Set(group.events.map(e => e.id))
+    const stamp = date ? `${date}T12:00:00Z` : null
+    applyLeadEdit(prev => prev.map(l => ids.has(l.id)
+      ? { ...l, [col]: stamp, ...(m === "closed" && dealValue !== undefined ? { deal_value: dealValue } : {}), ...(date ? { became_lead_at: l.became_lead_at ?? new Date().toISOString() } : {}) }
+      : l))
+    try {
+      const res = await fetch(`/api/leads/${group.mostRecentId}/milestone`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ milestone: m, date, ...(dealValue !== undefined ? { deal_value: dealValue } : {}) }),
+      })
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}))
+        throw new Error(body.error || `HTTP ${res.status}`)
+      }
+    } catch (e) {
+      alert(`Couldn't save ${m}: ${e instanceof Error ? e.message : String(e)}`)
+    }
+    void fetchLeads(true)
+  }
+
   async function patchFlagOnGroup(group: LeadGroup, patch: Partial<Lead>) {
     applyLeadEdit(prev => prev.map(l => l.id === group.mostRecentId ? { ...l, ...patch } : l))
     try {
@@ -1876,6 +1919,7 @@ export function LeadsTab() {
               draftError={expandedPhone === group.phone ? draftError : null}
               onPatchField={(field, value) => patchFlagOnGroup(group, { [field]: value || null } as Partial<Lead>)}
               onSaveOffer={(amount) => patchFlagOnGroup(group, { offer_amount: amount } as Partial<Lead>)}
+              onSaveMilestone={(m, date, value) => void saveMilestoneOnGroup(group, m, date, value)}
               onSaveProperties={(details) => patchFlagOnGroup(group, { property_details: details } as Partial<Lead>)}
               onSetMailRecord={(record) => setMailRecordOnGroup(group, record)}
               onSetStatus={(s) => setGroupStatus(group, s)}
@@ -2038,6 +2082,7 @@ interface LeadCardProps {
   // Offer amount edit — separate from onPatchField because the value is a
   // number (or null to clear), not a string. PATCH /api/leads coerces.
   onSaveOffer: (amount: number | null) => void
+  onSaveMilestone: (milestone: Milestone, date: string | null, dealValue?: number | null) => void
   // Persist the full property_details array after an add / edit / remove.
   onSaveProperties: (details: PropertyDetail[]) => void
   // Direct-mail tracking: link (record) / unlink (null) the mailed piece.
@@ -2338,6 +2383,7 @@ function LeadCard(p: LeadCardProps) {
               {onDrip && " · 🤖 drip"}
             </div>
           </div>
+          <StageChip group={group} />
           <span className={`px-2 py-0.5 text-[10px] font-semibold rounded uppercase tracking-wider ${STATUS_BADGE[group.status]}`}>
             {group.status}
           </span>
@@ -2549,6 +2595,8 @@ function LeadCard(p: LeadCardProps) {
             offerVerbalizedAt={group.offerVerbalizedAt}
             onSave={p.onSaveOffer}
           />
+
+          <MilestoneRow group={group} onSave={p.onSaveMilestone} />
 
           <Timeline
             events={mergeForTimeline(group.events, p.extraEvents)}
@@ -3221,6 +3269,111 @@ function mergeForTimeline(authoritative: Lead[], synthetic: Lead[]): Lead[] {
 // name + property_address on the expanded LeadCard so Ryan can correct
 // parser misses (e.g. "Google Voice" → "Chris Bola") in one tap. Saves
 // on Enter or blur; Esc cancels.
+// ── Funnel milestones (2026-10-24) ─────────────────────────────────────────
+// Appointment / Pending / Closed (+ price) taps on the card. Offer keeps its
+// own row above. The chip in the card header shows how far the person got.
+type Milestone = "appointment" | "pending" | "closed"
+const MILESTONE_COLUMN: Record<Milestone, "appointment_at" | "pending_at" | "deal_closed_at"> = {
+  appointment: "appointment_at",
+  pending: "pending_at",
+  closed: "deal_closed_at",
+}
+
+function furthestStage(g: LeadGroup): { emoji: string; label: string; cls: string } | null {
+  if (g.closedAt) return { emoji: "🏁", label: "Closed", cls: "bg-emerald-950/60 text-emerald-300 border-emerald-900/60" }
+  if (g.pendingAt) return { emoji: "📝", label: "Pending", cls: "bg-sky-950/60 text-sky-300 border-sky-900/60" }
+  if (g.offerVerbalizedAt) return { emoji: "💰", label: "Offer", cls: "bg-amber-950/50 text-amber-300 border-amber-900/60" }
+  if (g.appointmentAt) return { emoji: "📅", label: "Appt", cls: "bg-violet-950/50 text-violet-300 border-violet-900/60" }
+  if (g.becameLeadAt) return { emoji: "🎯", label: "Lead", cls: "bg-zinc-900 text-zinc-300 border-zinc-700" }
+  return null
+}
+
+function StageChip({ group }: { group: LeadGroup }) {
+  const st = furthestStage(group)
+  if (!st) return null
+  return (
+    <span className={`px-1.5 py-0.5 text-[10px] font-medium rounded border shrink-0 ${st.cls}`} title={`Furthest stage reached: ${st.label}`}>
+      {st.emoji} {st.label}
+    </span>
+  )
+}
+
+function MilestoneRow({ group, onSave }: { group: LeadGroup; onSave: (m: Milestone, date: string | null, dealValue?: number | null) => void }) {
+  const [editing, setEditing] = useState<Milestone | null>(null)
+  const [date, setDate] = useState("")
+  const [price, setPrice] = useState("")
+  const today = () => {
+    const d = new Date()
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`
+  }
+  const current: Record<Milestone, string | null> = { appointment: group.appointmentAt, pending: group.pendingAt, closed: group.closedAt }
+  const label: Record<Milestone, string> = { appointment: "📅 Appointment", pending: "📝 Pending", closed: "🏁 Closed" }
+  const fmt = (iso: string) => new Date(iso).toLocaleDateString([], { month: "short", day: "numeric", year: "numeric", timeZone: "UTC" })
+  const money = (n: number) => (n >= 1_000_000 ? `$${(n / 1_000_000).toFixed(2)}M` : `$${Math.round(n / 1000)}K`)
+  function parsePrice(input: string): number | null | "bad" {
+    const t = input.trim()
+    if (!t) return null
+    const m = t.replace(/[$,_\s]/g, "").match(/^(\d+(?:\.\d+)?)([kKmM]?)$/)
+    if (!m) return "bad"
+    const v = Math.round(parseFloat(m[1]) * (m[2].toLowerCase() === "k" ? 1000 : m[2].toLowerCase() === "m" ? 1_000_000 : 1))
+    return v > 0 ? v : "bad"
+  }
+  function open(m: Milestone) {
+    setEditing(m)
+    setDate(current[m] ? current[m]!.slice(0, 10) : today())
+    setPrice(m === "closed" && group.dealValue ? String(group.dealValue) : "")
+  }
+  function commit() {
+    if (!editing) return
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) { setEditing(null); return }
+    if (editing === "closed") {
+      const p = parsePrice(price)
+      if (p === "bad") return
+      onSave("closed", date, p)
+    } else {
+      onSave(editing, date)
+    }
+    setEditing(null)
+  }
+
+  if (editing) {
+    return (
+      <div className="rounded border border-zinc-700 bg-zinc-900 px-3 py-1.5 text-xs text-zinc-200 flex flex-wrap items-center gap-2 max-w-full">
+        <span>{label[editing]}</span>
+        <input type="date" value={date} onChange={(e) => setDate(e.target.value)} className="bg-zinc-950 border border-zinc-700 rounded px-2 py-0.5 text-xs text-zinc-100" style={{ fontSize: 16 }} />
+        {editing === "closed" && (
+          <input value={price} onChange={(e) => setPrice(e.target.value)} placeholder="Price, e.g. 1.2M" className="bg-zinc-950 border border-zinc-700 rounded px-2 py-0.5 text-xs text-zinc-100 w-32" style={{ fontSize: 16 }} />
+        )}
+        <button onClick={commit} className="px-2 py-0.5 rounded bg-emerald-700 hover:bg-emerald-600 text-white">Save</button>
+        {current[editing] && (
+          <button onClick={() => { onSave(editing, null); setEditing(null) }} className="px-2 py-0.5 rounded text-zinc-400 hover:text-red-300">Clear</button>
+        )}
+        <button onClick={() => setEditing(null)} className="px-2 py-0.5 rounded text-zinc-500 hover:text-zinc-300">Cancel</button>
+      </div>
+    )
+  }
+
+  return (
+    <div className="flex flex-wrap gap-1.5">
+      {(["appointment", "pending", "closed"] as Milestone[]).map(m => {
+        const at = current[m]
+        return (
+          <button
+            key={m}
+            onClick={() => open(m)}
+            className={at
+              ? "rounded border border-sky-900/50 bg-sky-950/30 px-3 py-1 text-[11px] text-sky-100 hover:bg-sky-950/50 transition-colors"
+              : "rounded border border-zinc-800 bg-zinc-950 px-3 py-1 text-[11px] text-zinc-500 hover:border-sky-900/60 hover:text-sky-300 transition-colors"}
+            title={at ? `Edit ${m}` : `Mark ${m}`}
+          >
+            {label[m]}{at ? ` · ${fmt(at)}` : ""}{m === "closed" && at && group.dealValue ? ` · ${money(group.dealValue)}` : ""}
+          </button>
+        )
+      })}
+    </div>
+  )
+}
+
 // Offer line on the expanded lead card. Renders nothing when offerAmount
 // is null. When set, shows "Offer: $800K · May 14 ✏️" with the pencil
 // opening an inline edit that parses dollar inputs like "850k", "$1.2M",

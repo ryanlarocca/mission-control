@@ -22,9 +22,21 @@ export interface CampaignPerf {
   parent_campaign_id: string | null
   notes: string | null
   drive_folder_id: string | null
-  // Computed:
-  responses: number              // count of non-junk leads with campaign_id = id
-  response_rate: number | null   // responses / pieces_sent
+  // Computed. Funnel (Ryan 2026-10-24): Total → Real (minus removals and
+  // junk) → Leads (ever Active) → Appointment → Offer → Pending → Closed.
+  // Everything below Total counts real responses only.
+  total_responses: number        // every person who reached out, junk + DNC included
+  total_response_rate: number | null
+  removals: number               // people who asked to be removed (is_dnc)
+  junk: number                   // junk / wrong person / vendor, not DNC
+  responses: number              // REAL responses = total − removals − junk
+  response_rate: number | null   // real responses / pieces_sent
+  leads: number                  // real responses that were ever Active
+  lead_rate: number | null       // leads / real responses
+  appointments: number
+  pending: number
+  cost_per_lead: number | null
+  cost_per_closed: number | null
   offers: number                 // count where offer_verbalized_at IS NOT NULL
   offer_rate: number | null      // offers / responses
   closed: number                 // count where deal_closed_at IS NOT NULL
@@ -48,7 +60,7 @@ export async function GET() {
       sb.from("campaigns").select("*"),
       sb
         .from("leads")
-        .select("id, name, campaign_id, caller_phone, email, gmail_thread_id, is_junk, offer_verbalized_at, deal_closed_at, deal_value")
+        .select("id, name, campaign_id, caller_phone, email, gmail_thread_id, is_junk, is_dnc, offer_verbalized_at, deal_closed_at, deal_value")
         .not("campaign_id", "is", null),
     ])
     if (cErr) return NextResponse.json({ error: cErr.message }, { status: 500 })
@@ -62,6 +74,7 @@ export async function GET() {
       email: string | null
       gmail_thread_id: string | null
       is_junk: boolean | null
+      is_dnc: boolean | null
       offer_verbalized_at: string | null
       deal_closed_at: string | null
       deal_value: number | null
@@ -80,6 +93,10 @@ export async function GET() {
       offer_verbalized_at: string | null
       deal_closed_at: string | null
       deal_value: number | null
+      is_dnc: boolean | null
+      became_lead_at: string | null
+      appointment_at: string | null
+      pending_at: string | null
     }
     // 2026-05-17 — we used to issue a single `.or()` query combining three
     // `.in.()` filters, but PostgREST (or supabase-js's encoding of it)
@@ -90,17 +107,17 @@ export async function GET() {
     const sibResults = await Promise.all([
       phones.length > 0
         ? sb.from("leads")
-            .select("caller_phone, email, gmail_thread_id, offer_verbalized_at, deal_closed_at, deal_value")
+            .select("caller_phone, email, gmail_thread_id, offer_verbalized_at, deal_closed_at, deal_value, is_dnc, became_lead_at, appointment_at, pending_at")
             .in("caller_phone", phones)
         : Promise.resolve({ data: [], error: null }),
       emails.length > 0
         ? sb.from("leads")
-            .select("caller_phone, email, gmail_thread_id, offer_verbalized_at, deal_closed_at, deal_value")
+            .select("caller_phone, email, gmail_thread_id, offer_verbalized_at, deal_closed_at, deal_value, is_dnc, became_lead_at, appointment_at, pending_at")
             .in("email", emails)
         : Promise.resolve({ data: [], error: null }),
       threads.length > 0
         ? sb.from("leads")
-            .select("caller_phone, email, gmail_thread_id, offer_verbalized_at, deal_closed_at, deal_value")
+            .select("caller_phone, email, gmail_thread_id, offer_verbalized_at, deal_closed_at, deal_value, is_dnc, became_lead_at, appointment_at, pending_at")
             .in("gmail_thread_id", threads)
         : Promise.resolve({ data: [], error: null }),
     ])
@@ -112,9 +129,19 @@ export async function GET() {
     // offer / a close? Use Set/Map for O(1) lookup during the rollup.
     const clusterOfferAt = new Map<string, string>() // earliest offer timestamp per cluster
     const clusterClose = new Map<string, { count: number; deal_value: number }>()
+    // Funnel milestones + removals are cluster-level too (written cluster-
+    // wide, but a DNC can sit on one row only — any row counts).
+    const clusterDnc = new Set<string>()
+    const clusterLead = new Set<string>()
+    const clusterAppt = new Set<string>()
+    const clusterPending = new Set<string>()
     for (const s of siblings) {
       const k = clusterKey(s)
       if (!k) continue
+      if (s.is_dnc) clusterDnc.add(k)
+      if (s.became_lead_at) clusterLead.add(k)
+      if (s.appointment_at) clusterAppt.add(k)
+      if (s.pending_at) clusterPending.add(k)
       if (s.offer_verbalized_at && !clusterOfferAt.has(k)) clusterOfferAt.set(k, s.offer_verbalized_at)
       if (s.deal_closed_at) {
         const cur = clusterClose.get(k) ?? { count: 0, deal_value: 0 }
@@ -142,16 +169,20 @@ export async function GET() {
         seen.add(k)
         clusters.push(r)
       }
-      // Junked leads aren't real responses — exclude from the funnel.
-      // is_junk is per-row; check the canonical row's flag. If any non-
-      // junk attributed row exists, the cluster counts as a real response.
-      const real = clusters.filter((r) => {
-        if (!r.is_junk) return true
-        const k = clusterKey(r) ?? `id:${r.id}`
-        // If another row in the cluster isn't junked, keep it.
-        return rows.some(other => (clusterKey(other) ?? `id:${other.id}`) === k && !other.is_junk)
-      })
+      // Total = every person. Removals = anyone in the cluster DNC'd.
+      // Junk = every attributed row junked (and not a removal). Real = the
+      // rest. Junk / removals are never counted further down the funnel.
+      const keyOf = (r: AttrRow) => clusterKey(r) ?? `id:${r.id}`
+      const isRemoval = (r: AttrRow) => clusterDnc.has(keyOf(r)) || rows.some(o => keyOf(o) === keyOf(r) && !!o.is_dnc)
+      const isJunk = (r: AttrRow) => !rows.some(o => keyOf(o) === keyOf(r) && !o.is_junk)
+      const totalResponses = clusters.length
+      const removals = clusters.filter(isRemoval).length
+      const junk = clusters.filter(r => !isRemoval(r) && isJunk(r)).length
+      const real = clusters.filter(r => !isRemoval(r) && !isJunk(r))
       const responses = real.length
+      const leads = real.filter(r => clusterLead.has(keyOf(r))).length
+      const appointments = real.filter(r => clusterAppt.has(keyOf(r))).length
+      const pending = real.filter(r => clusterPending.has(keyOf(r))).length
       // Offers / closes: count clusters where the cluster has the event,
       // not rows. This is the fix for Brian Metcalf's $1.8M landing on
       // his Outbound row (which has no campaign_id) — the cluster IS
@@ -179,6 +210,8 @@ export async function GET() {
       const costPerOffer = c.total_cost != null && offers > 0
         ? c.total_cost / offers
         : null
+      const costPerLead = c.total_cost != null && leads > 0 ? c.total_cost / leads : null
+      const costPerClosed = c.total_cost != null && closed > 0 ? c.total_cost / closed : null
       const roi = c.total_cost != null && c.total_cost > 0 && dealValueTotal > 0
         ? (dealValueTotal - c.total_cost) / c.total_cost
         : null
@@ -194,8 +227,18 @@ export async function GET() {
         parent_campaign_id: c.parent_campaign_id,
         notes: c.notes,
         drive_folder_id: c.drive_folder_id ?? null,
+        total_responses: totalResponses,
+        total_response_rate: c.pieces_sent && c.pieces_sent > 0 ? totalResponses / c.pieces_sent : null,
+        removals,
+        junk,
         responses,
         response_rate: responseRate,
+        leads,
+        lead_rate: responses > 0 ? leads / responses : null,
+        appointments,
+        pending,
+        cost_per_lead: costPerLead,
+        cost_per_closed: costPerClosed,
         offers,
         offer_rate: offerRate,
         closed,

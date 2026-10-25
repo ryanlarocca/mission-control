@@ -387,6 +387,18 @@ export async function POST(request: Request) {
       }
       return NextResponse.json({ ok: true })
     }
+    // Daily lead-status summary (2026-10-24): ↩️ Undo puts one automatic
+    // move back and makes Ryan's status stick (lib/leadStatus).
+    if (cb.data.startsWith("lsundo:")) {
+      const eventId = cb.data.slice("lsundo:".length)
+      const { undoStatusEvent } = await import("@/lib/leadStatus")
+      const out = /^[0-9a-f-]{36}$/.test(eventId)
+        ? await undoStatusEvent(getLeadsClient(), eventId)
+        : { ok: false, error: "bad button" }
+      await tg("answerCallbackQuery", { callback_query_id: cb.id, text: out.ok ? `↩️ ${out.label}` : `⚠️ ${out.error}` })
+      if (out.ok) await tg("sendMessage", { chat_id: chatId, text: `↩️ Undone — ${out.label}.`, reply_to_message_id: cb.message?.message_id })
+      return NextResponse.json({ ok: true })
+    }
     // Inbox Agent (2026-09-24): filing approvals, interview answers, open
     // loops, deal screens. Supabase-only here; the Mac mini worker executes.
     if (cb.data.startsWith(INBOX_CB_PREFIX)) {

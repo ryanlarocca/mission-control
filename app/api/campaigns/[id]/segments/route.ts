@@ -15,8 +15,18 @@ import { clusterKey, getLeadsClient } from "@/lib/leads"
 // Parent behaviour is unchanged.
 export const dynamic = "force-dynamic"
 
-interface StatRow { dimension: string; segment: string; pieces: number; responders: number }
-export interface SegmentRow { segment: string; pieces: number; responders: number; per_thousand: number; cost_per_response: number | null }
+// mail_segment_funnel (2026-10-24): the campaign funnel per segment.
+// `responders` stays = REAL responses (non-junk, non-DNC) so per-1,000 and
+// $/response keep meaning "real"; total + removals sit beside it.
+interface StatRow {
+  dimension: string; segment: string; pieces: number
+  responses: number; removals: number; real_responses: number; leads: number
+  appointments: number; offers: number; pending: number; closed: number
+}
+export interface SegmentRow {
+  segment: string; pieces: number; responders: number; per_thousand: number; cost_per_response: number | null
+  total: number; removals: number; leads: number; appointments: number; offers: number; pending: number; closed: number
+}
 
 const PAGE = 1000
 
@@ -48,13 +58,11 @@ export async function GET(_req: NextRequest, { params }: { params: { id: string 
       })
     }
 
-    const { data: stats, error: sErr } = childPiece
-      ? await sb.rpc("mail_segment_stats_piece", { p_campaign: recordsCampaignId, p_piece: childPiece })
-      : await sb.rpc("mail_segment_stats", { p_campaign: recordsCampaignId })
+    const { data: stats, error: sErr } = await sb.rpc("mail_segment_funnel", { p_campaign: recordsCampaignId, p_piece: childPiece })
     if (sErr) return NextResponse.json({ error: sErr.message }, { status: 500 })
     const rows = (stats ?? []) as StatRow[]
     const pieces = rows.filter(r => r.dimension === "arm").reduce((a, r) => a + Number(r.pieces), 0)
-    const respondersMatched = rows.filter(r => r.dimension === "arm").reduce((a, r) => a + Number(r.responders), 0)
+    const respondersMatched = rows.filter(r => r.dimension === "arm").reduce((a, r) => a + Number(r.real_responses), 0)
     let unitCost =
       campaign.total_cost != null && campaign.pieces_sent ? Number(campaign.total_cost) / Number(campaign.pieces_sent) : null
     if (unitCost == null && campaign.parent_campaign_id) {
@@ -70,13 +78,20 @@ export async function GET(_req: NextRequest, { params }: { params: { id: string 
 
     const dimensions: Record<string, SegmentRow[]> = {}
     for (const r of rows) {
-      const p = Number(r.pieces), n = Number(r.responders)
+      const p = Number(r.pieces), n = Number(r.real_responses)
       ;(dimensions[r.dimension] ??= []).push({
         segment: r.segment,
         pieces: p,
         responders: n,
         per_thousand: p ? Math.round((n / p) * 1000 * 100) / 100 : 0,
         cost_per_response: unitCost != null && n ? Math.round(((p * unitCost) / n) * 100) / 100 : null,
+        total: Number(r.responses),
+        removals: Number(r.removals),
+        leads: Number(r.leads),
+        appointments: Number(r.appointments),
+        offers: Number(r.offers),
+        pending: Number(r.pending),
+        closed: Number(r.closed),
       })
     }
 

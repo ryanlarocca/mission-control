@@ -230,6 +230,14 @@ export async function PATCH(request: NextRequest) {
 
   try {
     const sb = getLeadsClient()
+    // Status history (2026-10-24): read the old status first so the change
+    // is logged, and mark it Ryan's so the automatic rules leave it alone
+    // until something new happens on the person.
+    let priorStatus: LeadStatus | null = null
+    if (update.status !== undefined) {
+      const { data: prior } = await sb.from("leads").select("status").eq("id", id).maybeSingle()
+      priorStatus = (prior?.status as LeadStatus | undefined) ?? null
+    }
     // Apply the column update when there is one; a manual_touch-only call
     // just loads the row so the cadence reset can resolve its cluster.
     const { data, error } =
@@ -249,6 +257,15 @@ export async function PATCH(request: NextRequest) {
     // row would still fire (drainApprovedQueue doesn't re-check status).
     // We sweep them here so marking a lead dead/junk/dnc clears the queued
     // drips + the follow-up date immediately.
+    if (update.status !== undefined && update.status !== priorStatus) {
+      try {
+        const { recordManualStatus } = await import("@/lib/leadStatus")
+        await recordManualStatus(sb, id, priorStatus, update.status as LeadStatus)
+      } catch (e) {
+        console.warn(`[leads:PATCH] status history write failed for ${id}:`, e instanceof Error ? e.message : String(e))
+      }
+    }
+
     const flaggedHalt =
       update.is_junk === true || update.is_dnc === true || update.status === "dead"
     if (flaggedHalt) {

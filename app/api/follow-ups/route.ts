@@ -52,12 +52,18 @@ interface CandidateLead {
   twilio_number: string | null
   notes: string | null
   ai_summary: string | null
+  became_lead_at?: string | null
+  appointment_at?: string | null
+  offer_verbalized_at?: string | null
+  pending_at?: string | null
+  deal_closed_at?: string | null
 }
 
 const LEAD_COLS =
   "id, caller_phone, email, gmail_thread_id, source, source_type, name, status, created_at, " +
   "property_address, temperature, drip_campaign_type, drip_touch_number, last_drip_sent_at, " +
-  "is_dnc, is_junk, recommended_followup_date, followup_reason, lead_type, twilio_number, notes, ai_summary"
+  "is_dnc, is_junk, recommended_followup_date, followup_reason, lead_type, twilio_number, notes, ai_summary, " +
+  "became_lead_at, appointment_at, offer_verbalized_at, pending_at, deal_closed_at"
 
 interface ContactRow {
   clusterKey: string
@@ -88,6 +94,9 @@ interface ContactRow {
   // Id of an inbound email row in the cluster, if any — lets a manual email
   // thread the existing Gmail conversation instead of starting fresh.
   emailReplyLeadId: string | null
+  // Furthest funnel stage the person reached (2026-10-24) — same chip as
+  // the lead card: closed > pending > offer > appointment > lead.
+  stage: "closed" | "pending" | "offer" | "appointment" | "lead" | null
   primary: NextTouch
   secondary: NextTouch | null
 }
@@ -400,6 +409,12 @@ export async function GET(_request: NextRequest) {
         // wins" rule as notes/temperature.
         aiSummary: byRecent.find((l) => l.ai_summary && l.ai_summary.trim())?.ai_summary ?? null,
         emailReplyLeadId: emailReplyLead?.id ?? null,
+        stage: leads.some((l) => l.deal_closed_at) ? "closed"
+          : leads.some((l) => l.pending_at) ? "pending"
+          : leads.some((l) => l.offer_verbalized_at) ? "offer"
+          : leads.some((l) => l.appointment_at) ? "appointment"
+          : leads.some((l) => l.became_lead_at) ? "lead"
+          : null,
         primary: summary.primary,
         secondary: summary.secondary,
       })

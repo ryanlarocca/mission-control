@@ -23,14 +23,24 @@ interface CampaignPerf {
   variant: string | null
   parent_campaign_id: string | null
   notes: string | null
-  responses: number
+  total_responses: number
+  total_response_rate: number | null
+  removals: number
+  junk: number
+  responses: number              // real responses
   response_rate: number | null
+  leads: number
+  lead_rate: number | null
+  appointments: number
   offers: number
   offer_rate: number | null
+  pending: number
   closed: number
   deal_value_total: number
   cost_per_response: number | null
   cost_per_offer: number | null
+  cost_per_lead: number | null
+  cost_per_closed: number | null
   roi: number | null
 }
 
@@ -132,22 +142,36 @@ export function CampaignPerformanceTab() {
     const pieces = sum("pieces_sent")
     const cost = sum("total_cost")
     const responses = sum("responses")
+    const total = sum("total_responses")
+    const leads = sum("leads")
     const offers = sum("offers")
     const closed = sum("closed")
     const dealValue = sum("deal_value_total")
+    const piecesAll = pieces > 0 ? pieces : group.parent.pieces_sent
+    const costAll = cost > 0 ? cost : group.parent.total_cost
     return {
       ...group.parent,
-      pieces_sent: pieces > 0 ? pieces : group.parent.pieces_sent,
-      total_cost: cost > 0 ? cost : group.parent.total_cost,
+      pieces_sent: piecesAll,
+      total_cost: costAll,
+      total_responses: total,
+      total_response_rate: piecesAll ? total / piecesAll : null,
+      removals: sum("removals"),
+      junk: sum("junk"),
       responses,
-      response_rate: pieces > 0 ? responses / pieces : null,
+      response_rate: piecesAll ? responses / piecesAll : null,
+      leads,
+      lead_rate: responses > 0 ? leads / responses : null,
+      appointments: sum("appointments"),
       offers,
       offer_rate: responses > 0 ? offers / responses : null,
+      pending: sum("pending"),
       closed,
       deal_value_total: dealValue,
-      cost_per_response: cost > 0 && responses > 0 ? cost / responses : null,
-      cost_per_offer: cost > 0 && offers > 0 ? cost / offers : null,
-      roi: cost > 0 && dealValue > 0 ? (dealValue - cost) / cost : null,
+      cost_per_response: costAll && responses > 0 ? costAll / responses : null,
+      cost_per_offer: costAll && offers > 0 ? costAll / offers : null,
+      cost_per_lead: costAll && leads > 0 ? costAll / leads : null,
+      cost_per_closed: costAll && closed > 0 ? costAll / closed : null,
+      roi: costAll && dealValue > 0 ? (dealValue - costAll) / costAll : null,
     }
   }
 
@@ -173,7 +197,7 @@ export function CampaignPerformanceTab() {
       <div className="flex items-center justify-between gap-3">
         <div>
           <h1 className="text-lg font-semibold text-zinc-100">Campaign Performance</h1>
-          <p className="text-xs text-zinc-500">Sent → Responded → Offer → Closed funnel for every campaign, plus per-stage cost and ROI.</p>
+          <p className="text-xs text-zinc-500">Total → Real responses → Leads → Appointment → Offer → Pending → Closed for every campaign, with per-stage cost and ROI.</p>
         </div>
         <div className="flex items-center gap-2">
           <button
@@ -230,7 +254,8 @@ export function CampaignPerformanceTab() {
               <div className="px-3 py-2 space-y-2">
                 <div className="text-xs text-zinc-400">
                   {fmtInt(agg.pieces_sent)} pieces · {fmtMoney(agg.total_cost)} ·{" "}
-                  <span className="text-zinc-200">{agg.responses}</span> responses ({fmtPct(agg.response_rate)})
+                  <span className="text-zinc-200">{agg.total_responses}</span> responses ({fmtPct(agg.total_response_rate)}) ·{" "}
+                  <span className="text-zinc-200">{agg.responses}</span> real · <span className="text-zinc-200">{agg.leads}</span> leads
                 </div>
                 {ab && <div className="text-xs text-emerald-300">{ab}</div>}
                 {group.children.length > 0 && (
@@ -296,8 +321,10 @@ export function CampaignPerformanceTab() {
                 <th className="text-left px-3 py-1.5">Channel</th>
                 <th className="text-right px-3 py-1.5">Pieces</th>
                 <th className="text-right px-3 py-1.5">Spend</th>
-                <th className="text-right px-3 py-1.5">Resp</th>
+                <th className="text-right px-3 py-1.5">Total</th>
+                <th className="text-right px-3 py-1.5">Real</th>
                 <th className="text-right px-3 py-1.5">%</th>
+                <th className="text-right px-3 py-1.5">Leads</th>
                 <th className="text-right px-3 py-1.5">Off</th>
                 <th className="text-right px-3 py-1.5">%</th>
                 <th className="text-right px-3 py-1.5">Closed</th>
@@ -314,8 +341,10 @@ export function CampaignPerformanceTab() {
                   <td className="px-3 py-1.5 text-zinc-500">{c.channel === "direct_mail" ? "DM" : "GA"}</td>
                   <td className="px-3 py-1.5 text-right">{fmtInt(c.pieces_sent)}</td>
                   <td className="px-3 py-1.5 text-right">{fmtMoney(c.total_cost)}</td>
+                  <td className="px-3 py-1.5 text-right">{c.total_responses}</td>
                   <td className="px-3 py-1.5 text-right">{c.responses}</td>
                   <td className="px-3 py-1.5 text-right text-zinc-500">{fmtPct(c.response_rate)}</td>
+                  <td className="px-3 py-1.5 text-right">{c.leads}</td>
                   <td className="px-3 py-1.5 text-right">{c.offers}</td>
                   <td className="px-3 py-1.5 text-right text-zinc-500">{fmtPct(c.offer_rate)}</td>
                   <td className="px-3 py-1.5 text-right">{c.closed || "—"}</td>
@@ -354,14 +383,40 @@ function ChildCard({ c }: { c: CampaignPerf }) {
   )
 }
 
+// The funnel Ryan agreed 2026-10-24. Total and Real are rated against
+// pieces mailed; every stage below is rated against real responses. Removals
+// and junk are shown so the overall number is always visible and the
+// backing-out is explicit.
 function FunnelInline({ c }: { c: CampaignPerf }) {
+  const per = (n: number) => (c.total_cost != null && n > 0 ? c.total_cost / n : null)
+  const ofReal = (n: number) => (c.responses > 0 ? n / c.responses : null)
+  const rows: { label: string; n: number; rate: number | null; cost: number | null; sub?: boolean }[] = [
+    { label: "Total responses", n: c.total_responses, rate: c.total_response_rate, cost: per(c.total_responses) },
+    { label: "− Removals", n: c.removals, rate: null, cost: null, sub: true },
+    { label: "− Junk / wrong person", n: c.junk, rate: null, cost: null, sub: true },
+    { label: "Real responses", n: c.responses, rate: c.response_rate, cost: c.cost_per_response },
+    { label: "Leads", n: c.leads, rate: c.lead_rate, cost: c.cost_per_lead },
+    { label: "Appointment", n: c.appointments, rate: ofReal(c.appointments), cost: per(c.appointments) },
+    { label: "Offer", n: c.offers, rate: c.offer_rate, cost: c.cost_per_offer },
+    { label: "Pending", n: c.pending, rate: ofReal(c.pending), cost: per(c.pending) },
+    { label: "Closed", n: c.closed, rate: ofReal(c.closed), cost: c.cost_per_closed },
+  ]
   return (
-    <div className="text-[11px] space-y-0.5">
-      <div className="font-mono text-zinc-300">
-        {fmtInt(c.pieces_sent)} → {c.responses} ({fmtPct(c.response_rate)}) → {c.offers} ({fmtPct(c.offer_rate)}) → {c.closed || "—"}
-      </div>
+    <div className="text-[11px] space-y-1">
+      <table className="w-full font-mono">
+        <tbody>
+          {rows.map(r => (
+            <tr key={r.label} className={r.sub ? "text-zinc-500" : "text-zinc-300"}>
+              <td className={`py-0.5 ${r.sub ? "pl-3" : ""}`}>{r.label}</td>
+              <td className="py-0.5 text-right">{r.n}</td>
+              <td className="py-0.5 text-right text-zinc-500 w-16">{r.rate == null ? "" : fmtPct(r.rate)}</td>
+              <td className="py-0.5 text-right text-zinc-500 w-20">{r.cost == null ? "" : `${fmtCost(r.cost)} ea`}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
       <div className="text-zinc-500">
-        $/resp: {fmtCost(c.cost_per_response)} · $/off: {fmtCost(c.cost_per_offer)} · ROI: <span className={c.roi == null ? "text-zinc-500" : c.roi >= 0 ? "text-emerald-400" : "text-red-400"}>{fmtRoi(c.roi)}</span>
+        {c.deal_value_total > 0 && <>Closed value {fmtMoney(c.deal_value_total)} · </>}ROI: <span className={c.roi == null ? "text-zinc-500" : c.roi >= 0 ? "text-emerald-400" : "text-red-400"}>{fmtRoi(c.roi)}</span>
       </div>
     </div>
   )

@@ -46,6 +46,7 @@ interface ContactRow {
   notes: string | null
   aiSummary: string | null
   emailReplyLeadId: string | null
+  stage?: "closed" | "pending" | "offer" | "appointment" | "lead" | null
   primary: NextTouch
   secondary: NextTouch | null
 }
@@ -1252,6 +1253,8 @@ function ContextBlock({
   )
 }
 
+const STAGE_CHIP: Record<string, string> = { closed: "🏁 Closed", pending: "📝 Pending", offer: "💰 Offer", appointment: "📅 Appt", lead: "🎯 Lead" }
+
 function ContactCard({ row, ...h }: { row: ContactRow } & CardHandlers) {
   const acting = h.actingOn === row.clusterKey
   const callTouch =
@@ -1266,6 +1269,11 @@ function ContactCard({ row, ...h }: { row: ContactRow } & CardHandlers) {
       {/* header */}
       <div className="px-3 py-2 flex items-center gap-2 text-xs flex-wrap">
         {temp && <span className={temp.cls} title={row.temperature ?? ""}>{temp.emoji}</span>}
+        {row.stage && STAGE_CHIP[row.stage] && (
+          <span className="px-1.5 py-0.5 text-[10px] rounded border border-zinc-700 bg-zinc-900 text-zinc-300" title="Furthest stage reached">
+            {STAGE_CHIP[row.stage]}
+          </span>
+        )}
         <button
           type="button"
           onClick={() => h.onOpenLead(row)}

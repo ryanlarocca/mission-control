@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server"
+import { waitUntil } from "@vercel/functions"
 import { triggerTelegramDraft } from "@/lib/reply/telegram"
 import {
   OFFICE_NUMBERS,
@@ -35,6 +36,9 @@ import { handleInboundVendorText } from "@/lib/vendorMarketing"
 // Phase 7C-may8 Bug 1: inbound SMS to +16502043247 (the outbound caller-ID
 // number) is treated as a callback against the existing lead, not a fresh
 // intake — no drip-campaign stamp, no status reset.
+
+// Inbound-text analysis + automatic status run in waitUntil after the TwiML.
+export const maxDuration = 300
 
 const EMPTY_TWIML = `<?xml version="1.0" encoding="UTF-8"?>
 <Response></Response>`
@@ -368,6 +372,13 @@ export async function POST(request: Request) {
     await sendTelegramAlert(smsAlert.join("\n"))
     // Reply Planner: plan + draft as a second message (non-blocking).
     if (newLeadId && !(spam && spam.suspicious)) await triggerTelegramDraft(newLeadId)
+    // Read the text like a call (name / address / follow-up / offer → card,
+    // mailed-record link) and run automatic status (2026-10-24). In
+    // waitUntil: two model calls would push Twilio's 15 s webhook budget.
+    if (newLeadId && !(spam && spam.suspicious)) {
+      const { processInboundTextBackground } = await import("@/lib/leads")
+      waitUntil(processInboundTextBackground(newLeadId, from, bodyText))
+    }
   }
 
   return new NextResponse(EMPTY_TWIML, {

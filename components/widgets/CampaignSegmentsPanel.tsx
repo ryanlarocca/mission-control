@@ -15,6 +15,14 @@ interface SegmentRow {
   responders: number
   per_thousand: number
   cost_per_response: number | null
+  // Funnel per segment (2026-10-24). responders = real responses.
+  total: number
+  removals: number
+  leads: number
+  appointments: number
+  offers: number
+  pending: number
+  closed: number
 }
 
 interface SegmentsPayload {
@@ -170,28 +178,36 @@ export function CampaignSegmentsPanel({ campaignId }: { campaignId: string }) {
                     <tr>
                       <th className="text-left px-2 py-1 font-medium">Segment</th>
                       <th className="text-right px-2 py-1 font-medium">Pieces</th>
-                      <th className="text-right px-2 py-1 font-medium">Responders</th>
-                      <th className="text-right px-2 py-1 font-medium">per 1,000</th>
-                      <th className="text-right px-2 py-1 font-medium">$/response</th>
+                      <th className="text-right px-2 py-1 font-medium" title="Everyone who reached out">Total</th>
+                      <th className="text-right px-2 py-1 font-medium" title="Asked to be removed">Removed</th>
+                      <th className="text-right px-2 py-1 font-medium" title="Total minus removals and junk">Real</th>
+                      <th className="text-right px-2 py-1 font-medium">Real / 1,000</th>
+                      <th className="text-right px-2 py-1 font-medium">$/real</th>
+                      <th className="text-right px-2 py-1 font-medium" title="Ever Active">Leads</th>
+                      <th className="text-right px-2 py-1 font-medium" title="Appointment · Offer · Pending · Closed">Appt·Off·Pend·Closed</th>
                     </tr>
                   </thead>
                   <tbody className="text-zinc-300 tabular-nums">
                     {rows.length === 0 && (
-                      <tr><td colSpan={5} className="px-2 py-1.5 text-zinc-600">No rows for this dimension.</td></tr>
+                      <tr><td colSpan={9} className="px-2 py-1.5 text-zinc-600">No rows for this dimension.</td></tr>
                     )}
                     {rows.map(r => (
                       <tr key={r.segment} className="border-t border-zinc-900 hover:bg-zinc-900/40">
                         <td className="px-2 py-1 text-zinc-200">{r.segment}</td>
                         <td className="px-2 py-1 text-right">{fmtInt(r.pieces)}</td>
+                        <td className="px-2 py-1 text-right">{fmtInt(r.total ?? r.responders)}</td>
+                        <td className="px-2 py-1 text-right text-zinc-500">{fmtInt(r.removals ?? 0)}</td>
                         <td className="px-2 py-1 text-right">{fmtInt(r.responders)}</td>
                         <td className="px-2 py-1 text-right text-emerald-300">{fmtRate(r.per_thousand)}</td>
                         <td className="px-2 py-1 text-right text-zinc-400">{fmtCost(r.cost_per_response)}</td>
+                        <td className="px-2 py-1 text-right">{fmtInt(r.leads ?? 0)}</td>
+                        <td className="px-2 py-1 text-right text-zinc-400">{`${r.appointments ?? 0}·${r.offers ?? 0}·${r.pending ?? 0}·${r.closed ?? 0}`}</td>
                       </tr>
                     ))}
                   </tbody>
                 </table>
               </div>
-              <div className="text-zinc-600">Segment rates count matched responders only.</div>
+              <div className="text-zinc-600">Segment rates count responders linked to their mailed record only. Real = total minus removals and junk.</div>
               <TimingSection campaignId={campaignId} />
             </>
           )}

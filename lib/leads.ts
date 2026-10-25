@@ -1989,6 +1989,14 @@ export async function processRecordingBackground(args: {
       }
     }
 
+    // Automatic status (2026-10-24): every transcript — voicemail, answered
+    // call, Ryan's callback — is a chance for the person to become a lead or
+    // go to Nurture. Best-effort; runAutoStatusForLead never throws.
+    if (transcription && leadId) {
+      const { runAutoStatusForLead } = await import("@/lib/leadStatus")
+      await runAutoStatusForLead(leadId)
+    }
+
     if (kind !== "voicemail") {
       console.log(`[recording-bg] ${direction} live-call recording for lead ${leadId} — transcript saved, no Telegram post`)
       return
@@ -2022,6 +2030,32 @@ export async function processRecordingBackground(args: {
     }
   } catch (e) {
     console.error("[recording-bg] Threw:", e)
+  }
+}
+
+// Inbound text → the same analyzer as calls (2026-10-24). Before this a text
+// only got a reply plan: nothing pulled "I'm John, 123 Main St" onto the
+// card, so texters never linked to their mailed record. The prior thread
+// rides along as cluster history so an address on text 3 still counts.
+// Fill-if-empty (applyAnalyzeCallResult): never overwrites Ryan's edits.
+// Then automatic status. Runs in waitUntil from the SMS webhook.
+export async function processInboundTextBackground(leadId: string, callerPhone: string, body: string): Promise<void> {
+  try {
+    if (!body.trim()) return
+    const sb = getLeadsClient()
+    const clusterHistory = await fetchClusterHistory(sb, { callerPhone, excludeId: leadId })
+    const analysis = await analyzeCallTranscript(body, { clusterHistory, channel: "text" })
+    if (analysis) {
+      await applyAnalyzeCallResult(leadId, analysis)
+      console.log(`[analyze-text] Lead ${leadId} → ${analysis.temperature}: ${analysis.summary.slice(0, 100)}`)
+    } else {
+      console.error(`[analyze-text] Lead ${leadId} → analyzer returned nothing`)
+      await sendTelegramAlert(`⚠️ Text analysis failed — lead ${leadId} (${callerPhone}): the text is saved but name / address / follow-up were not extracted. The card's re-analyze button retries.`).catch(() => {})
+    }
+    const { runAutoStatusForLead } = await import("@/lib/leadStatus")
+    await runAutoStatusForLead(leadId)
+  } catch (e) {
+    console.error("[analyze-text] Threw:", e instanceof Error ? e.message : String(e))
   }
 }
 
@@ -2277,7 +2311,11 @@ export async function fetchClusterHistory(
 
 export async function analyzeCallTranscript(
   transcript: string,
-  context?: { clusterHistory?: string | null }
+  // channel "text" (2026-10-24): inbound texts run the same analyzer as
+  // calls so name / address / follow-up / offer land on the card and the
+  // mailed record links — a texter often gives the address on text 2 or 3,
+  // which is why the cluster history (prior texts) rides along.
+  context?: { clusterHistory?: string | null; channel?: "call" | "text" }
 ): Promise<AnalyzeCallResult | null> {
   if (!hasLlmKey()) {
     console.warn("[analyze-call] ANTHROPIC_API_KEY not set; skipping")
@@ -2291,7 +2329,14 @@ export async function analyzeCallTranscript(
   const historyBlock = history
     ? `\nPRIOR CONVERSATION (oldest → newest, context only — DO NOT treat as the current call):\n"""\n${history}\n"""\n`
     : ""
-  const prompt = `You are analyzing a phone call transcript between Ryan (a cash home buyer) and a real estate seller lead.
+  const isText = context?.channel === "text"
+  const intro = isText
+    ? "You are analyzing a text-message conversation between Ryan (a cash home buyer) and a real estate seller lead who answered his direct mail. Everything below that talks about \"the call\" or \"the transcript\" applies to the text thread; a text has no voicemail greeting."
+    : "You are analyzing a phone call transcript between Ryan (a cash home buyer) and a real estate seller lead."
+  const freshLabel = isText
+    ? "FRESH TEXT MESSAGE (the newest text from the seller; read it together with the prior texts above):"
+    : "FRESH TRANSCRIPT (this is the current call):"
+  const prompt = `${intro}
 
 TODAY IS ${today}. All recommended_followup_date values must be on or after today.${historyBlock ? "\n\nExtract NAME, PROPERTY_ADDRESS and EMAIL from the full conversation (prior + fresh). Other fields (temperature, summary, follow-up) should reflect the FRESH transcript primarily, using prior context for continuity.\n" : ""}
 
@@ -2529,7 +2574,7 @@ Respond with ONLY the JSON object — no markdown fences, no explanation.
   ]
 }
 
-${historyBlock}FRESH TRANSCRIPT (this is the current call):
+${historyBlock}${freshLabel}
 "${transcript}"`
 
   try {

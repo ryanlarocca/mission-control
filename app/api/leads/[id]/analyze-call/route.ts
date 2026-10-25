@@ -38,7 +38,7 @@ export async function POST(
     const sb = getLeadsClient()
     const { data: lead, error } = await sb
       .from("leads")
-      .select("id, name, message, ai_notes, caller_phone, email")
+      .select("id, name, message, ai_notes, caller_phone, email, lead_type")
       .eq("id", id)
       .maybeSingle()
     if (error) return NextResponse.json({ error: error.message }, { status: 500 })
@@ -66,7 +66,7 @@ export async function POST(
       email: lead.email,
       excludeId: id,
     })
-    const result = await analyzeCallTranscript(transcript, { clusterHistory })
+    const result = await analyzeCallTranscript(transcript, { clusterHistory, channel: lead.lead_type === "sms" ? "text" : "call" })
     if (!result) {
       return NextResponse.json({ error: "AI classification failed" }, { status: 502 })
     }
