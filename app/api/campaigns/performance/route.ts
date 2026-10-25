@@ -22,6 +22,10 @@ export interface CampaignPerf {
   parent_campaign_id: string | null
   notes: string | null
   drive_folder_id: string | null
+  legacy: boolean                // historical mailing (Legacy tab), 2026-10-24
+  order_number: string | null    // mail-house order #
+  // Closed deals attributed to this campaign (Legacy tab lists them).
+  closed_deals: { name: string | null; address: string | null; closed_at: string; deal_value: number | null }[]
   // Computed. Funnel (Ryan 2026-10-24): Total → Real (minus removals and
   // junk) → Leads (ever Active) → Appointment → Offer → Pending → Closed.
   // Everything below Total counts real responses only.
@@ -60,7 +64,7 @@ export async function GET() {
       sb.from("campaigns").select("*"),
       sb
         .from("leads")
-        .select("id, name, campaign_id, caller_phone, email, gmail_thread_id, is_junk, is_dnc, offer_verbalized_at, deal_closed_at, deal_value")
+        .select("id, name, campaign_id, caller_phone, email, gmail_thread_id, is_junk, is_dnc, offer_verbalized_at, deal_closed_at, deal_value, property_address")
         .not("campaign_id", "is", null),
     ])
     if (cErr) return NextResponse.json({ error: cErr.message }, { status: 500 })
@@ -78,6 +82,7 @@ export async function GET() {
       offer_verbalized_at: string | null
       deal_closed_at: string | null
       deal_value: number | null
+      property_address: string | null
     }
     const attributed = (attributedRaw ?? []) as AttrRow[]
 
@@ -129,6 +134,7 @@ export async function GET() {
     // offer / a close? Use Set/Map for O(1) lookup during the rollup.
     const clusterOfferAt = new Map<string, string>() // earliest offer timestamp per cluster
     const clusterClose = new Map<string, { count: number; deal_value: number }>()
+    const clusterCloseAt = new Map<string, string>()
     // Funnel milestones + removals are cluster-level too (written cluster-
     // wide, but a DNC can sit on one row only — any row counts).
     const clusterDnc = new Set<string>()
@@ -144,8 +150,11 @@ export async function GET() {
       if (s.pending_at) clusterPending.add(k)
       if (s.offer_verbalized_at && !clusterOfferAt.has(k)) clusterOfferAt.set(k, s.offer_verbalized_at)
       if (s.deal_closed_at) {
+        if (!clusterCloseAt.has(k)) clusterCloseAt.set(k, s.deal_closed_at)
         const cur = clusterClose.get(k) ?? { count: 0, deal_value: 0 }
-        clusterClose.set(k, { count: cur.count + 1, deal_value: cur.deal_value + (s.deal_value ?? 0) })
+        // deal_value is written on every row of the person (milestone route),
+        // so one deal = the max, not the sum of the rows.
+        clusterClose.set(k, { count: cur.count + 1, deal_value: Math.max(cur.deal_value, s.deal_value ?? 0) })
       }
     }
 
@@ -227,6 +236,20 @@ export async function GET() {
         parent_campaign_id: c.parent_campaign_id,
         notes: c.notes,
         drive_folder_id: c.drive_folder_id ?? null,
+        legacy: !!(c as Campaign & { legacy?: boolean }).legacy,
+        order_number: (c as Campaign & { order_number?: string | null }).order_number ?? null,
+        closed_deals: real
+          .filter(r => clusterClose.has(keyOf(r)))
+          .map(r => {
+            const k = keyOf(r)
+            const sib = rows.filter(o => keyOf(o) === k)
+            return {
+              name: sib.map(o => o.name).find(n => !!n) ?? null,
+              address: sib.map(o => o.property_address).find(a => !!a) ?? null,
+              closed_at: clusterCloseAt.get(k) ?? "",
+              deal_value: clusterClose.get(k)?.deal_value || null,
+            }
+          }),
         total_responses: totalResponses,
         total_response_rate: c.pieces_sent && c.pieces_sent > 0 ? totalResponses / c.pieces_sent : null,
         removals,

@@ -42,6 +42,9 @@ interface CampaignPerf {
   cost_per_lead: number | null
   cost_per_closed: number | null
   roi: number | null
+  legacy?: boolean
+  order_number?: string | null
+  closed_deals?: { name: string | null; address: string | null; closed_at: string; deal_value: number | null }[]
 }
 
 interface OfferEntry {
@@ -90,6 +93,9 @@ export function CampaignPerformanceTab() {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [showNewModal, setShowNewModal] = useState(false)
+  // Legacy tab (2026-10-24): mailings from before campaigns were tracked.
+  const [legacy, setLegacy] = useState<CampaignPerf[]>([])
+  const [tab, setTab] = useState<"current" | "legacy">("current")
 
   const fetchData = useCallback(async () => {
     setLoading(true)
@@ -97,7 +103,8 @@ export function CampaignPerformanceTab() {
       const res = await fetch("/api/campaigns/performance", { cache: "no-store" })
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
       const payload = await res.json() as { campaigns: CampaignPerf[]; offers?: OfferEntry[] }
-      setCampaigns(payload.campaigns)
+      setCampaigns(payload.campaigns.filter(c => !c.legacy))
+      setLegacy(payload.campaigns.filter(c => c.legacy))
       setOffers(payload.offers ?? [])
       setError(null)
     } catch (e) {
@@ -233,6 +240,20 @@ export function CampaignPerformanceTab() {
         </div>
       )}
 
+      <div className="flex gap-1 text-xs">
+        {(["current", "legacy"] as const).map(t => (
+          <button
+            key={t}
+            onClick={() => setTab(t)}
+            className={`px-3 py-1.5 min-h-[34px] rounded ${tab === t ? "bg-zinc-800 text-zinc-100" : "text-zinc-500 hover:text-zinc-300 hover:bg-zinc-900"}`}
+          >
+            {t === "current" ? "Current" : `Legacy${legacy.length ? ` · ${legacy.length}` : ""}`}
+          </button>
+        ))}
+      </div>
+
+      {tab === "legacy" ? <LegacyView rows={legacy} /> : (
+      <>
       {/* Per-parent rollup cards */}
       <div className="space-y-4">
         {groups.map(group => {
@@ -356,6 +377,9 @@ export function CampaignPerformanceTab() {
         </div>
       )}
 
+      </>
+      )}
+
       {showNewModal && (
         <NewCampaignModal
           campaigns={campaigns ?? []}
@@ -363,6 +387,70 @@ export function CampaignPerformanceTab() {
           onCreated={() => { setShowNewModal(false); void fetchData() }}
         />
       )}
+    </div>
+  )
+}
+
+// ── Legacy tab ─────────────────────────────────────────────────────────────
+// Every mailing from before the system tracked campaigns (Nov 2021 → Feb
+// 2026), entered from the ITI invoices: pieces, cost, and the closed deals
+// that came from each. Responses weren't tracked back then, so this tab is
+// about cost per deal, not response rate.
+function LegacyView({ rows }: { rows: CampaignPerf[] }) {
+  const sorted = [...rows].sort((a, b) => (b.drop_date ?? "").localeCompare(a.drop_date ?? ""))
+  const pieces = rows.reduce((a, c) => a + (c.pieces_sent ?? 0), 0)
+  const cost = rows.reduce((a, c) => a + (c.total_cost ?? 0), 0)
+  const deals = rows.flatMap(c => c.closed_deals ?? [])
+  const volume = deals.reduce((a, d) => a + (d.deal_value ?? 0), 0)
+  if (rows.length === 0) {
+    return <div className="rounded border border-zinc-800 bg-zinc-950 p-4 text-xs text-zinc-500">No legacy mailings recorded.</div>
+  }
+  return (
+    <div className="space-y-3">
+      <div className="rounded-lg border border-zinc-800 bg-zinc-950 px-3 py-2 text-xs text-zinc-400">
+        {rows.length} mailings since {fmtDate(sorted[sorted.length - 1]?.drop_date ?? null)} ·{" "}
+        <span className="text-zinc-200">{fmtInt(pieces)}</span> pieces · <span className="text-zinc-200">{fmtMoney(cost)}</span> spent ·{" "}
+        <span className="text-zinc-200">{deals.length}</span> closed deal{deals.length === 1 ? "" : "s"} ({fmtMoney(volume)} bought) ·{" "}
+        <span className="text-emerald-300">{deals.length ? `${fmtMoney(cost / deals.length)} per deal` : "—"}</span>
+        <div className="text-zinc-600 mt-1">From the mail-house invoices. Response counts weren't tracked before May 2026, so only closes are shown.</div>
+      </div>
+      <div className="rounded-lg border border-zinc-800 bg-zinc-950 overflow-x-auto">
+        <table className="w-full text-xs">
+          <thead className="text-zinc-500 bg-zinc-900/50">
+            <tr>
+              <th className="text-left px-3 py-1.5">Mailed</th>
+              <th className="text-left px-3 py-1.5">Mailing</th>
+              <th className="text-right px-3 py-1.5">Pieces</th>
+              <th className="text-right px-3 py-1.5">Cost</th>
+              <th className="text-right px-3 py-1.5">$/pc</th>
+              <th className="text-left px-3 py-1.5">Closed deals</th>
+            </tr>
+          </thead>
+          <tbody className="text-zinc-300">
+            {sorted.map(c => (
+              <tr key={c.id} className="border-t border-zinc-900 align-top hover:bg-zinc-900/40">
+                <td className="px-3 py-1.5 text-zinc-500 whitespace-nowrap">{fmtDate(c.drop_date)}</td>
+                <td className="px-3 py-1.5">
+                  <div>{c.name}</div>
+                  {(c.notes || c.order_number) && (
+                    <div className="text-[11px] text-zinc-600">{c.order_number ? `#${c.order_number} · ` : ""}{c.notes}</div>
+                  )}
+                </td>
+                <td className="px-3 py-1.5 text-right">{fmtInt(c.pieces_sent)}</td>
+                <td className="px-3 py-1.5 text-right">{fmtMoney(c.total_cost)}</td>
+                <td className="px-3 py-1.5 text-right text-zinc-500">{c.total_cost != null && c.pieces_sent ? `$${(c.total_cost / c.pieces_sent).toFixed(2)}` : "—"}</td>
+                <td className="px-3 py-1.5">
+                  {(c.closed_deals ?? []).length === 0 ? <span className="text-zinc-600">—</span> : (c.closed_deals ?? []).map((d, i) => (
+                    <div key={i} className="text-emerald-300">
+                      🏁 {d.address || d.name || "deal"} · {fmtMoney(d.deal_value)} · {fmtDate(d.closed_at ? d.closed_at.slice(0, 10) : null)}
+                    </div>
+                  ))}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
     </div>
   )
 }
