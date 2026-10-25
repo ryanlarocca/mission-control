@@ -57,17 +57,33 @@ returns table(
   appointments bigint, offers bigint, pending bigint, closed bigint
 )
 language sql stable as $$
-  with mailed as (
+  -- Responder flags per mailed record, aggregated ONCE over leads (an
+  -- EXISTS per flag per record timed out on the 16k-row NOO list).
+  with lr as (
+    select l.mail_record_id,
+      bool_or(coalesce(l.is_dnc, false)) as r_dnc,
+      bool_or(not coalesce(l.is_junk, false)) as r_nonjunk,
+      bool_or(l.became_lead_at is not null) as r_lead,
+      bool_or(l.appointment_at is not null) as r_appt,
+      bool_or(l.offer_verbalized_at is not null) as r_offer,
+      bool_or(l.pending_at is not null) as r_pending,
+      bool_or(l.deal_closed_at is not null) as r_closed
+    from leads l
+    where l.mail_record_id is not null
+    group by l.mail_record_id
+  ),
+  mailed as (
     select m.*,
-      exists (select 1 from leads l where l.mail_record_id = m.id) as r_any,
-      exists (select 1 from leads l where l.mail_record_id = m.id and coalesce(l.is_dnc, false)) as r_dnc,
-      exists (select 1 from leads l where l.mail_record_id = m.id and not coalesce(l.is_junk, false)) as r_nonjunk,
-      exists (select 1 from leads l where l.mail_record_id = m.id and l.became_lead_at is not null) as r_lead,
-      exists (select 1 from leads l where l.mail_record_id = m.id and l.appointment_at is not null) as r_appt,
-      exists (select 1 from leads l where l.mail_record_id = m.id and l.offer_verbalized_at is not null) as r_offer,
-      exists (select 1 from leads l where l.mail_record_id = m.id and l.pending_at is not null) as r_pending,
-      exists (select 1 from leads l where l.mail_record_id = m.id and l.deal_closed_at is not null) as r_closed
+      (lr.mail_record_id is not null) as r_any,
+      coalesce(lr.r_dnc, false) as r_dnc,
+      coalesce(lr.r_nonjunk, false) as r_nonjunk,
+      coalesce(lr.r_lead, false) as r_lead,
+      coalesce(lr.r_appt, false) as r_appt,
+      coalesce(lr.r_offer, false) as r_offer,
+      coalesce(lr.r_pending, false) as r_pending,
+      coalesce(lr.r_closed, false) as r_closed
     from mail_records m
+    left join lr on lr.mail_record_id = m.id
     where m.campaign_id = p_campaign and m.is_seed = false and m.arm in ('A', 'B', 'C')
       and (p_piece is null or m.piece = p_piece)
   ),
