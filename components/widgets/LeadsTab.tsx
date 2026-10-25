@@ -101,6 +101,10 @@ interface Lead {
   deal_closed_at?: string | null
   deal_value?: number | null
   became_lead_at?: string | null
+  // Direct-mail touch count (2026-10-24): letters received up to and
+  // including the one answered; null = unknown. Cluster-wide.
+  mail_pieces_before?: number | null
+  mail_pieces_detail?: string[] | null
   campaign_id?: string | null
   // campaigns.piece of campaign_id ("A" / "B" on A/B children), joined onto
   // the row by GET /api/leads (2026-10-12) for the piece-mismatch chip.
@@ -189,6 +193,8 @@ interface LeadGroup {
   closedAt: string | null
   dealValue: number | null
   becameLeadAt: string | null
+  mailPiecesBefore: number | null
+  mailPiecesDetail: string[]
   // Direct-mail match — the mailed record this cluster responded to (newest
   // row that has one), how it was matched, and the auto-matcher's unresolved
   // near-misses when it found several and attached none.
@@ -472,6 +478,8 @@ function groupLeads(leads: Lead[]): LeadGroup[] {
       closedAt: newestFirst.find(r => r.deal_closed_at)?.deal_closed_at ?? null,
       dealValue: newestFirst.find(r => typeof r.deal_value === "number" && r.deal_value > 0)?.deal_value ?? null,
       becameLeadAt: newestFirst.find(r => r.became_lead_at)?.became_lead_at ?? null,
+      mailPiecesBefore: newestFirst.find(r => typeof r.mail_pieces_before === "number")?.mail_pieces_before ?? null,
+      mailPiecesDetail: newestFirst.find(r => Array.isArray(r.mail_pieces_detail) && r.mail_pieces_detail.length)?.mail_pieces_detail ?? [],
       mailRecordId: mailRow?.mail_record_id ?? null,
       mailMatchMethod: mailRow?.mail_match_method ?? null,
       mailMatchCandidates: mailRow ? [] : (candidateRow?.mail_match_candidates ?? []),
@@ -2345,6 +2353,14 @@ function LeadCard(p: LeadCardProps) {
                   title={`Linked to a mailed record${group.mailMatchMethod ? ` (${group.mailMatchMethod.replace(/_/g, " ")})` : ""}`}
                 >
                   📬 Matched
+                </span>
+              )}
+              {group.mailPiecesBefore != null && group.mailPiecesBefore > 0 && (
+                <span
+                  className="px-1.5 py-0.5 text-[9px] font-semibold rounded uppercase tracking-wider bg-sky-950 text-sky-300 border border-sky-900 shrink-0"
+                  title={`Letters received before responding:\n${group.mailPiecesDetail.join("\n") || "(details not recorded)"}`}
+                >
+                  📬 {group.mailPiecesBefore} letter{group.mailPiecesBefore === 1 ? "" : "s"}
                 </span>
               )}
               {pieceMismatch && (

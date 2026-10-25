@@ -94,7 +94,7 @@ export function parseFreeAddress(addr: unknown): { street: string; city: string;
 export type MailMatchMethod = "auto_address" | "auto_mail_address" | "auto_surname" | "manual"
 
 export const MAIL_RECORD_LITE_COLUMNS =
-  "id, campaign_id, record_id, owner_name, site_address, site_city, site_zip, mail_address, mail_city, mail_zip, county, arm, batch, is_seed, piece, tenure_bucket, imp_tercile, any_signal, estate_language, family_transfer, out_of_state, multi_parcel_personal"
+  "id, campaign_id, record_id, owner_name, site_address, site_city, site_zip, mail_address, mail_city, mail_zip, county, arm, batch, is_seed, piece, tenure_bucket, imp_tercile, any_signal, estate_language, family_transfer, out_of_state, multi_parcel_personal, prior_pieces"
 
 export interface MailRecordLite {
   id: string
@@ -111,6 +111,8 @@ export interface MailRecordLite {
   arm: "A" | "B" | "C" | "none" | "seed"
   batch: number | null
   is_seed: boolean
+  // Letters this owner got from the drops before the campaign (2026-10-24).
+  prior_pieces?: number | null
   /** Creative mailed (NOO Q4 2026 A/B: A = bullets, B = prose); null when the list has no split. */
   piece: string | null
   tenure_bucket: string | null
@@ -199,17 +201,21 @@ export async function linkMailRecordToCluster(
   lead: ClusterIdentityLite,
   recordId: string | null,
   method: MailMatchMethod | null,
-  candidates: string[] | null = null
+  candidates: string[] | null = null,
+  // The linked record's prior_pieces, when the caller has the record: the
+  // lead's touch count = prior drops + the letter being answered.
+  priorPieces: number | null = null
 ): Promise<number> {
   const ors: string[] = []
   if (lead.caller_phone && !ANON.has(lead.caller_phone.trim().toLowerCase())) ors.push(`caller_phone.eq.${lead.caller_phone}`)
   if (lead.gmail_thread_id) ors.push(`gmail_thread_id.eq.${lead.gmail_thread_id}`)
   if (lead.email) ors.push(`email.eq.${lead.email.toLowerCase()}`)
-  const patch = {
+  const patch: Record<string, unknown> = {
     mail_record_id: recordId,
     mail_match_method: recordId ? method : null,
     mail_match_candidates: recordId ? null : candidates && candidates.length ? candidates : null,
   }
+  if (recordId && typeof priorPieces === "number") patch.mail_pieces_before = priorPieces + 1
   let q = sb.from("leads").update(patch).select("id")
   q = ors.length ? q.or(`id.eq.${lead.id},${ors.join(",")}`) : q.eq("id", lead.id)
   const { data, error } = await q
@@ -316,7 +322,7 @@ export async function autoLinkMailRecord(sb: SupabaseClient, leadId: string): Pr
           `matched record ${result.record.record_id} (${result.record.id}) piece ${result.record.piece} via ${result.method}`
       )
     }
-    await linkMailRecordToCluster(sb, lead, result.record.id, result.method)
+    await linkMailRecordToCluster(sb, lead, result.record.id, result.method, null, result.record.prior_pieces ?? null)
   } else if (result.candidates.length) {
     await linkMailRecordToCluster(sb, lead, null, null, result.candidates.map(c => c.id))
   }

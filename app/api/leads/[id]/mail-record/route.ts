@@ -33,7 +33,7 @@ export async function PATCH(request: NextRequest, { params }: { params: { id: st
       if (!rec) return NextResponse.json({ error: "mail record not found" }, { status: 404 })
       record = rec as unknown as MailRecordLite
     }
-    const updated = await linkMailRecordToCluster(sb, lead, recordId, "manual")
+    const updated = await linkMailRecordToCluster(sb, lead, recordId, "manual", null, record?.prior_pieces ?? null)
     return NextResponse.json({ ok: true, updated, record })
   } catch (e) {
     return NextResponse.json({ error: e instanceof Error ? e.message : String(e) }, { status: 500 })
