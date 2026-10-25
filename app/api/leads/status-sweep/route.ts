@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server"
 import { getLeadsClient, sendTelegramAlert } from "@/lib/leads"
-import { autoStatusEnabled, runQuietSweep } from "@/lib/leadStatus"
+import { autoStatusEnabled, runQuietSweep, type PersonalTexts } from "@/lib/leadStatus"
 import { sendStatusDigest } from "@/lib/leadStatusDigest"
 
 // Daily lead-status pass (launchd com.lrghomes.lead-status-sweep on the Mac
@@ -13,10 +13,26 @@ import { sendStatusDigest } from "@/lib/leadStatusDigest"
 export const dynamic = "force-dynamic"
 export const maxDuration = 300
 
-export async function POST() {
+// Body (optional): { personal: { "<last10>": { inbound: [iso], outbound: [iso] } } }
+// — Ryan's personal-cell texts per Active person, read from The Pile by the
+// mini script, so a seller he texts from his own phone is never "quiet".
+export async function POST(request: Request) {
   const sb = getLeadsClient()
   try {
-    const quiet = await runQuietSweep(sb)
+    let personalByPhone: Record<string, PersonalTexts> | undefined
+    try {
+      const body = (await request.json()) as { personal?: Record<string, { inbound?: string[]; outbound?: string[] }> }
+      if (body?.personal && typeof body.personal === "object") {
+        personalByPhone = {}
+        for (const [k, v] of Object.entries(body.personal)) {
+          const ts = (a?: string[]) => (Array.isArray(a) ? a.map((x) => Date.parse(x)).filter((n) => Number.isFinite(n)) : [])
+          personalByPhone[k.replace(/\D/g, "").slice(-10)] = { inbound: ts(v?.inbound), outbound: ts(v?.outbound) }
+        }
+      }
+    } catch {
+      /* no body — Supabase rows only */
+    }
+    const quiet = await runQuietSweep(sb, { personalByPhone })
     const digest = autoStatusEnabled() ? await sendStatusDigest(sb) : { sent: false, count: 0 }
     return NextResponse.json({ enabled: autoStatusEnabled(), quiet, digest })
   } catch (e) {

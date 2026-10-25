@@ -27,10 +27,9 @@ import { completeText, extractJsonObject, hasLlmKey, OPUS } from "@/lib/llm"
 // Telegram with an undo button (lib/leadStatusDigest).
 //
 // Status lives where the card reads it: the cluster's most recent INBOUND
-// row (LeadsTab groupLeads → statusSource). Active stops the drip engine,
-// Nurture lets it queue again (DRIP_STOP_STATUSES in scripts/drip-engine.js)
-// — the same effect as Ryan flipping the dropdown, every drip still waits
-// for his approval.
+// row (LeadsTab groupLeads → statusSource). Status does NOT touch drips:
+// Ryan retired "Active pauses the drip" the same night (only Dead stops one,
+// DRIP_STOP_STATUSES).
 //
 // LEAD_AUTO_STATUS=on applies moves. Anything else runs in shadow: the move
 // is logged with applied=false and nothing changes — that is how the first
@@ -130,13 +129,18 @@ export function decideStageMove(facts: ClusterFacts, stage: LeadStage): { to: Le
 
 /** Pure: the 30-day quiet rule for an Active person. Clock starts at Ryan's
  *  first outreach after their last message (or at his hand-set, if later). */
-export function decideQuietMove(rows: ClusterRow[], facts: ClusterFacts, now: number): { to: LeadStatus; rule: AutoRule; since: number } | null {
+// `personal` = Ryan's personal-cell texts with this person from The Pile
+// (chat.db on the mini). Those never reach `leads`, so without them a seller
+// Ryan texts from his own phone looked "quiet for 159 days" (Candace,
+// 2026-10-24 — they had texted four days earlier).
+export interface PersonalTexts { inbound: number[]; outbound: number[] }
+
+export function decideQuietMove(rows: ClusterRow[], facts: ClusterFacts, now: number, personal?: PersonalTexts | null): { to: LeadStatus; rule: AutoRule; since: number } | null {
   if (facts.current !== "active" || facts.isDnc || facts.dealLocked) return null
-  const inbound = rows.filter((r) => !isOutbound(r)).map((r) => new Date(r.created_at).getTime())
+  const inbound = [...rows.filter((r) => !isOutbound(r)).map((r) => new Date(r.created_at).getTime()), ...(personal?.inbound ?? [])]
   const lastInbound = inbound.length ? Math.max(...inbound) : 0
-  const chases = rows
-    .filter((r) => isOutbound(r) && new Date(r.created_at).getTime() > lastInbound)
-    .map((r) => new Date(r.created_at).getTime())
+  const outbound = [...rows.filter((r) => isOutbound(r)).map((r) => new Date(r.created_at).getTime()), ...(personal?.outbound ?? [])]
+  const chases = outbound.filter((t) => t > lastInbound)
   if (chases.length === 0) return null // Ryan never reached out — Follow Ups owns it
   let since = Math.min(...chases)
   if (facts.ryanSetAt != null && facts.ryanSetAt > since) since = facts.ryanSetAt
@@ -271,7 +275,12 @@ export async function runAutoStatusForLead(leadId: string): Promise<{ moved: boo
 
 /** Daily: every Active person who went quiet for 30 days after Ryan reached
  *  out → Nurture. No AI. Returns the moves (applied or shadow). */
-export async function runQuietSweep(sb: SupabaseClient, opts: { now?: number; apply?: boolean } = {}): Promise<{ leadId: string; name: string | null; days: number }[]> {
+export async function runQuietSweep(
+  sb: SupabaseClient,
+  // personalByPhone: last-10-digit phone → that person's personal-cell texts
+  // (from The Pile, sent by the mini's daily script). Missing = unknown.
+  opts: { now?: number; apply?: boolean; personalByPhone?: Record<string, PersonalTexts> } = {},
+): Promise<{ leadId: string; name: string | null; days: number }[]> {
   const now = opts.now ?? Date.now()
   const apply = opts.apply ?? autoStatusEnabled()
   const actives: { id: string; caller_phone: string | null; email: string | null; gmail_thread_id: string | null }[] = []
@@ -295,7 +304,8 @@ export async function runQuietSweep(sb: SupabaseClient, opts: { now?: number; ap
     seen.add(anchor.id)
     if (anchor.status !== "active") continue
     const facts = clusterFacts(rows, anchor)
-    const quiet = decideQuietMove(rows, facts, now)
+    const p10 = (anchor.caller_phone || "").replace(/\D/g, "").slice(-10)
+    const quiet = decideQuietMove(rows, facts, now, p10 ? opts.personalByPhone?.[p10] : null)
     if (!quiet) continue
     const days = Math.floor((now - quiet.since) / 86_400_000)
     const name = rows.map((r) => r.name).reverse().find((n) => n && n.trim()) ?? null

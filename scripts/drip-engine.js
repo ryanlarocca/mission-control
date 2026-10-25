@@ -153,11 +153,12 @@ const DRIP_CAMPAIGNS = {
   },
 }
 
-// Phase 7C: lifecycle-only stop list. Active = Ryan's working it; dead =
-// terminal. The DNC and Junk *flags* (is_dnc / is_junk) are checked
+// Phase 7C: lifecycle-only stop list. Dead = terminal. Active was removed
+// 2026-10-24 (Ryan): status moves automatically now and must not pause or
+// resume drips — keep in lockstep with lib/drip-campaigns.ts. The DNC and Junk *flags* (is_dnc / is_junk) are checked
 // separately in fetchEligibleLeads so a lead can be `dead` without being
 // DNC, and `is_dnc` halts everything regardless of status.
-const DRIP_STOP_STATUSES = new Set(["active", "dead"])
+const DRIP_STOP_STATUSES = new Set(["dead"])
 
 // When an email-only campaign acquires a phone, alternate channels by
 // touch parity (odd → iMessage, even → email). Mirrors google_ads_form's

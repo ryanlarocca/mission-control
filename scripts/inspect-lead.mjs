@@ -207,7 +207,7 @@ const eligible = rows.find(r => r.drip_campaign_type)
 if (!eligible) {
   console.log("  • no drip_campaign_type on any row — not on a drip cadence")
 } else {
-  const stops = ["active", "dead"]
+  const stops = ["dead"]
   const reasons = []
   if (stops.includes(eligible.status)) reasons.push(`status=${eligible.status} (stop status)`)
   if (eligible.is_dnc)  reasons.push("is_dnc=true")

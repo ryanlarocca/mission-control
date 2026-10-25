@@ -173,11 +173,13 @@ export function effectiveChannelForTouch(
   return defined?.channel ?? "imessage"
 }
 
-// Lifecycle statuses that disqualify a lead from drip processing. Active
-// leads are being personally worked by Ryan; dead is terminal. The DNC and
+// Lifecycle statuses that disqualify a lead from drip processing. Only dead
+// (terminal) since 2026-10-24 — Ryan retired "Active pauses the drip":
+// status is now set automatically and must not start / stop drips (every
+// drip is approval-gated anyway). The DNC and
 // Junk *flags* (is_dnc / is_junk on the lead row) are checked separately
 // in the drip engine's WHERE clause.
-export const DRIP_STOP_STATUSES = ["active", "dead"] as const
+export const DRIP_STOP_STATUSES = ["dead"] as const
 
 // Source-aware campaign selection for Apply Drip. Google Ads form leads
 // get the AI-drafted google_ads_* campaigns; legacy direct-mail leads stay

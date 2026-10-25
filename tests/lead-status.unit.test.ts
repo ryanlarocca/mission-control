@@ -83,6 +83,16 @@ describe("decideQuietMove", () => {
     const rows = [inbound("a", 60 * DAY, { status: "nurture" }), outbound("b", 50 * DAY)]
     expect(decideQuietMove(rows, facts(rows), NOW)).toBeNull()
   })
+  it("a personal-cell reply (The Pile) is a reply — Candace, 10-24", () => {
+    const rows = [inbound("a", 160 * DAY, { status: "active" }), outbound("b", 159 * DAY)]
+    expect(decideQuietMove(rows, facts(rows), NOW)?.to).toBe("nurture")
+    expect(decideQuietMove(rows, facts(rows), NOW, { inbound: [NOW - 4 * DAY], outbound: [NOW - 8 * DAY] })).toBeNull()
+  })
+  it("a personal-cell chase starts the clock when Supabase has none", () => {
+    const rows = [inbound("a", 90 * DAY, { status: "active" })]
+    expect(decideQuietMove(rows, facts(rows), NOW, { inbound: [], outbound: [NOW - 45 * DAY] })?.to).toBe("nurture")
+    expect(decideQuietMove(rows, facts(rows), NOW, { inbound: [], outbound: [NOW - 10 * DAY] })).toBeNull()
+  })
   it("Ryan re-setting Active restarts the clock", () => {
     const rows = [inbound("a", 60 * DAY, { status: "active", status_set_by: "ryan", status_set_at: iso(10 * DAY) }), outbound("b", 50 * DAY)]
     expect(decideQuietMove(rows, facts(rows), NOW)).toBeNull()
