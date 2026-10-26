@@ -44,7 +44,7 @@ const RECORDING_CALLBACK_URL =
 function buildTwiml(callerId: string): string {
   return `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-  <Dial timeout="10" action="/api/leads/voice/no-answer" method="POST" callerId="${callerId}" record="record-from-answer" recordingStatusCallback="${RECORDING_CALLBACK_URL}" recordingStatusCallbackMethod="POST">
+  <Dial timeout="12" action="/api/leads/voice/no-answer" method="POST" callerId="${callerId}" record="record-from-answer" recordingStatusCallback="${RECORDING_CALLBACK_URL}" recordingStatusCallbackMethod="POST">
     <Number>${FORWARD_TO}</Number>
   </Dial>
 </Response>`
@@ -57,7 +57,7 @@ function buildRelationshipTwiml(callerId: string, touchId: string): string {
   const q = `?touchId=${encodeURIComponent(touchId)}`
   return `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-  <Dial timeout="10" action="${PROD_BASE}/api/crms/call/inbound${q}" method="POST" callerId="${callerId}" record="record-from-answer" recordingStatusCallback="${PROD_BASE}/api/crms/call/recording${q}" recordingStatusCallbackMethod="POST">
+  <Dial timeout="12" action="${PROD_BASE}/api/crms/call/inbound${q}" method="POST" callerId="${callerId}" record="record-from-answer" recordingStatusCallback="${PROD_BASE}/api/crms/call/recording${q}" recordingStatusCallbackMethod="POST">
     <Number>${FORWARD_TO}</Number>
   </Dial>
 </Response>`
