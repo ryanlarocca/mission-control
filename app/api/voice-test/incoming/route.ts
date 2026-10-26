@@ -2,6 +2,7 @@ import { NextResponse } from "next/server"
 import { createHmac, timingSafeEqual } from "crypto"
 import { sendTelegramAlert } from "@/lib/leads"
 import {
+  VOICE_TEST_BACKEND_EFFORT,
   VOICE_TEST_BACKEND_MODEL,
   VOICE_TEST_GREETING,
   VOICE_TEST_INSTRUCTIONS,
@@ -95,7 +96,10 @@ export async function POST(request: Request) {
         model: VOICE_TEST_MODEL,
         instructions: VOICE_TEST_INSTRUCTIONS,
         audio: { output: { voice: VOICE_TEST_VOICE } },
-        delegation: { type: "responses", responses: { model: VOICE_TEST_BACKEND_MODEL } },
+        delegation: {
+          type: "responses",
+          responses: { model: VOICE_TEST_BACKEND_MODEL, reasoning: { effort: VOICE_TEST_BACKEND_EFFORT } },
+        },
         input: [
           { type: "message", role: "developer", content: [{ type: "input_text", text: VOICE_TEST_GREETING }] },
         ],
