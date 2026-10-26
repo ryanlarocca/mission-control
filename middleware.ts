@@ -41,6 +41,9 @@ const PUBLIC_PATHS = [
   "/api/campaign/sms",
   // Campaign-bot webhook (auth = secret token verified inside the route).
   "/api/campaign/telegram",
+  // GPT-Live phone test line: OpenAI's incoming-call webhook (auth = Standard
+  // Webhooks signature verified inside the route).
+  "/api/voice-test",
   // Playable voicemail-recording proxy (links in Telegram alerts; the only
   // input is a strictly-validated unguessable RecordingSid).
   "/api/campaign/vm",
