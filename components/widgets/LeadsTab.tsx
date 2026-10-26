@@ -109,6 +109,9 @@ interface Lead {
   // campaigns.piece of campaign_id ("A" / "B" on A/B children), joined onto
   // the row by GET /api/leads (2026-10-12) for the piece-mismatch chip.
   campaign_piece?: string | null
+  // True when the campaign (or its A/B parent) has a mailed list loaded in
+  // mail_records — stamped by GET /api/leads (2026-10-26). Gates "Unmatched".
+  campaign_mail_list?: boolean
   // Direct-mail tracking (2026-10-08): the mailed piece this responder
   // answered. Auto-matched at intake; "manual" after Ryan picks one.
   mail_record_id?: string | null
@@ -206,6 +209,9 @@ interface LeadGroup {
   // dialed line / emailed alias decides it. Compared with the linked
   // record's piece on the card ("⚠ piece mismatch").
   campaignPiece: string | null
+  // Some row in the cluster belongs to a campaign whose mailed list is loaded
+  // — only then can the lead be matched, so only then is "Unmatched" shown.
+  mailListLoaded: boolean
 }
 
 // Phase 7D: top-row lifecycle chips only. Source / temperature / flag-hides
@@ -485,6 +491,7 @@ function groupLeads(leads: Lead[]): LeadGroup[] {
       mailMatchCandidates: mailRow ? [] : (candidateRow?.mail_match_candidates ?? []),
       campaignId: newestFirst.map(e => e.campaign_id).find(v => !!v) ?? null,
       campaignPiece: mostRecentInbound?.campaign_piece ?? null,
+      mailListLoaded: newestFirst.some(r => r.campaign_mail_list === true),
     })
   }
   // Sort groups by newest event first
@@ -501,6 +508,8 @@ function groupLeads(leads: Lead[]): LeadGroup[] {
 // unknown sources and agent drips have no mailed record to link to. This is
 // an exclusion list, not an allow list: any other direct_mail label (MFM-A/B,
 // NOO-Q4-2026 and its A/B piece children NOO-Q4-2026-A / -B) is a mailer.
+// A mailer only reads "unmatched" when its mailed list is actually loaded
+// (mailListLoaded) — MFM and older drops have no list, so nothing to match.
 const NON_MAILER_SOURCES = new Set(["Legacy DM", "Outbound", "Unknown"])
 function isMailerSource(group: LeadGroup): boolean {
   if (group.sourceType !== "direct_mail") return false
@@ -513,7 +522,7 @@ type MailMatchState = "matched" | "candidates" | "unmatched" | null
 function mailMatchState(group: LeadGroup): MailMatchState {
   if (group.mailRecordId) return "matched"
   if (group.mailMatchCandidates.length > 0) return "candidates"
-  if (isMailerSource(group)) return "unmatched"
+  if (isMailerSource(group) && group.mailListLoaded) return "unmatched"
   return null
 }
 

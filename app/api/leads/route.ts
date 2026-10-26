@@ -80,20 +80,45 @@ export async function GET(request: NextRequest) {
 // stamped on each row here as `campaign_piece` — one small read for the
 // distinct campaign ids on the page — rather than through a new route.
 // Best-effort: a failed read leaves the field absent and the chip hidden.
+//
+// Same pass stamps `campaign_mail_list` (2026-10-26): true when the lead's
+// campaign (or its A/B parent) has rows in mail_records, i.e. there is a
+// mailed list to link the responder to. The card only says "Unmatched" for
+// those — MFM and older drops were never loaded, so "Unmatched" there was
+// noise on every legacy card.
 async function attachCampaignPiece(sb: SupabaseClient, rows: unknown[]): Promise<void> {
-  const leadRows = rows as { campaign_id?: string | null; campaign_piece?: string | null }[]
+  const leadRows = rows as { campaign_id?: string | null; campaign_piece?: string | null; campaign_mail_list?: boolean }[]
   const ids = Array.from(new Set(leadRows.map((r) => r.campaign_id).filter((v): v is string => typeof v === "string" && v.length > 0)))
   if (ids.length === 0) return
   const pieceById = new Map<string, string | null>()
+  const rootById = new Map<string, string>()
   for (let i = 0; i < ids.length; i += 200) {
-    const { data, error } = await sb.from("campaigns").select("id, piece").in("id", ids.slice(i, i + 200))
+    const { data, error } = await sb.from("campaigns").select("id, piece, parent_campaign_id").in("id", ids.slice(i, i + 200))
     if (error) {
       console.warn("[leads:GET] campaign piece join failed:", error.message)
       return
     }
-    for (const c of (data ?? []) as { id: string; piece: string | null }[]) pieceById.set(c.id, c.piece ?? null)
+    for (const c of (data ?? []) as { id: string; piece: string | null; parent_campaign_id: string | null }[]) {
+      pieceById.set(c.id, c.piece ?? null)
+      rootById.set(c.id, c.parent_campaign_id || c.id)
+    }
   }
   for (const r of leadRows) r.campaign_piece = r.campaign_id ? pieceById.get(r.campaign_id) ?? null : null
+
+  // One existence probe per distinct campaign family — a handful of reads.
+  const hasList = new Map<string, boolean>()
+  for (const root of Array.from(new Set(rootById.values()))) {
+    const { data, error } = await sb.from("mail_records").select("id").eq("campaign_id", root).limit(1)
+    if (error) {
+      console.warn("[leads:GET] mail list probe failed:", error.message)
+      return
+    }
+    hasList.set(root, (data ?? []).length > 0)
+  }
+  for (const r of leadRows) {
+    const root = r.campaign_id ? rootById.get(r.campaign_id) : undefined
+    r.campaign_mail_list = root ? hasList.get(root) ?? false : false
+  }
 }
 
 // Allow-list of patchable columns. Anything else in the body is ignored.
