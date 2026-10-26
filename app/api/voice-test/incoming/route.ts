@@ -1,10 +1,13 @@
 import { NextResponse } from "next/server"
+import { waitUntil } from "@vercel/functions"
 import { createHmac, timingSafeEqual } from "crypto"
+import WebSocket from "ws"
 import { sendTelegramAlert } from "@/lib/leads"
 import {
   VOICE_TEST_BACKEND_EFFORT,
   VOICE_TEST_BACKEND_MODEL,
   VOICE_TEST_GREETING,
+  VOICE_TEST_OPENER,
   VOICE_TEST_INSTRUCTIONS,
   VOICE_TEST_MODEL,
   VOICE_TEST_OWNER_CELL,
@@ -18,6 +21,9 @@ import {
 // checked against OPENAI_VOICE_WEBHOOK_SECRET.
 
 const OPENAI_BASE = "https://api.openai.com/v1"
+
+// Room for the opener sideband (waitUntil) after the webhook response.
+export const maxDuration = 30
 
 function voiceApiKey(): string | undefined {
   // Dedicated key once Ryan creates one; the shared Whisper key until then.
@@ -45,6 +51,48 @@ function callerFrom(sipHeaders: unknown): string {
   const from = sipHeaders.find((h) => typeof h?.name === "string" && h.name.toLowerCase() === "from")
   const match = typeof from?.value === "string" ? from.value.match(/\+?\d{10,15}/) : null
   return match ? (match[0].startsWith("+") ? match[0] : `+${match[0]}`) : ""
+}
+
+// The startup developer message only *suggests* a greeting — on 10-25 Jackie
+// sat silent 8 s while Ryan said hello. OpenAI's reliable path: attach a
+// sideband to the running session and append the exact opener as an
+// instruction. One event, then close; failures alert Telegram (a silent
+// opener is a broken call).
+async function sendOpener(sessionId: string, apiKey: string): Promise<void> {
+  const url = `wss://api.openai.com/v1/live/sessions/${encodeURIComponent(sessionId)}/attach`
+  const outcome = await new Promise<string>((resolve) => {
+    const ws = new WebSocket(url, { headers: { Authorization: `Bearer ${apiKey}` } })
+    const done = (result: string) => {
+      clearTimeout(timer)
+      try { ws.close() } catch { /* already closed */ }
+      resolve(result)
+    }
+    let sent = false
+    // The ack lands when the session timeline reaches the appended text, so a
+    // slow ack after a successful send isn't a failure.
+    const timer = setTimeout(() => done(sent ? "ok" : "timeout before send"), 15000)
+    ws.on("open", () => {
+      sent = true
+      ws.send(JSON.stringify({
+        type: "session.instructions.append",
+        event_id: `opener_${Date.now()}`,
+        delegation_id: null,
+        content: `Immediately say the following exactly and in full, then stop and listen: "${VOICE_TEST_OPENER}"`,
+      }))
+    })
+    ws.on("message", (raw) => {
+      let msg: { type?: string; error?: { message?: string } } = {}
+      try { msg = JSON.parse(String(raw)) } catch { return }
+      if (msg.type === "session.instructions.appended") done("ok")
+      else if (msg.type === "error") done(`error: ${msg.error?.message ?? "unknown"}`)
+    })
+    ws.on("error", (e) => done(`socket error: ${e.message}`))
+    ws.on("close", (code) => done(sent ? "ok" : `closed ${code} before send`))
+  })
+  if (outcome !== "ok") {
+    console.error(`[voice-test] opener not delivered: ${outcome}`)
+    await sendTelegramAlert(`⚠️ AI test line: couldn't trigger Jackie's opener (${outcome}) — she may wait for the caller to speak first.`)
+  }
 }
 
 export async function POST(request: Request) {
@@ -116,6 +164,8 @@ export async function POST(request: Request) {
     await sendTelegramAlert(`⚠️ AI test line: OpenAI refused to pick up (${res.status}, event ${event.type}) — caller ${caller || "unknown"}\n${detail}`)
     return NextResponse.json({ accepted: false })
   }
+
+  waitUntil(sendOpener(sessionId, apiKey))
 
   if (caller && caller !== VOICE_TEST_OWNER_CELL) {
     await sendTelegramAlert(`🤖 Someone other than Ryan reached the AI test line (408-337-2785): ${caller}. Recording is on the Twilio trunk.`)

@@ -98,10 +98,11 @@ NEVER
 - Share anything about Ryan's other properties, deals, or personal information.
 - Make up an answer. If you don't know, Ryan will cover it on the callback.`
 
-// Sent as a developer message at session start so the agent speaks first
-// (OpenAI: improves, but doesn't guarantee, a greeting before the caller talks).
-export const VOICE_TEST_GREETING =
-  `Greet the caller now in English. Say: "Hey, this is Jackie with LRG Homes, how can I help you?" Then pause and listen.`
+// Opener: a startup developer message (VOICE_TEST_GREETING) plus, right after
+// accept, the exact line appended over a sideband (route: sendOpener) —
+// OpenAI's documented sequence; the startup message alone left Jackie silent.
+export const VOICE_TEST_OPENER = "Hey, this is Jackie with LRG Homes, how can I help you?"
+export const VOICE_TEST_GREETING = `Greet the caller now in English. Say: "${VOICE_TEST_OPENER}" Then pause and listen.`
 
 // Telegram heads-up when anyone other than Ryan reaches the test line (there
 // is no caller lock — an old-letter caller could land here).
