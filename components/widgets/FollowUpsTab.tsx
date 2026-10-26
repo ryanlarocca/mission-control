@@ -1,6 +1,6 @@
 "use client"
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react"
 import {
   Phone, PhoneOutgoing, Bot, Mail, MessageSquare, Send, Pencil, X, Check,
   Clock, Loader2, RefreshCw, AlertTriangle, ChevronDown, ChevronRight,
@@ -8,6 +8,8 @@ import {
 } from "lucide-react"
 import { formatPhone } from "@/lib/utils"
 import { handleSessionExpired } from "@/lib/session-expired"
+import { splitLeadNotes, joinLeadNotes, ryanNotes } from "@/lib/lead-notes"
+import type { ContactHistory, HistoryItem } from "@/lib/lead-history"
 import { ReplyPlanner } from "./ReplyPlanner"
 import { type Plan, type CoachTurn, requestDraft, requestCoach, executePlan, sendSuffixFor } from "@/lib/reply-client"
 
@@ -47,6 +49,7 @@ interface ContactRow {
   aiSummary: string | null
   emailReplyLeadId: string | null
   stage?: "closed" | "pending" | "offer" | "appointment" | "lead" | null
+  history?: ContactHistory
   primary: NextTouch
   secondary: NextTouch | null
 }
@@ -1183,23 +1186,29 @@ function StatusMenu({
 function ContextBlock({
   aiSummary,
   notes,
+  history,
   onSaveNotes,
 }: {
   aiSummary: string | null
   notes: string | null
+  // Recent history, rendered between the summary and the note.
+  history?: ReactNode
   onSaveNotes: (value: string) => void
 }) {
+  // The card shows and edits only Ryan's own text; a skip-trace block in the
+  // same column stays put (full lead card only) and is re-attached on save.
+  const { mine, skipTrace } = splitLeadNotes(notes)
   const [expanded, setExpanded] = useState(false)
   const [editingNotes, setEditingNotes] = useState(false)
-  const [draft, setDraft] = useState(notes ?? "")
+  const [draft, setDraft] = useState(mine)
   // Re-sync from props only while not editing, so a 30s background refetch
   // can't wipe an in-progress note (same guard as the lead-card field editor).
-  useEffect(() => { if (!editingNotes) setDraft(notes ?? "") }, [notes, editingNotes])
+  useEffect(() => { if (!editingNotes) setDraft(mine) }, [mine, editingNotes])
 
   const commitNotes = () => {
     setEditingNotes(false)
     const t = draft.trim()
-    if (t !== (notes ?? "").trim()) onSaveNotes(t)
+    if (t !== mine) onSaveNotes(joinLeadNotes(t, skipTrace) ?? "")
   }
 
   // Nothing to show and nothing being added → just the faint "Add note" link.
@@ -1216,6 +1225,7 @@ function ContextBlock({
           <span className={expanded ? "" : "line-clamp-2"}>{aiSummary}</span>
         </button>
       )}
+      {history}
       {editingNotes ? (
         <textarea
           autoFocus
@@ -1223,21 +1233,21 @@ function ContextBlock({
           onChange={e => setDraft(e.target.value)}
           onBlur={commitNotes}
           onKeyDown={e => {
-            if (e.key === "Escape") { setDraft(notes ?? ""); setEditingNotes(false) }
+            if (e.key === "Escape") { setDraft(mine); setEditingNotes(false) }
           }}
           rows={2}
           placeholder="Where did this leave off? Add a note…"
           className="w-full text-xs bg-zinc-900 border border-zinc-700 rounded px-2 py-1.5 text-zinc-100 placeholder-zinc-600 focus:outline-none focus:border-zinc-500 resize-y"
           style={{ fontSize: 16 }}
         />
-      ) : notes ? (
+      ) : mine ? (
         <button
           type="button"
           onClick={() => setEditingNotes(true)}
           className="group w-full text-left text-xs text-zinc-300 bg-zinc-900/60 rounded px-2 py-1.5 hover:bg-zinc-900 flex gap-1.5"
         >
           <span className="text-zinc-500 shrink-0">📝</span>
-          <span className="flex-1 whitespace-pre-wrap break-words">{notes}</span>
+          <span className="flex-1 whitespace-pre-wrap break-words">{mine}</span>
           <Pencil className="w-3 h-3 opacity-0 group-hover:opacity-60 shrink-0 mt-0.5" />
         </button>
       ) : (
@@ -1247,6 +1257,193 @@ function ContextBlock({
           className="inline-flex items-center gap-1 text-[11px] text-zinc-500 hover:text-zinc-300"
         >
           <Pencil className="w-3 h-3" /> Add note
+        </button>
+      )}
+    </div>
+  )
+}
+
+// ---- Recent history ---------------------------------------------------------
+// Ryan 2026-10-26: "see very clearly what's been said." The last few calls /
+// voicemails / texts / emails, one line each, newest first. Texts show as
+// written; long calls show a one-line summary. ▸ opens the full text and
+// "Show all" the whole history — both fetched on tap from
+// /api/follow-ups/history so transcripts stay out of the 30s refetch.
+
+const HISTORY_ICON: Record<HistoryItem["kind"], string> = {
+  call: "📞", voicemail: "🎙️", text: "💬", email: "✉️", form: "📝",
+}
+
+function historyFirstName(name: string | null): string {
+  const n = (name || "").trim()
+  if (!n || /^[+\d(]/.test(n) || /^(unknown|anonymous)/i.test(n)) return "They"
+  return n.split(/\s+/)[0]
+}
+
+function historyWho(it: HistoryItem, first: string): string {
+  if (it.dir === "out") {
+    if (it.auto) return it.kind === "email" ? "Auto-email" : "Auto-text"
+    return it.kind === "text" ? "You texted" : it.kind === "email" ? "You emailed" : "You called"
+  }
+  switch (it.kind) {
+    case "voicemail": return `${first} left a voicemail`
+    case "call": return `${first} called`
+    case "text": return `${first} texted`
+    case "email": return `${first} emailed`
+    default: return `${first} sent the web form`
+  }
+}
+
+function historyDate(iso: string): string {
+  const d = new Date(iso)
+  const sameYear = d.getFullYear() === new Date().getFullYear()
+  return d.toLocaleDateString("en-US", { month: "short", day: "numeric", ...(sameYear ? {} : { year: "numeric" }) })
+}
+
+// One-liners for long transcripts are written server-side the first time a
+// card shows them. Cards queue their ids here; one request at a time, 8 ids
+// each, so a page of cards doesn't fan out into dozens of parallel model
+// calls. A failed id resolves null and is retried on the next page load.
+const pendingLineIds: string[] = []
+const lineWaiters = new Map<string, ((line: string | null) => void)[]>()
+let lineQueueRunning = false
+
+function requestHistoryLine(id: string): Promise<string | null> {
+  return new Promise(resolve => {
+    const waiting = lineWaiters.get(id)
+    if (waiting) { waiting.push(resolve); return }
+    lineWaiters.set(id, [resolve])
+    pendingLineIds.push(id)
+    void drainLineQueue()
+  })
+}
+
+async function drainLineQueue() {
+  if (lineQueueRunning) return
+  lineQueueRunning = true
+  try {
+    while (pendingLineIds.length > 0) {
+      const batch = pendingLineIds.splice(0, 8)
+      let lines: Record<string, string> = {}
+      try {
+        const res = await fetch("/api/follow-ups/history-lines", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ ids: batch }),
+        })
+        if (res.ok) lines = ((await res.json()) as { lines?: Record<string, string> }).lines ?? {}
+      } catch { /* resolves null below */ }
+      for (const id of batch) {
+        const line = lines[id] ?? null
+        lineWaiters.get(id)?.forEach(w => w(line))
+        lineWaiters.delete(id)
+      }
+    }
+  } finally {
+    lineQueueRunning = false
+  }
+}
+
+function HistoryBlock({ row }: { row: ContactRow }) {
+  const preview = row.history
+  const [full, setFull] = useState<HistoryItem[] | null>(null)
+  const [loading, setLoading] = useState(false)
+  const [loadFailed, setLoadFailed] = useState(false)
+  const [showAll, setShowAll] = useState(false)
+  const [open, setOpen] = useState<Set<string>>(() => new Set())
+  const [lines, setLines] = useState<Record<string, string>>({})
+  const first = historyFirstName(row.name)
+
+  // A new touch on the contact → the cached full history is stale.
+  const head = preview?.items[0]?.id ?? ""
+  const total = preview?.total ?? 0
+  useEffect(() => { setFull(null) }, [head, total])
+
+  const items = showAll && full ? full : preview?.items ?? []
+
+  // Ask for the one-liners this card is missing (long transcripts).
+  const needIds = items.filter(i => i.needsLine && !lines[i.id]).map(i => i.id).join(",")
+  useEffect(() => {
+    if (!needIds) return
+    let alive = true
+    for (const id of needIds.split(",")) {
+      void requestHistoryLine(id).then(line => {
+        if (alive && line) setLines(prev => ({ ...prev, [id]: line }))
+      })
+    }
+    return () => { alive = false }
+  }, [needIds])
+
+  async function loadFull(): Promise<void> {
+    if (full || loading) return
+    setLoading(true)
+    setLoadFailed(false)
+    try {
+      const res = await fetch(`/api/follow-ups/history?key=${encodeURIComponent(row.clusterKey)}`)
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
+      const data = (await res.json()) as { items?: HistoryItem[] }
+      setFull(data.items ?? [])
+    } catch {
+      setLoadFailed(true)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  function toggleItem(id: string) {
+    void loadFull()
+    setOpen(prev => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  }
+
+  if (!preview || preview.total === 0) return null
+  const fullById = new Map((full ?? []).map(i => [i.id, i]))
+
+  return (
+    <div className="text-xs space-y-1">
+      <div className="text-[10px] uppercase tracking-wide text-zinc-500">Recent history</div>
+      <ul className="space-y-1">
+        {items.map(it => {
+          const isOpen = open.has(it.id)
+          const fullText = fullById.get(it.id)?.full
+          return (
+            <li key={it.id}>
+              <button
+                type="button"
+                disabled={!it.more}
+                onClick={() => toggleItem(it.id)}
+                title={it.more ? (isOpen ? "Hide full text" : "Show full text") : undefined}
+                className="w-full text-left flex gap-1.5 text-zinc-300 enabled:hover:text-zinc-100"
+              >
+                <span className="shrink-0">{HISTORY_ICON[it.kind]}</span>
+                <span className="flex-1 min-w-0 break-words">
+                  <span className="text-zinc-500">{historyDate(it.at)} · {historyWho(it, first)} — </span>
+                  {lines[it.id] ?? it.line}
+                </span>
+                {it.more && (
+                  <ChevronRight className={`w-3.5 h-3.5 shrink-0 mt-0.5 text-zinc-500 transition-transform ${isOpen ? "rotate-90" : ""}`} />
+                )}
+              </button>
+              {isOpen && (
+                <div className="mt-1 ml-5 px-2 py-1.5 rounded bg-zinc-900/60 text-zinc-400 whitespace-pre-wrap break-words max-h-64 overflow-y-auto">
+                  {fullText ?? (loadFailed ? "Couldn't load the full text — tap again." : "Loading…")}
+                </div>
+              )}
+            </li>
+          )
+        })}
+      </ul>
+      {preview.total > preview.items.length && (
+        <button
+          type="button"
+          onClick={() => { if (!showAll) void loadFull(); setShowAll(s => !s) }}
+          className="text-[11px] text-zinc-500 hover:text-zinc-300"
+        >
+          {showAll ? "Show less" : loading ? "Loading…" : `Show all (${preview.total})`}
         </button>
       )}
     </div>
@@ -1307,10 +1504,12 @@ function ContactCard({ row, ...h }: { row: ContactRow } & CardHandlers) {
         </div>
       </div>
 
-      {/* context — where the relationship stands + inline-editable notes */}
+      {/* context — where the relationship stands, what's been said, and
+          the inline-editable note */}
       <ContextBlock
         aiSummary={row.aiSummary}
         notes={row.notes}
+        history={<HistoryBlock row={row} />}
         onSaveNotes={(v) => h.onSaveNotes(row, v)}
       />
 
@@ -2008,9 +2207,9 @@ function ComposeModal({
             onRegenerate={(why) => void aiDraft(why ? { why } : undefined)}
             coach={{ read: coachRead, currentBody: body, onDraft: coach }}
           />
-          {row.notes && (
+          {ryanNotes(row.notes) && (
             <div className="text-xs text-zinc-400 bg-zinc-900/60 rounded px-2.5 py-1.5">
-              <span className="text-zinc-500">📝 Notes:</span> {row.notes}
+              <span className="text-zinc-500">📝 Notes:</span> {ryanNotes(row.notes)}
             </div>
           )}
           {needsRecipient && (

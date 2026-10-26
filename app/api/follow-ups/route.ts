@@ -9,6 +9,7 @@ import {
   type QueuedDrip,
   type NextTouchChannel,
 } from "@/lib/next-touch"
+import { fetchHistoryPreviews, type ContactHistory } from "@/lib/lead-history"
 
 // Merged Follow Ups worklist. One row per contact who has any scheduled
 // touch — a follow-up call, a drip, or both — resolved through the shared
@@ -97,6 +98,10 @@ interface ContactRow {
   // Furthest funnel stage the person reached (2026-10-24) — same chip as
   // the lead card: closed > pending > offer > appointment > lead.
   stage: "closed" | "pending" | "offer" | "appointment" | "lead" | null
+  // Last few calls / voicemails / texts / emails, one line each (2026-10-26)
+  // — the card's "Recent history". Full text is fetched on tap from
+  // /api/follow-ups/history.
+  history: ContactHistory
   primary: NextTouch
   secondary: NextTouch | null
 }
@@ -415,6 +420,7 @@ export async function GET(_request: NextRequest) {
           : leads.some((l) => l.appointment_at) ? "appointment"
           : leads.some((l) => l.became_lead_at) ? "lead"
           : null,
+        history: { items: [], total: 0 },
         primary: summary.primary,
         secondary: summary.secondary,
       })
@@ -424,6 +430,15 @@ export async function GET(_request: NextRequest) {
     // within buckets (calls before drips, owed, by temperature) per the
     // Follow Ups tab spec.
     rows.sort((a, b) => compareWorklist(a.primary, b.primary))
+
+    // 5b. Recent history per card. A failure here leaves the cards without
+    //     history rather than failing the whole worklist.
+    try {
+      const histories = await fetchHistoryPreviews(sb, rows.map((r) => r.clusterKey))
+      for (const r of rows) r.history = histories.get(r.clusterKey) ?? r.history
+    } catch (e) {
+      console.error("[follow-ups:GET] history failed:", e instanceof Error ? e.message : String(e))
+    }
 
     // 6. Collapsed sections — failed + recently sent drips.
     const failed: DripCard[] = []

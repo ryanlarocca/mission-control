@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server"
+import { ryanNotes as ownNotes } from "@/lib/lead-notes"
 import { sidecarHeaders } from "@/lib/sidecar"
 import { getLeadsClient, getMailboxForSource } from "@/lib/leads"
 import { completeText, extractJsonObject, hasLlmKey, SONNET } from "@/lib/llm"
@@ -190,7 +191,8 @@ export async function POST(
     // Ryan's hand-typed notes from the lead card. When present these are
     // PRIORITY guidance for this draft — appended to the end of sharedContext
     // (max recency) and flagged as instructions, not content to quote.
-    const ryanNotes = (anchor.notes || "").trim()
+    // His text only — never the skip-trace block (lib/lead-notes).
+    const ryanNotes = ownNotes(anchor.notes) ?? ""
 
     const sharedContext = `LEAD CONTEXT:
 - Name: ${anchor.name || "(unknown)"}

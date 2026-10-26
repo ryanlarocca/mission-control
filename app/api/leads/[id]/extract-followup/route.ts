@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server"
 import { getLeadsClient, clampOwedFollowup } from "@/lib/leads"
 import { completeText, extractJsonObject, hasLlmKey, SONNET } from "@/lib/llm"
+import { ryanNotes } from "@/lib/lead-notes"
 
 export async function POST(
   request: NextRequest,
@@ -14,7 +15,9 @@ export async function POST(
   let notes = ""
   try {
     const body = await request.json()
-    notes = typeof body.notes === "string" ? body.notes.trim() : ""
+    // Ryan's text only — the skip-trace block's "since 1992" dates are not
+    // follow-up timing (lib/lead-notes).
+    notes = typeof body.notes === "string" ? ryanNotes(body.notes) ?? "" : ""
   } catch {
     return NextResponse.json({ error: "Invalid JSON" }, { status: 400 })
   }

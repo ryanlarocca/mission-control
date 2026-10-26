@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server"
+import { ryanNotes } from "@/lib/lead-notes"
 import { getLeadsClient, haltOutreachForCluster } from "@/lib/leads"
 import { isValidCategory, RELATIONSHIP_CATEGORIES } from "@/lib/crms"
 
@@ -117,7 +118,8 @@ export async function POST(
       .filter((r) => { const k = clean(r.ai_notes); if (seenNotes.has(k)) return false; seenNotes.add(k); return true })
       .map((r) => `• ${fmtDay(r.created_at)} (${r.lead_type || "call"}): ${clean(r.ai_notes)}`)
     // Ryan's typed notes, minus any prior promote marker.
-    const manual = Array.from(new Set(cluster.map((r) => clean(r.notes).replace(/^\[PROMOTED[^\]]*\]\s*/, "")).filter(Boolean)))
+    // (Skip-trace blocks stay on the lead — lib/lead-notes.)
+    const manual = Array.from(new Set(cluster.map((r) => clean(ryanNotes(r.notes)).replace(/^\[PROMOTED[^\]]*\]\s*/, "")).filter(Boolean)))
     const addresses = Array.from(new Set(cluster.map((r) => clean(r.property_address)).filter(Boolean)))
       .sort((a, b) => b.length - a.length)
     const firstSeen = cluster[0]?.created_at

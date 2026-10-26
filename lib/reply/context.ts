@@ -7,6 +7,7 @@
 import { getLeadsClient, getMailboxForSource } from "@/lib/leads"
 import { sidecarHeaders } from "../sidecar"
 import { fetchContactThread } from "@/lib/relationship-messages"
+import { ryanNotes } from "@/lib/lead-notes"
 
 export interface ThreadItem {
   at: string          // ISO
@@ -265,7 +266,10 @@ export async function buildLeadContext(leadId: string, opts: { live?: boolean } 
     source: pick("source"),
     campaign_label: pick("campaign_label"),
     ai_summary: pick("ai_summary"),
-    notes: rows.map((r) => (r.notes || "").trim()).filter(Boolean).join("\n") || null,
+    // Ryan's own text only — the skip-trace block is unverified people-search
+    // data, not his steering (lib/lead-notes). Deduped: the skip-trace script
+    // and some edits wrote the same notes onto every row of the cluster.
+    notes: Array.from(new Set(rows.map((r) => ryanNotes(r.notes)).filter(Boolean))).join("\n") || null,
     offer_amount: pick("offer_amount"),
     offer_verbalized_at: pick("offer_verbalized_at"),
     drip_campaign_type: pick("drip_campaign_type"),
