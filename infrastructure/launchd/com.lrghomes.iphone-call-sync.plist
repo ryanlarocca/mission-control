@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  iPhone call sync — every 5 min, mirrors the iPhone call history (shared to
+  the Mac mini via "Calls on Other Devices") into `phone_calls` and logs each
+  new call onto its Leads / Relationships card. See
+  scripts/sync-iphone-calls.mjs.
+
+  CallHistory.storedata is a Full Disk Access file: this must run under
+  launchd with /opt/homebrew/bin/node (the binary holding FDA).
+
+  Install (Mac mini):
+    cp infrastructure/launchd/com.lrghomes.iphone-call-sync.plist ~/Library/LaunchAgents/
+    launchctl load ~/Library/LaunchAgents/com.lrghomes.iphone-call-sync.plist
+
+  Tail logs:
+    tail -f /tmp/lrg-iphone-call-sync.log /tmp/lrg-iphone-call-sync-err.log
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.lrghomes.iphone-call-sync</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/opt/homebrew/bin/node</string>
+    <string>scripts/sync-iphone-calls.mjs</string>
+    <string>--execute</string>
+  </array>
+  <key>WorkingDirectory</key>
+  <string>/Users/ryanlarocca/Projects/PROJECTS/mission-control</string>
+  <key>StartInterval</key>
+  <integer>300</integer>
+  <key>StandardOutPath</key>
+  <string>/tmp/lrg-iphone-call-sync.log</string>
+  <key>StandardErrorPath</key>
+  <string>/tmp/lrg-iphone-call-sync-err.log</string>
+  <key>RunAtLoad</key>
+  <true/>
+</dict>
+</plist>
