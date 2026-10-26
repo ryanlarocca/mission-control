@@ -70,10 +70,12 @@ export async function POST(request: Request) {
     return new NextResponse("bad json", { status: 400 })
   }
 
-  // `live.call.incoming` is the deprecated name. Realtime's
-  // `realtime.call.incoming` can fire for the same call — ignore it so only
-  // one handler makes the accept decision.
-  if (event.type !== "live.transport.incoming" && event.type !== "live.call.incoming") {
+  // `live.call.incoming` is the deprecated name. The project webhook may be
+  // subscribed to Realtime's `realtime.call.incoming` instead (the dashboard
+  // defaults to it); that event carries `call_id`, which we try as the Live
+  // session id — a refusal surfaces in Telegram with OpenAI's reason.
+  const known = ["live.transport.incoming", "live.call.incoming", "realtime.call.incoming"]
+  if (!event.type || !known.includes(event.type)) {
     return NextResponse.json({ ignored: event.type ?? null })
   }
 
@@ -107,7 +109,7 @@ export async function POST(request: Request) {
     // A duplicate delivery of an already-accepted call is fine.
     if (detail.includes("decision_already_made")) return NextResponse.json({ duplicate: true })
     console.error(`[voice-test] accept failed ${res.status}: ${detail}`)
-    await sendTelegramAlert(`⚠️ AI test line: OpenAI refused to pick up (${res.status}) — caller ${caller || "unknown"}\n${detail}`)
+    await sendTelegramAlert(`⚠️ AI test line: OpenAI refused to pick up (${res.status}, event ${event.type}) — caller ${caller || "unknown"}\n${detail}`)
     return NextResponse.json({ accepted: false })
   }
 
