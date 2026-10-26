@@ -58,7 +58,8 @@ function callerFrom(sipHeaders: unknown): string {
 // sideband to the running session and append the exact opener as an
 // instruction. One event, then close; failures alert Telegram (a silent
 // opener is a broken call).
-async function sendOpener(sessionId: string, apiKey: string): Promise<void> {
+async function sendOpener(sessionId: string, apiKey: string, timing: string[], t0: number): Promise<void> {
+  const mark = (label: string) => timing.push(`${label} +${((Date.now() - t0) / 1000).toFixed(1)}s`)
   const url = `wss://api.openai.com/v1/live/sessions/${encodeURIComponent(sessionId)}/attach`
   const outcome = await new Promise<string>((resolve) => {
     const ws = new WebSocket(url, { headers: { Authorization: `Bearer ${apiKey}` } })
@@ -72,6 +73,7 @@ async function sendOpener(sessionId: string, apiKey: string): Promise<void> {
     // slow ack after a successful send isn't a failure.
     const timer = setTimeout(() => done(sent ? "ok" : "timeout before send"), 15000)
     ws.on("open", () => {
+      mark("sideband open")
       sent = true
       ws.send(JSON.stringify({
         type: "session.instructions.append",
@@ -83,12 +85,14 @@ async function sendOpener(sessionId: string, apiKey: string): Promise<void> {
     ws.on("message", (raw) => {
       let msg: { type?: string; error?: { message?: string } } = {}
       try { msg = JSON.parse(String(raw)) } catch { return }
-      if (msg.type === "session.instructions.appended") done("ok")
+      if (msg.type === "session.instructions.appended") { mark("opener acked"); done("ok") }
       else if (msg.type === "error") done(`error: ${msg.error?.message ?? "unknown"}`)
     })
     ws.on("error", (e) => done(`socket error: ${e.message}`))
     ws.on("close", (code) => done(sent ? "ok" : `closed ${code} before send`))
   })
+  // Debug while tuning the opener: one Telegram line per test call.
+  await sendTelegramAlert(`🧪 Test line timing: ${timing.join(" · ")} · result ${outcome}`)
   if (outcome !== "ok") {
     console.error(`[voice-test] opener not delivered: ${outcome}`)
     await sendTelegramAlert(`⚠️ AI test line: couldn't trigger Jackie's opener (${outcome}) — she may wait for the caller to speak first.`)
@@ -96,6 +100,7 @@ async function sendOpener(sessionId: string, apiKey: string): Promise<void> {
 }
 
 export async function POST(request: Request) {
+  const t0 = Date.now()
   const body = await request.text()
 
   const secret = process.env.OPENAI_VOICE_WEBHOOK_SECRET
@@ -112,7 +117,7 @@ export async function POST(request: Request) {
   )
   if (!ok) return new NextResponse("bad signature", { status: 400 })
 
-  let event: { type?: string; data?: { session_id?: string; call_id?: string; sip_headers?: unknown } }
+  let event: { type?: string; created_at?: number; data?: { session_id?: string; call_id?: string; sip_headers?: unknown } }
   try {
     event = JSON.parse(body)
   } catch {
@@ -135,6 +140,8 @@ export async function POST(request: Request) {
     return new NextResponse("unusable event", { status: 500 })
   }
 
+  const timing: string[] = []
+  if (event.created_at) timing.push(`OpenAI→us ${(t0 / 1000 - event.created_at).toFixed(1)}s`)
   const res = await fetch(`${OPENAI_BASE}/live/sessions/${encodeURIComponent(sessionId)}/accept`, {
     method: "POST",
     headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
@@ -165,7 +172,8 @@ export async function POST(request: Request) {
     return NextResponse.json({ accepted: false })
   }
 
-  waitUntil(sendOpener(sessionId, apiKey))
+  timing.push(`accepted +${((Date.now() - t0) / 1000).toFixed(1)}s`)
+  waitUntil(sendOpener(sessionId, apiKey, timing, t0))
 
   if (caller && caller !== VOICE_TEST_OWNER_CELL) {
     await sendTelegramAlert(`🤖 Someone other than Ryan reached the AI test line (408-337-2785): ${caller}. Recording is on the Twilio trunk.`)
