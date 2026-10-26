@@ -33,6 +33,10 @@ describe("lead history lines", () => {
     expect(pending).toMatchObject({ line: "Ryan spoke with Dick.", more: true, needsLine: true })
   })
 
+  it("a status the call handler wrote is not quoted", () => {
+    expect(toHistoryItem(row({ lead_type: "call", message_head: "📵 No answer — rang out" }))!.line).toBe("📵 No answer — rang out")
+  })
+
   it("a call with no transcript says what happened", () => {
     expect(toHistoryItem(row({ lead_type: "call" }))!.line).toBe("No answer / not recorded")
     expect(toHistoryItem(row({ lead_type: "call", twilio_number: "+1408" }))!.line).toBe("Missed call — no message")

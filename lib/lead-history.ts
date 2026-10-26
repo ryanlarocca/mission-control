@@ -123,7 +123,11 @@ export function toHistoryItem(r: HistoryRow): HistoryItem | null {
       }
       const saved = squash(r.history_line)
       if (saved) return { ...base, kind, line: saved, more: true }
-      if (r.message_len <= LONG_TRANSCRIPT) return { ...base, kind, line: `“${msg}”`, more: false }
+      // Short: shown as-is — quoted when it's someone's words, bare when it's
+      // a status the call handler wrote ("📵 No answer — rang out").
+      if (r.message_len <= LONG_TRANSCRIPT) {
+        return { ...base, kind, line: /^[A-Za-z0-9À-ÿ]/.test(msg) ? `“${msg}”` : msg, more: false }
+      }
       // Long transcript, no one-liner yet: a stand-in until it's written.
       const notes = squash(r.ai_notes_head)
       const line = dir === "out" && notes ? clip(firstSentence(notes), LINE_CLIP) : `“${clip(msg, LINE_CLIP)}”`
