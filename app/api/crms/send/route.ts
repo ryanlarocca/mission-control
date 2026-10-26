@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server"
+import { sidecarHeaders } from "@/lib/sidecar"
 
 // Proxies to the CRMS FDA sidecar on localhost:5799
 // Sidecar handles iMessage → SMS fallback via AppleScript + chat.db error detection.
@@ -19,7 +20,7 @@ export async function POST(request: Request) {
     try {
       const res = await fetch(`${SIDECAR_URL}/send`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: sidecarHeaders(),
         body: JSON.stringify({ phone, message }),
         signal: controller.signal,
       })

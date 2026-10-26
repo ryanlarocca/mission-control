@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server"
+import { sidecarHeaders } from "@/lib/sidecar"
 import { getLeadsClient } from "@/lib/leads"
 import { to10Digit } from "@/lib/relationships"
 
@@ -21,7 +22,7 @@ export async function POST(request: Request) {
     try {
       const res = await fetch(`${SIDECAR_URL}/enrich-one`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: sidecarHeaders(),
         body: JSON.stringify({ phone }),
         signal: controller.signal,
       })

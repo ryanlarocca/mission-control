@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server"
+import { sidecarHeaders } from "@/lib/sidecar"
 
 // Forecast → pending: kick the engine for a single lead (manual --now
 // override) so it generates the next touch via Haiku and writes a pending
@@ -23,7 +24,7 @@ export async function POST(request: NextRequest) {
   try {
     const res = await fetch(`${SIDECAR_URL}/drip-trigger-lead`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: sidecarHeaders(),
       body: JSON.stringify({ leadId }),
       signal: AbortSignal.timeout(95_000),
     })

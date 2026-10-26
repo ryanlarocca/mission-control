@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server"
+import { sidecarHeaders } from "@/lib/sidecar"
 
 // Lead-pipeline auxiliary: when a lead card is expanded in the Leads tab,
 // the UI calls this to pull any iMessage/SMS history for the lead's phone
@@ -34,7 +35,7 @@ export async function POST(request: NextRequest) {
   try {
     const res = await fetch(`${sidecarUrl}/sync-imessage`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: sidecarHeaders(),
       body: JSON.stringify({ phone }),
       signal: AbortSignal.timeout(10000),
     })

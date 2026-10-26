@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server"
+import { sidecarHeaders } from "@/lib/sidecar"
 import { getLeadsClient, getMailboxForSource } from "@/lib/leads"
 import { completeText, extractJsonObject, hasLlmKey, SONNET } from "@/lib/llm"
 
@@ -50,7 +51,7 @@ async function fetchLiveMessages(
     try {
       const res = await fetch(`${sidecarUrl}/sync-imessage`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: sidecarHeaders(),
         body: JSON.stringify({ phone: anchor.caller_phone }),
         signal: AbortSignal.timeout(SIDECAR_TIMEOUT_MS),
       })
@@ -80,7 +81,7 @@ async function fetchLiveMessages(
       try {
         const res = await fetch(`${sidecarUrl}/sync-email`, {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: sidecarHeaders(),
           body: JSON.stringify({ threadId: anchor.gmail_thread_id, mailbox }),
           signal: AbortSignal.timeout(SIDECAR_TIMEOUT_MS + 4000),
         })

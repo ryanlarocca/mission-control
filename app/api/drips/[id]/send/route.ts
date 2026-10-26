@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server"
+import { sidecarHeaders } from "@/lib/sidecar"
 import { getLeadsClient } from "@/lib/leads"
 
 // Immediate-send for a pending, approved, or failed drip_queue row. Flips
@@ -101,7 +102,7 @@ export async function POST(request: NextRequest, { params }: { params: { id: str
     try {
       const kick = await fetch(`${SIDECAR_URL}/drip-trigger-drain`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: sidecarHeaders(),
         body: JSON.stringify({}),
         signal: AbortSignal.timeout(5000),
       })

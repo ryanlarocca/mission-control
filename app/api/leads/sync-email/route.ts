@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server"
+import { sidecarHeaders } from "@/lib/sidecar"
 import { getLeadsClient, getMailboxForSource } from "@/lib/leads"
 
 // Lead-pipeline auxiliary: when a lead card is expanded, pull the full
@@ -63,7 +64,7 @@ export async function POST(request: NextRequest) {
   try {
     const res = await fetch(`${sidecarUrl}/sync-email`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: sidecarHeaders(),
       body: JSON.stringify({ threadId: lead.gmail_thread_id, mailbox }),
       signal: AbortSignal.timeout(15000),
     })

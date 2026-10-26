@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server"
+import { sidecarHeaders } from "@/lib/sidecar"
 
 export const dynamic = "force-dynamic"
 
@@ -9,7 +10,7 @@ export async function POST(request: Request) {
   try {
     const res = await fetch(`${SIDECAR_URL}/projects/create`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: sidecarHeaders(),
       body,
       signal: AbortSignal.timeout(10000),
     })

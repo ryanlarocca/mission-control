@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server"
+import { sidecarHeaders } from "@/lib/sidecar"
 
 export const dynamic = "force-dynamic"
 
@@ -15,6 +16,7 @@ export async function GET(req: Request) {
   try {
     const qs = new URLSearchParams({ path: filePath })
     const res = await fetch(`${SIDECAR_URL}/bugs/content?${qs}`, {
+      headers: sidecarHeaders(),
       signal: AbortSignal.timeout(10000),
       cache: "no-store",
     })
