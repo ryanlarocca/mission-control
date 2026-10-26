@@ -11,7 +11,9 @@ import {
   VOICE_TEST_INSTRUCTIONS,
   VOICE_TEST_MODEL,
   VOICE_TEST_OWNER_CELL,
+  VOICE_TEST_COACH_NOTE,
   VOICE_TEST_VOICE,
+  callerIdNote,
 } from "@/lib/voiceTest"
 
 // OpenAI project webhook for the GPT-Live phone test line (lib/voiceTest.ts).
@@ -155,6 +157,7 @@ export async function POST(request: Request) {
     return new NextResponse("unusable event", { status: 500 })
   }
 
+  const caller = callerFrom(event.data?.sip_headers)
   const timing: string[] = []
   if (event.created_at) timing.push(`OpenAI→us ${(t0 / 1000 - event.created_at).toFixed(1)}s`)
   const res = await fetch(`${OPENAI_BASE}/live/sessions/${encodeURIComponent(sessionId)}/accept`, {
@@ -164,7 +167,10 @@ export async function POST(request: Request) {
       session: {
         type: "live",
         model: VOICE_TEST_MODEL,
-        instructions: VOICE_TEST_INSTRUCTIONS,
+        instructions:
+          VOICE_TEST_INSTRUCTIONS +
+          callerIdNote(caller) +
+          (caller === VOICE_TEST_OWNER_CELL ? VOICE_TEST_COACH_NOTE : ""),
         audio: { output: { voice: VOICE_TEST_VOICE } },
         delegation: {
           type: "responses",
@@ -177,7 +183,6 @@ export async function POST(request: Request) {
     }),
   })
 
-  const caller = callerFrom(event.data?.sip_headers)
   if (!res.ok) {
     const detail = (await res.text()).slice(0, 300)
     // A duplicate delivery of an already-accepted call is fine.
