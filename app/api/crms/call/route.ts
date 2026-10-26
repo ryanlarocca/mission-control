@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server"
-import { getLeadsClient, getTwilioNumber, isOwnedNumber, FORWARD_TO } from "@/lib/leads"
+import { getLeadsClient, getTwilioNumber, isOwnedNumber, CARD_LINE, FORWARD_TO } from "@/lib/leads"
 import { PROD_BASE, relationshipCallerId } from "@/lib/relationship-calls"
+import { getCardLineFlag } from "@/lib/card-line"
 
 // Relationships-tab click-to-call. Mirrors /api/leads/call but the record is a
 // `relationship_touches` row (modality='call') instead of a lead:
@@ -10,6 +11,9 @@ import { PROD_BASE, relationshipCallerId } from "@/lib/relationship-calls"
 //      Twilio fetches /api/crms/call/bridge, which dials the contact showing
 //      Ryan's own cell (a Twilio Verified Caller ID) and records from answer.
 // GET ?touchId= lets the card poll the outcome while the call is in flight.
+// Card # ON (relationships.use_card_line, 2026-10-26): the contact sees the
+// business-card line instead — the bridge gets `line=card` (never a raw
+// number; it's public) and the touch is stamped with twilio_number.
 
 function normalizeE164(raw: string): string | null {
   const trimmed = raw.trim()
@@ -49,6 +53,7 @@ export async function POST(request: NextRequest) {
   }
 
   const sb = getLeadsClient()
+  const cardLine = await getCardLineFlag(sb, relationshipId)
   const { data: touch, error: insErr } = await sb
     .from("relationship_touches")
     .insert({
@@ -58,6 +63,7 @@ export async function POST(request: NextRequest) {
       call_status: "dialing",
       tier_at_touch: body.tier ?? null,
       category_at_touch: body.category ?? null,
+      ...(cardLine ? { twilio_number: CARD_LINE } : {}),
     })
     .select("id")
     .single()
@@ -70,7 +76,8 @@ export async function POST(request: NextRequest) {
   const bridgeUrl =
     `${PROD_BASE}/api/crms/call/bridge` +
     `?touchId=${encodeURIComponent(touchId)}` +
-    `&to=${encodeURIComponent(to)}`
+    `&to=${encodeURIComponent(to)}` +
+    (cardLine ? "&line=card" : "")
 
   const auth = Buffer.from(`${sid}:${token}`).toString("base64")
   // StatusCallback covers the first leg: if Ryan's cell never picks up, the
@@ -95,7 +102,7 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: json?.message || `HTTP ${res.status}` }, { status: 502 })
     }
     await sb.from("relationship_touches").update({ call_sid: json.sid ?? null }).eq("id", touchId)
-    return NextResponse.json({ success: true, touchId, callSid: json.sid ?? null, callerId: relationshipCallerId() })
+    return NextResponse.json({ success: true, touchId, callSid: json.sid ?? null, callerId: cardLine ? CARD_LINE : relationshipCallerId() })
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e)
     console.error("[crms/call] Twilio fetch threw:", msg)

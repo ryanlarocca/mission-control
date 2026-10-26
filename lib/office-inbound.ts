@@ -164,10 +164,13 @@ export async function openInboundCallTouch(
   return data.id as string
 }
 
+// `twilioNumber` = the line the text came in on (E.164), so the card's
+// Messages box can show it and a Telegram reply goes back out on it.
 export async function logInboundTextTouch(
   sb: SupabaseClient,
   rel: Extract<OfficeCaller, { kind: "relationship" }>,
-  body: string
+  body: string,
+  twilioNumber?: string | null
 ): Promise<boolean> {
   const { error } = await sb.from("relationship_touches").insert({
     relationship_id: rel.id,
@@ -176,6 +179,7 @@ export async function logInboundTextTouch(
     message: body,
     tier_at_touch: rel.tier,
     category_at_touch: rel.category,
+    ...(twilioNumber ? { twilio_number: twilioNumber } : {}),
   })
   if (error) console.error("[office-inbound] text touch insert failed:", error.message)
   return !error

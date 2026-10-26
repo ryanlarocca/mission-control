@@ -1032,6 +1032,20 @@ export async function POST(request: Request) {
     return NextResponse.json({ ok: true })
   }
 
+  // Office-line text alerts ("💬 Office line text — …", posted by this bot
+  // via sendTelegramAlert) for a Relationships contact (2026-10-26): the
+  // reply goes back out on the office line they texted, logged as a
+  // relationship touch — never the lead-line path below (650 line + a leads
+  // row). Not a Relationships contact → falls through unchanged.
+  if (/Office line text/i.test(repliedText)) {
+    const { replyToOfficeLineText, officeReplyMessage } = await import("@/lib/office-reply")
+    const office = await replyToOfficeLineText(getLeadsClient(), repliedText, body)
+    if (office.handled) {
+      await tg("sendMessage", { chat_id: chatId, text: officeReplyMessage(office), parse_mode: "HTML", reply_to_message_id: msg.message_id })
+      return NextResponse.json({ ok: true })
+    }
+  }
+
   // Lead-line alerts (Leads tab — /api/leads/sms, /voice, /email, recordings,
   // DNC) post from this bot since 2026-08-27 (Ryan retired Thadius). They
   // embed the lead phone in E.164 ("+1408…") or, for email/DM leads, as

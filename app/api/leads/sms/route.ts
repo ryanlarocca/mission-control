@@ -90,7 +90,7 @@ export async function POST(request: Request) {
       const sb = getLeadsClient()
       const who = await resolveOfficeCaller(sb, from)
       if (who.kind === "relationship") {
-        await logInboundTextTouch(sb, who, bodyText)
+        await logInboundTextTouch(sb, who, bodyText, to)
         const preview = bodyText.length > 300 ? bodyText.slice(0, 300) + "…" : bodyText
         const escaped = preview.replace(/[<>&]/g, c => c === "<" ? "&lt;" : c === ">" ? "&gt;" : "&amp;")
         await sendTelegramAlert(`💬 Office line text — ${describeContact(who)} — ${from}\n"${escaped}"`)

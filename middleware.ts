@@ -26,6 +26,9 @@ const PUBLIC_PATHS = [
   // Office-line inbound calls that resolve to a Relationships contact: the
   // <Dial action> (answered → stamp; else voicemail greeting + record).
   "/api/crms/call/inbound",
+  // Twilio StatusCallback for Card # texts from /api/crms/send (which stays
+  // auth-gated): alerts Telegram on failed/undelivered, nothing else.
+  "/api/crms/sms-status",
   // Google Cloud Pub/Sub pushes Gmail-watch notifications here without
   // a session cookie. Auth on this path is enforced by Pub/Sub itself
   // (subscription origin) — see scripts/setup-gmail-watch.js.

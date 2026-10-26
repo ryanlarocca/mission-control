@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server"
-import { fetchThread, formatThreadForPrompt } from "@/lib/relationship-messages"
+import { fetchContactThread, formatThreadForPrompt } from "@/lib/relationship-messages"
 import fs from "fs"
 import { getLeadsClient } from "@/lib/leads"
 import { completeText, SONNET } from "@/lib/llm"
@@ -579,7 +579,7 @@ export async function POST(request: Request) {
     // so the draft continues the actual conversation instead of restarting it.
     const [voiceExamples, thread] = await Promise.all([
       fetchVoiceExamples(type, modality, 5),
-      phone ? fetchThread(String(phone), 6000) : Promise.resolve([]),
+      phone ? fetchContactThread(getLeadsClient(), String(phone), 6000) : Promise.resolve([]),
     ])
     const transcript = formatThreadForPrompt(thread, 8)
     const threadBlock = transcript

@@ -131,6 +131,18 @@ export async function POST(request: Request) {
     return NextResponse.json({ ok: true })
   }
 
+  // Office-line text alerts for a Relationships contact (2026-10-26): reply
+  // goes back out on the office line they texted, as a relationship touch —
+  // never sendLeadSms (650 line + a leads row). Not a contact → falls through.
+  if (/Office line text/i.test(repliedText)) {
+    const { replyToOfficeLineText, officeReplyMessage } = await import("@/lib/office-reply")
+    const office = await replyToOfficeLineText(getLeadsClient(), repliedText, replyBody)
+    if (office.handled) {
+      await tgSend(chatId, officeReplyMessage(office), msg.message_id)
+      return NextResponse.json({ ok: true })
+    }
+  }
+
   // Email-reply alerts have no phone — point Ryan at the right channel.
   if (/AGENT REPLY/i.test(repliedText)) {
     await tgSend(chatId, "✉️ That's an email reply — answer it from Gmail (the thread is in info@).", msg.message_id)

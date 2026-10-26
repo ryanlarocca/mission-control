@@ -1,4 +1,6 @@
+import type { SupabaseClient } from "@supabase/supabase-js"
 import { sidecarHeaders } from "./sidecar"
+import { relationshipsByAnyPhone } from "./relationships"
 // Live iMessage/SMS thread for a Relationships contact, read from the Mac
 // mini's chat.db through the CRMS sidecar (POST /sync-imessage). Nothing is
 // stored — this is a read-through so the Relationships card can show the
@@ -11,6 +13,10 @@ export interface ThreadMessage {
   at: string           // ISO timestamp
   fromMe: boolean
   text: string
+  // Business-line texts only (Card # / office / agents line, from
+  // relationship_touches): the Twilio line, E.164, or "business line" when an
+  // old row didn't record it. Absent = chat.db (Ryan's own phone).
+  via?: string
 }
 
 // Sidecar timestamps are Apple-epoch milliseconds (2001-01-01 base).
@@ -46,6 +52,60 @@ export async function fetchThread(phone: string, timeoutMs = 10000): Promise<Thr
   }
 }
 
+const DUPLICATE_WINDOW_MS = 60_000
+
+// The whole text conversation with a contact (2026-10-26): Ryan's phone
+// (chat.db via the sidecar) merged with the texts on our Twilio lines, which
+// chat.db never sees — inbound sms touches (office / agents line) and Card #
+// sends (action 'sent' with a twilio_number). Best-effort: any Supabase
+// error falls back to the chat.db thread alone.
+export async function fetchContactThread(sb: SupabaseClient, phone: string, timeoutMs = 10000): Promise<ThreadMessage[]> {
+  const [live, business] = await Promise.all([fetchThread(phone, timeoutMs), fetchBusinessLineTexts(sb, phone)])
+  if (business.length === 0) return live
+  const merged = [...live, ...business].sort((a, b) => a.at.localeCompare(b.at))
+  const out: ThreadMessage[] = []
+  for (const m of merged) {
+    const t = Date.parse(m.at)
+    let dup = false
+    // Sorted by time, so only the tail within the window can match.
+    for (let i = out.length - 1; i >= 0 && t - Date.parse(out[i].at) <= DUPLICATE_WINDOW_MS; i--) {
+      if (out[i].text === m.text && out[i].fromMe === m.fromMe) { dup = true; break }
+    }
+    if (!dup) out.push(m)
+  }
+  return out
+}
+
+async function fetchBusinessLineTexts(sb: SupabaseClient, phone: string): Promise<ThreadMessage[]> {
+  const norm = String(phone ?? "").replace(/\D/g, "").slice(-10)
+  if (norm.length !== 10) return []
+  try {
+    const rels = await relationshipsByAnyPhone<{ id: string }>(sb, norm, "id")
+    const ids = rels.map((r) => r.id).filter(Boolean)
+    if (ids.length === 0) return []
+    const { data, error } = await sb
+      .from("relationship_touches")
+      .select("occurred_at, action, message, twilio_number")
+      .in("relationship_id", ids)
+      .or("and(modality.eq.sms,action.eq.inbound),and(action.eq.sent,twilio_number.not.is.null)")
+      .order("occurred_at", { ascending: false })
+      .limit(200)
+    if (error) throw error
+    const rows = (data ?? []) as { occurred_at: string | null; action: string | null; message: string | null; twilio_number: string | null }[]
+    return rows
+      .filter((r) => typeof r.message === "string" && r.message.trim() && r.occurred_at)
+      .map((r) => ({
+        at: new Date(r.occurred_at!).toISOString(),
+        fromMe: r.action === "sent",
+        text: r.message!.trim(),
+        via: r.twilio_number ?? "business line",
+      }))
+  } catch (e) {
+    console.warn("[relationship-messages] business-line texts fetch failed:", e instanceof Error ? e.message : String(e))
+    return []
+  }
+}
+
 // Compact transcript of the most recent exchanges for the draft prompt.
 export function formatThreadForPrompt(thread: ThreadMessage[], limit = 8): string {
   const recent = thread.slice(-limit)
@@ -55,7 +115,9 @@ export function formatThreadForPrompt(thread: ThreadMessage[], limit = 8): strin
       const date = new Date(m.at).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })
       const who = m.fromMe ? "Ryan" : "Them"
       const text = m.text.replace(/\s+/g, " ").slice(0, 400)
-      return `[${date}] ${who}: ${text}`
+      // The drafter should know which number the thread is on.
+      const line = m.fromMe && m.via ? " (from business line)" : ""
+      return `[${date}] ${who}: ${text}${line}`
     })
     .join("\n")
 }

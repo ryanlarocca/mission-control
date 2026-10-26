@@ -13,6 +13,7 @@ import type { TouchesSummary } from "./ContactDetailModal"
 import { RelationshipThread, invalidateRelationshipThread } from "./RelationshipThread"
 import { RelationshipPhone } from "./RelationshipPhone"
 import { useRelationshipCall, CallButton, CallStatusLine } from "./RelationshipCall"
+import { CardLineButton } from "./RelationshipCardLine"
 import { CleanupMode } from "./CleanupMode"
 import { ReplyPlanner } from "./ReplyPlanner"
 import { requestDraft, requestCoach, type Plan, type CoachTurn } from "@/lib/reply-client"
@@ -157,6 +158,7 @@ interface CRMSContact {
   phone:         string
   email?:        string | null
   altPhones?:    string[]   // extra numbers (10 digits) — "also:", never dialed
+  useCardLine?:  boolean    // Card #: calls + texts go from (408) 458-5442
   lastContact:   string
   lastContacted: string
   daysOverdue:   number
@@ -784,6 +786,27 @@ function CRMSTabInner() {
     fetchTouches(phone, true)
   }
 
+  // ── Card # toggle (2026-10-26): optimistic flip on both lists (so the
+  // queue card and the modal agree), revert + toast if the write fails.
+  async function handleCardLineToggle(id: string, on: boolean) {
+    const patch = (value: boolean) => (c: CRMSContact) => c.id === id ? { ...c, useCardLine: value } : c
+    setContacts(prev => prev.map(patch(on)))
+    setAllContacts(prev => prev.map(patch(on)))
+    try {
+      const res = await fetch("/api/crms/card-line", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id, on }),
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok || !data?.ok) throw new Error(data?.error || `HTTP ${res.status}`)
+    } catch (e) {
+      setContacts(prev => prev.map(patch(!on)))
+      setAllContacts(prev => prev.map(patch(!on)))
+      showSendToast(`Card # ${on ? "on" : "off"} failed — ${e instanceof Error ? e.message : "try again"}`)
+    }
+  }
+
   // ── Send: advance UI immediately; fire API calls in background ──
   function handleSend() {
     if (!selectedContact) return
@@ -843,12 +866,14 @@ function CRMSTabInner() {
     fetch("/api/crms/send", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ phone: contact.phone, message }),
+      body: JSON.stringify({ id: contact.id, phone: contact.phone, message }),
       signal: controller.signal,
     })
       .then(async res => {
         clearTimeout(timeout)
         if (!res.ok) throw new Error(`send ${res.status}`)
+        // `via` = the Twilio line a Card # text went out on (null = sidecar).
+        const sendData = await res.json().catch(() => ({}))
 
         // Await the log call so we can detect a failed LastContacted write.
         // If it fails, the contact will re-appear tomorrow — warn the user.
@@ -860,6 +885,7 @@ function CRMSTabInner() {
               id: contact.id, modality: mod, message,
               action: "sent", tier: contact.tier, category: contact.type,
               generatedMessage, wasEdited, draftId,
+              twilioNumber: sendData?.via ?? null,
             }),
           })
           if (!logRes.ok) {
@@ -1828,10 +1854,16 @@ function CRMSTabInner() {
                 </button>
                 <CallButton
                   liveCall={liveCall}
-                  contact={selectedContact ? { id: selectedContact.id, name: selectedContact.name, phone: selectedContact.phone, tier: selectedContact.tier, category: selectedContact.type } : null}
-                  onClick={() => selectedContact && startCall({ id: selectedContact.id, name: selectedContact.name, phone: selectedContact.phone, tier: selectedContact.tier, category: selectedContact.type })}
+                  contact={selectedContact ? { id: selectedContact.id, name: selectedContact.name, phone: selectedContact.phone, tier: selectedContact.tier, category: selectedContact.type, useCardLine: selectedContact.useCardLine } : null}
+                  onClick={() => selectedContact && startCall({ id: selectedContact.id, name: selectedContact.name, phone: selectedContact.phone, tier: selectedContact.tier, category: selectedContact.type, useCardLine: selectedContact.useCardLine })}
                   disabled={actionPending}
                 />
+                {selectedContact.phone && (
+                  <CardLineButton
+                    on={!!selectedContact.useCardLine}
+                    onToggle={() => void handleCardLineToggle(selectedContact.id, !selectedContact.useCardLine)}
+                  />
+                )}
                 <button
                   onClick={() => void regenerate()}
                   disabled={!!generatingFor}
@@ -1940,6 +1972,7 @@ function CRMSTabInner() {
             setContacts(prev => prev.map(patch))
             setAllContacts(prev => prev.map(patch))
           }}
+          onCardLineToggle={(id, on) => void handleCardLineToggle(id, on)}
         />
       )}
     </div>
