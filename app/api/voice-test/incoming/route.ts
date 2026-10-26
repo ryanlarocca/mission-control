@@ -53,49 +53,64 @@ function callerFrom(sipHeaders: unknown): string {
   return match ? (match[0].startsWith("+") ? match[0] : `+${match[0]}`) : ""
 }
 
-// The startup developer message only *suggests* a greeting — on 10-25 Jackie
-// sat silent 8 s while Ryan said hello. OpenAI's reliable path: attach a
-// sideband to the running session and append the exact opener as an
-// instruction. One event, then close; failures alert Telegram (a silent
-// opener is a broken call).
+// The startup developer message only *suggests* a greeting; on 10-25 Jackie
+// sat silent until Ryan spoke, three calls running. `session.instructions.append`
+// didn't help either — the model treats it as a rule for its NEXT reply.
+// OpenAI's documented "greet before the caller speaks" path is
+// `session.commentary.append` on a sideband. We send it, watch the reflected
+// output for her first sound, nudge once more at 4 s if she's still quiet,
+// and log the timeline (console + Telegram while tuning).
 async function sendOpener(sessionId: string, apiKey: string, timing: string[], t0: number): Promise<void> {
   const mark = (label: string) => timing.push(`${label} +${((Date.now() - t0) / 1000).toFixed(1)}s`)
   const url = `wss://api.openai.com/v1/live/sessions/${encodeURIComponent(sessionId)}/attach`
   const outcome = await new Promise<string>((resolve) => {
     const ws = new WebSocket(url, { headers: { Authorization: `Bearer ${apiKey}` } })
+    let sent = false
+    let spoke = false
+    let nudges = 0
+    let nudge: ReturnType<typeof setTimeout> | undefined
     const done = (result: string) => {
       clearTimeout(timer)
+      if (nudge) clearTimeout(nudge)
       try { ws.close() } catch { /* already closed */ }
       resolve(result)
     }
-    let sent = false
-    // The ack lands when the session timeline reaches the appended text, so a
-    // slow ack after a successful send isn't a failure.
-    const timer = setTimeout(() => done(sent ? "ok" : "timeout before send"), 15000)
+    const greet = () => {
+      nudges += 1
+      mark(`greet #${nudges}`)
+      ws.send(JSON.stringify({
+        type: "session.commentary.append",
+        event_id: `opener_${nudges}_${Date.now()}`,
+        delegation_id: null,
+        content: nudges === 1
+          ? VOICE_TEST_GREETING
+          : `The caller is on the line and waiting in silence. Speak first, right now: say "${VOICE_TEST_OPENER}" and then listen.`,
+      }))
+    }
+    const timer = setTimeout(() => done(spoke ? "ok" : sent ? "silent after greeting" : "timeout before send"), 14000)
     ws.on("open", () => {
       mark("sideband open")
       sent = true
-      ws.send(JSON.stringify({
-        type: "session.instructions.append",
-        event_id: `opener_${Date.now()}`,
-        delegation_id: null,
-        content: `Immediately say the following exactly and in full, then stop and listen: "${VOICE_TEST_OPENER}"`,
-      }))
+      greet()
+      nudge = setTimeout(() => { if (!spoke) greet() }, 4000)
     })
     ws.on("message", (raw) => {
       let msg: { type?: string; error?: { message?: string } } = {}
       try { msg = JSON.parse(String(raw)) } catch { return }
-      if (msg.type === "session.instructions.appended") { mark("opener acked"); done("ok") }
-      else if (msg.type === "error") done(`error: ${msg.error?.message ?? "unknown"}`)
+      if (msg.type === "session.output_audio.delta" || msg.type === "session.output_transcript.delta") {
+        if (!spoke) { spoke = true; mark("Jackie speaking"); done("ok") }
+      } else if (msg.type === "error") {
+        done(`error: ${msg.error?.message ?? "unknown"}`)
+      }
     })
     ws.on("error", (e) => done(`socket error: ${e.message}`))
-    ws.on("close", (code) => done(sent ? "ok" : `closed ${code} before send`))
+    ws.on("close", (code) => done(spoke ? "ok" : sent ? `closed ${code} after greeting` : `closed ${code} before send`))
   })
-  // Debug while tuning the opener: one Telegram line per test call.
-  await sendTelegramAlert(`🧪 Test line timing: ${timing.join(" · ")} · result ${outcome}`)
+  const line = `${timing.join(" · ")} · result: ${outcome}`
+  console.log(`[voice-test] ${line}`)
+  await sendTelegramAlert(`🧪 Test line timing: ${line}`)
   if (outcome !== "ok") {
     console.error(`[voice-test] opener not delivered: ${outcome}`)
-    await sendTelegramAlert(`⚠️ AI test line: couldn't trigger Jackie's opener (${outcome}) — she may wait for the caller to speak first.`)
   }
 }
 
