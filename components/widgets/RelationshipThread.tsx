@@ -3,12 +3,16 @@
 import { useEffect, useRef, useState } from "react"
 import { Loader2, Mail } from "lucide-react"
 import type { ThreadMessage } from "@/lib/relationship-messages"
+import { lineTag } from "@/lib/card-line"
 
 // The contact's live conversation, shared by the Relationships queue card and
 // the contact detail modal. Texts come from chat.db via the sidecar; emails
 // (2026-10-09) come from relationship_touches rows with modality "email" —
 // an agent's campaign reply ("inbound") and anything sent from the card's
 // Email button ("sent"). Merged by time, newest at the bottom, last 15 shown.
+// Texts on our Twilio lines (Card # sends, office/agents-line inbound —
+// 2026-10-26) arrive in the same /api/crms/messages list with `via` set and
+// get a small "via 458-5442" tag.
 // A module-level cache keeps the queue card and the modal from re-fetching
 // the same phone.
 
@@ -142,6 +146,11 @@ export function RelationshipThread({ phone }: { phone: string }) {
                       m.fromMe ? "bg-blue-500/15 text-blue-100" : "bg-zinc-800 text-zinc-200"
                     }`}>
                       {m.text}
+                      {m.via && (
+                        <span className={`block text-[10px] mt-0.5 ${m.fromMe ? "text-blue-300/60" : "text-zinc-500"}`}>
+                          via {lineTag(m.via)}
+                        </span>
+                      )}
                     </p>
                   )}
                 </div>

@@ -6,7 +6,7 @@
 
 import { getLeadsClient, getMailboxForSource } from "@/lib/leads"
 import { sidecarHeaders } from "../sidecar"
-import { fetchThread } from "@/lib/relationship-messages"
+import { fetchContactThread } from "@/lib/relationship-messages"
 
 export interface ThreadItem {
   at: string          // ISO
@@ -305,11 +305,12 @@ export async function buildRelationshipContext(relationshipId: string): Promise<
   if (error) throw new Error(error.message)
   if (!r) return null
   const [live, emails] = await Promise.all([
-    r.phone ? fetchThread(r.phone) : Promise.resolve([]),
+    r.phone ? fetchContactThread(sb, r.phone) : Promise.resolve([]),
     fetchRelationshipEmails(sb, r.id),
   ])
   const thread = mergeThread([
-    ...live.map((m): ThreadItem => ({ at: m.at, from: m.fromMe ? "ryan" : "them", channel: "imessage", text: m.text })),
+    // `via` = a text on one of our Twilio lines (Card # / office / agents), not Ryan's phone.
+    ...live.map((m): ThreadItem => ({ at: m.at, from: m.fromMe ? "ryan" : "them", channel: m.via ? "sms (business line)" : "imessage", text: m.text })),
     ...emails,
   ])
   return {

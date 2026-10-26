@@ -2,13 +2,16 @@
 
 import { useEffect, useRef, useState } from "react"
 import { Loader2, Phone, X } from "lucide-react"
+import { CARD_LINE, CARD_LINE_DISPLAY } from "@/lib/card-line"
 
 // Click-to-call for a Relationships contact, shared by the queue card and the
 // detail modal. `useRelationshipCall` owns the call lifecycle (POST
 // /api/crms/call, then poll the touch until the outcome or the transcript
 // summary lands); `CallButton` + `CallStatusLine` render it.
 
-export type CallContact = { id: string; name: string; phone: string; tier?: string; category?: string }
+// `useCardLine` only shapes the button's wording — the server reads the flag
+// itself and decides which number the contact sees.
+export type CallContact = { id: string; name: string; phone: string; tier?: string; category?: string; useCardLine?: boolean }
 
 export type LiveCall = {
   contactId: string
@@ -53,7 +56,8 @@ export function useRelationshipCall(opts: {
       const data = await res.json().catch(() => ({}))
       if (!res.ok || !data.success) throw new Error(data.error || `HTTP ${res.status}`)
       const touchId: string = data.touchId
-      setLiveCall({ contactId: contact.id, touchId, phase: "dialing", text: `Ringing your cell… answer to connect to ${contact.name}` })
+      const seen = data.callerId === CARD_LINE ? ` (they'll see ${CARD_LINE_DISPLAY})` : ""
+      setLiveCall({ contactId: contact.id, touchId, phase: "dialing", text: `Ringing your cell… answer to connect to ${contact.name}${seen}` })
       const started = Date.now()
       let connectedFired = false
       pollRef.current = setInterval(async () => {
@@ -96,7 +100,9 @@ export function CallButton({ liveCall, contact, onClick, disabled, className }: 
     <button
       onClick={onClick}
       disabled={disabled || liveCall?.phase === "dialing" || !contact?.phone}
-      title="Call them — rings your cell first, they see your number; recorded and summarized into notes"
+      title={contact?.useCardLine
+        ? `Call them — rings your cell first, they see ${CARD_LINE_DISPLAY}; recorded and summarized into notes`
+        : "Call them — rings your cell first, they see your number; recorded and summarized into notes"}
       className={className ?? "flex items-center gap-1.5 text-xs text-emerald-400 hover:text-emerald-300 bg-emerald-500/10 border border-emerald-500/30 hover:border-emerald-500/50 px-3 py-1.5 rounded transition-colors disabled:opacity-50"}
     >
       {dialing ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Phone className="w-3.5 h-3.5" />}

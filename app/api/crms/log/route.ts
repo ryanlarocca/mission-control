@@ -10,7 +10,7 @@ export const dynamic = "force-dynamic"
 export async function POST(request: Request) {
   try {
     const {
-      id, modality, message, action, tier, category, generatedMessage, wasEdited, note, draftId,
+      id, modality, message, action, tier, category, generatedMessage, wasEdited, note, draftId, twilioNumber,
     } = await request.json()
 
     if (!id || typeof id !== "string") {
@@ -25,6 +25,9 @@ export async function POST(request: Request) {
 
     // Append-only touch row. generated_message (original AI draft) + was_edited
     // feed the generate route's voice few-shot and future voice-learning.
+    // twilio_number (Card #, 2026-10-26): the Twilio line a text went out on —
+    // only written when /api/crms/send reported one, so a sidecar send's
+    // insert is unchanged.
     const ins = await supabase.from("relationship_touches").insert({
       relationship_id: id,
       modality: modality ?? null,
@@ -34,6 +37,7 @@ export async function POST(request: Request) {
       was_edited: wasEdited === true ? true : wasEdited === false ? false : null,
       tier_at_touch: tier ?? null,
       category_at_touch: category ?? null,
+      ...(typeof twilioNumber === "string" && /^\+\d{10,15}$/.test(twilioNumber) ? { twilio_number: twilioNumber } : {}),
     })
     if (ins.error) {
       console.error("Failed to insert relationship_touch:", ins.error)

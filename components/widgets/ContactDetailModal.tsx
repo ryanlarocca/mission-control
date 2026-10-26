@@ -9,6 +9,8 @@ import type { LucideIcon } from "lucide-react"
 import { RelationshipThread, invalidateRelationshipThread } from "./RelationshipThread"
 import { RelationshipPhone } from "./RelationshipPhone"
 import { useRelationshipCall, CallButton, CallStatusLine } from "./RelationshipCall"
+import { CardLineButton } from "./RelationshipCardLine"
+import { CARD_LINE_DISPLAY } from "@/lib/card-line"
 import { ReplyPlanner } from "./ReplyPlanner"
 import { type Plan, type CoachTurn, requestDraft, requestCoach } from "@/lib/reply-client"
 
@@ -45,6 +47,8 @@ export interface ContactDetailContact {
   email?: string | null
   // Extra numbers (10 digits) — shown as "also:", matched on inbound, never dialed.
   altPhones?: string[]
+  // Card #: calls + texts go from the business-card line (408) 458-5442.
+  useCardLine?: boolean
   lastContacted: string
   notes: string
   hasNotes: boolean
@@ -60,6 +64,9 @@ interface Props {
   // The parent owns the contact + the phone-keyed caches; it patches the
   // contact so this modal re-renders (and refetches history) under the new number.
   onPhoneChanged?: (id: string, phone: string, altPhones: string[]) => void
+  // The parent owns the Card # flag (optimistic flip + revert), so the queue
+  // card and this modal stay in sync.
+  onCardLineToggle?: (id: string, on: boolean) => void
 }
 
 const CATEGORY_OPTIONS = ["Agent", "Vendor", "Personal", "PM", "Investor", "PrivateMoney"] as const
@@ -123,7 +130,7 @@ function formatDateTime(iso: string): string {
   })
 }
 
-export function ContactDetailModal({ contact, onClose, onSendToast, onNotesSaved, onCategoryChanged, onTierChanged, onPhoneChanged }: Props) {
+export function ContactDetailModal({ contact, onClose, onSendToast, onNotesSaved, onCategoryChanged, onTierChanged, onPhoneChanged, onCardLineToggle }: Props) {
   const [history, setHistory] = useState<InteractionEntry[]>([])
   const [loadingHistory, setLoadingHistory] = useState(true)
   const [notes, setNotes] = useState(contact.notes)
@@ -225,7 +232,7 @@ export function ContactDetailModal({ contact, onClose, onSendToast, onNotesSaved
       reloadHistory()
     },
   })
-  const callContact = { id: contact.id, name: contact.name, phone: contact.phone, tier: contact.tier, category: contact.category }
+  const callContact = { id: contact.id, name: contact.name, phone: contact.phone, tier: contact.tier, category: contact.category, useCardLine: contact.useCardLine }
 
   // Click-outside for the category picker. pointerdown + setTimeout(0) so the
   // opening tap doesn't immediately close it on iOS Safari.
@@ -402,10 +409,12 @@ export function ContactDetailModal({ contact, onClose, onSendToast, onNotesSaved
     fetch("/api/crms/send", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ phone: contact.phone, message: msg }),
+      body: JSON.stringify({ id: contact.id, phone: contact.phone, message: msg }),
     })
       .then(async res => {
         if (!res.ok) throw new Error(`send ${res.status}`)
+        // `via` = the Twilio line a Card # text went out on (null = sidecar).
+        const sendData = await res.json().catch(() => ({}))
 
         // Await the log call so we can warn if LastContacted didn't save.
         // Quick-send is always manual (no AI draft) → generatedMessage empty, wasEdited true.
@@ -419,6 +428,7 @@ export function ContactDetailModal({ contact, onClose, onSendToast, onNotesSaved
               // With a planner draft the server computes was_edited on the
               // reply_drafts row; keep the touch-log convention too.
               generatedMessage: sentGenerated, wasEdited: !sentDraftId, draftId: sentDraftId,
+              twilioNumber: sendData?.via ?? null,
             }),
           })
           if (!logRes.ok) {
@@ -456,7 +466,7 @@ export function ContactDetailModal({ contact, onClose, onSendToast, onNotesSaved
         <div className="flex items-center justify-between px-4 py-3 border-b border-zinc-800 sticky top-0 bg-zinc-950 z-10">
           <div className="min-w-0">
             <p className="text-sm font-semibold text-zinc-100 truncate">{contact.name}</p>
-            <div className="flex items-center gap-1.5 mt-0.5">
+            <div className="flex flex-wrap items-center gap-1.5 mt-0.5">
               <div className="relative" ref={categoryPickerRef}>
                 <button
                   type="button"
@@ -513,6 +523,11 @@ export function ContactDetailModal({ contact, onClose, onSendToast, onNotesSaved
                 </button>
               ))}
               {savingTier && <Loader2 className="w-3 h-3 text-zinc-500 animate-spin" />}
+              {contact.phone && onCardLineToggle && (
+                <span className="ml-1">
+                  <CardLineButton on={!!contact.useCardLine} onToggle={() => onCardLineToggle(contact.id, !contact.useCardLine)} />
+                </span>
+              )}
             </div>
           </div>
           <div className="flex items-center gap-2 shrink-0">
@@ -695,7 +710,9 @@ export function ContactDetailModal({ contact, onClose, onSendToast, onNotesSaved
               onChange={e => setQuickMessage(e.target.value)}
               rows={4}
               className="w-full bg-zinc-900 border border-zinc-800 rounded px-3 py-2 text-zinc-200 leading-relaxed resize-none focus:outline-none focus:border-zinc-600"
-              placeholder="Type a message and tap Send — fires immediately."
+              placeholder={channel === "text" && contact.useCardLine
+                ? `Type a message and tap Send — goes out from ${CARD_LINE_DISPLAY}.`
+                : "Type a message and tap Send — fires immediately."}
               style={{ fontSize: "16px" }}
             />
             <div className="flex justify-end mt-1.5">

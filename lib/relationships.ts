@@ -18,7 +18,7 @@ export const RELATIONSHIP_TYPES: readonly RelationshipCategory[] = [
 
 // Column list for `select()` against the relationships table.
 export const REL_COLUMNS =
-  "id, name, phone, email, alt_phones, source, category, tier, notes, enriched_at, last_contacted_at, snooze_until, source_lead_id, status, cleanup_verdict, cleanup_reviewed_at"
+  "id, name, phone, email, alt_phones, use_card_line, source, category, tier, notes, enriched_at, last_contacted_at, snooze_until, source_lead_id, status, cleanup_verdict, cleanup_reviewed_at"
 
 // Cleanup-mode triage verdicts (2026-07-16): keep = leave as-is, vague =
 // demoted to tier D, never = status set to do_not_contact.
@@ -33,6 +33,8 @@ export interface RelationshipRow {
   // Other numbers they reach us from (E.164) — matched on inbound, shown as
   // "also:" on the card, never dialed (2026-10-15).
   alt_phones: string[]
+  // Card # toggle — calls/texts go from (408) 458-5442 (2026-10-26).
+  use_card_line?: boolean | null
   source: string | null
   category: string
   tier: string
@@ -55,6 +57,8 @@ export interface ApiContact {
   email: string | null
   // 10-digit extras, display only.
   altPhones: string[]
+  // Card # toggle: calls + texts go from the business-card line.
+  useCardLine: boolean
   tier: string
   type: RelationshipCategory
   category: RelationshipCategory
@@ -176,6 +180,7 @@ export function toApiContact(row: RelationshipRow): ApiContact {
     phone: to10Digit(row.phone),
     email: row.email,
     altPhones: (row.alt_phones ?? []).map(to10Digit).filter((p) => p.length === 10),
+    useCardLine: row.use_card_line === true,
     tier,
     type,
     category: type,

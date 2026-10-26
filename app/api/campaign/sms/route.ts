@@ -3,7 +3,7 @@ import { getLeadsClient, isOwnedNumber, parseTwilioBody } from "@/lib/leads"
 import { sendCampaignAlert } from "@/lib/campaignAlerts"
 import { addSuppression } from "@/lib/suppression"
 import { logInboundTextTouch } from "@/lib/office-inbound"
-import { describeAgent, findCampaignContactByPhone, markRelationshipDoNotContact, resolveAgentContact } from "@/lib/agentsLineInbound"
+import { AGENTS_LINE, describeAgent, findCampaignContactByPhone, markRelationshipDoNotContact, resolveAgentContact } from "@/lib/agentsLineInbound"
 
 // Agents line — inbound SMS webhook. Every text: campaign match (phone →
 // campaign_contacts), Relationships card (campaign list → Relationships →
@@ -68,7 +68,7 @@ export async function POST(request: NextRequest) {
       raw: { from, relationship_id: rel?.id ?? null },
     })
     if (rel) {
-      await logInboundTextTouch(sb, rel, body)
+      await logInboundTextTouch(sb, rel, body, AGENTS_LINE)
       await markRelationshipDoNotContact(sb, rel.id, `texted "${body}" to the agents line`)
     }
     await sendCampaignAlert(sb, `🚫 Agents line STOP from ${label} — sms suppression added${rel ? ", card marked do-not-contact" : ""}`)
@@ -82,7 +82,7 @@ export async function POST(request: NextRequest) {
     body,
     raw: { from, relationship_id: rel?.id ?? null },
   })
-  if (rel) await logInboundTextTouch(sb, rel, body)
+  if (rel) await logInboundTextTouch(sb, rel, body, AGENTS_LINE)
   await sendCampaignAlert(sb,
     `💬 <b>Agents line text</b> — ${label}\n"${esc(body.slice(0, 250))}"\n\nReply to this message to text back from the agents line.`,
     { buttons: digits.length === 10 ? [{ text: "📞 Call them", data: `call:${digits}` }] : undefined }

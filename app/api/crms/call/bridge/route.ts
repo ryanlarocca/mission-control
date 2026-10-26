@@ -1,11 +1,14 @@
 import { NextRequest, NextResponse } from "next/server"
 import { PROD_BASE, relationshipCallerId } from "@/lib/relationship-calls"
+import { CARD_LINE } from "@/lib/card-line"
 
 // Twilio fetches this when Ryan answers the first leg of a call placed from
 // /api/crms/call. We <Dial> the contact with Ryan's own cell as caller ID
 // (a Twilio Verified Caller ID — a warm contact sees Ryan, not a marketing
 // line) and record from answer. The caller ID is never taken from the query:
-// this route is public (Twilio webhook, middleware PUBLIC_PATHS).
+// this route is public (Twilio webhook, middleware PUBLIC_PATHS). The only
+// switch is `line=card` (Card # toggle, 2026-10-26) → the business-card line
+// (408) 458-5442, a Twilio number we own; anything else → Ryan's cell.
 
 function xml(body: string): NextResponse {
   return new NextResponse(body, { headers: { "Content-Type": "text/xml" } })
@@ -21,9 +24,10 @@ function handle(request: NextRequest): NextResponse {
   }
   const recordingUrl = `${PROD_BASE}/api/crms/call/recording?touchId=${encodeURIComponent(touchId)}`
   const statusUrl = `${PROD_BASE}/api/crms/call/status?touchId=${encodeURIComponent(touchId)}`
+  const callerId = request.nextUrl.searchParams.get("line") === "card" ? CARD_LINE : relationshipCallerId()
   return xml(`<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-  <Dial timeout="30" callerId="${relationshipCallerId()}" action="${statusUrl}" method="POST" record="record-from-answer" recordingStatusCallback="${recordingUrl}" recordingStatusCallbackMethod="POST">
+  <Dial timeout="30" callerId="${callerId}" action="${statusUrl}" method="POST" record="record-from-answer" recordingStatusCallback="${recordingUrl}" recordingStatusCallbackMethod="POST">
     <Number>${to}</Number>
   </Dial>
 </Response>`)

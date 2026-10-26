@@ -3,6 +3,7 @@ import { sidecarHeaders } from "./sidecar"
 import { google, gmail_v1 } from "googleapis"
 import emailCampaigns from "@/config/email-campaigns.json"
 import { isAnonymousCaller } from "./anonymous"
+import { CARD_LINE } from "./card-line"
 import { LEAD_MOMENT_RUBRIC, isLeadMoment } from "@/lib/reply/moments"
 import { completeText, extractJsonObject, hasLlmKey, SONNET } from "./llm"
 import { autoLinkMailRecord } from "./mailMatch"
@@ -69,7 +70,9 @@ export const CAMPAIGN_MAP: Record<string, string> = {
 // NEVER stamp a fresh drip cadence — a caller to an office line is responding
 // to email outreach or existing business, and auto-enrolling them in the
 // direct-mail drip would text mailer follow-ups at vendors/agents/clients.
-export const OFFICE_NUMBERS = new Set(["+14084585442", "+14084930632"])
+export const OFFICE_NUMBERS = new Set([CARD_LINE, "+14084930632"])
+// The business-card line ("Office — Ryan") — lib/card-line.ts, re-exported.
+export { CARD_LINE }
 
 // Lines whose campaign label WINS over the cluster's inherited source. The
 // intake routes normally keep a returning caller in their original campaign
@@ -530,14 +533,22 @@ export interface TwilioSmsResult {
 // service's sender pool, otherwise from the default outbound line so the
 // text still lands. A synchronous Twilio rejection of the preferred line
 // (21712 / 21606) also falls back. Throws on any other failure.
+//
+// `strictFrom` (Relationships Card #, 2026-10-26): send from `preferredFrom`
+// or not at all — throws when the line is missing, not in the sender pool,
+// the pool is unreadable, or Twilio rejects it. A text to an agent from the
+// default line would show them a stranger's number.
 export async function sendTwilioSms(args: {
   to: string
   body: string
   preferredFrom?: string | null
+  strictFrom?: boolean
+  statusCallback?: string
 }): Promise<TwilioSmsResult> {
   const sid = process.env.TWILIO_ACCOUNT_SID
   const token = process.env.TWILIO_AUTH_TOKEN
   if (!sid || !token) throw new Error("TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN must be set")
+  if (args.strictFrom && !args.preferredFrom) throw new Error("strictFrom needs a preferredFrom line")
   const defaultFrom = getTwilioNumber()
   const service = getMessagingServiceSid()
   const auth = Buffer.from(`${sid}:${token}`).toString("base64")
@@ -545,6 +556,11 @@ export async function sendTwilioSms(args: {
   let preferred = args.preferredFrom && args.preferredFrom !== defaultFrom ? args.preferredFrom : null
   if (preferred) {
     const pool = await getSenderPool()
+    if (args.strictFrom && (!pool || !pool.has(preferred))) {
+      throw new Error(pool
+        ? `${preferred} is not in the A2P sender pool — not sending from another line`
+        : `A2P sender pool unreadable — not sending from ${preferred} unverified`)
+    }
     if (!pool || !pool.has(preferred)) {
       console.warn(`[sendTwilioSms] ${preferred} is not in the A2P sender pool${pool ? "" : " (pool unreadable)"} — sending from ${defaultFrom}`)
       if (pool && !replyLineWarned.has(preferred)) {
@@ -557,6 +573,7 @@ export async function sendTwilioSms(args: {
 
   const attempt = async (from: string) => {
     const form = new URLSearchParams({ To: args.to, Body: args.body, MessagingServiceSid: service, From: from })
+    if (args.statusCallback) form.set("StatusCallback", args.statusCallback)
     const res = await fetch(`https://api.twilio.com/2010-04-01/Accounts/${sid}/Messages.json`, {
       method: "POST",
       headers: { Authorization: `Basic ${auth}`, "Content-Type": "application/x-www-form-urlencoded" },
@@ -570,7 +587,7 @@ export async function sendTwilioSms(args: {
     const r = await attempt(preferred)
     if (r.ok) return { sid: r.json.sid ?? null, from: preferred, fellBack: false }
     const rejectedLine = r.json.code === 21712 || r.json.code === 21606
-    if (!rejectedLine) throw new Error(r.json.message || `Twilio HTTP ${r.status}`)
+    if (!rejectedLine || args.strictFrom) throw new Error(r.json.message || `Twilio HTTP ${r.status}`)
     console.warn(`[sendTwilioSms] ${preferred} rejected (${r.json.code}); falling back to ${defaultFrom}`)
   }
   const r = await attempt(defaultFrom)
