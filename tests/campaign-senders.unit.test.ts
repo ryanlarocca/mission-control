@@ -186,6 +186,33 @@ describe("understudy overflow (Ryan 2026-09-16, rebuild Q3)", () => {
     const budgets = new Map([[workhorse.email, 0], [understudy.email, 3]])
     expect(assignSender({ contact: stranger, senders, relEmails, lastSender, budgets })).toBe(workhorse)
   })
+
+  // Ryan 2026-10-27: every post-verification bounce was a catch-all domain on
+  // the understudy. Catch-all never goes to the small sender — not by segment
+  // claim, not by overflow — unless the thread already lives there.
+  describe("catch-all never goes to the understudy", () => {
+    const warmCatchAll = { id: "c3", email: "warm@agent.com", touch_number: 0, verify_accept_all: true }
+    const strangerCatchAll = { id: "c4", email: "new2@agent.com", touch_number: 0, verify_accept_all: true }
+
+    it("a catch-all Relationships match goes to the workhorse", () => {
+      const budgets = new Map([[workhorse.email, 5], [understudy.email, 3]])
+      expect(assignSender({ contact: warmCatchAll, senders, relEmails, budgets })).toBe(workhorse)
+    })
+
+    it("a catch-all stranger does not overflow when the workhorse budget is spent — it waits", () => {
+      const budgets = new Map([[workhorse.email, 0], [understudy.email, 3]])
+      expect(assignSender({ contact: strangerCatchAll, senders, relEmails, budgets })).toBe(workhorse)
+    })
+
+    it("sticky-to-thread still wins: a catch-all contact already on the understudy stays there", () => {
+      const lastSender = new Map([["c3", understudy.email]])
+      expect(assignSender({ contact: warmCatchAll, senders, relEmails, lastSender, budgets: new Map([[workhorse.email, 5], [understudy.email, 3]]) })).toBe(understudy)
+    })
+
+    it("a verified-deliverable Relationships match still goes to the understudy", () => {
+      expect(assignSender({ contact: { id: "c5", email: "warm@agent.com", verify_accept_all: false }, senders, relEmails, budgets: new Map([[workhorse.email, 5], [understudy.email, 3]]) })).toBe(understudy)
+    })
+  })
 })
 
 // What counts as a reply (2026-10-22): AI triage labels every genuine reply,

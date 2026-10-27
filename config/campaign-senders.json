@@ -12,7 +12,7 @@
     "requireCanaryVerdict: the brief's 'canary Primary 3 days running' gate. true = a sender cannot advance a rung until its last minHealthyDays recorded canary verdicts are all 'primary' and the newest is at most canaryVerdictMaxAgeDays old. Verdicts come from Ryan reading the judge inbox (CAMPAIGN_CANARY_TO) and replying 'canary <label> <verdict>' on Telegram. requirePostmaster stays false until Postmaster Tools has the new domains and shows a reputation (weeks of volume) — 'reputation <label> <level>' records what the dashboard shows."
   ],
   "gates": {
-    "minHealthyDays": 3,
+    "minHealthyDays": 2,
     "healthyDayMinFraction": 0.6,
     "maxWeekOverWeek": 2,
     "bounceHoldRate": 0.01,

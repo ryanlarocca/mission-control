@@ -409,8 +409,14 @@ export function assignSender({ contact, senders, relEmails, lastSender, budgets 
     const s = senders.find((x) => x.email === prior)
     if (s) return s
   }
+  // Catch-all addresses never go to the understudy (Ryan 2026-10-27): the
+  // verifier can't see a dead mailbox behind a catch-all domain, and every
+  // post-verification bounce in October was one. The small sender's
+  // 2nd-bounce day-stop can't absorb that; the workhorse (34 catch-all sent,
+  // 0 bounces) can. Sticky-to-thread above still wins for later touches.
+  const catchAll = contact.verify_accept_all === true
   const understudy = senders.find((s) => s.segment === "relationships")
-  if (understudy && relEmails?.has(email)) return understudy
+  if (understudy && relEmails?.has(email) && !catchAll) return understudy
   const workhorse = senders.find((s) => s.segment === "drip") ?? senders[0] ?? null
   // Overflow (Ryan 2026-09-16, Q3): the Relationships segment alone can never
   // keep the understudy busy (≈230 agents with an email vs a 40/day cap), so
@@ -419,7 +425,7 @@ export function assignSender({ contact, senders, relEmails, lastSender, budgets 
   // due list is sorted segment-first, so the understudy's own people always
   // consume its budget before any overflow does. Sticky-to-thread above
   // keeps the contact on that mailbox for every later touch.
-  if (budgets && workhorse && (budgets.get(workhorse.email) ?? 0) <= 0) {
+  if (budgets && workhorse && !catchAll && (budgets.get(workhorse.email) ?? 0) <= 0) {
     const spare = senders.find((s) => s !== workhorse && s.overflow && (budgets.get(s.email) ?? 0) > 0)
     if (spare) return spare
   }
