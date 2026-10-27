@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server"
 import {
+  CAMPAIGN_MAP,
   FORWARD_TO,
   OFFICE_NUMBERS,
   OUTBOUND_TWILIO_NUMBER,
@@ -19,6 +20,7 @@ import {
 import { isAnonymousCaller } from "@/lib/anonymous"
 import { describeContact, isOfficeLine, openInboundCallTouch, resolveOfficeCaller } from "@/lib/office-inbound"
 import { PROD_BASE, twimlAttr } from "@/lib/relationship-calls"
+import { getJackieFlip, jackieDialTwiml } from "@/lib/jackie"
 import { scoreLeadSpam, spamAlertLines, spamReviewColumns, type SpamScore } from "@/lib/lead-spam"
 
 // TwiML voice webhook for LRG Homes Twilio numbers.
@@ -101,6 +103,24 @@ export async function POST(request: Request) {
   // LRG line. Still return the Dial TwiML so the call connects, but never
   // write a lead row: on 2026-09-03 a self-call logged three phantom "leads"
   // whose transcripts were our own voicemail greeting.
+  // Ryan's own cell is an "owned" number (below), so it never gets a lead
+  // row and used to ring itself — his carrier voicemail answered (10-27).
+  // On a Jackie line, a test-number cell goes straight to Jackie instead:
+  // no card, no ring, her production script (no coach mode).
+  if (callerPhone === FORWARD_TO && SOURCE_OVERRIDE_NUMBERS.has(twilioNumber)) {
+    try {
+      const flip = await getJackieFlip(getLeadsClient())
+      if ((flip.force_numbers ?? []).includes(callerPhone)) {
+        return new NextResponse(
+          jackieDialTwiml({ tags: { line: CAMPAIGN_MAP[twilioNumber] ?? twilioNumber }, action: `${PROD_BASE}/api/voice-test/after` }),
+          { headers: { "Content-Type": "text/xml" } },
+        )
+      }
+    } catch (e) {
+      console.error("[voice] Jackie test-number check failed:", e)
+    }
+  }
+
   if (callerPhone && isOwnedNumber(callerPhone)) {
     console.warn(`[voice] self-originated call from our own number ${callerPhone} -> ${twilioNumber}; dialing without logging a lead`)
     return new NextResponse(buildTwiml(twilioNumber), {
@@ -316,17 +336,6 @@ export async function POST(request: Request) {
     // Append the fake-lead warning to the same note — no-op when clean.
     if (spam) callAlert.push(...spamAlertLines(spam))
     await sendTelegramAlert(callAlert.join("\n"))
-  }
-
-  // Ryan calling his own line from his cell: ringing his cell would hit his
-  // own (busy) phone, whose carrier voicemail picks up and reads as
-  // "answered" (2026-10-27, his first Jackie test). Skip the ring and go
-  // straight to the missed-call step — voicemail, or Jackie for a test number.
-  if (callerPhone === FORWARD_TO) {
-    return new NextResponse(
-      `<?xml version="1.0" encoding="UTF-8"?>\n<Response>\n  <Redirect method="POST">/api/leads/voice/no-answer</Redirect>\n</Response>`,
-      { headers: { "Content-Type": "text/xml" } },
-    )
   }
 
   // Press-1 screen only where the Jackie test runs, and only with a row to
