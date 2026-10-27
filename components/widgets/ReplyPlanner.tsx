@@ -174,10 +174,13 @@ export function ReplyPlanner(p: {
   return (
     <div className="mb-2">
       <div className="flex items-center justify-between gap-2 mb-1">
-        <div className="flex items-center gap-2 min-w-0">
-          <div className="text-xs text-zinc-500">{p.hideChips ? "Draft" : "Plan"}</div>
+        {/* The label + Auto/Coach toggle never shrink; a long status note on
+            the right (e.g. "checked: …") truncates instead. On a phone the
+            old layout squeezed the toggle to a 1px border line. */}
+        <div className="flex items-center gap-2 shrink-0">
+          <div className="text-xs text-zinc-500 whitespace-nowrap">{p.hideChips ? "Draft" : "Plan"}</div>
           {coach && (
-            <div className="inline-flex rounded border border-zinc-800 overflow-hidden" role="tablist" aria-label="Draft mode">
+            <div className="inline-flex shrink-0 rounded border border-zinc-800 overflow-hidden" role="tablist" aria-label="Draft mode">
               {(["auto", "coach"] as const).map(m => (
                 <button
                   key={m}
@@ -197,13 +200,13 @@ export function ReplyPlanner(p: {
             </div>
           )}
         </div>
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-3 min-w-0">
           {busy && (
-            <span className="text-[11px] text-zinc-500 inline-flex items-center gap-1">
+            <span className="text-[11px] text-zinc-500 inline-flex items-center gap-1 whitespace-nowrap">
               <Loader2 className="w-3 h-3 animate-spin" /> {mode === "coach" ? "Coaching…" : plan ? "Drafting from plan…" : "Planning…"}
             </span>
           )}
-          {!busy && p.status && <span className="text-[11px] text-zinc-600 truncate max-w-[220px]">{p.status}</span>}
+          {!busy && p.status && <span className="text-[11px] text-zinc-600 truncate min-w-0 max-w-[220px]" title={p.status}>{p.status}</span>}
           {mode === "auto" && (
             <>
               <button
