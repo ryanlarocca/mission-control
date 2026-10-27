@@ -31,7 +31,9 @@ export type JackieCallTags = {
 export function jackieSipUri(tags: JackieCallTags): string {
   const headers = new URLSearchParams({ "x-lrg-line": tags.line })
   if (tags.leadId) headers.set("x-lrg-lead", tags.leadId)
-  return `sip:${OPENAI_SIP_PROJECT}@sip.api.openai.com;transport=tls?${headers.toString()}`
+  // secure=true = SRTP. TLS alone only encrypts signaling, and OpenAI
+  // answers plain RTP with 488 Not Acceptable Here (measured 10-27).
+  return `sip:${OPENAI_SIP_PROJECT}@sip.api.openai.com;transport=tls;secure=true?${headers.toString()}`
 }
 
 /**
