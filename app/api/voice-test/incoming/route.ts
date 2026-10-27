@@ -13,7 +13,9 @@ import {
   VOICE_TEST_OWNER_CELL,
   VOICE_TEST_COACH_NOTE,
   VOICE_TEST_VOICE,
+  callbackTimingNote,
   callerIdNote,
+  pickAuditionVoice,
 } from "@/lib/voiceTest"
 
 // OpenAI project webhook for the GPT-Live phone test line (lib/voiceTest.ts).
@@ -159,29 +161,58 @@ export async function POST(request: Request) {
 
   const caller = callerFrom(event.data?.sip_headers)
   const timing: string[] = []
+
+  // Voice audition: Ryan's cell rotates through lib/voiceTest VOICE_AUDITION.
+  let voice = VOICE_TEST_VOICE
+  if (caller === VOICE_TEST_OWNER_CELL) {
+    try {
+      const pick = await pickAuditionVoice(sessionId)
+      if (pick) {
+        voice = pick.voice
+        timing.push(`🎙️ ${pick.voice} (audition ${pick.index + 1} of ${pick.total})`)
+      }
+    } catch (e) {
+      console.error(`[voice-test] audition lookup failed: ${e instanceof Error ? e.message : e}`)
+    }
+  }
+
   if (event.created_at) timing.push(`OpenAI→us ${(t0 / 1000 - event.created_at).toFixed(1)}s`)
-  const res = await fetch(`${OPENAI_BASE}/live/sessions/${encodeURIComponent(sessionId)}/accept`, {
-    method: "POST",
-    headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
-    body: JSON.stringify({
-      session: {
-        type: "live",
-        model: VOICE_TEST_MODEL,
-        instructions:
-          VOICE_TEST_INSTRUCTIONS +
-          callerIdNote(caller) +
-          (caller === VOICE_TEST_OWNER_CELL ? VOICE_TEST_COACH_NOTE : ""),
-        audio: { output: { voice: VOICE_TEST_VOICE } },
-        delegation: {
-          type: "responses",
-          responses: { model: VOICE_TEST_BACKEND_MODEL, reasoning: { effort: VOICE_TEST_BACKEND_EFFORT } },
+  const instructions =
+    VOICE_TEST_INSTRUCTIONS +
+    callerIdNote(caller) +
+    callbackTimingNote() +
+    (caller === VOICE_TEST_OWNER_CELL ? VOICE_TEST_COACH_NOTE : "")
+  const accept = (withVoice: string) =>
+    fetch(`${OPENAI_BASE}/live/sessions/${encodeURIComponent(sessionId)}/accept`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
+      body: JSON.stringify({
+        session: {
+          type: "live",
+          model: VOICE_TEST_MODEL,
+          instructions,
+          audio: { output: { voice: withVoice } },
+          delegation: {
+            type: "responses",
+            responses: { model: VOICE_TEST_BACKEND_MODEL, reasoning: { effort: VOICE_TEST_BACKEND_EFFORT } },
+          },
+          input: [
+            { type: "message", role: "developer", content: [{ type: "input_text", text: VOICE_TEST_GREETING }] },
+          ],
         },
-        input: [
-          { type: "message", role: "developer", content: [{ type: "input_text", text: VOICE_TEST_GREETING }] },
-        ],
-      },
-    }),
-  })
+      }),
+    })
+  let res = await accept(voice)
+
+  // GPT-Live's voice list isn't published — if it refuses an audition voice,
+  // pick up in the default voice rather than leave Ryan in silence.
+  if (!res.ok && voice !== VOICE_TEST_VOICE) {
+    const detail = (await res.text()).slice(0, 200)
+    if (detail.includes("decision_already_made")) return NextResponse.json({ duplicate: true })
+    timing.push(`⚠️ ${voice} refused (${res.status}: ${detail}) → ${VOICE_TEST_VOICE}`)
+    voice = VOICE_TEST_VOICE
+    res = await accept(voice)
+  }
 
   if (!res.ok) {
     const detail = (await res.text()).slice(0, 300)
