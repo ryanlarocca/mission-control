@@ -16,6 +16,7 @@ import {
   pickAuditionVoice,
 } from "@/lib/voiceTest"
 import { watchCall } from "@/lib/voiceTestWatch"
+import { jackieTagsFromSipHeaders } from "@/lib/jackie"
 import { getLeadsClient } from "@/lib/leads"
 
 // OpenAI project webhook for the GPT-Live phone test line (lib/voiceTest.ts).
@@ -100,11 +101,18 @@ export async function POST(request: Request) {
   }
 
   const caller = callerFrom(event.data?.sip_headers)
+  // x-lrg-* labels from a <Dial><Sip> hand-off (lib/jackie.ts); none on the
+  // old trunk path. Coach mode is a test-line thing only — a mailer-line
+  // call never gets it, even from Ryan's cell.
+  const tags = jackieTagsFromSipHeaders(event.data?.sip_headers)
+  const testLine = !tags.line || tags.line === "test"
+  const coach = testLine && caller === VOICE_TEST_OWNER_CELL
   const timing: string[] = []
+  if (tags.line) timing.push(`line ${tags.line}`)
 
   // Voice audition: Ryan's cell rotates through lib/voiceTest VOICE_AUDITION.
   let voice = VOICE_TEST_VOICE
-  if (caller === VOICE_TEST_OWNER_CELL) {
+  if (coach) {
     try {
       const pick = await pickAuditionVoice(sessionId)
       if (pick) {
@@ -121,7 +129,7 @@ export async function POST(request: Request) {
     VOICE_TEST_INSTRUCTIONS +
     callerIdNote(caller) +
     callbackTimingNote() +
-    (caller === VOICE_TEST_OWNER_CELL ? VOICE_TEST_COACH_NOTE : "")
+    (coach ? VOICE_TEST_COACH_NOTE : "")
   const accept = (withVoice: string) =>
     fetch(`${OPENAI_BASE}/live/sessions/${encodeURIComponent(sessionId)}/accept`, {
       method: "POST",
@@ -156,7 +164,7 @@ export async function POST(request: Request) {
   }
 
   timing.push(`accepted +${((Date.now() - t0) / 1000).toFixed(1)}s`)
-  waitUntil(watchCall({ sessionId, apiKey, t0, hop: 0, caller, opener: { timing } }))
+  waitUntil(watchCall({ sessionId, apiKey, t0, hop: 0, caller, twilioCallSid: tags.twilioCallSid ?? undefined, opener: { timing } }))
   // Lets a local observer (mini) attach its own sideband while debugging.
   waitUntil(
     Promise.resolve(
@@ -166,7 +174,7 @@ export async function POST(request: Request) {
     ).then(({ error }) => { if (error) console.error(`[voice-test] last-session note failed: ${error.message}`) }),
   )
 
-  if (caller && caller !== VOICE_TEST_OWNER_CELL) {
+  if (testLine && caller && caller !== VOICE_TEST_OWNER_CELL) {
     await sendTelegramAlert(`🤖 Someone other than Ryan reached the AI test line (408-337-2785): ${caller}. Recording is on the Twilio trunk.`)
   }
   return NextResponse.json({ accepted: true })

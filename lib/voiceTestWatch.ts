@@ -18,7 +18,7 @@ const HOP_MS = 240_000 // hand off well inside the 300 s function limit
 const GIVE_UP_MS = 285_000
 const TICK_MS = 250
 
-export type WatchHandoff = { sessionId: string; hop: number; state: MonitorState; caller?: string }
+export type WatchHandoff = { sessionId: string; hop: number; state: MonitorState; caller?: string; twilioCallSid?: string }
 
 function baseUrl(): string {
   return process.env.MC_BASE_URL || "https://mission-control-three-chi.vercel.app"
@@ -44,13 +44,24 @@ function clock(ms: number): string {
   return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`
 }
 
-// Backup: end the call on Twilio's side (the trunk leg is the caller's
-// number → sip:proj…@sip.api.openai.com) if OpenAI's hangup doesn't take.
-async function twilioHangup(caller: string): Promise<string> {
+// Backup: end the call on Twilio's side if OpenAI's hangup doesn't take.
+// A <Dial><Sip> hand-off (lib/jackie.ts) tells us the exact leg via the
+// X-Twilio-CallSid SIP header; the old trunk path is found by caller number
+// (the leg is caller → sip:proj…@sip.api.openai.com).
+async function twilioHangup(caller: string, legSid?: string): Promise<string> {
   const sid = process.env.TWILIO_ACCOUNT_SID
   const token = process.env.TWILIO_AUTH_TOKEN
-  if (!sid || !token || !caller) return "twilio: not configured"
+  if (!sid || !token || (!caller && !legSid)) return "twilio: not configured"
   const auth = `Basic ${Buffer.from(`${sid}:${token}`).toString("base64")}`
+  if (legSid) {
+    const res = await fetch(`https://api.twilio.com/2010-04-01/Accounts/${sid}/Calls/${encodeURIComponent(legSid)}.json`, {
+      method: "POST",
+      headers: { Authorization: auth, "Content-Type": "application/x-www-form-urlencoded" },
+      body: "Status=completed",
+    })
+    if (res.ok) return "ok (twilio)"
+    if (!caller) return `twilio ${res.status}`
+  }
   const list = await fetch(
     `https://api.twilio.com/2010-04-01/Accounts/${sid}/Calls.json?From=${encodeURIComponent(caller)}&Status=in-progress&PageSize=5`,
     { headers: { Authorization: auth } },
@@ -67,7 +78,7 @@ async function twilioHangup(caller: string): Promise<string> {
   return res.ok ? "ok (twilio)" : `twilio ${res.status}`
 }
 
-async function hangup(sessionId: string, apiKey: string, caller: string): Promise<string> {
+async function hangup(sessionId: string, apiKey: string, caller: string, legSid?: string): Promise<string> {
   const res = await fetch(`${OPENAI_BASE}/live/sessions/${encodeURIComponent(sessionId)}/hangup`, {
     method: "POST",
     headers: { Authorization: `Bearer ${apiKey}` },
@@ -75,7 +86,7 @@ async function hangup(sessionId: string, apiKey: string, caller: string): Promis
   if (res.ok) return "ok"
   const detail = `${res.status} ${(await res.text()).slice(0, 200)}`
   console.error(`[voice-test] OpenAI hangup failed: ${detail}`)
-  const backup = await twilioHangup(caller)
+  const backup = await twilioHangup(caller, legSid)
   return backup.startsWith("ok") ? backup : `openai ${detail}; ${backup}`
 }
 
@@ -110,6 +121,7 @@ export async function watchCall(opts: {
   t0: number
   hop: number
   caller: string
+  twilioCallSid?: string
   state?: MonitorState
   opener?: { timing: string[] }
 }): Promise<void> {
@@ -179,13 +191,13 @@ export async function watchCall(opts: {
         } else if (action.type === "hangup") {
           const reason = action.reason
           hangupReason = reason
-          void hangup(sessionId, apiKey, caller).then((r) => finish(r.startsWith("ok") ? ended() : `hangup failed (${reason}): ${r}`))
+          void hangup(sessionId, apiKey, caller, opts.twilioCallSid).then((r) => finish(r.startsWith("ok") ? ended() : `hangup failed (${reason}): ${r}`))
           return
         }
       }
       if (now - startedAt >= HOP_MS && !monitor.state.done) {
         handingOff = true // stop acting while the next invocation takes over
-        void handOff({ sessionId, hop: hop + 1, state: monitor.state, caller }).then((ok) => {
+        void handOff({ sessionId, hop: hop + 1, state: monitor.state, caller, twilioCallSid: opts.twilioCallSid }).then((ok) => {
           if (ok) finish("handed off")
           else {
             handingOff = false

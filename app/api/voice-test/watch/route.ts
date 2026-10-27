@@ -30,6 +30,6 @@ export async function POST(request: Request) {
   }
   // Runaway guard: an 11-minute call needs 3 hops at most.
   if (handoff.hop > 4) return NextResponse.json({ refused: "too many hops" })
-  waitUntil(watchCall({ sessionId: handoff.sessionId, apiKey, t0: handoff.state.t0, hop: handoff.hop, caller: handoff.caller ?? "", state: handoff.state }))
+  waitUntil(watchCall({ sessionId: handoff.sessionId, apiKey, t0: handoff.state.t0, hop: handoff.hop, caller: handoff.caller ?? "", twilioCallSid: handoff.twilioCallSid, state: handoff.state }))
   return NextResponse.json({ watching: true }, { status: 202 })
 }
