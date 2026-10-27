@@ -164,14 +164,12 @@ export async function POST(request: Request) {
 
   // Voice audition: Ryan's cell rotates through lib/voiceTest VOICE_AUDITION.
   let voice = VOICE_TEST_VOICE
-  let speed: number | undefined
   if (caller === VOICE_TEST_OWNER_CELL) {
     try {
       const pick = await pickAuditionVoice(sessionId)
       if (pick) {
         voice = pick.voice
-        speed = pick.speed
-        timing.push(`🎙️ ${pick.voice}${speed ? ` ×${speed}` : ""} (audition ${pick.index + 1} of ${pick.total})`)
+        timing.push(`🎙️ ${pick.voice} (audition ${pick.index + 1} of ${pick.total})`)
       }
     } catch (e) {
       console.error(`[voice-test] audition lookup failed: ${e instanceof Error ? e.message : e}`)
@@ -184,7 +182,7 @@ export async function POST(request: Request) {
     callerIdNote(caller) +
     callbackTimingNote() +
     (caller === VOICE_TEST_OWNER_CELL ? VOICE_TEST_COACH_NOTE : "")
-  const accept = (withVoice: string, withSpeed?: number) =>
+  const accept = (withVoice: string) =>
     fetch(`${OPENAI_BASE}/live/sessions/${encodeURIComponent(sessionId)}/accept`, {
       method: "POST",
       headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
@@ -193,7 +191,7 @@ export async function POST(request: Request) {
           type: "live",
           model: VOICE_TEST_MODEL,
           instructions,
-          audio: { output: withSpeed ? { voice: withVoice, speed: withSpeed } : { voice: withVoice } },
+          audio: { output: { voice: withVoice } },
           delegation: {
             type: "responses",
             responses: { model: VOICE_TEST_BACKEND_MODEL, reasoning: { effort: VOICE_TEST_BACKEND_EFFORT } },
@@ -204,20 +202,9 @@ export async function POST(request: Request) {
         },
       }),
     })
-  // GPT-Live publishes neither its voice list nor a speed setting — if it
-  // refuses an audition voice or speed, step back (drop the speed, then the
-  // default voice) rather than leave Ryan in silence.
-  const attempts: { voice: string; speed?: number }[] = [{ voice, speed }]
-  if (speed) attempts.push({ voice })
-  if (voice !== VOICE_TEST_VOICE) attempts.push({ voice: VOICE_TEST_VOICE })
-  let res = await accept(voice, speed)
-  for (const next of attempts.slice(1)) {
-    if (res.ok) break
-    const detail = (await res.text()).slice(0, 200)
-    if (detail.includes("decision_already_made")) return NextResponse.json({ duplicate: true })
-    timing.push(`⚠️ refused (${res.status}: ${detail}) → ${next.voice}${next.speed ? ` ×${next.speed}` : ""}`)
-    res = await accept(next.voice, next.speed)
-  }
+  // One shot only: a refused accept ends the call — OpenAI drops the session
+  // and any retry gets 404 session_id_not_found (10-26, audio.output.speed).
+  const res = await accept(voice)
 
   if (!res.ok) {
     const detail = (await res.text()).slice(0, 300)

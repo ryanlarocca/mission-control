@@ -21,17 +21,14 @@ export const VOICE_TEST_VOICE = "marin"
 // optional override list for the finalists round — lives in inbox_settings
 // key VOICE_AUDITION_KEY, so switching rounds needs no deploy. Empty list =
 // audition off. OpenAI doesn't publish GPT-Live's voices; these are the
-// Realtime API's, and a refused one falls back to VOICE_TEST_VOICE (route).
+// Realtime API's, and all five were accepted on 10-26. Only send fields
+// GPT-Live documents: a refused accept kills the call (no retry possible),
+// which is how the undocumented audio.output.speed failed (10-26).
 export const VOICE_AUDITION = ["coral", "shimmer", "sage", "alloy", "marin"]
 export const VOICE_AUDITION_KEY = "voice_test_audition"
-// Speaking speed per voice (Realtime API's audio.output.speed, 0.25–1.5).
-// GPT-Live doesn't document it; Ryan found Sage "talking really slow" (10-26).
-// The settings row's `speeds` map overrides this; a refusal drops the speed.
-export const VOICE_SPEEDS: Record<string, number> = { sage: 1.15 }
 
 type AuditionState = {
   voices?: unknown
-  speeds?: unknown
   next?: unknown
   last_session?: unknown
   last_voice?: unknown
@@ -41,7 +38,7 @@ type AuditionState = {
 /** Next audition voice for this call, advancing the rotation; null = audition off. */
 export async function pickAuditionVoice(
   sessionId: string,
-): Promise<{ voice: string; speed?: number; index: number; total: number } | null> {
+): Promise<{ voice: string; index: number; total: number } | null> {
   const sb = getLeadsClient()
   const { data } = await sb.from("inbox_settings").select("value").eq("key", VOICE_AUDITION_KEY).maybeSingle()
   const state = (data?.value ?? {}) as AuditionState
@@ -50,13 +47,9 @@ export async function pickAuditionVoice(
       ? (state.voices as string[])
       : VOICE_AUDITION
   if (voices.length === 0) return null
-  const speeds =
-    state.speeds && typeof state.speeds === "object" ? (state.speeds as Record<string, unknown>) : VOICE_SPEEDS
-  const speedFor = (v: string) => (typeof speeds[v] === "number" ? (speeds[v] as number) : undefined)
   // A redelivered webhook for the same call keeps its voice and doesn't advance.
   if (state.last_session === sessionId && typeof state.last_voice === "string") {
-    const voice = state.last_voice
-    return { voice, speed: speedFor(voice), index: Number(state.last_index) || 0, total: voices.length }
+    return { voice: state.last_voice, index: Number(state.last_index) || 0, total: voices.length }
   }
   const next = typeof state.next === "number" && Number.isFinite(state.next) ? state.next : 0
   const index = next % voices.length
@@ -68,7 +61,7 @@ export async function pickAuditionVoice(
     updated_at,
   })
   if (error) console.error(`[voice-test] audition position not saved: ${error.message}`)
-  return { voice, speed: speedFor(voice), index, total: voices.length }
+  return { voice, index, total: voices.length }
 }
 // Backend "brain" GPT-Live hands harder questions to (billed separately).
 // Jackie is told never to hand off — call 1's 15–27 s "Hmm, OK" stalls were
@@ -84,11 +77,12 @@ export const VOICE_TEST_BACKEND_EFFORT = "low"
 // Round 4 (call 8, 10-26): no stock deflection line — the lone example
 // ("I'm just the receptionist…") shipped verbatim three times — and the
 // callback promise comes from callbackTimingNote (day/time aware).
+// Same trap with small talk: "How's your day going?" came out on 3 of 4
+// audition calls, once instead of answering a realtor's question — so no
+// example line; answer first, small talk only when it fits.
 export const VOICE_TEST_INSTRUCTIONS = `You are Jackie, the receptionist for LRG Homes. LRG Homes is Ryan, a local real estate investor in the Bay Area who buys houses directly from owners. Most callers got a letter from Ryan about their property.
 
-Personality: Warm, relaxed, down-to-earth, like a friendly front-desk person at a small local business. Talk like a real person on the phone: short, natural replies, one question at a time. Use the caller's name once you have it. A little small talk is good ("How's your day going?"). Never sound like you're filling out a form. Never say the same sentence twice in a call; if you need to make the same point again, say it differently and tie it to what they just said.
-
-Pacing: Talk at a natural, slightly brisk pace, like a busy but friendly front desk. Don't drag out words or leave long gaps between sentences.
+Personality: Warm, relaxed, down-to-earth, like a friendly front-desk person at a small local business. Talk like a real person on the phone: short, natural replies, one question at a time. Use the caller's name once you have it. Always respond to what the caller just said or asked before moving on; if they ask you something, answer it first. A bit of friendly small talk is good when it fits the moment, in your own words, never the same line every call. Never sound like you're filling out a form. Never say the same sentence twice in a call; if you need to make the same point again, say it differently and tie it to what they just said.
 
 Backchannel policy: Use natural backchannels ("okay", "mm-hmm", "got it") while the caller talks.
 
