@@ -100,6 +100,9 @@ export async function watchCall(opts: {
     let handingOff = false
     let openerReported = !opts.opener
     let nudges = 0
+    // Diagnostics (10-26, call 11 never hung up): what the sideband sends.
+    const counts: Record<string, number> = {}
+    const shapes: Record<string, string> = {}
     const timers: ReturnType<typeof setTimeout>[] = []
 
     const reportOpener = (result: string) => {
@@ -112,6 +115,7 @@ export async function watchCall(opts: {
     const finish = (result: string) => {
       if (finished) return
       finished = true
+      console.log(`[voice-test] watcher hop ${hop} stop: ${result} · events ${JSON.stringify(counts)} · shapes ${JSON.stringify(shapes)} · notes ${JSON.stringify(monitor.notes)}`)
       clearInterval(ticker)
       timers.forEach(clearTimeout)
       try { ws.close() } catch { /* already closed */ }
@@ -173,6 +177,14 @@ export async function watchCall(opts: {
     ws.on("message", (raw) => {
       let msg: Record<string, unknown>
       try { msg = JSON.parse(String(raw)) } catch { return }
+      const type = typeof msg.type === "string" ? msg.type : "?"
+      counts[type] = (counts[type] ?? 0) + 1
+      if (!shapes[type]) {
+        shapes[type] = Object.entries(msg)
+          .map(([k, v]) => `${k}:${typeof v === "string" ? (v.length > 40 ? `str${v.length}` : JSON.stringify(v)) : typeof v === "object" ? "obj" : String(v)}`)
+          .join(",")
+          .slice(0, 300)
+      }
       const wasSpeaking = monitor.state.spoke
       monitor.onEvent(msg, Date.now())
       if (!wasSpeaking && monitor.state.spoke && opts.opener) {

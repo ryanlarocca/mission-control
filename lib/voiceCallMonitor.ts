@@ -49,8 +49,13 @@ const GOODBYE_RE =
 // Words a caller says while the call winds down; anything else after her
 // goodbye means they're still talking to her.
 const WIND_DOWN = new Set(
-  "ok okay alright all right bye goodbye good night thanks thank you too take care have a nice great one day yeah yep yes sure cool will do see ya you bet uh um mm hmm fuck off whatever".split(" "),
+  "ok okay alright all right bye goodbye good night thanks thank you too take care have a nice great one day yeah yep yes no nope nah sure cool will do see ya you bet uh um mm hmm fuck off whatever".split(" "),
 )
+// The caller saying their own goodbye never keeps the line open — call 11
+// (10-26): "No, I'm gonna go. Goodbye." over her "Take care, Michael. Bye."
+// cancelled the hang-up.
+const CALLER_GOODBYE_RE =
+  /\b(bye|goodbye|gotta go|got to go|gonna go|going to go|i'?m going|i'?ll let you go|take care|have a (good|great|nice) \w+|talk (to you )?later|see ya|later)\b/i
 
 export function isGoodbye(text: string): boolean {
   const t = text.trim()
@@ -60,6 +65,7 @@ export function isGoodbye(text: string): boolean {
 }
 
 export function isSubstantive(input: string): boolean {
+  if (CALLER_GOODBYE_RE.test(input)) return false
   const words = input.toLowerCase().match(/[a-z']+/g) ?? []
   return words.some((w) => !WIND_DOWN.has(w.replace(/'/g, "")))
 }
@@ -80,6 +86,8 @@ export function pcm16Rms(b64: string): number {
 
 export class CallMonitor {
   state: MonitorState
+  /** Human-readable decisions, logged when the watcher stops (not persisted). */
+  notes: string[] = []
 
   constructor(t0: number, prior?: MonitorState) {
     this.state = prior ?? {
@@ -130,7 +138,10 @@ export class CallMonitor {
         s.lastOutputTextAt = now
         // Re-judged on every fragment: "Take care! Oh, one more thing?" isn't a goodbye.
         if (isGoodbye(s.outputText)) {
-          if (!s.goodbye) s.goodbye = { input: "", readyAt: null }
+          if (!s.goodbye) {
+            s.goodbye = { input: "", readyAt: null }
+            this.note(now, `goodbye heard: "${s.outputText.trim().slice(-60)}"`)
+          }
         } else {
           s.goodbye = null
         }
@@ -142,7 +153,10 @@ export class CallMonitor {
         s.quietStage = 0
         if (s.goodbye) {
           s.goodbye.input += ` ${text}`
-          if (isSubstantive(s.goodbye.input)) s.goodbye = null
+          if (isSubstantive(s.goodbye.input)) {
+            this.note(now, `goodbye cancelled — caller: "${s.goodbye.input.trim().slice(0, 60)}"`)
+            s.goodbye = null
+          }
         }
         break
       }
@@ -204,6 +218,10 @@ export class CallMonitor {
       return [...actions, ...this.end("dead air")]
     }
     return actions
+  }
+
+  private note(now: number, text: string): void {
+    if (this.notes.length < 40) this.notes.push(`${((now - this.state.t0) / 1000).toFixed(1)}s ${text}`)
   }
 
   private end(reason: string): MonitorAction[] {
