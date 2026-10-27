@@ -16,7 +16,7 @@ import {
   pickAuditionVoice,
 } from "@/lib/voiceTest"
 import { watchCall } from "@/lib/voiceTestWatch"
-import { jackieTagsFromSipHeaders } from "@/lib/jackie"
+import { jackieTagsFromSipHeaders, mergeJackieCall } from "@/lib/jackie"
 import { getLeadsClient } from "@/lib/leads"
 
 // OpenAI project webhook for the GPT-Live phone test line (lib/voiceTest.ts).
@@ -170,9 +170,15 @@ export async function POST(request: Request) {
     Promise.resolve(
       getLeadsClient()
         .from("inbox_settings")
-        .upsert({ key: "voice_test_last_session", value: { session_id: sessionId, caller, at: new Date(t0).toISOString() }, updated_at: new Date().toISOString() }),
+        .upsert({ key: "voice_test_last_session", value: { session_id: sessionId, caller, line: tags.line, lead_id: tags.leadId, at: new Date(t0).toISOString() }, updated_at: new Date().toISOString() }),
     ).then(({ error }) => { if (error) console.error(`[voice-test] last-session note failed: ${error.message}`) }),
   )
+
+  // A mailer-line call: tie her session to the lead card.
+  if (tags.leadId) {
+    waitUntil(mergeJackieCall(getLeadsClient(), tags.leadId, { session_id: sessionId })
+      .catch((e) => console.error(`[voice-test] session id on lead failed: ${e instanceof Error ? e.message : e}`)))
+  }
 
   if (testLine && caller && caller !== VOICE_TEST_OWNER_CELL) {
     await sendTelegramAlert(`🤖 Someone other than Ryan reached the AI test line (408-337-2785): ${caller}. Recording is on the Twilio trunk.`)

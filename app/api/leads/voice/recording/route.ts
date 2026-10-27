@@ -53,6 +53,12 @@ export async function POST(request: Request) {
   let recordingStatus = ""
   let recordingDurationSec: number | null = null
   let explicitLeadId = ""
+  // Jackie's leg (no-answer → <Dial><Sip>, lib/jackie.ts) posts its
+  // recordingStatusCallback here with ?jackie=1&leadId=…. Status callbacks
+  // carry no From/To, so the row supplies the caller and line.
+  const reqUrl = new URL(request.url)
+  const jackie = reqUrl.searchParams.get("jackie") === "1"
+  const jackieLeadId = jackie ? reqUrl.searchParams.get("leadId") || "" : ""
   try {
     const body = await request.text()
     const params = parseTwilioBody(body)
@@ -69,6 +75,17 @@ export async function POST(request: Request) {
   } catch (e) {
     console.error("[recording] Failed to parse Twilio body:", e)
     return twimlResponse()
+  }
+
+  if (jackie && jackieLeadId && recordingUrl) {
+    explicitLeadId = jackieLeadId
+    try {
+      const { data } = await getLeadsClient().from("leads").select("caller_phone, twilio_number").eq("id", jackieLeadId).maybeSingle()
+      callerPhone = callerPhone || (data?.caller_phone as string | null) || ""
+      twilioNumber = twilioNumber || (data?.twilio_number as string | null) || ""
+    } catch (e) {
+      console.error("[recording] Jackie row lookup threw:", e)
+    }
   }
 
   if (!recordingUrl || !callerPhone) {
@@ -216,8 +233,10 @@ export async function POST(request: Request) {
     source,
     leadId,
     direction: "inbound",
-    kind,
+    // A Jackie conversation posts to Telegram like a voicemail does.
+    kind: jackie ? "voicemail" : kind,
     recordingDurationSec,
+    jackie,
   }))
 
   return twimlResponse()

@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useState } from "react"
 import { Loader2, RefreshCw, Plus, X } from "lucide-react"
 import { formatPhone } from "@/lib/utils"
 import { CampaignSegmentsPanel } from "./CampaignSegmentsPanel"
+import { JackieTestPanel } from "./JackieTestPanel"
 
 // Campaign Performance tab — funnel + ROI for every marketing campaign.
 // Reads `/api/campaigns/performance` once on mount and on user refresh.
@@ -254,6 +255,7 @@ export function CampaignPerformanceTab() {
 
       {tab === "legacy" ? <LegacyView rows={legacy} /> : (
       <>
+      <JackieTestPanel />
       {/* Per-parent rollup cards */}
       <div className="space-y-4">
         {groups.map(group => {

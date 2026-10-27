@@ -645,6 +645,31 @@ export async function POST(request: Request) {
     await tg("sendMessage", { chat_id: chatId, text: "noted — build pending. Canary two (enrolled-contact canary for T2) is the next brief; T2 stays gated until it clears.", reply_to_message_id: msg.message_id })
     return NextResponse.json({ ok: true })
   }
+  // Jackie's kill switch (2026-10-27): "jackie on" / "jackie off" /
+  // "jackie status". Flips the NOO Q4 coin flip (lib/jackie.ts); off = every
+  // missed call goes to Ryan's voicemail as before.
+  const jackieCmd = /^jackie\s+(on|off|status)\b/i.exec(body)
+  if (jackieCmd) {
+    const verb = jackieCmd[1].toLowerCase()
+    try {
+      const { getJackieFlip, setJackieFlip } = await import("@/lib/jackie")
+      const sb = getLeadsClient()
+      const flip = verb === "status" ? await getJackieFlip(sb) : await setJackieFlip(sb, verb === "on")
+      const since = flip.changed_at
+        ? ` (since ${new Date(flip.changed_at).toLocaleString("en-US", { timeZone: "America/Los_Angeles", dateStyle: "medium", timeStyle: "short" })})`
+        : ""
+      await tg("sendMessage", {
+        chat_id: chatId,
+        text: flip.on
+          ? `🤖 Jackie is ON${since}. First-time callers you miss on the two NOO Q4 lines get a coin flip: Jackie or your voicemail.`
+          : `📴 Jackie is OFF${since}. Every missed call goes to your voicemail.`,
+        reply_to_message_id: msg.message_id,
+      })
+    } catch (e) {
+      await tg("sendMessage", { chat_id: chatId, text: `⚠️ jackie ${verb} failed — ${e instanceof Error ? e.message : String(e)}`, reply_to_message_id: msg.message_id })
+    }
+    return NextResponse.json({ ok: true })
+  }
   const autoCmd = /^auto\s+t\s*(\d{1,2})\s+(on|off)\b/i.exec(body)
   if (autoCmd) {
     const touch = Number(autoCmd[1])

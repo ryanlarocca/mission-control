@@ -43,6 +43,18 @@ export async function POST(request: NextRequest) {
   }
   console.log(`[call/status] lead ${leadId} → ${status || "?"} (${duration || "0"}s)`)
 
+  // Talk time of a connected call — Campaign Performance's Jackie test
+  // counts a call of a minute or more as Ryan making contact (2026-10-27).
+  const talkSec = Number(duration) || 0
+  if (leadId && status === "completed" && talkSec > 0) {
+    try {
+      const { error } = await getLeadsClient().from("leads").update({ call_duration_sec: talkSec }).eq("id", leadId)
+      if (error) console.error("[call/status] duration write failed:", error.message)
+    } catch (e) {
+      console.error("[call/status] duration write threw:", e)
+    }
+  }
+
   const outcome = callOutcomeMessage(status)
   if (leadId && outcome) {
     try {

@@ -1463,9 +1463,15 @@ async function processLead(sb, lead) {
   // recording_url is null AND drip_touch_number is NULL (truly fresh).
   // NULL check is critical: once touch #0 fires we write drip_touch_number=0,
   // and 0 must NOT be treated as "fresh" on the next pass — that was the loop bug.
+  // A Jackie call has a recording but counts as missed when she didn't get
+  // the intake (lib/jackie.ts reviewJackieCall → jackie_call.intake_complete;
+  // Ryan 2026-10-25: missed-call text only if she didn't finish). Until the
+  // review lands, intake_complete is undefined → not missed yet; the next
+  // pass decides.
+  const jackieIncomplete = !!lead.jackie_call && lead.jackie_call.intake_complete === false
   let isMissedCall = campaign.type === "direct_mail_call"
     && lead.drip_touch_number == null
-    && !lead.recording_url
+    && (!lead.recording_url || jackieIncomplete)
 
   // If we'd send touch #0, confirm there's no prior real contact first.
   if (isMissedCall) {

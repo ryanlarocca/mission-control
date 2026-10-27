@@ -1809,6 +1809,10 @@ export async function processRecordingBackground(args: {
   // a 20-min live call was stamped "left no message" because the audio
   // fetch came back empty.
   recordingDurationSec?: number | null
+  // A Jackie (AI receptionist) conversation, not a voicemail (lib/jackie.ts):
+  // the transcript is labelled, her promised callback becomes an Owed
+  // follow-up, and the Telegram note says it was Jackie.
+  jackie?: boolean
 }): Promise<void> {
   const { fullUrl, callerPhone, source, leadId } = args
   const direction = args.direction ?? "inbound"
@@ -1845,6 +1849,10 @@ export async function processRecordingBackground(args: {
     let transcription: string | null = null
     if (audio) {
       transcription = await transcribeAudio(audio)
+      if (transcription && args.jackie) {
+        const { JACKIE_TRANSCRIPT_PREFIX } = await import("@/lib/jackie")
+        transcription = JACKIE_TRANSCRIPT_PREFIX + transcription
+      }
       if (transcription && leadId) {
         try {
           const sb = getLeadsClient()
@@ -2006,6 +2014,42 @@ export async function processRecordingBackground(args: {
       }
     }
 
+    // Jackie: did she finish the intake, and what callback did she promise?
+    // The promise is Ryan's to keep, so it becomes an Owed follow-up on the
+    // date she gave (default: next business day). An incomplete intake is
+    // what lets the drip engine still send the missed-call text.
+    let jackieLines: string[] = []
+    if (args.jackie && leadId && transcription) {
+      try {
+        const { mergeJackieCall, nextBusinessDay, reviewJackieCall } = await import("@/lib/jackie")
+        const { OWED_PREFIX } = await import("@/lib/next-touch")
+        const review = await reviewJackieCall(transcription)
+        const sb = getLeadsClient()
+        await mergeJackieCall(sb, leadId, review
+          ? { intake_complete: review.intake_complete, callback_when: review.callback_when, callback_date: review.callback_date, spanish: review.spanish, reviewed_at: new Date().toISOString() }
+          : { review_failed: true })
+        if (review && !analysis?.is_dnc && (review.callback_when || review.intake_complete)) {
+          const today = new Intl.DateTimeFormat("en-CA", { timeZone: "America/Los_Angeles" }).format(new Date())
+          const date = review.callback_date ?? nextBusinessDay(today)
+          const { error } = await sb.from("leads").update({
+            recommended_followup_date: date,
+            followup_reason: `${OWED_PREFIX}Jackie told them Ryan would call — ${review.callback_when ?? "within one business day"}`,
+            followup_generated_at: new Date().toISOString(),
+          }).eq("id", leadId)
+          if (error) console.error(`[jackie] follow-up write failed for ${leadId}: ${error.message}`)
+        }
+        if (review) {
+          jackieLines = [
+            review.callback_when ? `📅 Callback promised: ${review.callback_when}${review.callback_date ? ` (${review.callback_date})` : ""}` : "📅 No callback time set",
+            review.intake_complete ? "✅ Intake complete" : "⚠️ Intake incomplete — the missed-call text will still go out",
+          ]
+          if (review.spanish) jackieLines.push("🇲🇽 Spanish speaker — team callback")
+        }
+      } catch (e) {
+        console.error(`[jackie] post-call review threw for ${leadId}:`, e)
+      }
+    }
+
     // Automatic status (2026-10-24): every transcript — voicemail, answered
     // call, Ryan's callback — is a chance for the person to become a lead or
     // go to Nurture. Best-effort; runAutoStatusForLead never throws.
@@ -2019,17 +2063,25 @@ export async function processRecordingBackground(args: {
       return
     }
 
-    const header = `🎙️ New voicemail — <b>${source}</b> — ${callerPhone}`
-    const captionLines = [header]
+    const header = args.jackie
+      ? `🤖 Jackie took a call — <b>${source}</b> — ${callerPhone}`
+      : `🎙️ New voicemail — <b>${source}</b> — ${callerPhone}`
+    const captionLines = [header, ...(jackieLines.length ? ["", ...jackieLines] : [])]
+    // A Jackie call runs minutes, and Telegram cuts captions at 1,024
+    // chars — so her summary goes first and the transcript last.
+    const summaryLine = analysis
+      ? `${TEMPERATURE_BADGE[analysis.temperature].emoji} <b>${TEMPERATURE_BADGE[analysis.temperature].label}</b> — ${analysis.summary}`
+      : null
+    if (args.jackie && summaryLine) captionLines.push("", summaryLine)
     if (transcription) {
-      captionLines.push("", `📝 ${transcription}`)
+      const shown = args.jackie
+        ? transcription.replace(/^\[Call answered by Jackie[^\]]*\]\n/, "")
+        : transcription
+      captionLines.push("", `📝 ${shown}`)
     } else {
       captionLines.push("", `🔗 ${fullUrl}`)
     }
-    if (analysis) {
-      const badge = TEMPERATURE_BADGE[analysis.temperature]
-      captionLines.push("", `${badge.emoji} <b>${badge.label}</b> — ${analysis.summary}`)
-    }
+    if (!args.jackie && summaryLine) captionLines.push("", summaryLine)
     if (outboundSummary) {
       captionLines.push("", `🤖 Summary: ${outboundSummary}`)
     }
