@@ -56,29 +56,48 @@ export async function POST(request: Request) {
   } catch (e) {
     console.error("[no-answer] Failed to parse Twilio body:", e)
   }
-  const answered = dialStatus === "completed"
+  // Press-1 screen (NOO Q4 lines, /api/leads/voice/screen): the voice route
+  // passes the intake row. Twilio says "completed" whenever anything picked
+  // up Ryan's leg — his carrier voicemail included — so a screened call only
+  // counts as answered if he pressed a key (ryan_picked_up_at).
+  const url = new URL(request.url)
+  const screened = url.searchParams.get("screened") === "1"
+  const passedLeadId = url.searchParams.get("leadId")
+  let answered = dialStatus === "completed"
   if (!callerPhone || isOwnedNumber(callerPhone)) return xml(answered ? HANGUP_TWIML : leadVoicemailTwiml())
 
   const sb = getLeadsClient()
 
-  // This call's intake row (written by /api/leads/voice at call start).
-  let leadId: string | null = null
-  try {
-    const fiveMinAgo = new Date(Date.now() - 5 * 60 * 1000).toISOString()
-    let lookup = sb
-      .from("leads")
-      .select("id")
-      .eq("caller_phone", callerPhone)
-      .gte("created_at", fiveMinAgo)
-      .order("created_at", { ascending: false })
-      .limit(1)
-    if (twilioNumber) lookup = lookup.eq("twilio_number", twilioNumber)
-    const { data, error } = await lookup
-    if (error) console.error("[no-answer] Lookup failed:", error)
-    leadId = data?.[0]?.id ?? null
-    if (!leadId) console.warn(`[no-answer] No recent lead for ${callerPhone}`)
-  } catch (e) {
-    console.error("[no-answer] Lookup threw:", e)
+  // This call's intake row (written by /api/leads/voice at call start). An
+  // answered call can run long before this fires, hence the 4 h window.
+  let leadId: string | null = passedLeadId && /^[0-9a-f-]{36}$/i.test(passedLeadId) ? passedLeadId : null
+  if (!leadId) {
+    try {
+      const windowStart = new Date(Date.now() - 4 * 60 * 60 * 1000).toISOString()
+      let lookup = sb
+        .from("leads")
+        .select("id")
+        .eq("caller_phone", callerPhone)
+        .gte("created_at", windowStart)
+        .order("created_at", { ascending: false })
+        .limit(1)
+      if (twilioNumber) lookup = lookup.eq("twilio_number", twilioNumber)
+      const { data, error } = await lookup
+      if (error) console.error("[no-answer] Lookup failed:", error)
+      leadId = data?.[0]?.id ?? null
+      if (!leadId) console.warn(`[no-answer] No recent lead for ${callerPhone}`)
+    } catch (e) {
+      console.error("[no-answer] Lookup threw:", e)
+    }
+  }
+  if (screened && answered && leadId) {
+    const { data, error } = await sb.from("leads").select("ryan_picked_up_at").eq("id", leadId).maybeSingle()
+    if (error) console.error("[no-answer] pick-up stamp read failed:", error.message)
+    // Read failure → trust Twilio (today's behaviour) rather than guess.
+    else if (!data?.ryan_picked_up_at) {
+      answered = false
+      console.log(`[no-answer] ${callerPhone}: leg picked up without a key press (carrier voicemail) — treating as missed`)
+    }
   }
 
   // Coin flip — NOO Q4 lines only, only while the switch is on.

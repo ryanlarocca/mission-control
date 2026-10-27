@@ -18,7 +18,7 @@ import {
 } from "@/lib/leads"
 import { isAnonymousCaller } from "@/lib/anonymous"
 import { describeContact, isOfficeLine, openInboundCallTouch, resolveOfficeCaller } from "@/lib/office-inbound"
-import { PROD_BASE } from "@/lib/relationship-calls"
+import { PROD_BASE, twimlAttr } from "@/lib/relationship-calls"
 import { scoreLeadSpam, spamAlertLines, spamReviewColumns, type SpamScore } from "@/lib/lead-spam"
 
 // TwiML voice webhook for LRG Homes Twilio numbers.
@@ -41,11 +41,30 @@ import { scoreLeadSpam, spamAlertLines, spamReviewColumns, type SpamScore } from
 const RECORDING_CALLBACK_URL =
   "https://mission-control-three-chi.vercel.app/api/leads/voice/recording"
 
-function buildTwiml(callerId: string): string {
-  return `<?xml version="1.0" encoding="UTF-8"?>
+// `screenLeadId` (NOO Q4 lines, 2026-10-27): Ryan's leg runs a press-1
+// screen (/api/leads/voice/screen) before it connects. A declined or busy
+// call is picked up by his carrier voicemail, which Twilio counts as
+// answered — the screen is how no-answer tells that apart from Ryan, so
+// the caller still gets the Jackie coin flip.
+// A screened call is NOT recorded from answer — that would capture the
+// screen + his carrier greeting on a decline. The screen starts the
+// recording itself once he presses a key.
+function buildTwiml(callerId: string, screen: { leadId: string; callSid: string } | null = null): string {
+  if (!screen) {
+    return `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
   <Dial timeout="12" action="/api/leads/voice/no-answer" method="POST" callerId="${callerId}" record="record-from-answer" recordingStatusCallback="${RECORDING_CALLBACK_URL}" recordingStatusCallbackMethod="POST">
     <Number>${FORWARD_TO}</Number>
+  </Dial>
+</Response>`
+  }
+  const lead = `leadId=${encodeURIComponent(screen.leadId)}`
+  const screenUrl = twimlAttr(`${PROD_BASE}/api/leads/voice/screen?${lead}&callSid=${encodeURIComponent(screen.callSid)}`)
+  const action = twimlAttr(`/api/leads/voice/no-answer?screened=1&${lead}`)
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+  <Dial timeout="12" action="${action}" method="POST" callerId="${callerId}">
+    <Number url="${screenUrl}" method="POST">${FORWARD_TO}</Number>
   </Dial>
 </Response>`
 }
@@ -116,6 +135,9 @@ export async function POST(request: Request) {
     }
   }
 
+  // This call's intake row — threaded to the press-1 screen + no-answer on
+  // the NOO Q4 lines.
+  let intakeLeadId: string | null = null
   if (callerPhone) {
     const source = getCampaignSource(twilioNumber)
     const isOffice = isOfficeLine(twilioNumber)
@@ -245,6 +267,7 @@ export async function POST(request: Request) {
         .select("id")
         .single()
       if (error) console.error("[voice] Supabase insert failed:", error)
+      intakeLeadId = (insertedRow?.id as string | undefined) ?? null
 
       // Re-engagement carried the cluster's drip stamp onto this new event
       // row. Sweep the cluster so exactly ONE row drives the drip engine —
@@ -306,7 +329,12 @@ export async function POST(request: Request) {
     )
   }
 
-  return new NextResponse(buildTwiml(twilioNumber), {
+  // Press-1 screen only where the Jackie test runs, and only with a row to
+  // stamp — without one the call rings exactly as before.
+  const screen = SOURCE_OVERRIDE_NUMBERS.has(twilioNumber) && intakeLeadId && callSid
+    ? { leadId: intakeLeadId, callSid }
+    : null
+  return new NextResponse(buildTwiml(twilioNumber, screen), {
     headers: { "Content-Type": "text/xml" },
   })
 }

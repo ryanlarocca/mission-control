@@ -53,12 +53,14 @@ export async function POST(request: Request) {
   let recordingStatus = ""
   let recordingDurationSec: number | null = null
   let explicitLeadId = ""
-  // Jackie's leg (no-answer → <Dial><Sip>, lib/jackie.ts) posts its
-  // recordingStatusCallback here with ?jackie=1&leadId=…. Status callbacks
-  // carry no From/To, so the row supplies the caller and line.
+  // Callbacks that name their row with ?leadId=…: Jackie's leg (no-answer →
+  // <Dial><Sip>, lib/jackie.ts, also ?jackie=1) and a screened call Ryan
+  // picked up (/api/leads/voice/screen starts that recording). Status
+  // callbacks carry no From/To, so the row supplies the caller and line.
   const reqUrl = new URL(request.url)
   const jackie = reqUrl.searchParams.get("jackie") === "1"
-  const jackieLeadId = jackie ? reqUrl.searchParams.get("leadId") || "" : ""
+  const urlLeadId = reqUrl.searchParams.get("leadId") || ""
+  const jackieLeadId = /^[0-9a-f-]{36}$/i.test(urlLeadId) ? urlLeadId : ""
   try {
     const body = await request.text()
     const params = parseTwilioBody(body)
@@ -77,7 +79,7 @@ export async function POST(request: Request) {
     return twimlResponse()
   }
 
-  if (jackie && jackieLeadId && recordingUrl) {
+  if (jackieLeadId && recordingUrl) {
     explicitLeadId = jackieLeadId
     try {
       const { data } = await getLeadsClient().from("leads").select("caller_phone, twilio_number").eq("id", jackieLeadId).maybeSingle()
