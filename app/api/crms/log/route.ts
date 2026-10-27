@@ -1,10 +1,16 @@
 import { NextResponse } from "next/server"
 import { getLeadsClient } from "@/lib/leads"
 import { markDraftSent } from "@/lib/reply/record"
+import { CADENCE } from "@/lib/relationships"
 
 // Logs an outreach touch. Inserts one row into `relationship_touches`
 // (replaces the BoB "Log" tab) and, on a "sent", advances the contact's
-// cadence clock; on a "skipped", snoozes the contact 24h.
+// cadence clock; on a "skipped", snoozes the contact one full cadence
+// period for its tier (A 30d / B 45d / C 60d / D 365d) — so a skip resets
+// the follow-up clock like a contact would, without counting as one
+// (last_contacted_at and the touch stats are untouched; 2026-10-27, Ryan:
+// "it doesn't count as a contact but I want it to reset their follow up
+// cadence like a contact"). Before that a skip was a 24h snooze.
 export const dynamic = "force-dynamic"
 
 export async function POST(request: Request) {
@@ -74,8 +80,13 @@ export async function POST(request: Request) {
     }
 
     if (action === "skipped") {
-      // Snooze the contact 24h so it drops out of today's queue.
-      const until = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString()
+      // Snooze for one cadence period of the contact's tier. The tier comes
+      // from the row (the client's copy can be stale), falling back to the
+      // body, then to the C cadence.
+      const { data: cur } = await supabase.from("relationships").select("tier").eq("id", id).single()
+      const t = String(cur?.tier ?? tier ?? "C").trim().toUpperCase()
+      const days = CADENCE[t] ?? CADENCE.C
+      const until = new Date(Date.now() + days * 24 * 60 * 60 * 1000).toISOString()
       const upd = await supabase.from("relationships").update({ snooze_until: until }).eq("id", id)
       snoozeWritten = !upd.error
       if (upd.error) console.error("Failed to write snooze:", upd.error)

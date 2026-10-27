@@ -940,7 +940,8 @@ function CRMSTabInner() {
     setActionPending(false)
   }
 
-  // ── Remove from rotation: status → do_not_contact. Unlike Skip (24h snooze)
+  // ── Remove from rotation: status → do_not_contact. Unlike Skip (snoozed one
+  // cadence period, same as a contact, without counting as one)
   // this is permanent — the contact never surfaces in the queue again. The
   // toast offers an 8s Undo; after that, restorable from Cleanup mode.
   async function handleRemove() {
@@ -1815,7 +1816,7 @@ function CRMSTabInner() {
                 <button
                   onClick={handleSkip}
                   disabled={actionPending}
-                  title="Not today — snoozes 24h"
+                  title="Resets their follow-up clock like a contact, without counting as one"
                   className="flex items-center gap-1.5 text-xs text-zinc-400 hover:text-zinc-200 bg-zinc-800 border border-zinc-700 px-3 py-1.5 rounded transition-colors disabled:opacity-50"
                 >
                   <SkipForward className="w-3.5 h-3.5" />
