@@ -464,8 +464,9 @@ function CRMSTabInner() {
   // Persist session progress on change
   useEffect(() => { saveSession(sent, skipped) }, [sent, skipped])
 
-  // Thread choice is per contact — back to "reply" whenever the card changes.
-  useEffect(() => { setThreadMode("reply") }, [selectedId])
+  // Per-contact draft state — back to "reply", and no coach read / status
+  // note carried over from the previous card, whenever the card changes.
+  useEffect(() => { setThreadMode("reply"); setCoachRead(null); setDraftStatus(null) }, [selectedId])
 
   // Fetch contacts on mount
   useEffect(() => {
@@ -1694,6 +1695,7 @@ function CRMSTabInner() {
                 <ReplyPlanner
                   kind="relationship"
                   hideChips
+                  contactKey={selectedContact.id}
                   plan={{ moment: momentFor(selectedContact, modalityToIntent(modality)), temperature: null, next_action: "send", reason: "", source: "ryan", familiarity, intent: modalityToIntent(modality) }}
                   busy={isGenerating}
                   error={null}

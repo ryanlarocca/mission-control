@@ -2670,6 +2670,7 @@ function LeadCard(p: LeadCardProps) {
             return (
               <ReplyPlanner
                 kind="lead"
+                contactKey={group.phone}
                 plan={p.plan}
                 busy={p.draftingEmail || p.draftingText}
                 error={p.draftError}

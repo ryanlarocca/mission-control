@@ -2199,6 +2199,7 @@ function ComposeModal({
         <div className="px-4 py-3 space-y-2.5">
           <ReplyPlanner
             kind="lead"
+            contactKey={row.phone || row.email || undefined}
             plan={plan}
             busy={drafting}
             error={null}

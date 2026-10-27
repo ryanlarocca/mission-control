@@ -633,6 +633,7 @@ export function ContactDetailModal({ contact, onClose, onSendToast, onNotesSaved
             </div>
             <ReplyPlanner
               kind="relationship"
+              contactKey={contact.id}
               plan={plan}
               busy={drafting}
               error={draftError}

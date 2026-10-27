@@ -65,6 +65,12 @@ export function ReplyPlanner(p: {
   hideChips?: boolean
   // Coach mode. Every card that mounts the planner passes this.
   coach?: CoachControls
+  // Identity of the contact this planner is drafting for. When it changes the
+  // gist / refine / "not right" text and the coach session are cleared, so a
+  // gist typed for one person never drafts the next (2026-10-27, Ryan: "I'd
+  // prefer if the coach box doesn't keep text in there from other leads").
+  // The Auto/Coach choice is kept. Mounts that remount per contact can omit it.
+  contactKey?: string
 }) {
   const { kind, plan, busy, coach } = p
   const [mode, setMode] = useState<DraftMode>("auto")
@@ -83,6 +89,17 @@ export function ReplyPlanner(p: {
   const canListen = !!getSpeech()
 
   useEffect(() => () => { recRef.current?.stop() }, [])
+
+  // New contact → fresh coach box (see contactKey above).
+  const firstKeyRef = useRef(true)
+  useEffect(() => {
+    if (firstKeyRef.current) { firstKeyRef.current = false; return }
+    recRef.current?.stop()
+    setListening(null)
+    setGist(""); setRefine(""); setWhy("")
+    setTurns([]); setLastGist(null)
+    setOpen(false)
+  }, [p.contactKey])
 
   function toggleMic(target: MicTarget) {
     if (listening) { recRef.current?.stop(); setListening(null); if (listening === target) return }
