@@ -130,8 +130,12 @@ export class CallMonitor {
           s.spoke = true
           s.lastOutputLoudAt = now
         }
-        const start = typeof msg.start_ms === "number" ? msg.start_ms : null
-        const end = typeof msg.end_ms === "number" ? msg.end_ms : null
+        // Only loud chunks count toward "when does her speech finish playing":
+        // the stream is continuous (10-26 observer: one 200 ms chunk every
+        // 200 ms for the whole call), so silent chunks would pin playbackEndAt
+        // to "now" and she'd never be "done talking".
+        const start = loud && typeof msg.start_ms === "number" ? msg.start_ms : null
+        const end = loud && typeof msg.end_ms === "number" ? msg.end_ms : null
         if (start !== null && end !== null) {
           // Audio can arrive faster than it plays; map her timeline onto the
           // wall clock from the first chunk of each utterance.
