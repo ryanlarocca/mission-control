@@ -29,7 +29,8 @@ export async function POST(request: NextRequest) {
   } catch { /* no digits → not accepted */ }
 
   if (step !== "answer") {
-    const action = twimlAttr(`${PROD_BASE}/api/leads/voice/screen?step=answer&leadId=${encodeURIComponent(leadId)}`)
+    const callSid = request.nextUrl.searchParams.get("callSid") || ""
+    const action = twimlAttr(`${PROD_BASE}/api/leads/voice/screen?step=answer&leadId=${encodeURIComponent(leadId)}&callSid=${encodeURIComponent(callSid)}`)
     return xml(`<?xml version="1.0" encoding="UTF-8"?>
 <Response>
   <Gather numDigits="1" timeout="6" action="${action}" method="POST">
