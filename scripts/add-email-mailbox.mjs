@@ -162,7 +162,7 @@ async function main() {
       userId: aliasOf || email,
       requestBody: {
         topicName: topicPath,
-        labelIds: ["INBOX"],
+        labelIds: ["INBOX", "SPAM"], // SPAM too: Gmail files some real replies + bounces there (2026-10-27)
         labelFilterAction: "include",
       },
     })

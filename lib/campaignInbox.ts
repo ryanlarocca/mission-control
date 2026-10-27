@@ -69,7 +69,8 @@ const OWN_DOMAINS = ["lrghomes.com", "lrghomesbuys.com", "lrghomesoffers.com"]
 const isOwnAddress = (email: string): boolean => OWN_DOMAINS.some((d) => email.endsWith(`@${d}`))
 
 const BOUNCE_SENDER_RE = /mailer-daemon@|postmaster@/i
-const BOUNCE_SUBJECT_RE = /delivery status notification|undeliverable|delivery incomplete|failure notice|returned mail/i
+// "couldn't be delivered" = Microsoft 365 / Exchange NDR wording (2026-10-27).
+const BOUNCE_SUBJECT_RE = /delivery status notification|undeliverable|delivery incomplete|failure notice|returned mail|couldn['’]t be delivered/i
 const HARD_DSN_RE = /\b5\.\d+\.\d+\b|\b55[0-9]\b|does not exist|no such user|user unknown|address not found|account.{0,20}disabled/i
 const SOFT_DSN_RE = /\b4\.\d+\.\d+\b|\b4[25][0-9]\b|mailbox full|over quota|temporar/i
 const UNSUB_RE = /unsubscribe|take me off|remove me|opt me out|opt out|stop (emailing|sending|contacting)/i
@@ -363,7 +364,7 @@ async function cancelQueuedSends(sb: SupabaseClient, contactId: string, why: str
 async function handleBounce(
   sb: SupabaseClient,
   args: { gmailId: string; subject: string; body: string; headers: gmail_v1.Schema$MessagePartHeader[] | undefined; mailbox: string }
-): Promise<void> {
+): Promise<boolean> {
   const { gmailId, subject, body, headers, mailbox } = args
   // Failed recipient: X-Failed-Recipients header, else Final-Recipient DSN
   // line, else first email in the body that isn't ours.
@@ -378,13 +379,13 @@ async function handleBounce(
   }
   if (!failed) {
     console.warn(`[campaign-inbox] bounce ${gmailId}: could not extract failed recipient`)
-    return
+    return false
   }
   const contact = await findContactByEmail(sb, failed)
   if (!contact) {
     // Bounce for something that isn't a campaign send (Ryan's own mail) — not ours.
     console.log(`[campaign-inbox] bounce ${gmailId} for non-campaign address — skipping`)
-    return
+    return false
   }
 
   const probe = `${subject}\n${body}`
@@ -412,6 +413,7 @@ async function handleBounce(
   // reply alert on day one. Bounce handling is fully automated; counts are
   // on /email-campaign. Telegram stays signal-only: replies, texts, calls,
   // voicemails, unsubscribes.
+  return true
 }
 
 async function handleContactMessage(
@@ -788,9 +790,29 @@ async function addReplyPhonesToCard(sb: SupabaseClient, relationshipId: string, 
  * campaign-related before any content handling. With no argument, scans
  * every campaign inbox (ryansvr@ new threads + info@ legacy threads).
  */
-export async function processCampaignInbox(mailbox?: string, recipientFilter?: string[]): Promise<void> {
+export async function processCampaignInbox(mailbox?: string, recipientFilter?: string[], opts?: { query?: string; maxResults?: number }): Promise<void> {
   const boxes = mailbox ? [mailbox] : CAMPAIGN_INBOXES
-  for (const box of boxes) await processOneCampaignInbox(box, recipientFilter)
+  for (const box of boxes) await processOneCampaignInbox(box, recipientFilter, opts)
+}
+
+// Gmail runs its own spam filter on mail ARRIVING at our sending mailboxes,
+// and sometimes files a real agent reply or a bounce notice (DSN) in that
+// mailbox's Spam folder (2026-10-27: Paula Rose + Robert Moreno replies and
+// a Coldwell Banker bounce sat there unseen for up to two weeks). The scan
+// therefore reads Spam as well as Inbox; the campaign-match gate below still
+// drops anything that isn't a reply/bounce for someone we emailed, and only
+// a matched message is moved back to the Inbox (so Ryan sees it and Gmail
+// learns). Non-campaign spam is never touched.
+const SCAN_QUERY = "(in:inbox OR in:spam) newer_than:1h"
+
+async function unspamIfNeeded(gmail: gmail_v1.Gmail, gmailId: string, labelIds: string[] | null | undefined): Promise<void> {
+  if (!labelIds?.includes("SPAM")) return
+  try {
+    await gmail.users.messages.modify({ userId: "me", id: gmailId, requestBody: { removeLabelIds: ["SPAM"], addLabelIds: ["INBOX"] } })
+    console.log(`[campaign-inbox] ${gmailId}: campaign message was in Spam — moved to Inbox`)
+  } catch (e) {
+    console.warn(`[campaign-inbox] ${gmailId}: could not move out of Spam:`, e)
+  }
 }
 
 // Recipient headers of a message, lower-cased. Used when a campaign inbox is an
@@ -806,7 +828,7 @@ function recipientAddresses(headers: gmail_v1.Schema$MessagePartHeader[] | undef
   return out
 }
 
-async function processOneCampaignInbox(mailbox: string, recipientFilter?: string[]): Promise<void> {
+async function processOneCampaignInbox(mailbox: string, recipientFilter?: string[], opts?: { query?: string; maxResults?: number }): Promise<void> {
   const sb = getLeadsClient()
   const gmail = getGmailClient(mailbox)
 
@@ -814,8 +836,9 @@ async function processOneCampaignInbox(mailbox: string, recipientFilter?: string
   try {
     const { data } = await gmail.users.messages.list({
       userId: "me",
-      q: "in:inbox newer_than:1h",
-      maxResults: 25,
+      q: opts?.query ?? SCAN_QUERY,
+      maxResults: opts?.maxResults ?? 25,
+      includeSpamTrash: true,
     })
     ids = (data.messages ?? []).map((m) => m.id ?? "").filter(Boolean)
   } catch (e) {
@@ -845,7 +868,8 @@ async function processOneCampaignInbox(mailbox: string, recipientFilter?: string
       const isBounce = BOUNCE_SENDER_RE.test(sender) || BOUNCE_SUBJECT_RE.test(subject)
       if (isBounce) {
         const body = extractText(message.payload)
-        await handleBounce(sb, { gmailId, subject, body, headers, mailbox })
+        const handled = await handleBounce(sb, { gmailId, subject, body, headers, mailbox })
+        if (handled) await unspamIfNeeded(gmail, gmailId, message.labelIds)
         continue
       }
 
@@ -858,6 +882,7 @@ async function processOneCampaignInbox(mailbox: string, recipientFilter?: string
         continue
       }
       const body = extractText(message.payload)
+      await unspamIfNeeded(gmail, gmailId, message.labelIds)
       await handleContactMessage(sb, gmail, contact, { gmailId, threadId, subject, body, mailbox, sender, payload: message.payload })
     } catch (e) {
       console.error(`[campaign-inbox] failed on ${gmailId}:`, e)
