@@ -295,6 +295,17 @@ export async function POST(request: Request) {
     await sendTelegramAlert(callAlert.join("\n"))
   }
 
+  // Ryan calling his own line from his cell: ringing his cell would hit his
+  // own (busy) phone, whose carrier voicemail picks up and reads as
+  // "answered" (2026-10-27, his first Jackie test). Skip the ring and go
+  // straight to the missed-call step — voicemail, or Jackie for a test number.
+  if (callerPhone === FORWARD_TO) {
+    return new NextResponse(
+      `<?xml version="1.0" encoding="UTF-8"?>\n<Response>\n  <Redirect method="POST">/api/leads/voice/no-answer</Redirect>\n</Response>`,
+      { headers: { "Content-Type": "text/xml" } },
+    )
+  }
+
   return new NextResponse(buildTwiml(twilioNumber), {
     headers: { "Content-Type": "text/xml" },
   })
