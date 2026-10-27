@@ -19,6 +19,7 @@ export type MonitorState = {
   outputText: string
   lastOutputTextAt: number
   lastOutputAudioAt: number
+  lastOutputLoudAt: number
   utterStartAt: number
   utterStartMs: number
   utterEndMs: number
@@ -70,6 +71,12 @@ export function isSubstantive(input: string): boolean {
   return words.some((w) => !WIND_DOWN.has(w.replace(/'/g, "")))
 }
 
+// Jackie continuing after a goodbye: more than a few words, or a question.
+export function isSubstantiveReply(text: string): boolean {
+  const t = text.trim()
+  return t.endsWith("?") || (t.match(/[a-z']+/gi) ?? []).length > 3
+}
+
 export function pcm16Rms(b64: string): number {
   const buf = Buffer.from(b64, "base64")
   const n = Math.floor(buf.length / 2)
@@ -96,6 +103,7 @@ export class CallMonitor {
       outputText: "",
       lastOutputTextAt: 0,
       lastOutputAudioAt: 0,
+      lastOutputLoudAt: 0,
       utterStartAt: 0,
       utterStartMs: 0,
       utterEndMs: 0,
@@ -115,7 +123,13 @@ export class CallMonitor {
     const text = typeof msg.delta === "string" ? msg.delta : typeof msg.text === "string" ? msg.text : ""
     switch (msg.type) {
       case "session.output_audio.delta": {
-        s.spoke = true
+        // Reflected output may stream continuously (silence included), so
+        // "she's talking" = the audio is actually loud, not merely present.
+        const loud = typeof msg.delta === "string" ? pcm16Rms(msg.delta) > LOUD_RMS : true
+        if (loud) {
+          s.spoke = true
+          s.lastOutputLoudAt = now
+        }
         const start = typeof msg.start_ms === "number" ? msg.start_ms : null
         const end = typeof msg.end_ms === "number" ? msg.end_ms : null
         if (start !== null && end !== null) {
@@ -142,7 +156,10 @@ export class CallMonitor {
             s.goodbye = { input: "", readyAt: null }
             this.note(now, `goodbye heard: "${s.outputText.trim().slice(-60)}"`)
           }
+        } else if (s.goodbye && !isSubstantiveReply(s.outputText)) {
+          // a stray "mm-hmm" / "you bet" after her goodbye keeps it armed
         } else {
+          if (s.goodbye) this.note(now, `goodbye cancelled — Jackie went on: "${s.outputText.trim().slice(0, 60)}"`)
           s.goodbye = null
         }
         break
@@ -183,7 +200,7 @@ export class CallMonitor {
       })
     }
 
-    const speakingDone = now >= s.playbackEndAt + 300 && now - s.lastOutputAudioAt >= 600
+    const speakingDone = now >= s.playbackEndAt + 300 && now - s.lastOutputLoudAt >= 700
     if (s.goodbye && speakingDone) {
       if (s.goodbye.readyAt === null) s.goodbye.readyAt = now
       const waited = now - s.goodbye.readyAt
@@ -194,7 +211,7 @@ export class CallMonitor {
     }
 
     if (s.spoke && speakingDone && !s.goodbye) {
-      const lastActivity = Math.max(s.lastInputTextAt, s.lastOutputAudioAt, s.playbackEndAt)
+      const lastActivity = Math.max(s.lastInputTextAt, s.lastLoudInputAt, s.lastOutputLoudAt, s.playbackEndAt)
       const quiet = now - lastActivity
       if (s.quietStage === 0 && quiet >= CHECK_IN_AFTER_MS) {
         s.quietStage = 1

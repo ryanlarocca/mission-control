@@ -155,7 +155,7 @@ export async function POST(request: Request) {
   }
 
   timing.push(`accepted +${((Date.now() - t0) / 1000).toFixed(1)}s`)
-  waitUntil(watchCall({ sessionId, apiKey, t0, hop: 0, opener: { timing } }))
+  waitUntil(watchCall({ sessionId, apiKey, t0, hop: 0, caller, opener: { timing } }))
 
   if (caller && caller !== VOICE_TEST_OWNER_CELL) {
     await sendTelegramAlert(`🤖 Someone other than Ryan reached the AI test line (408-337-2785): ${caller}. Recording is on the Twilio trunk.`)
