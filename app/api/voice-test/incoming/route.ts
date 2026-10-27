@@ -164,12 +164,14 @@ export async function POST(request: Request) {
 
   // Voice audition: Ryan's cell rotates through lib/voiceTest VOICE_AUDITION.
   let voice = VOICE_TEST_VOICE
+  let speed: number | undefined
   if (caller === VOICE_TEST_OWNER_CELL) {
     try {
       const pick = await pickAuditionVoice(sessionId)
       if (pick) {
         voice = pick.voice
-        timing.push(`🎙️ ${pick.voice} (audition ${pick.index + 1} of ${pick.total})`)
+        speed = pick.speed
+        timing.push(`🎙️ ${pick.voice}${speed ? ` ×${speed}` : ""} (audition ${pick.index + 1} of ${pick.total})`)
       }
     } catch (e) {
       console.error(`[voice-test] audition lookup failed: ${e instanceof Error ? e.message : e}`)
@@ -182,7 +184,7 @@ export async function POST(request: Request) {
     callerIdNote(caller) +
     callbackTimingNote() +
     (caller === VOICE_TEST_OWNER_CELL ? VOICE_TEST_COACH_NOTE : "")
-  const accept = (withVoice: string) =>
+  const accept = (withVoice: string, withSpeed?: number) =>
     fetch(`${OPENAI_BASE}/live/sessions/${encodeURIComponent(sessionId)}/accept`, {
       method: "POST",
       headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
@@ -191,7 +193,7 @@ export async function POST(request: Request) {
           type: "live",
           model: VOICE_TEST_MODEL,
           instructions,
-          audio: { output: { voice: withVoice } },
+          audio: { output: withSpeed ? { voice: withVoice, speed: withSpeed } : { voice: withVoice } },
           delegation: {
             type: "responses",
             responses: { model: VOICE_TEST_BACKEND_MODEL, reasoning: { effort: VOICE_TEST_BACKEND_EFFORT } },
@@ -202,16 +204,19 @@ export async function POST(request: Request) {
         },
       }),
     })
-  let res = await accept(voice)
-
-  // GPT-Live's voice list isn't published — if it refuses an audition voice,
-  // pick up in the default voice rather than leave Ryan in silence.
-  if (!res.ok && voice !== VOICE_TEST_VOICE) {
+  // GPT-Live publishes neither its voice list nor a speed setting — if it
+  // refuses an audition voice or speed, step back (drop the speed, then the
+  // default voice) rather than leave Ryan in silence.
+  const attempts: { voice: string; speed?: number }[] = [{ voice, speed }]
+  if (speed) attempts.push({ voice })
+  if (voice !== VOICE_TEST_VOICE) attempts.push({ voice: VOICE_TEST_VOICE })
+  let res = await accept(voice, speed)
+  for (const next of attempts.slice(1)) {
+    if (res.ok) break
     const detail = (await res.text()).slice(0, 200)
     if (detail.includes("decision_already_made")) return NextResponse.json({ duplicate: true })
-    timing.push(`⚠️ ${voice} refused (${res.status}: ${detail}) → ${VOICE_TEST_VOICE}`)
-    voice = VOICE_TEST_VOICE
-    res = await accept(voice)
+    timing.push(`⚠️ refused (${res.status}: ${detail}) → ${next.voice}${next.speed ? ` ×${next.speed}` : ""}`)
+    res = await accept(next.voice, next.speed)
   }
 
   if (!res.ok) {
