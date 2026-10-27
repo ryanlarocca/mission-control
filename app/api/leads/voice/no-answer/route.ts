@@ -87,9 +87,11 @@ export async function POST(request: Request) {
   if (leadId && SOURCE_OVERRIDE_NUMBERS.has(twilioNumber)) {
     try {
       const flip = await getJackieFlip(sb)
-      if (flip.on) {
+      // Test numbers (force_numbers) reach Jackie even with the flip off, so
+      // Ryan can try the real mailer-line path before switching it on.
+      const forced = (flip.force_numbers ?? []).includes(callerPhone)
+      if (flip.on || forced) {
         anonymous = isAnonymousCaller(callerPhone)
-        const forced = (flip.force_numbers ?? []).includes(callerPhone)
         const [known, anonToday] = await Promise.all([
           anonymous || forced ? Promise.resolve(false) : isKnownCaller(sb, callerPhone, leadId),
           anonymous && !answered ? anonymousJackieCallsToday(sb) : Promise.resolve(0),
