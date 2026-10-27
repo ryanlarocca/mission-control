@@ -1,13 +1,11 @@
 import { NextResponse } from "next/server"
 import { waitUntil } from "@vercel/functions"
 import { createHmac, timingSafeEqual } from "crypto"
-import WebSocket from "ws"
 import { sendTelegramAlert } from "@/lib/leads"
 import {
   VOICE_TEST_BACKEND_EFFORT,
   VOICE_TEST_BACKEND_MODEL,
   VOICE_TEST_GREETING,
-  VOICE_TEST_OPENER,
   VOICE_TEST_INSTRUCTIONS,
   VOICE_TEST_MODEL,
   VOICE_TEST_OWNER_CELL,
@@ -17,6 +15,7 @@ import {
   callerIdNote,
   pickAuditionVoice,
 } from "@/lib/voiceTest"
+import { watchCall } from "@/lib/voiceTestWatch"
 
 // OpenAI project webhook for the GPT-Live phone test line (lib/voiceTest.ts).
 // Twilio's SIP trunk sends 408-337-2785 calls to OpenAI; OpenAI POSTs
@@ -26,8 +25,9 @@ import {
 
 const OPENAI_BASE = "https://api.openai.com/v1"
 
-// Room for the opener sideband (waitUntil) after the webhook response.
-export const maxDuration = 30
+// The call watcher (opener + hang-up, lib/voiceTestWatch.ts) runs in
+// waitUntil for up to 4 min, then hands off to /api/voice-test/watch.
+export const maxDuration = 300
 
 function voiceApiKey(): string | undefined {
   // Dedicated key once Ryan creates one; the shared Whisper key until then.
@@ -55,67 +55,6 @@ function callerFrom(sipHeaders: unknown): string {
   const from = sipHeaders.find((h) => typeof h?.name === "string" && h.name.toLowerCase() === "from")
   const match = typeof from?.value === "string" ? from.value.match(/\+?\d{10,15}/) : null
   return match ? (match[0].startsWith("+") ? match[0] : `+${match[0]}`) : ""
-}
-
-// The startup developer message only *suggests* a greeting; on 10-25 Jackie
-// sat silent until Ryan spoke, three calls running. `session.instructions.append`
-// didn't help either — the model treats it as a rule for its NEXT reply.
-// OpenAI's documented "greet before the caller speaks" path is
-// `session.commentary.append` on a sideband. We send it, watch the reflected
-// output for her first sound, nudge once more at 4 s if she's still quiet,
-// and log the timeline (console + Telegram while tuning).
-async function sendOpener(sessionId: string, apiKey: string, timing: string[], t0: number): Promise<void> {
-  const mark = (label: string) => timing.push(`${label} +${((Date.now() - t0) / 1000).toFixed(1)}s`)
-  const url = `wss://api.openai.com/v1/live/sessions/${encodeURIComponent(sessionId)}/attach`
-  const outcome = await new Promise<string>((resolve) => {
-    const ws = new WebSocket(url, { headers: { Authorization: `Bearer ${apiKey}` } })
-    let sent = false
-    let spoke = false
-    let nudges = 0
-    let nudge: ReturnType<typeof setTimeout> | undefined
-    const done = (result: string) => {
-      clearTimeout(timer)
-      if (nudge) clearTimeout(nudge)
-      try { ws.close() } catch { /* already closed */ }
-      resolve(result)
-    }
-    const greet = () => {
-      nudges += 1
-      mark(`greet #${nudges}`)
-      ws.send(JSON.stringify({
-        type: "session.commentary.append",
-        event_id: `opener_${nudges}_${Date.now()}`,
-        delegation_id: null,
-        content: nudges === 1
-          ? VOICE_TEST_GREETING
-          : `The caller is on the line and waiting in silence. Speak first, right now: say "${VOICE_TEST_OPENER}" and then listen.`,
-      }))
-    }
-    const timer = setTimeout(() => done(spoke ? "ok" : sent ? "silent after greeting" : "timeout before send"), 14000)
-    ws.on("open", () => {
-      mark("sideband open")
-      sent = true
-      greet()
-      nudge = setTimeout(() => { if (!spoke) greet() }, 4000)
-    })
-    ws.on("message", (raw) => {
-      let msg: { type?: string; error?: { message?: string } } = {}
-      try { msg = JSON.parse(String(raw)) } catch { return }
-      if (msg.type === "session.output_audio.delta" || msg.type === "session.output_transcript.delta") {
-        if (!spoke) { spoke = true; mark("Jackie speaking"); done("ok") }
-      } else if (msg.type === "error") {
-        done(`error: ${msg.error?.message ?? "unknown"}`)
-      }
-    })
-    ws.on("error", (e) => done(`socket error: ${e.message}`))
-    ws.on("close", (code) => done(spoke ? "ok" : sent ? `closed ${code} after greeting` : `closed ${code} before send`))
-  })
-  const line = `${timing.join(" · ")} · result: ${outcome}`
-  console.log(`[voice-test] ${line}`)
-  await sendTelegramAlert(`🧪 Test line timing: ${line}`)
-  if (outcome !== "ok") {
-    console.error(`[voice-test] opener not delivered: ${outcome}`)
-  }
 }
 
 export async function POST(request: Request) {
@@ -216,7 +155,7 @@ export async function POST(request: Request) {
   }
 
   timing.push(`accepted +${((Date.now() - t0) / 1000).toFixed(1)}s`)
-  waitUntil(sendOpener(sessionId, apiKey, timing, t0))
+  waitUntil(watchCall({ sessionId, apiKey, t0, hop: 0, opener: { timing } }))
 
   if (caller && caller !== VOICE_TEST_OWNER_CELL) {
     await sendTelegramAlert(`🤖 Someone other than Ryan reached the AI test line (408-337-2785): ${caller}. Recording is on the Twilio trunk.`)
