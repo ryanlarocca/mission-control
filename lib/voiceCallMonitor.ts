@@ -215,7 +215,12 @@ export class CallMonitor {
     }
 
     if (s.spoke && speakingDone && !s.goodbye) {
-      const lastActivity = Math.max(s.lastInputTextAt, s.lastLoudInputAt, s.lastOutputLoudAt, s.playbackEndAt)
+      // Dead air is judged on WORDS from the caller, not loudness (Ryan,
+      // 10-27): a TV or traffic at a steady level kept resetting the clock,
+      // so a noisy phone left on the counter ran to the 11-minute cap.
+      // Loudness still guards the goodbye grace above (so she doesn't hang
+      // up on someone mid-sentence).
+      const lastActivity = Math.max(s.lastInputTextAt, s.lastOutputLoudAt, s.playbackEndAt)
       const quiet = now - lastActivity
       if (s.quietStage === 0 && quiet >= CHECK_IN_AFTER_MS) {
         s.quietStage = 1

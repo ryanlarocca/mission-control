@@ -118,6 +118,7 @@ export async function buildJackieScoreboard(sb: SupabaseClient, now: number = Da
       .select("id, created_at, caller_phone, call_arm, is_dnc, is_junk, jackie_call")
       .not("call_arm", "is", null)
       .order("created_at", { ascending: true })
+      .order("id")
       .range(a, b),
   )
   const phones = Array.from(new Set(intake.map((r) => r.caller_phone).filter((p): p is string => !!p && !isAnonymousCaller(p))))
@@ -131,12 +132,14 @@ export async function buildJackieScoreboard(sb: SupabaseClient, now: number = Da
         sb.from("leads")
           .select("id, created_at, caller_phone, lead_type, twilio_number, call_duration_sec, is_dnc, is_junk")
           .in("caller_phone", chunk)
+          .order("id")
           .range(a, b),
       ),
       pageAll<{ phone: string; occurred_at: string; duration_sec: number; kind: string | null }>((a, b) =>
         sb.from("phone_calls")
           .select("phone, occurred_at, duration_sec, kind")
           .in("phone", chunk)
+          .order("id")
           .range(a, b),
       ),
     ])
