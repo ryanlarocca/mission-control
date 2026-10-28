@@ -18,10 +18,12 @@ export const CAMPAIGN_MAP: Record<string, string> = {
   // console must point this number's Voice + Messaging webhooks at
   // /api/leads/voice and /api/leads/sms.
   "+16502043247": "Outbound",
-  // Google Ads landing-page number. Inbound voice + SMS get tagged
-  // source_type=google_ads and routed to the google_ads_form drip (see
-  // voice/sms route handlers).
-  "+16506703914": "Google",
+  // The lrghomes.com website line (Twilio "Website (lrghomes.com)"). Was
+  // the Google Ads landing-page number until Ryan stopped running Ads
+  // (2026-10-27); historical rows keep source "Google" / google_ads.
+  // Inbound voice + SMS get source_type=website and NO automatic drip
+  // (see voice/sms route handlers).
+  "+16506703914": "Website",
   // Legacy response lines ported in from Google Voice (Twilio shows them
   // created 2026-07-27) — the numbers printed on Ryan's old mailer campaigns
   // and agent marketing over the years. Ryan (2026-09-22): one universal
@@ -160,9 +162,10 @@ export async function clusterHasDnc(
 // existing lead group instead of starting a new drip cycle.
 export const OUTBOUND_TWILIO_NUMBER = "+16502043247"
 
-// Google Ads landing-page inbound number — drives source_type=google_ads
-// and the google_ads_form drip path in the voice/sms webhooks.
-export const GOOGLE_ADS_LANDING_NUMBER = "+16506703914"
+// Website inbound number (lrghomes.com) — drives source_type=website in the
+// voice/sms webhooks. No drip is stamped on intake: a caller off the site
+// may be an agent or a curious visitor, not a seller.
+export const WEBSITE_NUMBER = "+16506703914"
 
 // Ryan's cell — every inbound call forwards here, and it is the number that
 // texts the campaign lines during testing. Owned for the same reason as the

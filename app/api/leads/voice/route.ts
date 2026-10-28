@@ -6,6 +6,7 @@ import {
   OUTBOUND_TWILIO_NUMBER,
   RESET_TO_NEW_SUFFIX,
   SOURCE_OVERRIDE_NUMBERS,
+  WEBSITE_NUMBER,
   clusterHasDnc,
   resolveIntakeStatus,
   dedupeClusterStamps,
@@ -161,9 +162,11 @@ export async function POST(request: Request) {
   if (callerPhone) {
     const source = getCampaignSource(twilioNumber)
     const isOffice = isOfficeLine(twilioNumber)
-    // Landing-page Google Ads number gets its own source_type + drip path.
-    // Everything else (MFM-A/B, outbound callback) stays on direct-mail.
-    const isGoogleAds = twilioNumber === "+16506703914"
+    // The website line gets its own source_type and NO automatic drip — a
+    // caller off lrghomes.com may be an agent or a curious visitor, not a
+    // seller (Ryan, 2026-10-27). Everything else (MFM-A/B, outbound
+    // callback) stays on direct-mail.
+    const isWebsite = twilioNumber === WEBSITE_NUMBER
     // A callback to the outbound caller-ID number is a lead responding to
     // outreach Ryan already started by hand — not a fresh direct-mail
     // lead. It must NOT get a fresh drip stamp. Office/admin lines
@@ -234,7 +237,7 @@ export async function POST(request: Request) {
         // direct mail.
         source_type: overrideSource
           ? "direct_mail"
-          : existingRow?.source_type || (isGoogleAds ? "google_ads" : isOffice ? "office" : "direct_mail"),
+          : existingRow?.source_type || (isWebsite ? "website" : isOffice ? "office" : "direct_mail"),
         twilio_number: twilioNumber,
         caller_phone: callerPhone,
         lead_type: "call",
@@ -256,11 +259,13 @@ export async function POST(request: Request) {
           // `drip_touch_number IS NULL`, so we stamp NULL here, not 0.
           // (0 means "touch #0 already done"; stamping 0 on intake
           // silently killed the missed-call opener for every lead.)
-          // Google Ads landing-page calls skip touch #0 and run the
-          // AI-drafted google_ads_form cadence from touch 1.
-          insertRow.drip_campaign_type = isGoogleAds ? "google_ads_form" : "direct_mail_call"
-          insertRow.drip_touch_number = null
-          insertRow.last_drip_sent_at = new Date().toISOString()
+          // Website-line calls get no stamp at all — Ryan decides per lead
+          // (Apply Drip in the Leads tab) whether a follow-up cadence fits.
+          if (!isWebsite) {
+            insertRow.drip_campaign_type = "direct_mail_call"
+            insertRow.drip_touch_number = null
+            insertRow.last_drip_sent_at = new Date().toISOString()
+          }
         }
         // else: a first-ever contact via the outbound callback number —
         // insert a plain event row, no drip stamp.
@@ -276,7 +281,7 @@ export async function POST(request: Request) {
       // leads only for now, fresh + non-anonymous calls only. (Anonymous
       // calls are already junked above; a known returning caller must not
       // be re-flagged.) A call carries only a phone at intake.
-      if (isGoogleAds && !isAnon && !existingRow) {
+      if (isWebsite && !isAnon && !existingRow) {
         spam = scoreLeadSpam({ phone: callerPhone })
         if (spam.suspicious) Object.assign(insertRow, spamReviewColumns(spam))
       }
@@ -307,7 +312,7 @@ export async function POST(request: Request) {
           const { resolveCampaignId } = await import("@/lib/campaigns")
           const campaignId = await resolveCampaignId({
             source: (insertRow.source as string) ?? source,
-            source_type: (insertRow.source_type as string) ?? (isGoogleAds ? "google_ads" : "direct_mail"),
+            source_type: (insertRow.source_type as string) ?? (isWebsite ? "website" : "direct_mail"),
             created_at: new Date(),
           })
           if (campaignId) {

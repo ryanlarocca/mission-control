@@ -182,17 +182,19 @@ export function effectiveChannelForTouch(
 export const DRIP_STOP_STATUSES = ["dead"] as const
 
 // Source-aware campaign selection for Apply Drip. Google Ads form leads
-// get the AI-drafted google_ads_* campaigns; legacy direct-mail leads stay
-// on direct_mail_*. Falling all the way through to direct_mail_call for an
-// unknown-source phone lead is the legacy behavior — kept so we don't
-// regress on outbound number callbacks or unmapped sources.
+// (historical) and Website leads get the AI-drafted google_ads_* campaigns
+// — the cadence is named for its first source, not tied to it; legacy
+// direct-mail leads stay on direct_mail_*. Falling all the way through to
+// direct_mail_call for an unknown-source phone lead is the legacy behavior
+// — kept so we don't regress on outbound number callbacks or unmapped
+// sources.
 export function pickCampaignType(lead: {
   caller_phone: string | null
   email: string | null
   source: string | null
 }): DripCampaignType | null {
   const src = (lead.source || "").toLowerCase()
-  if (src === "google ads") {
+  if (src === "google ads" || src === "website") {
     if (lead.caller_phone) return "google_ads_form"
     if (lead.email) return "google_ads_email_only"
     return null

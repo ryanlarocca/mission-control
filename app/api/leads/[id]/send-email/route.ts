@@ -107,7 +107,7 @@ export async function POST(
     const fromMailbox = tn.startsWith("email:")
       ? tn.slice("email:".length)
       : campaignMailbox
-      ?? (lead.source_type === "google_ads"
+      ?? (lead.source_type === "google_ads" || lead.source_type === "website"
         ? "info@lrghomes.com"
         : process.env.DRIP_DEFAULT_MAILBOX || "ryan@lrghomes.com")
 
