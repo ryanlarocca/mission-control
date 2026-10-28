@@ -36,7 +36,7 @@ type LeadType =
   | "call" | "voicemail" | "sms" | "form" | "email"
   | "drip_imessage" | "drip_email"
 type Temperature = "hot" | "warm" | "cold"
-type SourceType = "direct_mail" | "google_ads"
+type SourceType = "direct_mail" | "google_ads" | "website"
 
 const TEMPERATURE_BADGE: Record<Temperature, { emoji: string; label: string; badgeClass: string; pillClass: string }> = {
   hot:  { emoji: "🔥", label: "Hot",  badgeClass: "bg-red-900/40 text-red-200 border-red-900/70",   pillClass: "bg-red-900/30 text-red-200" },
@@ -47,7 +47,7 @@ const TEMPERATURE_BADGE: Record<Temperature, { emoji: string; label: string; bad
 // See lib/leads.ts for the schema conventions:
 //   `message` holds SMS body for sms rows, transcription for voicemail/call rows
 //   `twilio_number IS NULL` means outbound (sent via iMessage sidecar)
-//   `source_type` buckets the lead ('direct_mail' | 'google_ads') for filtering
+//   `source_type` buckets the lead ('direct_mail' | 'google_ads' | 'website') for filtering
 interface Lead {
   id: string
   created_at: string
@@ -230,6 +230,7 @@ const SOURCE_TYPE_FILTERS: ({ key: "all" | SourceType; label: string })[] = [
   { key: "all",          label: "All Sources" },
   { key: "direct_mail",  label: "Direct Mail" },
   { key: "google_ads",   label: "Google Ads" },
+  { key: "website",      label: "Website" },
 ]
 
 const TEMPERATURE_FILTERS: ({ key: "all" | Temperature; label: string })[] = [
@@ -275,11 +276,13 @@ const SOURCE_BADGE: Record<string, string> = {
 const SOURCE_TYPE_BADGE: Record<string, string> = {
   direct_mail: "bg-orange-900/60 text-orange-200",
   google_ads:  "bg-green-900/60 text-green-200",
+  website:     "bg-violet-900/60 text-violet-200",
 }
 
 const SOURCE_TYPE_LABEL: Record<string, string> = {
   direct_mail: "Direct Mail",
   google_ads:  "Google Ads",
+  website:     "Website",
 }
 
 const TYPE_ICON: Record<LeadType, typeof Phone> = {
