@@ -1,8 +1,9 @@
 # BRIEF — lrghomes.com revamp + "Ryan LaRocca" search clean-up
 
-**Status (2026-10-28, early morning):** preview BUILT and deployed (not live). Mission Control
-"Website line" change committed on branch `worktree-bridge-cse_014MoDVtAB8X5t3AAzJMHHV3`
-(pushed, not merged). Profile copy + takedown drafts below are DRAFTS — nothing sent.
+**Status (2026-10-28, evening):** website LIVE and wrapped (`lrg-homes-website` `d78e72b`);
+Mission Control Website-line change merged (`277516d`). §5 profile copy and §6 takedown drafts are
+still DRAFTS — nothing sent; they belong to the next project (web presence). Current state lives in
+`PROJECTS/lrg-public-web/PROJECT_MEMO.md`, not here.
 Owner project: `PROJECTS/lrg-public-web/`.
 
 ## 1. The job of the site (Ryan, 2026-10-27)
