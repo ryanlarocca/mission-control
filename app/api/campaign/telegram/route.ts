@@ -5,6 +5,7 @@ import { approveBatch, setPaused, campaignStatusLine } from "@/lib/campaignBatch
 import { resolveSender, setSenderPaused, recordCanaryVerdict, recordPostmaster } from "@/lib/campaignSenders"
 import { autoSendStatusLine, describeAutoSend, setAutoTouch } from "@/lib/campaignAutoSend"
 import { waitUntil } from "@vercel/functions"
+import { sidecarHeaders } from "@/lib/sidecar"
 import { sendAgentsLineText, startAgentsLineRelayCall } from "@/lib/campaignSms"
 import { contactPhoneByName, sendCampaignEmailReply } from "@/lib/campaignEmail"
 import {
@@ -578,6 +579,42 @@ export async function POST(request: Request) {
   const body = (msg.text || "").trim()
   const repliedText = msg.reply_to_message?.text || msg.reply_to_message?.caption || ""
   if (!body) return NextResponse.json({ ok: true })
+
+  // Mac mini bridge rescue (2026-10-30): "mini status" / "mini cleanup" /
+  // "mini restart" (a leading "/" and bare "mini" work too). The bridge that
+  // runs Claude sessions on the mini fills up (32 max) or drops, and Ryan needs
+  // a phone-only fix when he's away. The sidecar runs ~/bin/claude-remote-ctl.py.
+  // Checked first so a reply-to-alert never routes "mini restart" anywhere else.
+  const miniCmd = /^\/?mini(?:@\w+)?(?:\s+(status|cleanup|clean\s*up|clean|restart|reboot)(?:\s+(?:now|please))?)?\s*$/i.exec(body)
+  if (miniCmd) {
+    const word = (miniCmd[1] || "status").toLowerCase().replace(/\s+/g, "")
+    const verb = word === "reboot" ? "restart" : word.startsWith("clean") ? "cleanup" : word
+    if (verb !== "status") {
+      await tg("sendMessage", {
+        chat_id: chatId,
+        text: verb === "restart"
+          ? "⏳ Restarting the Mac mini bridge… every open Mac mini chat drops; reopen the one you need after."
+          : "⏳ Archiving idle Mac mini chats…",
+        reply_to_message_id: msg.message_id,
+      })
+    }
+    waitUntil((async () => {
+      let text: string
+      try {
+        const res = await fetch(`${process.env.SIDECAR_URL || "http://localhost:5799"}/mini/${verb}`, {
+          method: verb === "status" ? "GET" : "POST",
+          headers: sidecarHeaders(),
+          signal: AbortSignal.timeout(55_000),
+        })
+        const j = (await res.json().catch(() => ({}))) as { text?: string; error?: string }
+        text = j.text || `⚠️ mini ${verb}: ${j.error || `HTTP ${res.status}`}`
+      } catch (e) {
+        text = `🔴 Can't reach the Mac mini (${e instanceof Error ? e.message : String(e)}). It may be asleep, off, or its internet/tunnel is down — nothing can restart it remotely until it's back online.`
+      }
+      await tg("sendMessage", { chat_id: chatId, text, reply_to_message_id: msg.message_id })
+    })())
+    return NextResponse.json({ ok: true })
+  }
 
   // ---- Offer bot (briefs/OFFER_BOT.md, 2026-10-15) ----
   // /offer_help · /offer [terms] · a reply to one of the bot's own offer
