@@ -1,5 +1,7 @@
 import { getGmailClient, getLeadsClient } from "@/lib/leads"
 import { buildEmailMime, toGmailRaw } from "@/lib/emailMime"
+import { emailTouchMessage } from "@/lib/relationshipEmail"
+import type { SupabaseClient } from "@supabase/supabase-js"
 
 // Reply-by-Telegram for EMAIL alerts (2026-07-27, Ryan: typed replies to
 // AGENT REPLY alerts should just send). Maps an alert's contact name back
@@ -29,7 +31,7 @@ export async function sendCampaignEmailReply(args: {
 
   const { data: contacts } = await sb
     .from("campaign_contacts")
-    .select("id, name, email, gmail_thread_id")
+    .select("id, name, email, gmail_thread_id, relationship_id")
     .ilike("name", contactName)
     .limit(2)
   if (!contacts?.length) return { success: false, error: `no contact named "${contactName}"` }
@@ -109,7 +111,50 @@ export async function sendCampaignEmailReply(args: {
     body: body.slice(0, 1000),
     raw: { via: "telegram_reply", thread_id: threadId, mailbox: sendAs },
   })
+  await logRelationshipEmailTouch(sb, {
+    relationshipId: contact.relationship_id ?? null,
+    emails: [contact.email, toAddr],
+    subject,
+    body,
+  })
   return { success: true, label: `${contact.name} <${toAddr}>`, mailbox: sendAs }
+}
+
+/** The Telegram send lands on the agent's Relationships card too
+ * (2026-10-30, Ryan: "I emailed Jessa back through Telegram — I don't see it
+ * in Mission Control"). Same row shape as a card send (lib/relationshipEmail)
+ * so the card's thread, # of touches and Last contacted all pick it up.
+ * Card = campaign_contacts.relationship_id, else a Relationships row with the
+ * same email. No card → nothing to log. Best-effort: the email already went. */
+async function logRelationshipEmailTouch(
+  sb: SupabaseClient,
+  args: { relationshipId: string | null; emails: (string | null | undefined)[]; subject: string; body: string },
+): Promise<void> {
+  type Rel = { id: string; tier: string | null; category: string | null }
+  let rel: Rel | null = null
+  if (args.relationshipId) {
+    const { data } = await sb.from("relationships").select("id, tier, category").eq("id", args.relationshipId).limit(1)
+    rel = (data?.[0] as Rel) ?? null
+  }
+  for (const e of args.emails) {
+    if (rel) break
+    const addr = e?.trim().toLowerCase()
+    if (!addr?.includes("@")) continue
+    const { data } = await sb.from("relationships").select("id, tier, category").ilike("email", addr).order("status", { ascending: true }).limit(1)
+    rel = (data?.[0] as Rel) ?? null
+  }
+  if (!rel) return
+  const ins = await sb.from("relationship_touches").insert({
+    relationship_id: rel.id,
+    modality: "email",
+    action: "sent",
+    message: emailTouchMessage(args.subject, args.body),
+    tier_at_touch: rel.tier,
+    category_at_touch: rel.category,
+  })
+  if (ins.error) console.error("[campaign-email] touch insert failed:", ins.error.message)
+  const upd = await sb.from("relationships").update({ last_contacted_at: new Date().toISOString() }).eq("id", rel.id)
+  if (upd.error) console.error("[campaign-email] last_contacted_at update failed:", upd.error.message)
 }
 
 /** Contact phone lookup by name — lets "call him back" work on email alerts. */
