@@ -67,7 +67,7 @@ export function PhysiqWidget() {
       {/* Date + app link */}
       <div className="flex items-center justify-between">
         <div>
-          <p className="text-xs text-zinc-500">{new Date().toLocaleDateString([], { weekday: "long", month: "long", day: "numeric" })}</p>
+          <p className="text-xs text-zinc-500">{new Date().toLocaleDateString([], { weekday: "long", month: "long", day: "numeric", year: "numeric" })}</p>
         </div>
         <a
           href="https://ryanlarocca.github.io/physiq/"

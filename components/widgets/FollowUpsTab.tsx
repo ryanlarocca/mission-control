@@ -1295,9 +1295,8 @@ function historyWho(it: HistoryItem, first: string): string {
 }
 
 function historyDate(iso: string): string {
-  const d = new Date(iso)
-  const sameYear = d.getFullYear() === new Date().getFullYear()
-  return d.toLocaleDateString("en-US", { month: "short", day: "numeric", ...(sameYear ? {} : { year: "numeric" }) })
+  // Year always, even this year's (Ryan 2026-10-30).
+  return new Date(iso).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })
 }
 
 // One-liners for long transcripts are written server-side the first time a

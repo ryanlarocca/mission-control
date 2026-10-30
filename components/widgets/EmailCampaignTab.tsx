@@ -772,7 +772,7 @@ export function EmailCampaignTab() {
                         .map((row) => (
                           <li key={row.key} className="flex gap-2 border-b border-dashed border-zinc-800/70 pb-1">
                             <span className="w-20 shrink-0 font-mono text-[11px] text-zinc-600">
-                              {new Date(row.at).toLocaleDateString("en-US", { month: "short", day: "numeric" })}
+                              {new Date(row.at).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}
                             </span>
                             <span className="text-zinc-300">{row.text}</span>
                           </li>

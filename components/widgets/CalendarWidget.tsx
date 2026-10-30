@@ -33,7 +33,7 @@ function formatDate(iso: string) {
 
   if (d.toDateString() === today.toDateString()) return "Today"
   if (d.toDateString() === tomorrow.toDateString()) return "Tomorrow"
-  return d.toLocaleDateString([], { weekday: "short", month: "short", day: "numeric" })
+  return d.toLocaleDateString([], { weekday: "short", month: "short", day: "numeric", year: "numeric" })
 }
 
 function EventRow({ event }: { event: CalendarEvent }) {

@@ -107,7 +107,7 @@ export function Sidebar() {
       <NavItems />
       <div className="px-4 py-3 border-t border-zinc-800">
         <p className="text-xs text-zinc-600">
-          {new Date().toLocaleDateString([], { weekday: "short", month: "short", day: "numeric" })}
+          {new Date().toLocaleDateString([], { weekday: "short", month: "short", day: "numeric", year: "numeric" })}
         </p>
       </div>
     </aside>

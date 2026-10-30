@@ -196,7 +196,7 @@ export function EmailCampaignPerformance() {
             {stats.recent_replies.map((r, i) => (
               <div key={i} className="text-[12px]">
                 <span className="font-semibold text-zinc-200">{r.name}</span>{" "}
-                <span className="text-zinc-600">{new Date(r.when).toLocaleDateString("en-US", { month: "short", day: "numeric" })}</span>{" "}
+                <span className="text-zinc-600">{new Date(r.when).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}</span>{" "}
                 <span className="text-zinc-400">“{r.snippet}”</span>
               </div>
             ))}

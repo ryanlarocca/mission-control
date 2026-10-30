@@ -329,7 +329,7 @@ function relativeTime(iso: string): string {
   if (sec < 3600)  return `${Math.floor(sec / 60)}m ago`
   if (sec < 86400) return `${Math.floor(sec / 3600)}h ago`
   if (sec < 86400 * 7) return `${Math.floor(sec / 86400)}d ago`
-  return new Date(iso).toLocaleDateString([], { month: "short", day: "numeric" })
+  return new Date(iso).toLocaleDateString([], { month: "short", day: "numeric", year: "numeric" })
 }
 
 function groupLeads(leads: Lead[]): LeadGroup[] {
@@ -3441,7 +3441,7 @@ function OfferRow(props: {
   }
 
   function formatDate(iso: string): string {
-    return new Date(iso).toLocaleDateString([], { month: "short", day: "numeric" })
+    return new Date(iso).toLocaleDateString([], { month: "short", day: "numeric", year: "numeric" })
   }
 
   // Empty state → render a low-contrast "+ Add offer" pill so Ryan has a
@@ -3850,8 +3850,10 @@ function CopyButton({ text, label = "Copy" }: { text: string; label?: string }) 
 function TimelineEvent({ ev }: { ev: Lead }) {
   const outbound = isOutbound(ev)
   const Icon = TYPE_ICON[ev.lead_type ?? "call"] || Phone
+  // Year always (Ryan 2026-10-30): imported leads carry history from past
+  // years — "Feb 26" alone can't tell this year from three years ago.
   const fullTime = new Date(ev.created_at).toLocaleString([], {
-    month: "short", day: "numeric", hour: "numeric", minute: "2-digit",
+    month: "short", day: "numeric", year: "numeric", hour: "numeric", minute: "2-digit",
   })
 
   // Skip rendering for content-less events that aren't a call (which has its

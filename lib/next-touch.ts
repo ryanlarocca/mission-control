@@ -200,7 +200,7 @@ export function describeTouchWhen(touch: NextTouch, now: Date = new Date()): str
   if (diffDays === 0) return "today"
   if (diffDays === 1) return "tomorrow"
   if (diffDays < 7) return `in ${diffDays}d`
-  return new Date(`${touch.due}T00:00:00`).toLocaleDateString([], { month: "short", day: "numeric" })
+  return new Date(`${touch.due}T00:00:00`).toLocaleDateString([], { month: "short", day: "numeric", year: "numeric" })
 }
 
 // Resolve the drip side of a contact: a live queued row if one exists,
