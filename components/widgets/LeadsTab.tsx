@@ -2188,6 +2188,31 @@ function LeadCard(p: LeadCardProps) {
   const displayCampaign = group.campaignLabel || group.source || "Unknown"
   const sourceClass = SOURCE_BADGE[displayCampaign] || SOURCE_BADGE.Unknown
   const sourceTypeClass = group.sourceType ? SOURCE_TYPE_BADGE[group.sourceType] : null
+  // Campaign + earlier campaigns + source type. Rendered twice in the
+  // collapsed row: a column on desktop, inline chips on a phone.
+  const sourceTags = (mainSize: string, extraSize: string) => (
+    <>
+      <span className={`${mainSize} py-0.5 font-semibold rounded uppercase tracking-wider whitespace-nowrap ${sourceClass}`}>
+        {displayCampaign}
+      </span>
+      {group.sources
+        .filter(src => src !== displayCampaign && src !== group.campaignLabel)
+        .map(src => (
+          <span
+            key={src}
+            title="Earlier campaign this caller responded to"
+            className={`${extraSize} py-0.5 font-semibold rounded uppercase tracking-wider whitespace-nowrap opacity-80 ${SOURCE_BADGE[src] || SOURCE_BADGE.Unknown}`}
+          >
+            {src}
+          </span>
+        ))}
+      {sourceTypeClass && (
+        <span className={`${extraSize} py-0.5 font-semibold rounded uppercase tracking-wider whitespace-nowrap ${sourceTypeClass}`}>
+          {SOURCE_TYPE_LABEL[group.sourceType!] || group.sourceType}
+        </span>
+      )}
+    </>
+  )
   const phoneDisplay = group.contactPhone ? formatPhone(group.contactPhone) : null
   const onDrip = !!group.events.find(e => e.drip_campaign_type)?.drip_campaign_type
   const canApplyDrip = !onDrip && !group.isDnc && !group.isJunk && (group.contactPhone || group.email)
@@ -2300,33 +2325,24 @@ function LeadCard(p: LeadCardProps) {
         </label>
         <button
           onClick={p.onToggle}
-          className="flex-1 px-3 py-3 flex items-center gap-3 text-left hover:bg-zinc-900/50 transition-colors"
+          className="flex-1 min-w-0 px-3 py-3 flex items-center gap-3 text-left hover:bg-zinc-900/50 transition-colors"
         >
-          <div className="flex flex-col gap-0.5 shrink-0">
-            <span className={`px-2 py-0.5 text-[10px] font-semibold rounded uppercase tracking-wider ${sourceClass}`}>
-              {displayCampaign}
-            </span>
-            {group.sources
-              .filter(src => src !== displayCampaign && src !== group.campaignLabel)
-              .map(src => (
-                <span
-                  key={src}
-                  title="Earlier campaign this caller responded to"
-                  className={`px-2 py-0.5 text-[9px] font-semibold rounded uppercase tracking-wider opacity-80 ${SOURCE_BADGE[src] || SOURCE_BADGE.Unknown}`}
-                >
-                  {src}
-                </span>
-              ))}
-            {sourceTypeClass && (
-              <span className={`px-2 py-0.5 text-[9px] font-semibold rounded uppercase tracking-wider ${sourceTypeClass}`}>
-                {SOURCE_TYPE_LABEL[group.sourceType!] || group.sourceType}
-              </span>
-            )}
+          {/* Source tags get their own column on desktop only. On a phone
+              that column + the badges sharing the name line left the name
+              as "R…" (Ryan 2026-10-30) — there the tags drop into the badge
+              row under the name, and the name gets the full width. */}
+          <div className="hidden sm:flex flex-col gap-0.5 shrink-0">
+            {sourceTags("px-2 text-[10px]", "px-2 text-[9px]")}
           </div>
           <Icon className="w-4 h-4 text-zinc-400 shrink-0" />
           <div className="flex-1 min-w-0">
-            <div className="text-sm text-zinc-100 font-medium truncate flex items-center gap-2">
-              <span className="truncate">{group.name || phoneDisplay || group.email || "(unknown)"}</span>
+            <div className="text-sm text-zinc-100 font-medium truncate">
+              {group.name || phoneDisplay || group.email || "(unknown)"}
+            </div>
+            <div className="flex flex-wrap items-center gap-1 mt-0.5 empty:hidden">
+              <span className="contents sm:hidden">
+                {sourceTags("px-1.5 text-[9px]", "px-1.5 text-[9px]")}
+              </span>
               {group.temperature && (
                 <span
                   className={`px-1.5 py-0.5 text-[10px] font-semibold rounded border shrink-0 ${TEMPERATURE_BADGE[group.temperature].badgeClass}`}
@@ -2412,7 +2428,7 @@ function LeadCard(p: LeadCardProps) {
             </div>
           </div>
           <StageChip group={group} />
-          <span className={`px-2 py-0.5 text-[10px] font-semibold rounded uppercase tracking-wider ${STATUS_BADGE[group.status]}`}>
+          <span className={`px-2 py-0.5 text-[10px] font-semibold rounded uppercase tracking-wider shrink-0 ${STATUS_BADGE[group.status]}`}>
             {group.status}
           </span>
           {expanded
