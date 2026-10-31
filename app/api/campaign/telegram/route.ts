@@ -159,6 +159,24 @@ async function postCopyPreview(chatId: number, replyToMessageId: number | undefi
 }
 
 /** Download a Telegram file by file_id → base64 + media type. */
+// Mac mini bridge rescue (2026-10-30): the sidecar runs ~/bin/claude-remote-ctl.py.
+// `reboot` is the real machine restart (sudoers allows exactly that command).
+async function runMini(chatId: number, verb: "status" | "cleanup" | "restart" | "reboot", replyTo?: number) {
+  let text: string
+  try {
+    const res = await fetch(`${process.env.SIDECAR_URL || "http://localhost:5799"}/mini/${verb}`, {
+      method: verb === "status" ? "GET" : "POST",
+      headers: sidecarHeaders(),
+      signal: AbortSignal.timeout(55_000),
+    })
+    const j = (await res.json().catch(() => ({}))) as { text?: string; error?: string }
+    text = j.text || `⚠️ mini ${verb}: ${j.error || `HTTP ${res.status}`}`
+  } catch (e) {
+    text = `🔴 Can't reach the Mac mini (${e instanceof Error ? e.message : String(e)}). It may be asleep, off, or its internet/tunnel is down — nothing can restart it remotely until it's back online.`
+  }
+  await tg("sendMessage", { chat_id: chatId, text, reply_to_message_id: replyTo })
+}
+
 async function tgDownload(fileId: string): Promise<{ base64: string; mediaType: ImageMediaType } | { error: string }> {
   const token = botToken()
   if (!token) return { error: "bot token not set" }
@@ -388,6 +406,16 @@ export async function POST(request: Request) {
       }
       return NextResponse.json({ ok: true })
     }
+    // "mini reboot" confirmation (2026-10-30): a real machine restart only
+    // happens on the ✅ tap; everything on the mini is down ~3 min.
+    if ((cb.data === "mini:reboot:yes" || cb.data === "mini:reboot:no") && typeof chatId === "number") {
+      const yes = cb.data.endsWith(":yes")
+      await tg("answerCallbackQuery", { callback_query_id: cb.id, text: yes ? "Rebooting…" : "Cancelled" })
+      await tg("editMessageReplyMarkup", { chat_id: chatId, message_id: cb.message?.message_id, reply_markup: { inline_keyboard: [] } })
+      if (yes) waitUntil(runMini(chatId, "reboot", cb.message?.message_id))
+      else await tg("sendMessage", { chat_id: chatId, text: "❌ Reboot cancelled — nothing happened.", reply_to_message_id: cb.message?.message_id })
+      return NextResponse.json({ ok: true })
+    }
     // Daily lead-status summary (2026-10-24): ↩️ Undo puts one automatic
     // move back and makes Ryan's status stick (lib/leadStatus).
     if (cb.data.startsWith("lsundo:")) {
@@ -580,15 +608,22 @@ export async function POST(request: Request) {
   const repliedText = msg.reply_to_message?.text || msg.reply_to_message?.caption || ""
   if (!body) return NextResponse.json({ ok: true })
 
-  // Mac mini bridge rescue (2026-10-30): "mini status" / "mini cleanup" /
-  // "mini restart" (a leading "/" and bare "mini" work too). The bridge that
-  // runs Claude sessions on the mini fills up (32 max) or drops, and Ryan needs
-  // a phone-only fix when he's away. The sidecar runs ~/bin/claude-remote-ctl.py.
-  // Checked first so a reply-to-alert never routes "mini restart" anywhere else.
-  const miniCmd = /^\/?mini(?:@\w+)?(?:\s+(status|cleanup|clean\s*up|clean|restart|reboot)(?:\s+(?:now|please))?)?\s*$/i.exec(body)
+  // "mini" / "mini status|cleanup|restart|reboot" (2026-10-30). restart = the
+  // Remote Control connection only (~1 min); reboot = the whole machine, behind
+  // a ✅ button. Checked first so a reply-to-alert never routes it elsewhere.
+  const miniCmd = /^\/?mini(?:@\w+)?(?:\s+(status|cleanup|clean\s*up|clean|restart|reboot|reset)(?:\s+(?:now|please))?)?\s*$/i.exec(body)
   if (miniCmd) {
     const word = (miniCmd[1] || "status").toLowerCase().replace(/\s+/g, "")
-    const verb = word === "reboot" ? "restart" : word.startsWith("clean") ? "cleanup" : word
+    const verb = word === "reset" ? "restart" : word.startsWith("clean") ? "cleanup" : (word as "status" | "restart" | "reboot")
+    if (verb === "reboot") {
+      await tg("sendMessage", {
+        chat_id: chatId,
+        text: "⚠️ Reboot the Mac mini? Everything on it stops for about 3 minutes — Jackie, text sync, e-sign, every open mini chat. Try “mini restart” first if you haven't. Boot-check texts you when it's back.",
+        reply_to_message_id: msg.message_id,
+        reply_markup: { inline_keyboard: [[{ text: "✅ Reboot", callback_data: "mini:reboot:yes" }, { text: "❌ Cancel", callback_data: "mini:reboot:no" }]] },
+      })
+      return NextResponse.json({ ok: true })
+    }
     if (verb !== "status") {
       await tg("sendMessage", {
         chat_id: chatId,
@@ -598,21 +633,7 @@ export async function POST(request: Request) {
         reply_to_message_id: msg.message_id,
       })
     }
-    waitUntil((async () => {
-      let text: string
-      try {
-        const res = await fetch(`${process.env.SIDECAR_URL || "http://localhost:5799"}/mini/${verb}`, {
-          method: verb === "status" ? "GET" : "POST",
-          headers: sidecarHeaders(),
-          signal: AbortSignal.timeout(55_000),
-        })
-        const j = (await res.json().catch(() => ({}))) as { text?: string; error?: string }
-        text = j.text || `⚠️ mini ${verb}: ${j.error || `HTTP ${res.status}`}`
-      } catch (e) {
-        text = `🔴 Can't reach the Mac mini (${e instanceof Error ? e.message : String(e)}). It may be asleep, off, or its internet/tunnel is down — nothing can restart it remotely until it's back online.`
-      }
-      await tg("sendMessage", { chat_id: chatId, text, reply_to_message_id: msg.message_id })
-    })())
+    waitUntil(runMini(chatId, verb, msg.message_id))
     return NextResponse.json({ ok: true })
   }
 
