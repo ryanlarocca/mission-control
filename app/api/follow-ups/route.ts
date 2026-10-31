@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server"
+import type { LeadListing } from "@/lib/listing"
 import { getLeadsClient, clusterKeyOrId, isAnonymousCaller, fetchRelationshipContactKeys, isRelationshipContact } from "@/lib/leads"
 import {
   resolveNextTouch,
@@ -41,6 +42,7 @@ interface CandidateLead {
   status: string | null
   created_at: string
   property_address: string | null
+  listing?: LeadListing | null
   temperature: string | null
   drip_campaign_type: string | null
   drip_touch_number: number | null
@@ -64,7 +66,7 @@ const LEAD_COLS =
   "id, caller_phone, email, gmail_thread_id, source, source_type, name, status, created_at, " +
   "property_address, temperature, drip_campaign_type, drip_touch_number, last_drip_sent_at, " +
   "is_dnc, is_junk, recommended_followup_date, followup_reason, lead_type, twilio_number, notes, ai_summary, " +
-  "became_lead_at, appointment_at, offer_verbalized_at, pending_at, deal_closed_at"
+  "became_lead_at, appointment_at, offer_verbalized_at, pending_at, deal_closed_at, listing"
 
 interface ContactRow {
   clusterKey: string
@@ -83,6 +85,9 @@ interface ContactRow {
   gmailThreadId: string | null
   source: string | null
   propertyAddress: string | null
+  // MLS listing status for the property (2026-10-30) — the worklist chips
+  // it and sorts listed owners last.
+  listing: LeadListing | null
   status: string
   temperature: "hot" | "warm" | "cold" | null
   // Ryan's notes — shown as guidance in the manual-compose popup AND now as
@@ -407,6 +412,7 @@ export async function GET(_request: NextRequest) {
           leads.find((l) => l.gmail_thread_id)?.gmail_thread_id ?? null,
         source: leads.find((l) => l.source)?.source ?? null,
         propertyAddress: property,
+        listing: byRecent.find((l) => l.listing && typeof l.listing === "object")?.listing ?? null,
         status: rep.status ?? "new",
         temperature: temp === "hot" || temp === "warm" || temp === "cold" ? temp : null,
         notes: byRecent.find((l) => l.notes && l.notes.trim())?.notes ?? null,

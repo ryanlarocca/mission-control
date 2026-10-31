@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState, useCallback } from "react"
 import { useSearchParams } from "next/navigation"
+import { isOnMarket, listingChipLabel, type LeadListing } from "@/lib/listing"
 import {
   Phone, PhoneOutgoing, Voicemail, MessageSquare, ClipboardList, ChevronDown, ChevronRight,
   Loader2, RefreshCw, Send, Check, Mail, Trash2, Bot, Clock, X,
@@ -105,6 +106,9 @@ interface Lead {
   // including the one answered; null = unknown. Cluster-wide.
   mail_pieces_before?: number | null
   mail_pieces_detail?: string[] | null
+  // MLS listing status for property_address (2026-10-30), stamped
+  // cluster-wide by scripts/listing-status.py. Null = never checked.
+  listing?: LeadListing | null
   campaign_id?: string | null
   // campaigns.piece of campaign_id ("A" / "B" on A/B children), joined onto
   // the row by GET /api/leads (2026-10-12) for the piece-mismatch chip.
@@ -198,6 +202,7 @@ interface LeadGroup {
   becameLeadAt: string | null
   mailPiecesBefore: number | null
   mailPiecesDetail: string[]
+  listing: LeadListing | null
   // Direct-mail match — the mailed record this cluster responded to (newest
   // row that has one), how it was matched, and the auto-matcher's unresolved
   // near-misses when it found several and attached none.
@@ -489,6 +494,7 @@ function groupLeads(leads: Lead[]): LeadGroup[] {
       becameLeadAt: newestFirst.find(r => r.became_lead_at)?.became_lead_at ?? null,
       mailPiecesBefore: newestFirst.find(r => typeof r.mail_pieces_before === "number")?.mail_pieces_before ?? null,
       mailPiecesDetail: newestFirst.find(r => Array.isArray(r.mail_pieces_detail) && r.mail_pieces_detail.length)?.mail_pieces_detail ?? [],
+      listing: newestFirst.find(r => r.listing && typeof r.listing === "object")?.listing ?? null,
       mailRecordId: mailRow?.mail_record_id ?? null,
       mailMatchMethod: mailRow?.mail_match_method ?? null,
       mailMatchCandidates: mailRow ? [] : (candidateRow?.mail_match_candidates ?? []),
@@ -2383,6 +2389,14 @@ function LeadCard(p: LeadCardProps) {
                   📬 Matched
                 </span>
               )}
+              {isOnMarket(group.listing) && (
+                <span
+                  className="px-1.5 py-0.5 text-[9px] font-semibold rounded uppercase tracking-wider bg-rose-950 text-rose-300 border border-rose-900 shrink-0"
+                  title={`Listed on the MLS${group.listing!.mls ? ` (${group.listing!.mls})` : ""}${group.listing!.checked_at ? ` — checked ${new Date(group.listing!.checked_at).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}` : ""}`}
+                >
+                  🏷 {listingChipLabel(group.listing!)}
+                </span>
+              )}
               {group.mailPiecesBefore != null && group.mailPiecesBefore > 0 && (
                 <span
                   className="px-1.5 py-0.5 text-[9px] font-semibold rounded uppercase tracking-wider bg-sky-950 text-sky-300 border border-sky-900 shrink-0"
@@ -2565,6 +2579,31 @@ function LeadCard(p: LeadCardProps) {
               onSave={(v) => p.onPatchField("property_address", v)}
             />
           </div>
+          {group.listing && (
+            <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-zinc-400">
+              <span className="text-zinc-500">🏷 MLS:</span>
+              {isOnMarket(group.listing) ? (
+                <span className="text-rose-300">
+                  {group.listing.status}
+                  {group.listing.price ? ` · $${group.listing.price.toLocaleString()}` : ""}
+                  {group.listing.dom != null ? ` · ${group.listing.dom} days on market` : ""}
+                  {group.listing.type ? ` · ${group.listing.type}` : ""}
+                </span>
+              ) : (
+                <span>Not listed</span>
+              )}
+              {group.listing.url && (
+                <a href={group.listing.url} target="_blank" rel="noreferrer" className="text-sky-400 hover:underline">
+                  {group.listing.mls || "listing"} ↗
+                </a>
+              )}
+              {group.listing.checked_at && (
+                <span className="text-zinc-600">
+                  checked {new Date(group.listing.checked_at).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}
+                </span>
+              )}
+            </div>
+          )}
 
           {/* Direct-mail tracking — which mailed piece this responder answered.
               Shown for every card so a mis-sourced lead can still be linked;

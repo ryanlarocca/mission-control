@@ -1,6 +1,7 @@
 "use client"
 
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react"
+import { isOnMarket, listingChipLabel, type LeadListing } from "@/lib/listing"
 import {
   Phone, PhoneOutgoing, Bot, Mail, MessageSquare, Send, Pencil, X, Check,
   Clock, Loader2, RefreshCw, AlertTriangle, ChevronDown, ChevronRight,
@@ -43,6 +44,7 @@ interface ContactRow {
   gmailThreadId: string | null
   source: string | null
   propertyAddress: string | null
+  listing?: LeadListing | null
   status: string
   temperature: "hot" | "warm" | "cold" | null
   notes: string | null
@@ -99,6 +101,10 @@ function sortWorklist(rows: ContactRow[]): ContactRow[] {
     if (owed !== 0) return owed
     const t = tempRank(a.temperature) - tempRank(b.temperature)
     if (t !== 0) return t
+    // Owners whose property is already listed on the MLS go last — Ryan
+    // calls them after everyone else (2026-10-30).
+    const listed = Number(isOnMarket(a.listing)) - Number(isOnMarket(b.listing))
+    if (listed !== 0) return listed
     return touchSortKey(a.primary) - touchSortKey(b.primary)
   })
 }
@@ -1484,6 +1490,14 @@ function ContactCard({ row, ...h }: { row: ContactRow } & CardHandlers) {
         {row.source && <><span className="text-zinc-600">·</span><span className="text-zinc-500">{row.source}</span></>}
         {row.propertyAddress && (
           <span className="text-zinc-500 truncate max-w-[200px]" title={row.propertyAddress}>🏠 {row.propertyAddress}</span>
+        )}
+        {isOnMarket(row.listing) && (
+          <span
+            className="px-1.5 py-0.5 text-[9px] font-semibold rounded uppercase tracking-wider bg-rose-950 text-rose-300 border border-rose-900 shrink-0"
+            title={`Listed on the MLS${row.listing!.mls ? ` (${row.listing!.mls})` : ""} — call last`}
+          >
+            🏷 {listingChipLabel(row.listing!)}
+          </span>
         )}
         <div className="ml-auto flex items-center gap-1 shrink-0">
           <StatusMenu
