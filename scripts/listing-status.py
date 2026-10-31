@@ -55,7 +55,7 @@ def get(url, hops=0):
         if e.code in (301, 302, 303, 307) and loc and hops < 4:
             return get(loc if loc.startswith("http") else BASE + loc, hops + 1)
         raise
-CARD = re.compile(r"(\d+[A-Za-z]?) ([^,$]+?), ([A-Za-z .]+), CA (\d{5})?\s*\$([\d,]+)\s+(Active Under Contract|Active|Pending|Contingent)\s*(?:(\d+) Days? on Site)?\s*([A-Za-z /]+?)\s+MLS #: (\w+)")
+CARD = re.compile(r"(\d+[A-Za-z]?) ([^,$]+?), ([A-Za-z .]+), CA (\d{5})?(?:-\d{4})?\s*\$([\d,]+)\s+(Active Under Contract|Active|Pending|Contingent)\s*(?:(\d+) Days? on Site)?\s*([A-Za-z /]+?)\s+MLS #: (\w+)")
 def cards(body):
     out, seen = [], set()
     for m0 in re.finditer(r'data-target="([A-Z]{2}\w+)"', body):
@@ -91,6 +91,8 @@ def search(text, ttype, max_pages=8):
     return count, out
 
 # ---------- address handling
+# (zip+4 like "94025-2049" appears on some cards; cards with "Address Not
+# Disclosed" never parse and can't match a lead anyway.)
 SUF = {"street": "st", "avenue": "ave", "av": "ave", "drive": "dr", "road": "rd", "boulevard": "blvd", "court": "ct", "lane": "ln",
        "place": "pl", "circle": "cir", "terrace": "ter", "parkway": "pkwy", "highway": "hwy"}
 SUF_RE = r" (st|ave|dr|rd|blvd|ct|ln|pl|way|cir|ter|pkwy|hwy)$"
@@ -106,20 +108,38 @@ def parse(raw):
         if not m: out.append({"nums": [], "street": alt.strip(), "city": city}); continue
         out.append({"nums": [int(x) for x in re.split(r"\s*[/-]\s*", m.group(1))], "street": m.group(2).strip(), "city": city})
     return out
+_city_cache = {}
+def city_inventory(city):
+    """Every Active / AUC / Pending card in a city, fetched once (San Jose ≈ 55 pages, ~25 s)."""
+    k = city.lower()
+    if k not in _city_cache:
+        try: count, cs = search(city, "City", max_pages=120)
+        except Exception as e: count, cs = 0, []
+        _city_cache[k] = (count, [c for c in cs if c["city"].lower() == k])
+    return _city_cache[k]
 def check(p):
+    """Three nets, unioned: the city's full inventory (authoritative when a
+    city is known), the bare street-name search and the suffix-form street
+    search (each finds listings the other misses). A street name that is
+    also a city name ("Oak", "Grand", "Richmond") sends the street search to
+    that city — that's why the inventory net exists."""
     hits, notes, seen = [], [], set()
-    bare = key(p["street"])
+    bare = key(p["street"]); full = norm(p["street"])
     if not bare: return hits, ["no street"]
-    tries = ([("Address", f"{p['nums'][0]} {norm(p['street'])}, {p['city']}, CA")] if p["nums"] and p["city"] else []) + [("Street", bare)]
-    for ttype, q in tries:
-        try: count, cs = search(q, ttype)
-        except Exception as e: notes.append(f"{ttype} '{q}': {e}"); continue
+    def take(cs, label, count):
         on_street = [k for k in cs if key(k["street"]) == bare]
-        notes.append(f"{ttype} '{q}': {count} results, {len(on_street)} on street")
+        notes.append(f"{label}: {count} results, {len(on_street)} on street")
         for k in on_street:
             if int(re.sub(r"\D", "", k["num"]) or 0) not in p["nums"]: continue
             if p["city"] and k["city"].lower() != p["city"].lower(): continue
             if k["mls"] not in seen: seen.add(k["mls"]); hits.append(k)
+        return on_street
+    if p["city"]:
+        count, cs = city_inventory(p["city"]); take(cs, f"city {p['city']}", count)
+    for q in dict.fromkeys([bare, full]):
+        try: count, cs = search(q, "Street")
+        except Exception as e: notes.append(f"street '{q}': {e}"); continue
+        on_street = take(cs, f"street '{q}'", count)
         if not p["nums"]: notes.append("no house number; on street: " + "; ".join(f"{k['num']} {k['street']} {k['city']} {k['status']} ${k['price']:,}" for k in on_street[:5]))
         time.sleep(0.3)
     return hits, notes
