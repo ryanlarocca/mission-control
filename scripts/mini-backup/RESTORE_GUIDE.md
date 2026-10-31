@@ -54,6 +54,7 @@ Work top to bottom. Verify each step before the next. The old machine's exact st
 | `cloudflared/*` | `~/.cloudflared/` (named tunnel `esign` credentials + cert; no Cloudflare login needed) |
 | `ssh/*` | `~/.ssh/` (chmod 700 dir, 600 keys) |
 | `bin/*` | `~/bin/` (claude-remote tmux scripts) |
+| *(not backed up — recreate)* | `/etc/sudoers.d/claude-reboot` = `ryanlarocca ALL=(root) NOPASSWD: /sbin/shutdown -r now` (mode 0440, root:wheel; `visudo -cf` it). Lets the Marketing bot's `mini reboot` restart the mini. Ryan types his password once in the `osascript … with administrator privileges` box. |
 | `gog/config.json` | `~/Library/Application Support/gogcli/config.json` — tokens are NOT here, see clicks below |
 | `sidecar/*` | `~/Projects/PROJECTS/comprehensive-relationship-management/phase2/` (gitignored sidecar + helpers) |
 | `data/iphone_sms.db`, `data/unified_messages.db` | `~/Projects/PROJECTS/comprehensive-relationship-management/data/` |
