@@ -74,7 +74,7 @@ export const DOC_TYPES = [
   "purchase_agreement", "counter", "addendum", "contingency_removal", "disclosure", "nhd", "inspection", "appraisal",
   "title_report", "escrow_instructions", "emd_receipt", "net_sheet", "closing_statement", "deed",
   "evidence_of_insurance", "insurance_policy", "insurance_quote", "loan_docs", "loan_application",
-  "invoice", "bid", "offering_memorandum", "flyer", "marketing_list", "tax_doc", "lease", "photos", "draw_request", "proof", "tax_form", "other",
+  "invoice", "bid", "offering_memorandum", "flyer", "marketing_list", "tax_doc", "lease", "photos", "draw_request", "proof", "tax_form", "proof_of_funds", "other",
 ]
 
 // Ryan 2026-10-02 — the transaction whitelist. Only these document types are
@@ -85,6 +85,16 @@ export const WHITELIST = new Set([
   "purchase_agreement", "counter", "addendum", "contingency_removal", "disclosure", "nhd", "inspection", "appraisal",
   "title_report", "emd_receipt", "net_sheet", "closing_statement", "deed", "evidence_of_insurance", "insurance_policy",
   "loan_docs", "marketing_list", "draw_request",
+])
+
+// Ryan 2026-11-01 (Coko LLC's $1.5M as-is cash offer on Quito, filed as if it were
+// his own purchase): an offer he RECEIVES on a property he is selling is a package —
+// everything the buyer's agent sent travels together into one folder under
+// Properties/<addr>/Offers/, and never into the numbered Purchase & Sale chain.
+// Membership is decided by the email (an inbound offer was detected on it), the
+// doc type only says what the piece is called. Buyer-rep agreements stay out.
+export const OFFER_PACKAGE_TYPES = new Set([
+  "purchase_agreement", "counter", "addendum", "contingency_removal", "closing_statement", "net_sheet", "emd_receipt", "proof_of_funds", "escrow_instructions",
 ])
 
 /** Which property subfolder a whitelisted doc type lives in (null = not filed). */
@@ -124,8 +134,8 @@ export function verifyPrompt({ filename, candidates }) {
 Ryan's active properties: ${candidates.join("; ") || "(none listed)"}
 
 Which property is this document about? Look at the first page(s): the "Property" line of a purchase agreement, the property address on a settlement statement, prelim, disclosure, insurance binder, loan document, or report.
-Return JSON only: {"address": "2116 Quito Rd, San Jose, CA 95130" | null, "label": "2116 Quito Rd" | null, "apn": "403-29-017" | null, "matches": "<one of Ryan's active properties above, exactly as listed, or null>", "stage": "quote"|"application"|"estimated"|"final"|"bound"|"signed"|null, "confidence": 0.0-1.0}
-"label" = number + street name only. "stage": final/FINAL in a title → final; "estimated"/"preliminary" → estimated; an insurance binder, declarations page or evidence of insurance naming a lender → bound; an insurance quote or proposal → quote; a loan application → application; a fully executed contract → signed.`
+Return JSON only: {"address": "2116 Quito Rd, San Jose, CA 95130" | null, "label": "2116 Quito Rd" | null, "apn": "403-29-017" | null, "matches": "<one of Ryan's active properties above, exactly as listed, or null>", "stage": "quote"|"application"|"estimated"|"final"|"bound"|"signed"|null, "buyer": "Coko LLC" | null, "seller": "Ryan LaRocca" | null, "price": 1500000 | null, "confidence": 0.0-1.0}
+"label" = number + street name only. "buyer" / "seller" / "price": only for a purchase agreement, counter offer, addendum or contingency removal — copy the buyer's and seller's names exactly as printed on the first page (an LLC stays an LLC; several buyers joined with " & "), and the purchase price as a plain number; null for every other kind of document. "stage": final/FINAL in a title → final; "estimated"/"preliminary" → estimated; an insurance binder, declarations page or evidence of insurance naming a lender → bound; an insurance quote or proposal → quote; a loan application → application; a fully executed contract → signed.`
 }
 
 export const CLASSIFY_SYSTEM = `You are the inbox triage layer for Ryan LaRocca, a real-estate investor (LRG Homes, San Jose CA). He flips houses and buys small multifamily, sells his own flips through listing agents, and works with escrow officers (Chicago Title), lenders (Kiavi, Conventus), insurance (Obie), contractors, and agents who send him deals.
@@ -163,7 +173,7 @@ Return JSON only:
   // media_delivery = a photographer / media company delivering listing photos, video, floor plans or a property website — f8, Aryeo, HDPhotoHub, Tourbuzz, Spiro, Matterport. Put the download link in document_links.
   "property": {"label": "93 Ridgeview", "address": "93 Ridgeview Ave, San Jose, CA 95127"} | null,   // label = number + street name only
   "attachments": [ {"filename": "...", "relevant": true|false, "doc_type": "<one of: ${DOC_TYPES.join(", ")}>", "property_label": "..."|null, "signed": true|false|null, "stage": "quote"|"application"|"estimated"|"final"|"bound"|null, "description": "6-12 words"} ],
-  // doc_type notes: counter = counter offer (SCO/BCO); contingency_removal = CR form; nhd = natural hazard disclosure report; emd_receipt = earnest-money wire/deposit receipt from escrow; closing_statement = buyer/seller settlement statement (any version); deed = grant deed / recorded docs; evidence_of_insurance = EOI/binder; insurance_policy = declarations page / policy; insurance_quote = quotes, proposals, RCE, applications not yet bound; loan_application = applications, affidavits, disclosures, guides from a lender; loan_docs = final executed loan documents (note, deed of trust, closing disclosure); marketing_list = CSV/XLSX owner or farm lists from a title rep; draw_request = ANY construction-draw paperwork from a lender or its draws desk (draw request form / DRF spreadsheet, lien package, lien waiver/release, draw schedule or budget, draw inspection, draw approval or funding notice) — never "invoice" or "loan_docs" when the email is about a draw; proof = a print proof / mockup to approve (mail house, PandaDoc); tax_form = a sales-tax exemption certificate such as CDTFA-230 / Reg 1541.5. stage: "final" when the sender calls it final; "estimated" for estimated/preliminary statements; "bound" for an insurance binder/EOI/dec page; "quote"/"application" otherwise for insurance and loan paperwork.
+  // doc_type notes: counter = counter offer (SCO/BCO); contingency_removal = CR form; nhd = natural hazard disclosure report; emd_receipt = earnest-money wire/deposit receipt from escrow; closing_statement = buyer/seller settlement statement (any version); deed = grant deed / recorded docs; evidence_of_insurance = EOI/binder; insurance_policy = declarations page / policy; insurance_quote = quotes, proposals, RCE, applications not yet bound; loan_application = applications, affidavits, disclosures, guides from a lender; loan_docs = final executed loan documents (note, deed of trust, closing disclosure); marketing_list = CSV/XLSX owner or farm lists from a title rep; draw_request = ANY construction-draw paperwork from a lender or its draws desk (draw request form / DRF spreadsheet, lien package, lien waiver/release, draw schedule or budget, draw inspection, draw approval or funding notice) — never "invoice" or "loan_docs" when the email is about a draw; proof = a print proof / mockup to approve (mail house, PandaDoc); tax_form = a sales-tax exemption certificate such as CDTFA-230 / Reg 1541.5; proof_of_funds = a buyer's POF / bank or brokerage statement / lender pre-approval letter sent with an offer (never "proof"). stage: "final" when the sender calls it final; "estimated" for estimated/preliminary statements; "bound" for an insurance binder/EOI/dec page; "quote"/"application" otherwise for insurance and loan paperwork.
   // Lender servicing / processing desks (servicing@, loan.processing@, draws@), escrow officers, insurers and billing
   // systems acting for a vendor (FreshBooks, QuickBooks, Bill.com, Stripe, PayPal, Square invoices/proposals/estimates)
   // on one of Ryan's deals are REAL asks: an invoice or proposal to approve/pay, an ACH or wire form to return, a

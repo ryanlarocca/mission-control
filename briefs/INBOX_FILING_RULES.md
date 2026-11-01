@@ -37,10 +37,21 @@ Properties/<number street>/          e.g. 5764 Halleck Dr, 2116 Quito Rd
     <property> Buyer Statement <date> FINAL.pdf
     <property> Grant Deed <date>.pdf
   Loan & Insurance/                  final loan docs (sender's name), EOI (sender's name), <property> Insurance Policy <date>.pdf
+  Offers/                            offers Ryan RECEIVES on a property he is selling (since 2026-11-01) — one folder per offer, the whole package together
+    Coko LLC $1.5M offer 2026-10-30/
+      Offer RPA 2026-10-30.pdf
+      Buyer Contingency Removal 2026-10-30.pdf
+      Buyer Closing Statement 2026-10-30.pdf
+      Proof of Funds 2026-10-30.pdf
+      Escrow Wire Instructions 2026-10-30.pdf
+      Counter Offer 2026-11-02.pdf       ← a later counter / addendum for the same buyer joins the same folder
   Construction/                      draw paperwork from any lender (DRF / draw request form, lien package, lien waivers, draw schedule, draw approvals — sender's name, every stage; since 2026-10-06); bids, invoices, permits (Ryan files these by hand)
   Photos/
 ```
 Closed deals stay where they are until Ryan says otherwise (`Properties/Old/`, `Properties/2025/` untouched). `93 Ridgeview` keeps its current name and layout — do not rename or restructure it.
+
+## Offers Ryan receives (he is the seller)
+The buyer named on the first page of the RPA / counter decides. If it is not Ryan, LRG Homes or Charity Doors LLC (plus `inbox_settings.agent.our_names`), the email is an **offer package**: every piece the buyer's agent sent — RPA, counters, addenda, the buyer's contingency removal, their closing statement / net sheet, EMD receipt, proof of funds / pre-approval, escrow wire sheet — files together into `Properties/<addr>/Offers/<buyer> <price> offer <date>/` with short dated names. Nothing from it ever enters the numbered Purchase & Sale chain (that is Ryan's own purchase). A buyer-representation agreement stays out. No statement diff on buyer-side statements.
 
 ## Money that crosses deals
 When proceeds from one property fund another (e.g. the 93 Ridgeview disbursement wired into the 5764 Halleck Dr escrow), the disbursement / wire document is filed with the **receiving** property too, under Title & Escrow, so that file balances on its own later. A document naming two properties is not a misfile — check which escrow the money landed in.

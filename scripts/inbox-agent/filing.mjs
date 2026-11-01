@@ -5,7 +5,7 @@
 // classifies; this module decides whether a document is filed at all, which
 // property subfolder it belongs in, and what it is called.
 import { ptDate, sanitizeFilename } from "./env.mjs"
-import { PS_LABEL, WHITELIST, subfolderFor } from "./llm.mjs"
+import { OFFER_PACKAGE_TYPES, PS_LABEL, WHITELIST, subfolderFor } from "./llm.mjs"
 import { invoiceNumberFrom, money, paidName, parseItiAmounts, proofTitleFrom, stagingNumberFrom } from "./vendors.mjs"
 import { freshbooksAmount } from "./fetch/freshbooks.mjs"
 
@@ -44,6 +44,8 @@ export function refineDocType(filename, docType, senderEmail, subject = "") {
   const f = String(filename || "")
   const sender = String(senderEmail || "").toLowerCase()
   const insuranceContext = INSURER_RE.test(sender) || /\b(insurance|policy|dwelling|binder)\b/i.test(String(subject || ""))
+  if (PROOF_OF_FUNDS_RE.test(f) && !/insurance|payment/i.test(f)) return "proof_of_funds"
+  if (docType === "proof" && !PROOF_FILE_RE.test(f)) docType = "other" // the classifier's "proof" is a print proof; anything else so labelled is just unknown
   if (DRAW_FILE_RE.test(f)) return "draw_request"
   if (DRAW_SUBJECT_RE.test(String(subject || "")) && !NEVER_DRAW.has(docType) && !/\b(guide|quick start|faq|how to)\b/i.test(f)) return "draw_request"
   if (TERMITE_SUBJECT_RE.test(String(subject || "")) && !TERMITE_NOT_REPORT_RE.test(f) && (!docType || docType === "invoice" || docType === "other")) return "inspection"
@@ -83,8 +85,12 @@ export function stageOf({ filename, subject, modelStage, verifyStage }) {
   return s
 }
 
-/** Is this attachment filed at all? Returns {file: bool, why}. */
-export function filingDecision(docType, stage) {
+/** Is this attachment filed at all? Returns {file: bool, why}.
+ *  `offer` = the email carries an offer Ryan received on his own listing (see
+ *  inboundOfferFrom): the whole package files to Offers/, including the pieces
+ *  (POF, escrow wire sheet) that are never filed on his own purchases. */
+export function filingDecision(docType, stage, { offer = false } = {}) {
+  if (offer && OFFER_PACKAGE_TYPES.has(docType)) return { file: true, sub: OFFERS_SUBFOLDER, why: "offer package" }
   if (!WHITELIST.has(docType)) return { file: false, why: `${docType} is not a transaction document` }
   if (docType === "marketing_list") return { file: true, why: "marketing list" }
   const sub = subfolderFor(docType, docType === "loan_docs" && stage === "signed" ? "final" : stage)
@@ -100,6 +106,70 @@ export function nextSequence(existingNames) {
 
 export function isPurchaseDoc(docType) {
   return PS_TYPES.has(docType)
+}
+
+// ---- offers Ryan receives (2026-11-01)
+export const OFFERS_SUBFOLDER = "Offers"
+// Names that make a purchase document Ryan's own deal rather than an offer he
+// received: himself, the company, and the Quito/Halleck partnership entity.
+// Extend with inbox_settings.agent.our_names.
+export const OUR_NAMES_DEFAULT = ["LaRocca", "LRG Homes", "LRG", "Charity Doors"]
+const BUYER_NOISE_RE = /,?\s*(a|an)\s+(california|delaware|nevada|wyoming)?\s*(limited liability company|corporation|trust|partnership)\b.*$|\s*and\/or\s+(nominee|assignee)s?\b.*$|\s*\((?:or|and\/or)?\s*assignee\)/i
+
+/** The buyer's name as a folder prefix: "Coko LLC, a California limited liability company and/or assignee" → "Coko LLC". */
+export function cleanBuyerName(buyer) {
+  const b = String(buyer || "").replace(/\s+/g, " ").replace(BUYER_NOISE_RE, "").replace(/[.,;]+$/, "").trim()
+  return b
+}
+
+/**
+ * Did Ryan receive this offer, or make it? From the verify read of the first page
+ * (buyer / seller / price). An offer is inbound when the document names a buyer
+ * and none of our names appear in it. null = Ryan's own purchase chain (or the
+ * page could not be read), so the existing Purchase & Sale rule applies.
+ * @returns {{ buyer: string, price: number|null } | null}
+ */
+export function inboundOfferFrom(verify, ourNames = OUR_NAMES_DEFAULT) {
+  const buyer = cleanBuyerName(verify?.buyer)
+  if (!buyer) return null
+  const hay = buyer.toLowerCase()
+  if ((ourNames || []).some((n) => n && hay.includes(String(n).toLowerCase()))) return null
+  const price = Number(verify?.price)
+  return { buyer, price: Number.isFinite(price) && price > 0 ? price : null }
+}
+
+/** $1,500,000 → "$1.5M"; $1,465,000 → "$1.465M"; $850,000 → "$850k". */
+export function shortPrice(price) {
+  const n = Number(price)
+  if (!Number.isFinite(n) || n <= 0) return null
+  if (n >= 1e6) return `$${String(Number((n / 1e6).toFixed(3)))}M`
+  if (n >= 1e3) return `$${String(Number((n / 1e3).toFixed(1)))}k`
+  return `$${n}`
+}
+
+/** One folder per offer: "Coko LLC $1.5M offer 2026-10-30". */
+export function offerPackageFolder({ buyer, price, receivedAt }) {
+  const p = shortPrice(price)
+  return sanitizeFilename(`${cleanBuyerName(buyer)}${p ? ` ${p}` : ""} offer ${ptDate(receivedAt)}`)
+}
+
+/** A later piece of the same negotiation (counter, revised offer) joins the buyer's existing package folder. */
+export function offerFolderMatch(existingNames, buyer) {
+  const want = cleanBuyerName(buyer).toLowerCase()
+  if (!want) return null
+  return (existingNames || []).find((n) => String(n).toLowerCase().startsWith(want + " ") || String(n).toLowerCase() === want) || null
+}
+
+const OFFER_DOC_LABEL = {
+  purchase_agreement: "Offer RPA", counter: "Counter Offer", addendum: "Addendum", contingency_removal: "Buyer Contingency Removal",
+  closing_statement: "Buyer Closing Statement", net_sheet: "Buyer Net Sheet", emd_receipt: "EMD Receipt", proof_of_funds: "Proof of Funds", escrow_instructions: "Escrow Wire Instructions",
+}
+/** Short, dated names inside the package folder (the folder already says who and how much). */
+export function offerDocName({ docType, filename, receivedAt }) {
+  const ext = (/\.([a-z0-9]{1,6})$/i.exec(filename || "") || [])[1]?.toLowerCase() || "pdf"
+  const n = (/addendum\s*#?\s*(\d+|[A-Z])\b/i.exec(filename || "") || [])[1]
+  const label = docType === "addendum" && n ? `Addendum ${n}` : OFFER_DOC_LABEL[docType]
+  return sanitizeFilename(label ? `${label} ${String(receivedAt || "").slice(0, 10)}.${ext}` : filename)
 }
 
 /**

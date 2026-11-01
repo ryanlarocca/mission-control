@@ -73,7 +73,7 @@ describe("regression — the whitelist is unchanged for every non-vendor sender"
     // "Exempt Seller Disclosure" (CAR ESD) and an "Insurance Proof" PDF into ignored vendor types.
     expect(refineDocType("ESD - Exempt Seller Disclosure.pdf", "disclosure", "agent@x.com", "")).toBe("disclosure")
     expect(refineDocType("Insurance Proof.pdf", "evidence_of_insurance", "agent@x.com", "")).toBe("evidence_of_insurance")
-    expect(refineDocType("Proof of Funds - Chase.pdf", "other", "agent@x.com", "")).toBe("other")
+    expect(refineDocType("Proof of Funds - Chase.pdf", "other", "agent@x.com", "")).toBe("proof_of_funds") // 2026-11-01: a buyer's POF has its own type now — still never a vendor "proof"
     expect(refineDocType("1541 Foo Ave Addendum.pdf", "addendum", "agent@x.com", "")).toBe("addendum")
     expect(refineDocType("RE-Proof3 for order #240069.pdf", "other", "juan@letterprinting.net", "")).not.toBe("proof")
     expect(refineDocType("CDTFA-230 Exemption Certificate.pdf", "other", "juan@letterprinting.net", "")).not.toBe("tax_form")

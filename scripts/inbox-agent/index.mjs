@@ -61,7 +61,7 @@ import {
   CLASSIFY_SYSTEM, FILING_SYSTEM, RULES_SYSTEM, SCREEN_SYSTEM, SONNET, VERIFY_SYSTEM,
   BAY_AREA_RE, CONDO_RE, blastSignalsPass,
   changePrompt, classifyPrompt, complete, completeJson, filingPrompt, rulesPrompt, screenPrompt, verifyPrompt, WHITELIST } from "./llm.mjs"
-import { destinationFor, driveDuplicateOf, filingDecision, isPurchaseDoc, nextSequence, refineDocType, stageOf, vendorFilename, vendorPropertyFolder, withTimeSuffix } from "./filing.mjs"
+import { OFFERS_SUBFOLDER, OUR_NAMES_DEFAULT, destinationFor, driveDuplicateOf, filingDecision, inboundOfferFrom, isPurchaseDoc, nextSequence, offerDocName, offerFolderMatch, offerPackageFolder, refineDocType, stageOf, vendorFilename, vendorPropertyFolder, withTimeSuffix } from "./filing.mjs"
 import { AWAITING_PAYMENT_MAX_TRIES, MAX_FETCH_ATTEMPTS, NEW_LINK_ERROR, NEW_LINK_GUARD_MS, awaitingPaymentNext, documentLinks, fetchDocuments, freshbooksAddress, newLinkGuard, nextTryAt, paymentWakeTargets, propertyWebsiteLinks, providerKind, providerLabel, queuesForVendor, queuesOnSystemEmail, readFetchedBytes, requeueDecision, saveFetchedBytes, tapinspectShareId, waitsClosedBy, waitsTimedOut } from "./fetch/index.mjs"
 import { invoiceDiffLines, isPaidName, matchVendor, money, paidName, parentCampaignOf, pickCampaign, stagingInvoiceRowFor, stagingNumberFrom, supersedeRenames, vendorDocType, vendorFilingDecision, vendorRules } from "./vendors.mjs"
 import { DUP_STATUSES, gmailLink, photoDedupeVerdict, propertyFolderFromReply, propertyLabelFromSubject, suffixedFilename } from "./photos.mjs"
@@ -483,6 +483,42 @@ async function deterministicDest(ctx, pf, att, msg, stage, source = "attachment"
   }
   const dest = destinationFor({ property: pf.name, docType: att.doc_type, filename: att.cleanName || att.filename, subject: msg.subject, receivedAt: msg.internalDate, stage, seq, side, source })
   return dest ? { ...dest, folder: dest.folder.replace(/^Properties\/[^/]+/, pf.path) } : null
+}
+
+// Ryan 2026-11-01: an offer he RECEIVES on a listing (Coko LLC's $1.5M on Quito)
+// had been numbered into his own Purchase & Sale chain and its closing statement
+// dropped in a stray root folder. The buyer on the RPA's first page decides: not
+// one of our names → the whole email is an offer package → one folder under
+// Properties/<addr>/Offers/, every piece the buyer's agent sent, short dated names.
+/** Read the purchase documents on this email first; returns {buyer, price, label, verifyByName} or null. */
+async function detectInboundOffer(ctx, msg, docs) {
+  const verifyByName = new Map()
+  const ourNames = [...OUR_NAMES_DEFAULT, ...(((await getSetting("agent")).our_names) || [])]
+  let offer = null
+  for (const att of docs) {
+    if (!isPurchaseDoc(att.doc_type) || !/^application\/pdf$/.test(att.mime)) continue
+    try {
+      const bytes = att.bytes || (await getAttachmentBytes(ctx.gmail, msg.id, att.attachmentId))
+      const verify = await verifyProperty(ctx, bytes, att.cleanName || att.filename)
+      verifyByName.set(att.cleanName || att.filename, verify)
+      const hit = inboundOfferFrom(verify, ourNames)
+      if (hit && !offer) offer = { ...hit, label: labelFromVerify(verify) }
+    } catch (e) {
+      warn(`offer check on ${att.filename} failed:`, e.message)
+    }
+    if (offer) break
+  }
+  if (offer) log(`inbound offer: ${offer.buyer}${offer.price ? ` $${offer.price}` : ""} on ${offer.label || "?"} (${msg.subject})`)
+  return offer ? { ...offer, verifyByName } : null
+}
+
+/** Destination inside the buyer's package folder; a later counter/addendum joins the existing folder for that buyer. */
+async function offerDest(ctx, pf, att, msg, offer) {
+  const offersPath = `${pf.path}/${OFFERS_SUBFOLDER}`
+  const { id } = await resolvePath(ctx.drive, ctx.rootId, offersPath, { create: !DRY })
+  const existing = id ? (await listChildren(ctx.drive, id)).filter((k) => k.mimeType === "application/vnd.google-apps.folder").map((k) => k.name) : []
+  const folderName = offerFolderMatch(existing, offer.buyer) || offerPackageFolder({ buyer: offer.buyer, price: offer.price, receivedAt: msg.internalDate })
+  return { folder: `${offersPath}/${folderName}`, name: offerDocName({ docType: att.doc_type, filename: att.cleanName || att.filename, receivedAt: msg.internalDate }) }
 }
 
 /** The per-document lines of a filed-confirmation card (shared with the link-fetch card). */
@@ -973,10 +1009,12 @@ async function fileDocuments(ctx, msg, cls, docs, { source = "attachment", fetch
   const outcomes = [] // [{filename, outcome, why}] — the link-fetch card lists what happened to every file
   const note = (att, outcome, why = "") => outcomes.push({ filename: att.cleanName || att.filename, outcome, why })
   let property = cls?.property?.label || null // the email's property; refined by the first verified PDF
+  const offer = rulesApproved && ctx.drive ? await detectInboundOffer(ctx, msg, docs) : null
+  if (offer?.label && !property) property = offer.label
   for (const att of docs) {
     const isDeal = cls?.deal && (kind === "deal_lead" || kind === "broker_blast")
     const stage0 = stageOf({ filename: att.cleanName, subject: msg.subject, modelStage: att.stage })
-    const pre = filingDecision(att.doc_type, stage0)
+    const pre = filingDecision(att.doc_type, stage0, { offer: !!offer })
     if (!pre.file && !/^(evidence_of_insurance|insurance_policy|loan_docs)$/.test(att.doc_type) && !(isDeal && /^application\/pdf$/.test(att.mime))) {
       await recordIgnored(msg, att, pre.why, recOpts)
       note(att, "ignored", pre.why)
@@ -1002,11 +1040,11 @@ async function fileDocuments(ctx, msg, cls, docs, { source = "attachment", fetch
     }
 
     // Property from the document itself.
-    let verify = null
-    if (/^application\/pdf$/.test(att.mime) && att.doc_type !== "marketing_list") verify = await verifyProperty(ctx, rec.bytes, att.cleanName)
+    let verify = offer?.verifyByName.get(att.cleanName) || null
+    if (!verify && /^application\/pdf$/.test(att.mime) && att.doc_type !== "marketing_list") verify = await verifyProperty(ctx, rec.bytes, att.cleanName)
     const vLabel = labelFromVerify(verify)
     const stage = stageOf({ filename: att.cleanName, subject: msg.subject, modelStage: att.stage, verifyStage: verify?.stage })
-    const decision = filingDecision(att.doc_type, stage)
+    const decision = filingDecision(att.doc_type, stage, { offer: !!offer })
     if (!decision.file) {
       if (!DRY) await sb().from("inbox_files").update({ status: "ignored", error: decision.why, resolved_at: isoNow() }).eq("id", rec.row.id)
       log(`ignore ${att.filename}: ${decision.why}`)
@@ -1039,7 +1077,7 @@ async function fileDocuments(ctx, msg, cls, docs, { source = "attachment", fetch
       note(att, "asked", `no folder for ${property}`)
       continue
     }
-    const dest = await deterministicDest(ctx, pf, att, msg, stage, source)
+    const dest = offer ? await offerDest(ctx, pf, att, msg, offer) : await deterministicDest(ctx, pf, att, msg, stage, source)
     if (!dest) continue
     const r = await fileToDrive(ctx, rowNow, dest.folder, dest.name, { suffixOnExisting: true, bytes: rec.bytes })
     if (!r.ok) {
@@ -1048,7 +1086,7 @@ async function fileDocuments(ctx, msg, cls, docs, { source = "attachment", fetch
       continue
     }
     let diff = null
-    if (/^(closing_statement|net_sheet)$/.test(att.doc_type) && r.folderId && !DRY) diff = await statementDiff(ctx, r.folderId, rec.bytes, r.name || dest.name, pf.name)
+    if (!offer && /^(closing_statement|net_sheet)$/.test(att.doc_type) && r.folderId && !DRY) diff = await statementDiff(ctx, r.folderId, rec.bytes, r.name || dest.name, pf.name)
     filed.push({ row: rowNow, folder: dest.folder, name: r.name || dest.name, url: r.url, diff })
     note(att, "filed", `${dest.folder}/${r.name || dest.name}`)
   }
