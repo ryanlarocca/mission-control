@@ -9,9 +9,28 @@
   "source_brief": "briefs/BRIEF_MARKET_CYCLE_TRACKER_2026-11-01.md",
   "scored_object": {
     "dial_id": "zhvi_scc_drawdown",
-    "description": "Santa Clara County ZHVI (seasonally adjusted, all homes), maximum drawdown from its 2026 peak, measured on monthly prints through Dec 2028. The peak month is fixed from the data at the shakedown (expected May-Jun 2026).",
-    "measure_through": "2028-12-31",
-    "peak_month_fixed_at": "shakedown"
+    "description": "Santa Clara County ZHVI (seasonally adjusted, all homes), maximum drawdown from the reference peak, measured on monthly prints through Dec 2028.",
+    "reference_peak_rule": "The series' all-time high as of the shakedown. At bootstrap (2026-11-01) that is Jan 2025 = $1,630,177; the Jan 2026 local high ($1,603,555) is NOT the reference.",
+    "reference_peak": {
+      "month": "2025-01",
+      "value": 1630177,
+      "fixed_on": "2026-11-01"
+    },
+    "readings_at_bootstrap": {
+      "2026-09": 1562682,
+      "drawdown_pct": -4.1,
+      "deepest_so_far": {
+        "month": "2025-08",
+        "pct": -4.8
+      }
+    },
+    "historical_drawdowns_same_series": {
+      "2022-05_to_2023-05": -12.1,
+      "2018-11_to_2019-08": -9.2,
+      "2007-04_to_2011-12": -31.1
+    },
+    "calibration_note": "Base (-8 to -15) = the 2022-23 (-12.1%) and 2018-19 (-9.2%) magnitudes; Bear (<= -15) is beyond any rate-shock episode and needs a jobs shock; 2008 was -31.",
+    "measure_through": "2028-12-31"
   },
   "scenarios": [
     {
@@ -315,7 +334,7 @@
     },
     {
       "id": "C15",
-      "text": "SCC ZHVI drawdown from the 2026 peak reaches -10% or worse at any monthly print through Dec 2027",
+      "text": "SCC ZHVI drawdown from the reference peak (series all-time high, Jan 2025 at bootstrap) reaches -10% or worse at any monthly print through Dec 2027",
       "category": "scc_housing",
       "scenario_tag": "base",
       "prob_chat_claude": 60,
@@ -652,7 +671,8 @@
     },
     "move_requires": "log row citing >=2 readings and a non-empty opposite case (move #0 excepted as bootstrap)",
     "seasonal_window_years": 5,
-    "market_dials_read_as": "10-day average"
+    "market_dials_read_as": "10-day average",
+    "corridor_note": "Authored thresholds live in each dial's corridor. Bootstrap-computed seasonal stats are stored under corridor.computed and never overwrite authored keys. seasonal_1sd applies only to flow/count series (payrolls, claims, Realtor.com counts, C.A.R. sales)."
   },
   "tripwires": {
     "big": [
@@ -664,7 +684,7 @@
       {
         "id": "ccc_oas_record",
         "dial_id": "ccc_oas",
-        "rule": "FRED HY CCC OAS beyond its 2010-2025 maximum on a two-day close"
+        "rule": "FRED HY CCC OAS (BAMLH0A3HYC) at or above 20% on a two-day close (manual seed ~ the 2016/2020 closes; FRED only serves history from 2023-10)"
       },
       {
         "id": "hormuz",
@@ -723,8 +743,11 @@
         "up": "bear",
         "down": "bull"
       },
-      "band_rule": "seasonal_1sd",
-      "corridor": null,
+      "band_rule": "corridor",
+      "corridor": {
+        "bull_at_or_below": 2.8,
+        "bear_at_or_above": 4.0
+      },
       "has_history": true,
       "votes": true,
       "geography": "us"
@@ -746,8 +769,11 @@
         "up": "bear",
         "down": "bull"
       },
-      "band_rule": "seasonal_1sd",
-      "corridor": null,
+      "band_rule": "corridor",
+      "corridor": {
+        "bull_at_or_below": 2.5,
+        "bear_at_or_above": 3.5
+      },
       "has_history": true,
       "votes": true,
       "geography": "us"
@@ -769,8 +795,11 @@
         "up": "bear",
         "down": "bull"
       },
-      "band_rule": "seasonal_1sd",
-      "corridor": null,
+      "band_rule": "corridor",
+      "corridor": {
+        "bull_at_or_below": 2.8,
+        "bear_at_or_above": 4.0
+      },
       "has_history": true,
       "votes": true,
       "geography": "us"
@@ -792,8 +821,11 @@
         "up": "bear",
         "down": "bull"
       },
-      "band_rule": "seasonal_1sd",
-      "corridor": null,
+      "band_rule": "corridor",
+      "corridor": {
+        "bull_at_or_below": 2.6,
+        "bear_at_or_above": 3.5
+      },
       "has_history": true,
       "votes": true,
       "geography": "us"
@@ -838,8 +870,11 @@
         "up": "bear",
         "down": "bull"
       },
-      "band_rule": "seasonal_1sd",
-      "corridor": null,
+      "band_rule": "corridor",
+      "corridor": {
+        "bull_at_or_below": 4.0,
+        "bear_at_or_above": 4.7
+      },
       "has_history": true,
       "votes": true,
       "geography": "us"
@@ -884,8 +919,10 @@
         "up": "bear",
         "down": "bull"
       },
-      "band_rule": "seasonal_1sd",
-      "corridor": null,
+      "band_rule": "corridor",
+      "corridor": {
+        "bear_at_or_above": 0.5
+      },
       "has_history": true,
       "votes": true,
       "geography": "us",
@@ -908,8 +945,11 @@
         "up": "bull",
         "down": "bear"
       },
-      "band_rule": "seasonal_1sd",
-      "corridor": null,
+      "band_rule": "corridor",
+      "corridor": {
+        "bear_at_or_below": 0.0,
+        "bull_at_or_above": 2.5
+      },
       "has_history": true,
       "votes": true,
       "geography": "us",
@@ -957,7 +997,11 @@
         "down": "bull"
       },
       "band_rule": "corridor",
-      "corridor": null,
+      "corridor": {
+        "bull_at_or_below": 4.3,
+        "bear_at_or_above": 5.25,
+        "read_as": "10d_avg"
+      },
       "has_history": true,
       "votes": true,
       "geography": "us",
@@ -981,7 +1025,9 @@
         "down": "bull"
       },
       "band_rule": "corridor",
-      "corridor": null,
+      "corridor": {
+        "display_only": true
+      },
       "has_history": true,
       "votes": true,
       "geography": "us"
@@ -1004,7 +1050,11 @@
         "down": "bear"
       },
       "band_rule": "corridor",
-      "corridor": null,
+      "corridor": {
+        "bear_at_or_below": -0.25,
+        "bull_at_or_above": 1.0,
+        "read_as": "10d_avg"
+      },
       "has_history": true,
       "votes": true,
       "geography": "us",
@@ -1028,7 +1078,10 @@
         "down": "bull"
       },
       "band_rule": "corridor",
-      "corridor": null,
+      "corridor": {
+        "bull_at_or_below": 6.5,
+        "bear_at_or_above": 7.5
+      },
       "has_history": true,
       "votes": true,
       "geography": "us"
@@ -1051,7 +1104,10 @@
         "down": "bull"
       },
       "band_rule": "corridor",
-      "corridor": null,
+      "corridor": {
+        "bull_at_or_below": 180,
+        "bear_at_or_above": 260
+      },
       "has_history": true,
       "votes": true,
       "geography": "us",
@@ -1075,7 +1131,11 @@
         "down": "bull"
       },
       "band_rule": "corridor",
-      "corridor": null,
+      "corridor": {
+        "bull_at_or_below": 90,
+        "bear_at_or_above": 120,
+        "read_as": "10d_avg"
+      },
       "has_history": true,
       "votes": true,
       "geography": "global"
@@ -1098,7 +1158,13 @@
         "down": "bull"
       },
       "band_rule": "corridor",
-      "corridor": null,
+      "corridor": {
+        "bull_at_or_below": 9.0,
+        "bear_at_or_above": 15.0,
+        "tripwire_at_or_above": 20.0,
+        "read_as": "2d_close",
+        "note": "FRED history starts 2023-10 (ICE licence). 15 ~ the 2016 and 2022-23 stress levels, 20 ~ the Feb 2016 / Mar 2020 closes per published charts - UNVERIFIED manual seed; replace if full history is obtained."
+      },
       "has_history": true,
       "votes": true,
       "geography": "us",
@@ -1211,7 +1277,11 @@
         "down": "bear"
       },
       "band_rule": "corridor",
-      "corridor": null,
+      "corridor": {
+        "transform": "drawdown_from_2026-10-06_high",
+        "bear_at_or_below": -20.0,
+        "bull": "new closing high"
+      },
       "has_history": true,
       "votes": true,
       "geography": "us",
@@ -1234,7 +1304,12 @@
         "down": "bear"
       },
       "band_rule": "corridor",
-      "corridor": null,
+      "corridor": {
+        "transform": "drawdown_from_52w_high",
+        "bear_at_or_below": -30.0,
+        "bull_at_or_above": -10.0,
+        "note": "equal-weight 11 names; -20.5% at bootstrap"
+      },
       "has_history": true,
       "votes": true,
       "geography": "scc",
@@ -1461,8 +1536,12 @@
         "up": "bull",
         "down": "bear"
       },
-      "band_rule": "seasonal_1sd",
-      "corridor": null,
+      "band_rule": "corridor",
+      "corridor": {
+        "transform": "yoy_pct",
+        "bull_at_or_above": 3.0,
+        "bear_at_or_below": 0.0
+      },
       "has_history": true,
       "votes": true,
       "geography": "us",
@@ -1485,8 +1564,12 @@
         "up": "bull",
         "down": "bear"
       },
-      "band_rule": "seasonal_1sd",
-      "corridor": null,
+      "band_rule": "corridor",
+      "corridor": {
+        "transform": "yoy_pct",
+        "bull_at_or_above": 3.0,
+        "bear_at_or_below": -3.0
+      },
       "has_history": true,
       "votes": false,
       "geography": "sf_metro",
@@ -1509,8 +1592,12 @@
         "up": "bull",
         "down": "bear"
       },
-      "band_rule": "seasonal_1sd",
-      "corridor": null,
+      "band_rule": "corridor",
+      "corridor": {
+        "transform": "yoy_pct",
+        "bull_at_or_above": 3.0,
+        "bear_at_or_below": -5.0
+      },
       "has_history": true,
       "votes": true,
       "geography": "sj_msa"
@@ -1554,8 +1641,11 @@
         "up": "bull",
         "down": "bear"
       },
-      "band_rule": "seasonal_1sd",
-      "corridor": null,
+      "band_rule": "corridor",
+      "corridor": {
+        "bull_at_or_above": 2.0,
+        "bear_at_or_below": -5.0
+      },
       "has_history": true,
       "votes": true,
       "geography": "scc",
@@ -1600,8 +1690,11 @@
         "up": "bull",
         "down": "bear"
       },
-      "band_rule": "seasonal_1sd",
-      "corridor": null,
+      "band_rule": "corridor",
+      "corridor": {
+        "bull_at_or_above": 2.0,
+        "bear_at_or_below": -5.0
+      },
       "has_history": true,
       "votes": true,
       "geography": "scc",
@@ -1623,8 +1716,11 @@
         "up": "bull",
         "down": "bear"
       },
-      "band_rule": "seasonal_1sd",
-      "corridor": null,
+      "band_rule": "corridor",
+      "corridor": {
+        "bull_at_or_above": 2.0,
+        "bear_at_or_below": -5.0
+      },
       "has_history": true,
       "votes": true,
       "geography": "scc",
@@ -1646,8 +1742,10 @@
         "up": "neutral",
         "down": "neutral"
       },
-      "band_rule": "seasonal_1sd",
-      "corridor": null,
+      "band_rule": "corridor",
+      "corridor": {
+        "display_only": true
+      },
       "has_history": true,
       "votes": false,
       "geography": "zip:95118",
@@ -1669,8 +1767,10 @@
         "up": "neutral",
         "down": "neutral"
       },
-      "band_rule": "seasonal_1sd",
-      "corridor": null,
+      "band_rule": "corridor",
+      "corridor": {
+        "display_only": true
+      },
       "has_history": true,
       "votes": false,
       "geography": "zip:95123",
@@ -1692,8 +1792,10 @@
         "up": "neutral",
         "down": "neutral"
       },
-      "band_rule": "seasonal_1sd",
-      "corridor": null,
+      "band_rule": "corridor",
+      "corridor": {
+        "display_only": true
+      },
       "has_history": true,
       "votes": false,
       "geography": "zip:95130",
@@ -1834,7 +1936,11 @@
         "down": "bull"
       },
       "band_rule": "corridor",
-      "corridor": null,
+      "corridor": {
+        "bear_at_or_above": 58.54,
+        "bull_at_or_below": 20.0,
+        "note": "bear edge = 2016-2025 max (Nov 2018), computed at bootstrap; 31.2% in Sep 2026"
+      },
       "has_history": true,
       "votes": true,
       "geography": "scc",
@@ -1857,8 +1963,12 @@
         "up": "bull",
         "down": "bear"
       },
-      "band_rule": "seasonal_1sd",
-      "corridor": null,
+      "band_rule": "corridor",
+      "corridor": {
+        "transform": "yoy_pct",
+        "bull_at_or_above": 3.0,
+        "bear_at_or_below": -5.0
+      },
       "has_history": true,
       "votes": false,
       "geography": "scc",
@@ -1903,8 +2013,12 @@
         "up": "bull",
         "down": "bear"
       },
-      "band_rule": "seasonal_1sd",
-      "corridor": null,
+      "band_rule": "corridor",
+      "corridor": {
+        "transform": "yoy_pct",
+        "bull_at_or_above": 0.0,
+        "bear_at_or_below": -8.0
+      },
       "has_history": true,
       "votes": true,
       "geography": "scc",
@@ -1926,8 +2040,11 @@
         "up": "bull",
         "down": "bear"
       },
-      "band_rule": "seasonal_1sd",
-      "corridor": null,
+      "band_rule": "corridor",
+      "corridor": {
+        "bull_at_or_above": 5.0,
+        "bear_at_or_below": 0.0
+      },
       "has_history": true,
       "votes": false,
       "geography": "san_francisco",
@@ -1950,7 +2067,10 @@
         "down": "bull"
       },
       "band_rule": "corridor",
-      "corridor": null,
+      "corridor": {
+        "bear_at_or_above": 3.0,
+        "bull_at_or_below": 1.5
+      },
       "has_history": false,
       "votes": true,
       "geography": "scc",
@@ -1973,7 +2093,9 @@
         "down": "bull"
       },
       "band_rule": "corridor",
-      "corridor": null,
+      "corridor": {
+        "note": "set after a 3-month baseline (Dec 2026-Feb 2027)"
+      },
       "has_history": false,
       "votes": true,
       "geography": "scc",
@@ -1996,8 +2118,11 @@
         "up": "bear",
         "down": "bull"
       },
-      "band_rule": "seasonal_1sd",
-      "corridor": null,
+      "band_rule": "corridor",
+      "corridor": {
+        "bull_at_or_below": 4.0,
+        "bear_at_or_above": 5.5
+      },
       "has_history": true,
       "votes": true,
       "geography": "scc",
@@ -2020,8 +2145,11 @@
         "up": "bull",
         "down": "bear"
       },
-      "band_rule": "seasonal_1sd",
-      "corridor": null,
+      "band_rule": "corridor",
+      "corridor": {
+        "bull_at_or_above": 1.5,
+        "bear_at_or_below": 0.0
+      },
       "has_history": true,
       "votes": true,
       "geography": "sj_msa",
@@ -2044,7 +2172,11 @@
         "down": "bull"
       },
       "band_rule": "corridor",
-      "corridor": null,
+      "corridor": {
+        "bear_at_or_above": 1588,
+        "bull_at_or_below": 500,
+        "note": "bear edge = 2x the 2025 monthly average (794), computed at bootstrap"
+      },
       "has_history": true,
       "votes": true,
       "geography": "scc",
@@ -2066,8 +2198,11 @@
         "up": "bull",
         "down": "bear"
       },
-      "band_rule": "seasonal_1sd",
-      "corridor": null,
+      "band_rule": "corridor",
+      "corridor": {
+        "bull_at_or_above": 100,
+        "bear_at_or_below": 70
+      },
       "has_history": true,
       "votes": true,
       "geography": "sj_msa",
@@ -2090,8 +2225,11 @@
         "up": "bull",
         "down": "bear"
       },
-      "band_rule": "seasonal_1sd",
-      "corridor": null,
+      "band_rule": "corridor",
+      "corridor": {
+        "bull_at_or_above": 100,
+        "bear_at_or_below": 70
+      },
       "has_history": true,
       "votes": true,
       "geography": "us"
@@ -2112,8 +2250,11 @@
         "up": "bull",
         "down": "bear"
       },
-      "band_rule": "seasonal_1sd",
-      "corridor": null,
+      "band_rule": "corridor",
+      "corridor": {
+        "bull_at_or_above": 4.0,
+        "bear_at_or_below": 0.0
+      },
       "has_history": true,
       "votes": true,
       "geography": "san_jose",
@@ -2246,7 +2387,9 @@
         "down": "bull"
       },
       "band_rule": "corridor",
-      "corridor": null,
+      "corridor": {
+        "note": "set at the shakedown from the first 2-3 weekly readings, cross-checked to the Realtor.com monthly series"
+      },
       "has_history": false,
       "votes": true,
       "geography": "scc",
@@ -2269,7 +2412,9 @@
         "down": "bear"
       },
       "band_rule": "corridor",
-      "corridor": null,
+      "corridor": {
+        "note": "set at the shakedown from the first 2-3 weekly readings, cross-checked to the Realtor.com monthly series"
+      },
       "has_history": false,
       "votes": true,
       "geography": "scc",
@@ -2292,7 +2437,9 @@
         "down": "bull"
       },
       "band_rule": "corridor",
-      "corridor": null,
+      "corridor": {
+        "note": "set at the shakedown from the first 2-3 weekly readings, cross-checked to the Realtor.com monthly series"
+      },
       "has_history": false,
       "votes": true,
       "geography": "scc",
@@ -2315,7 +2462,9 @@
         "down": "bull"
       },
       "band_rule": "corridor",
-      "corridor": null,
+      "corridor": {
+        "note": "set at the shakedown from the first 2-3 weekly readings, cross-checked to the Realtor.com monthly series"
+      },
       "has_history": false,
       "votes": true,
       "geography": "scc",
@@ -2338,7 +2487,9 @@
         "down": "bull"
       },
       "band_rule": "corridor",
-      "corridor": null,
+      "corridor": {
+        "note": "set at the shakedown from the first 2-3 weekly readings, cross-checked to the Realtor.com monthly series"
+      },
       "has_history": false,
       "votes": true,
       "geography": "scc",
@@ -2361,7 +2512,9 @@
         "down": "bull"
       },
       "band_rule": "corridor",
-      "corridor": null,
+      "corridor": {
+        "note": "set at the shakedown from the first 2-3 weekly readings, cross-checked to the Realtor.com monthly series"
+      },
       "has_history": false,
       "votes": true,
       "geography": "scc",
@@ -2384,7 +2537,9 @@
         "down": "bear"
       },
       "band_rule": "corridor",
-      "corridor": null,
+      "corridor": {
+        "note": "set at the shakedown from the first 2-3 weekly readings, cross-checked to the Realtor.com monthly series"
+      },
       "has_history": false,
       "votes": true,
       "geography": "scc",
@@ -2407,7 +2562,9 @@
         "down": "bull"
       },
       "band_rule": "corridor",
-      "corridor": null,
+      "corridor": {
+        "note": "set at the shakedown from the first 2-3 weekly readings, cross-checked to the Realtor.com monthly series"
+      },
       "has_history": false,
       "votes": true,
       "geography": "scc:tier:lt_1_3m"
@@ -2429,7 +2586,9 @@
         "down": "bull"
       },
       "band_rule": "corridor",
-      "corridor": null,
+      "corridor": {
+        "note": "set at the shakedown from the first 2-3 weekly readings, cross-checked to the Realtor.com monthly series"
+      },
       "has_history": false,
       "votes": true,
       "geography": "scc:tier:lt_1_3m"
@@ -2451,7 +2610,9 @@
         "down": "bull"
       },
       "band_rule": "corridor",
-      "corridor": null,
+      "corridor": {
+        "note": "set at the shakedown from the first 2-3 weekly readings, cross-checked to the Realtor.com monthly series"
+      },
       "has_history": false,
       "votes": true,
       "geography": "scc:tier:1_3m_2m"
@@ -2473,7 +2634,9 @@
         "down": "bull"
       },
       "band_rule": "corridor",
-      "corridor": null,
+      "corridor": {
+        "note": "set at the shakedown from the first 2-3 weekly readings, cross-checked to the Realtor.com monthly series"
+      },
       "has_history": false,
       "votes": true,
       "geography": "scc:tier:1_3m_2m"
@@ -2495,7 +2658,9 @@
         "down": "bull"
       },
       "band_rule": "corridor",
-      "corridor": null,
+      "corridor": {
+        "note": "set at the shakedown from the first 2-3 weekly readings, cross-checked to the Realtor.com monthly series"
+      },
       "has_history": false,
       "votes": true,
       "geography": "scc:tier:2m_3m"
@@ -2517,7 +2682,9 @@
         "down": "bull"
       },
       "band_rule": "corridor",
-      "corridor": null,
+      "corridor": {
+        "note": "set at the shakedown from the first 2-3 weekly readings, cross-checked to the Realtor.com monthly series"
+      },
       "has_history": false,
       "votes": true,
       "geography": "scc:tier:2m_3m"
@@ -2539,7 +2706,9 @@
         "down": "bull"
       },
       "band_rule": "corridor",
-      "corridor": null,
+      "corridor": {
+        "note": "set at the shakedown from the first 2-3 weekly readings, cross-checked to the Realtor.com monthly series"
+      },
       "has_history": false,
       "votes": true,
       "geography": "scc:tier:3m_plus"
@@ -2561,7 +2730,9 @@
         "down": "bull"
       },
       "band_rule": "corridor",
-      "corridor": null,
+      "corridor": {
+        "note": "set at the shakedown from the first 2-3 weekly readings, cross-checked to the Realtor.com monthly series"
+      },
       "has_history": false,
       "votes": true,
       "geography": "scc:tier:3m_plus"
@@ -2583,7 +2754,9 @@
         "down": "bull"
       },
       "band_rule": "corridor",
-      "corridor": null,
+      "corridor": {
+        "note": "set at the shakedown from the first 2-3 weekly readings, cross-checked to the Realtor.com monthly series"
+      },
       "has_history": false,
       "votes": false,
       "geography": "panel:san_mateo",
@@ -2606,7 +2779,9 @@
         "down": "bull"
       },
       "band_rule": "corridor",
-      "corridor": null,
+      "corridor": {
+        "note": "set at the shakedown from the first 2-3 weekly readings, cross-checked to the Realtor.com monthly series"
+      },
       "has_history": false,
       "votes": false,
       "geography": "panel:san_mateo",
@@ -2629,7 +2804,9 @@
         "down": "bull"
       },
       "band_rule": "corridor",
-      "corridor": null,
+      "corridor": {
+        "note": "set at the shakedown from the first 2-3 weekly readings, cross-checked to the Realtor.com monthly series"
+      },
       "has_history": false,
       "votes": false,
       "geography": "panel:sf_houses",
@@ -2652,7 +2829,9 @@
         "down": "bull"
       },
       "band_rule": "corridor",
-      "corridor": null,
+      "corridor": {
+        "note": "set at the shakedown from the first 2-3 weekly readings, cross-checked to the Realtor.com monthly series"
+      },
       "has_history": false,
       "votes": false,
       "geography": "panel:sf_houses",
@@ -2675,7 +2854,9 @@
         "down": "bull"
       },
       "band_rule": "corridor",
-      "corridor": null,
+      "corridor": {
+        "note": "set at the shakedown from the first 2-3 weekly readings, cross-checked to the Realtor.com monthly series"
+      },
       "has_history": false,
       "votes": false,
       "geography": "panel:sf_condos",
@@ -2698,7 +2879,9 @@
         "down": "bull"
       },
       "band_rule": "corridor",
-      "corridor": null,
+      "corridor": {
+        "note": "set at the shakedown from the first 2-3 weekly readings, cross-checked to the Realtor.com monthly series"
+      },
       "has_history": false,
       "votes": false,
       "geography": "panel:sf_condos",
@@ -2721,7 +2904,9 @@
         "down": "bull"
       },
       "band_rule": "corridor",
-      "corridor": null,
+      "corridor": {
+        "note": "set at the shakedown from the first 2-3 weekly readings, cross-checked to the Realtor.com monthly series"
+      },
       "has_history": false,
       "votes": false,
       "geography": "panel:santa_cruz",
@@ -2744,7 +2929,9 @@
         "down": "bull"
       },
       "band_rule": "corridor",
-      "corridor": null,
+      "corridor": {
+        "note": "set at the shakedown from the first 2-3 weekly readings, cross-checked to the Realtor.com monthly series"
+      },
       "has_history": false,
       "votes": false,
       "geography": "panel:santa_cruz",
@@ -2767,7 +2954,9 @@
         "down": "bull"
       },
       "band_rule": "corridor",
-      "corridor": null,
+      "corridor": {
+        "note": "set at the shakedown from the first 2-3 weekly readings, cross-checked to the Realtor.com monthly series"
+      },
       "has_history": false,
       "votes": false,
       "geography": "panel:fremont",
@@ -2790,7 +2979,9 @@
         "down": "bull"
       },
       "band_rule": "corridor",
-      "corridor": null,
+      "corridor": {
+        "note": "set at the shakedown from the first 2-3 weekly readings, cross-checked to the Realtor.com monthly series"
+      },
       "has_history": false,
       "votes": false,
       "geography": "panel:fremont",
