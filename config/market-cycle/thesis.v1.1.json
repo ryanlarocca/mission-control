@@ -1,0 +1,2986 @@
+{
+  "version": "1.1",
+  "date": "2026-11-01",
+  "authors": [
+    "chat Claude (Nov 1 thesis)",
+    "Claude Code (v1.1 cross-examination + audit)",
+    "Ryan LaRocca (decisions)"
+  ],
+  "source_brief": "briefs/BRIEF_MARKET_CYCLE_TRACKER_2026-11-01.md",
+  "scored_object": {
+    "dial_id": "zhvi_scc_drawdown",
+    "description": "Santa Clara County ZHVI (seasonally adjusted, all homes), maximum drawdown from its 2026 peak, measured on monthly prints through Dec 2028. The peak month is fixed from the data at the shakedown (expected May-Jun 2026).",
+    "measure_through": "2028-12-31",
+    "peak_month_fixed_at": "shakedown"
+  },
+  "scenarios": [
+    {
+      "id": "bear",
+      "name": "Bear — \"2000 plus oil\"",
+      "drawdown_bounds_pct": {
+        "min": null,
+        "max": -15.0
+      },
+      "definition": "SCC ZHVI max drawdown through Dec 2028 of -15% or worse",
+      "weight": 35,
+      "weight_chat_claude": "~60%",
+      "markers": "S&P -25% or worse from the Oct 6 high; US recession starts in 2027; credit stays broken; mortgages >=6.75% through mid-2027; IPO window closes (ANT pulled or below issue); trough in 2028"
+    },
+    {
+      "id": "base",
+      "name": "Base — \"2022 rate shock, slower exit\"",
+      "drawdown_bounds_pct": {
+        "min": -15.0,
+        "max": -8.0
+      },
+      "definition": "SCC ZHVI max drawdown through Dec 2028 between -8% and -15% (shallower than -15%, -8% or worse)",
+      "weight": 45,
+      "weight_chat_claude": "not defined",
+      "markers": "S&P -10% to -24.9%, chops; no recession or a shallow one; Fed peaks 4.25-4.50 and holds; 10-yr 4.4-5.0; mortgages 6.5-7.0; trough H1-mid 2027, flat into 2028"
+    },
+    {
+      "id": "bull",
+      "name": "Bull — \"Iran deal + AI liquidity\"",
+      "drawdown_bounds_pct": {
+        "min": -8.0,
+        "max": null
+      },
+      "definition": "SCC ZHVI max drawdown through Dec 2028 shallower than -8%",
+      "weight": 20,
+      "weight_chat_claude": "35-40%",
+      "markers": "Hormuz reopens; Brent <$90 by Q2 2027; CPI <=2.8% by mid-2027; Fed stops <=4.25; 10-yr <=4.3; mortgages <=6.5 by Q3 2027; ANT and SpaceX money lands; trough Q4 2026-Q1 2027, positive YoY by Q4 2027"
+    }
+  ],
+  "partition_rule": "Exclusive bounds: bear if drawdown <= -15; base if -15 < drawdown <= -8; bull if drawdown > -8 (shallower than -8).",
+  "weight_moves": [
+    {
+      "n": 0,
+      "date": "2026-11-01",
+      "label": "chat Claude -> v1.1",
+      "from": {
+        "bear": 60,
+        "base": null,
+        "bull": 38
+      },
+      "to": {
+        "bear": 35,
+        "base": 45,
+        "bull": 20
+      },
+      "readings_cited": "brief Part 1.1 table (no stored readings exist yet)",
+      "reason": "(a) the bear path is a five-link conjunction; (b) local labor, rents, sales volume and months-of-supply are all inconsistent with a crash regime today; (c) a steep yield curve and ~18.7x forward P/E argue against the 2000 analog; (d) the IPO calendar is a live counter-current. Bull is cut because it needs a Hormuz deal Iran currently calls unacceptable and a Fed that stops hiking with CPI at 3.7%.",
+      "opposite_case": "Credit spreads at 2009 levels have never been noise; private-credit defaults at a record with a 2027-28 maturity wall; Alphabet -30% says the market has already begun punishing the build-out; the Fed is hiking into +29k payrolls, which is how soft landings end. If this move is wrong, it's because local data lags the credit cycle by two to three quarters.",
+      "reverses_if": "Any one tripwire among {two consecutive months of SCC WARN workers >50% YoY, ANT pulled or below issue, CCC OAS beyond its 2010-2025 maximum} moves Bear back above 50. (Tripwire checkpoints are exempt from the three-dial rule, brief 3.4.)",
+      "bootstrap_exception": true
+    }
+  ],
+  "claims": [
+    {
+      "id": "C1",
+      "text": "The S&P 500 closing high of Oct 6, 2026 (~7,800) stands as the cycle top through Jun 30, 2027",
+      "category": "macro",
+      "scenario_tag": "bear",
+      "prob_chat_claude": 60,
+      "prob_chat_claude_note": "60",
+      "prob_initial": 55,
+      "prob_current": 55,
+      "resolves_on": "2027-06-30",
+      "falsifier": "Any close above the Oct 6 high before the date",
+      "data_source": "sp500",
+      "also_reads": [],
+      "status": "open",
+      "mark": "[kept, dated]"
+    },
+    {
+      "id": "C2",
+      "text": "S&P 500 drawdown from the Oct 6 high reaches -25% or worse at some close before Dec 31, 2027",
+      "category": "macro",
+      "scenario_tag": "bear",
+      "prob_chat_claude": 60,
+      "prob_chat_claude_note": "~60",
+      "prob_initial": 40,
+      "prob_current": 40,
+      "resolves_on": "2027-12-31",
+      "falsifier": "Max drawdown stays shallower than -25%",
+      "data_source": "sp500",
+      "also_reads": [],
+      "status": "open",
+      "mark": "[prob; audit: must exceed Bear weight]"
+    },
+    {
+      "id": "C3",
+      "text": "S&P 500 drawdown reaches -45% before Dec 31, 2028 (the \"2000-02\" tail)",
+      "category": "macro",
+      "scenario_tag": "bear",
+      "prob_chat_claude": null,
+      "prob_chat_claude_note": "tail",
+      "prob_initial": 10,
+      "prob_current": 10,
+      "resolves_on": "2028-12-31",
+      "falsifier": "Never trades there",
+      "data_source": "sp500",
+      "also_reads": [],
+      "status": "open",
+      "mark": "[reworded]"
+    },
+    {
+      "id": "C4",
+      "text": "A US recession begins in calendar 2027 (NBER dating, or two consecutive negative real-GDP quarters starting in 2027)",
+      "category": "macro",
+      "scenario_tag": "bear",
+      "prob_chat_claude": null,
+      "prob_chat_claude_note": "50-55",
+      "prob_initial": 40,
+      "prob_current": 40,
+      "resolves_on": "2028-09-30",
+      "falsifier": "No recession start in 2027",
+      "data_source": "nber_recession",
+      "also_reads": [
+        "us_real_gdp_qoq"
+      ],
+      "status": "open",
+      "mark": "[prob; audit: date]"
+    },
+    {
+      "id": "C5",
+      "text": "Fed raises the funds target at the Dec 16, 2026 meeting",
+      "category": "rates",
+      "scenario_tag": "bear",
+      "prob_chat_claude": 85,
+      "prob_chat_claude_note": "~85 (market)",
+      "prob_initial": 75,
+      "prob_current": 75,
+      "resolves_on": "2026-12-16",
+      "falsifier": "Hold or cut",
+      "data_source": "fomc_decision",
+      "also_reads": [
+        "fed_funds_target_upper"
+      ],
+      "status": "open",
+      "mark": "[new, split out]"
+    },
+    {
+      "id": "C6",
+      "text": "Fed funds peak for this cycle has an upper bound <=4.50%",
+      "category": "rates",
+      "scenario_tag": "base",
+      "prob_chat_claude": null,
+      "prob_chat_claude_note": "—",
+      "prob_initial": 70,
+      "prob_current": 70,
+      "resolves_on": "2027-12-31",
+      "falsifier": "Any hike above 4.50",
+      "data_source": "fed_funds_target_upper",
+      "also_reads": [],
+      "status": "open",
+      "mark": "[new]"
+    },
+    {
+      "id": "C7",
+      "text": "Fed's first cut comes between Sep 2027 and Mar 2028",
+      "category": "rates",
+      "scenario_tag": "bear",
+      "prob_chat_claude": null,
+      "prob_chat_claude_note": "implied",
+      "prob_initial": 45,
+      "prob_current": 45,
+      "resolves_on": "2028-03-31",
+      "falsifier": "Earlier than Sep 2027 (bull) or later than Mar 2028",
+      "data_source": "fed_funds_target_upper",
+      "also_reads": [
+        "fomc_decision"
+      ],
+      "status": "open",
+      "mark": "[reworded, prob]"
+    },
+    {
+      "id": "C8",
+      "text": "A named credit event before Jun 30, 2027: a private-credit fund or BDC with >=$5B AUM gates redemptions or defaults, or Fitch's TTM leveraged-loan default rate >=6%, or FRED's HY CCC-and-below OAS exceeds its 2010-2025 maximum",
+      "category": "credit",
+      "scenario_tag": "bear",
+      "prob_chat_claude": null,
+      "prob_chat_claude_note": "\"something breaks\"",
+      "prob_initial": 45,
+      "prob_current": 45,
+      "resolves_on": "2027-06-30",
+      "falsifier": "None of the three",
+      "data_source": "credit_event",
+      "also_reads": [
+        "fitch_lev_loan_default",
+        "ccc_oas"
+      ],
+      "status": "open",
+      "mark": "[reworded; audit: defined]"
+    },
+    {
+      "id": "C9",
+      "text": "Freddie Mac 30-yr average is >=6.75% every week through Jun 30, 2027",
+      "category": "rates",
+      "scenario_tag": "bear",
+      "prob_chat_claude": null,
+      "prob_chat_claude_note": "\"7%+\"",
+      "prob_initial": 45,
+      "prob_current": 45,
+      "resolves_on": "2027-06-30",
+      "falsifier": "Any weekly print <6.75",
+      "data_source": "mortgage30",
+      "also_reads": [],
+      "status": "open",
+      "mark": "[reworded, prob]"
+    },
+    {
+      "id": "C10",
+      "text": "10-yr Treasury closes below 4.30% before Jun 30, 2027",
+      "category": "rates",
+      "scenario_tag": "bull",
+      "prob_chat_claude": null,
+      "prob_chat_claude_note": "—",
+      "prob_initial": 30,
+      "prob_current": 30,
+      "resolves_on": "2027-06-30",
+      "falsifier": "Never closes below 4.30",
+      "data_source": "ust10y",
+      "also_reads": [],
+      "status": "open",
+      "mark": "[new; the bull pivot]"
+    },
+    {
+      "id": "C11",
+      "text": "Mortgage spread (Freddie 30-yr minus 10-yr, weekly) prints below 180 bp before Dec 31, 2027",
+      "category": "rates",
+      "scenario_tag": "bull",
+      "prob_chat_claude": null,
+      "prob_chat_claude_note": "—",
+      "prob_initial": 50,
+      "prob_current": 50,
+      "resolves_on": "2027-12-31",
+      "falsifier": "Stays >=180",
+      "data_source": "mortgage_spread",
+      "also_reads": [
+        "mortgage30",
+        "ust10y"
+      ],
+      "status": "open",
+      "mark": "[new]"
+    },
+    {
+      "id": "C12",
+      "text": "Brent closes below $90 before Jun 30, 2027",
+      "category": "macro",
+      "scenario_tag": "bull",
+      "prob_chat_claude": null,
+      "prob_chat_claude_note": "implied bull",
+      "prob_initial": 40,
+      "prob_current": 40,
+      "resolves_on": "2027-06-30",
+      "falsifier": "Never closes <$90",
+      "data_source": "brent",
+      "also_reads": [
+        "hormuz_status"
+      ],
+      "status": "open",
+      "mark": "[new; audit: aligned to Bull's Q2]"
+    },
+    {
+      "id": "C13",
+      "text": "US CPI YoY prints <=2.8% for any month Jan-Jun 2027",
+      "category": "macro",
+      "scenario_tag": "bull",
+      "prob_chat_claude": null,
+      "prob_chat_claude_note": "bull",
+      "prob_initial": 30,
+      "prob_current": 30,
+      "resolves_on": "2027-07-15",
+      "falsifier": "No print <=2.8",
+      "data_source": "cpi_yoy",
+      "also_reads": [],
+      "status": "open",
+      "mark": "[new]"
+    },
+    {
+      "id": "C14",
+      "text": "Case-Shiller US national (NSA) nominal peak-to-trough is -3% or worse by the Dec 2028 print",
+      "category": "macro",
+      "scenario_tag": "bear",
+      "prob_chat_claude": null,
+      "prob_chat_claude_note": "implied",
+      "prob_initial": 55,
+      "prob_current": 55,
+      "resolves_on": "2029-02-28",
+      "falsifier": "Shallower than -3%",
+      "data_source": "cs_national",
+      "also_reads": [],
+      "status": "open",
+      "mark": "[reworded]"
+    },
+    {
+      "id": "C15",
+      "text": "SCC ZHVI drawdown from the 2026 peak reaches -10% or worse at any monthly print through Dec 2027",
+      "category": "scc_housing",
+      "scenario_tag": "base",
+      "prob_chat_claude": 60,
+      "prob_chat_claude_note": "implied ~60",
+      "prob_initial": 55,
+      "prob_current": 55,
+      "resolves_on": "2028-02-15",
+      "falsifier": "Never -10",
+      "data_source": "zhvi_scc_drawdown",
+      "also_reads": [],
+      "status": "open",
+      "mark": "[reworded; audit: unit + prob]"
+    },
+    {
+      "id": "C16",
+      "text": "SCC ZHVI drawdown reaches -15% or worse at any print through Dec 2028 (the thesis's \"trough $1.65-1.80M\")",
+      "category": "scc_housing",
+      "scenario_tag": "bear",
+      "prob_chat_claude": 60,
+      "prob_chat_claude_note": "implied ~60",
+      "prob_initial": 35,
+      "prob_current": 35,
+      "resolves_on": "2029-02-15",
+      "falsifier": "Never -15",
+      "data_source": "zhvi_scc_drawdown",
+      "also_reads": [],
+      "status": "open",
+      "mark": "[prob; audit: = Bear weight by construction]"
+    },
+    {
+      "id": "C17",
+      "text": "The lowest SCC ZHVI print through Dec 2027 occurs in Nov 2026-Jun 2027 and the Dec 2027 print is above it (the 2022 analog)",
+      "category": "scc_housing",
+      "scenario_tag": "base",
+      "prob_chat_claude": null,
+      "prob_chat_claude_note": "—",
+      "prob_initial": 40,
+      "prob_current": 40,
+      "resolves_on": "2028-02-15",
+      "falsifier": "Low after Jun 2027, or Dec 2027 not above it",
+      "data_source": "zhvi_scc",
+      "also_reads": [],
+      "status": "open",
+      "mark": "[new; audit: defined on a closed window]"
+    },
+    {
+      "id": "C18",
+      "text": "Realtor.com active listing count for SCC (FRED, monthly) for Mar 2027 is >=25% above Mar 2026",
+      "category": "scc_housing",
+      "scenario_tag": "bear",
+      "prob_chat_claude": null,
+      "prob_chat_claude_note": "—",
+      "prob_initial": 55,
+      "prob_current": 55,
+      "resolves_on": "2027-04-30",
+      "falsifier": "<25% YoY",
+      "data_source": "realtor_active_scc",
+      "also_reads": [],
+      "status": "open",
+      "mark": "[new; audit: source with history]"
+    },
+    {
+      "id": "C19",
+      "text": "SCC months of supply (Realtor.com actives / C.A.R. monthly closed SFR sales) exceeds 3.0 in any month of 2027",
+      "category": "scc_housing",
+      "scenario_tag": "bear",
+      "prob_chat_claude": null,
+      "prob_chat_claude_note": "—",
+      "prob_initial": 30,
+      "prob_current": 30,
+      "resolves_on": "2028-01-31",
+      "falsifier": "Never >3.0",
+      "data_source": "scc_months_supply",
+      "also_reads": [
+        "realtor_active_scc",
+        "car_scc_sfr_sales"
+      ],
+      "status": "open",
+      "mark": "[new]"
+    },
+    {
+      "id": "C20",
+      "text": "SCC price-reduced share (Realtor.com price-reduced count / active count, monthly) exceeds its 2016-2025 maximum in any month Feb-May 2027",
+      "category": "scc_housing",
+      "scenario_tag": "bear",
+      "prob_chat_claude": null,
+      "prob_chat_claude_note": "—",
+      "prob_initial": 40,
+      "prob_current": 40,
+      "resolves_on": "2027-06-30",
+      "falsifier": "Never exceeds",
+      "data_source": "realtor_price_reduced_share_scc",
+      "also_reads": [],
+      "status": "open",
+      "mark": "[new; audit: threshold defined by history, not a guessed 40%]"
+    },
+    {
+      "id": "C21",
+      "text": "C.A.R. SCC SFR closed sales for Mar-May 2027 total below Mar-May 2026",
+      "category": "scc_housing",
+      "scenario_tag": "bear",
+      "prob_chat_claude": null,
+      "prob_chat_claude_note": "—",
+      "prob_initial": 50,
+      "prob_current": 50,
+      "resolves_on": "2027-06-30",
+      "falsifier": "Spring 2027 >= spring 2026",
+      "data_source": "car_scc_sfr_sales",
+      "also_reads": [],
+      "status": "open",
+      "mark": "[new; volume leads price]"
+    },
+    {
+      "id": "C22",
+      "text": "SCC Notices of Default in any calendar month of 2027 are >=2x the average of the first three months we count (Dec 2026-Feb 2027)",
+      "category": "scc_housing",
+      "scenario_tag": "bear",
+      "prob_chat_claude": null,
+      "prob_chat_claude_note": "—",
+      "prob_initial": 25,
+      "prob_current": 25,
+      "resolves_on": "2028-01-31",
+      "falsifier": "Never 2x",
+      "data_source": "scc_nod_count",
+      "also_reads": [],
+      "status": "open",
+      "mark": "[new; provisional until a 2025 baseline is sourced]"
+    },
+    {
+      "id": "C23",
+      "text": "SCC WARN-affected workers for any quarter of 2027 are >=1.5x the same quarter of 2026 (EDD workbook)",
+      "category": "local_labor",
+      "scenario_tag": "bear",
+      "prob_chat_claude": null,
+      "prob_chat_claude_note": "—",
+      "prob_initial": 40,
+      "prob_current": 40,
+      "resolves_on": "2028-01-31",
+      "falsifier": "Never 1.5x",
+      "data_source": "scc_warn_workers",
+      "also_reads": [],
+      "status": "open",
+      "mark": "[new]"
+    },
+    {
+      "id": "C24",
+      "text": "SCC unemployment rate (LAUS, NSA) prints >=5.5% for any month of 2027",
+      "category": "local_labor",
+      "scenario_tag": "bear",
+      "prob_chat_claude": null,
+      "prob_chat_claude_note": "—",
+      "prob_initial": 30,
+      "prob_current": 30,
+      "resolves_on": "2028-01-31",
+      "falsifier": "Never >=5.5",
+      "data_source": "scc_unemployment",
+      "also_reads": [],
+      "status": "open",
+      "mark": "[new]"
+    },
+    {
+      "id": "C25",
+      "text": "San Jose asking-rent YoY (Apartment List) is <=0% for any month of 2027",
+      "category": "local_labor",
+      "scenario_tag": "bear",
+      "prob_chat_claude": null,
+      "prob_chat_claude_note": "—",
+      "prob_initial": 35,
+      "prob_current": 35,
+      "resolves_on": "2028-01-31",
+      "falsifier": "Stays positive",
+      "data_source": "sj_rent_yoy",
+      "also_reads": [],
+      "status": "open",
+      "mark": "[new]"
+    },
+    {
+      "id": "C26",
+      "text": "C.A.R. San Francisco County SFR median YoY is <=0% for any month Nov 2026-Nov 2027",
+      "category": "scc_housing",
+      "scenario_tag": "bear",
+      "prob_chat_claude": null,
+      "prob_chat_claude_note": "\"negative within 12 months\"",
+      "prob_initial": 45,
+      "prob_current": 45,
+      "resolves_on": "2027-12-20",
+      "falsifier": "Never <=0",
+      "data_source": "car_sf_sfr_median_yoy",
+      "also_reads": [],
+      "status": "open",
+      "mark": "[reworded; audit: series named]"
+    },
+    {
+      "id": "C27",
+      "text": "Anthropic prices its IPO before Dec 31, 2026 and closes above the issue price on day 1",
+      "category": "ai_liquidity",
+      "scenario_tag": "bull",
+      "prob_chat_claude": null,
+      "prob_chat_claude_note": "—",
+      "prob_initial": 60,
+      "prob_current": 60,
+      "resolves_on": "2026-12-31",
+      "falsifier": "Pulled/postponed, or closes below issue",
+      "data_source": "ant_ipo",
+      "also_reads": [],
+      "status": "open",
+      "mark": "[new; the 2000-analog tripwire]"
+    },
+    {
+      "id": "C28",
+      "text": "At least one of Microsoft, Alphabet, Amazon, Meta guides 2027 capex below 2026 actual by Feb 28, 2027. For a firm without a numeric annual guide, use the first-reported 2027 consensus after its Q4 call",
+      "category": "ai_liquidity",
+      "scenario_tag": "bear",
+      "prob_chat_claude": null,
+      "prob_chat_claude_note": "\"punishing capex\"",
+      "prob_initial": 25,
+      "prob_current": 25,
+      "resolves_on": "2027-02-28",
+      "falsifier": "All four flat or up",
+      "data_source": "big4_capex_2027",
+      "also_reads": [],
+      "status": "open",
+      "mark": "[reworded; audit: no-guide rule]"
+    },
+    {
+      "id": "C29",
+      "text": "Combined 2027 capex (guidance or consensus as above) for the four is >=10% above 2026 actual",
+      "category": "ai_liquidity",
+      "scenario_tag": "bull",
+      "prob_chat_claude": null,
+      "prob_chat_claude_note": "—",
+      "prob_initial": 55,
+      "prob_current": 55,
+      "resolves_on": "2027-02-28",
+      "falsifier": "<10% growth",
+      "data_source": "big4_capex_2027",
+      "also_reads": [],
+      "status": "open",
+      "mark": "[new; not a complement of C28]"
+    },
+    {
+      "id": "C30",
+      "text": "Equal-weight local employer index (NVDA, AAPL, GOOGL, META, AVGO, AMD, AMAT, LRCX, KLAC, INTC, CSCO; rebalanced monthly) closes >=30% below its 52-week high before Dec 31, 2027",
+      "category": "ai_liquidity",
+      "scenario_tag": "bear",
+      "prob_chat_claude": null,
+      "prob_chat_claude_note": "—",
+      "prob_initial": 35,
+      "prob_current": 35,
+      "resolves_on": "2027-12-31",
+      "falsifier": "Never -30",
+      "data_source": "basket_index",
+      "also_reads": [],
+      "status": "open",
+      "mark": "[new; audit: index drawdown, not mean of names]"
+    },
+    {
+      "id": "C31",
+      "text": "Zillow top-tier ZHVI for SCC is positive YoY in Jun 2027 while bottom-tier ZHVI is negative YoY (IPO money bids the top)",
+      "category": "ai_liquidity",
+      "scenario_tag": "bull",
+      "prob_chat_claude": null,
+      "prob_chat_claude_note": "—",
+      "prob_initial": 35,
+      "prob_current": 35,
+      "resolves_on": "2027-08-15",
+      "falsifier": "Both same sign",
+      "data_source": "zhvi_scc_top_yoy",
+      "also_reads": [
+        "zhvi_scc_bottom_yoy"
+      ],
+      "status": "open",
+      "mark": "[new; audit: tier source with history]"
+    },
+    {
+      "id": "C32",
+      "text": "SCC ZHVI YoY >= +5% for any month of 2028 (\"next boom 2028-29\")",
+      "category": "scc_housing",
+      "scenario_tag": "bull",
+      "prob_chat_claude": null,
+      "prob_chat_claude_note": "implied",
+      "prob_initial": 35,
+      "prob_current": 35,
+      "resolves_on": "2029-02-15",
+      "falsifier": "Never >=+5",
+      "data_source": "zhvi_scc_yoy",
+      "also_reads": [],
+      "status": "open",
+      "mark": "[reworded, dated]"
+    }
+  ],
+  "dropped_claims": [
+    {
+      "text": "Analog: 2000 plus 1973-74",
+      "reason": "Dropped as a claim; label only"
+    },
+    {
+      "text": "Mid-5s mortgages by 2029",
+      "reason": "Dropped; outside horizon; revisit at a 2027 rewrite"
+    },
+    {
+      "text": "Midterms ~94% Dem House",
+      "reason": "Dropped; no housing mechanism; log result as context (dial midterm_result, votes=false)"
+    }
+  ],
+  "scoring": {
+    "method": "brier",
+    "scores": [
+      "brier_live (probability held at the last monthly checkpoint before resolution)",
+      "brier_initial (v1.1 initial probability)"
+    ],
+    "categories": [
+      "macro",
+      "rates",
+      "credit",
+      "scc_housing",
+      "local_labor",
+      "ai_liquidity"
+    ],
+    "text_changes": "quarterly rewrites only",
+    "probability_changes": "any monthly checkpoint, logged like a weight move"
+  },
+  "vote_rules": {
+    "band_rules": [
+      "seasonal_1sd",
+      "corridor",
+      "event"
+    ],
+    "persistence": "two consecutive readings outside the band, or one beyond 2 sigma",
+    "weights_move_when": "3+ dials from 2+ categories vote the same way, or a claim resolves, or a tripwire fired",
+    "cap_points": {
+      "monthly": 15,
+      "claim_resolved_or_tripwire": 25
+    },
+    "move_requires": "log row citing >=2 readings and a non-empty opposite case (move #0 excepted as bootstrap)",
+    "seasonal_window_years": 5,
+    "market_dials_read_as": "10-day average"
+  },
+  "tripwires": {
+    "big": [
+      {
+        "id": "ant_ipo_fail",
+        "dial_id": "ant_ipo",
+        "rule": "ANT pulled, postponed past Dec 31, or closes below issue on day 1"
+      },
+      {
+        "id": "ccc_oas_record",
+        "dial_id": "ccc_oas",
+        "rule": "FRED HY CCC OAS beyond its 2010-2025 maximum on a two-day close"
+      },
+      {
+        "id": "hormuz",
+        "dial_id": "hormuz_status",
+        "rule": "Hormuz reopens or a US-Iran deal is signed"
+      },
+      {
+        "id": "fed_intermeeting",
+        "dial_id": "fomc_decision",
+        "rule": "Inter-meeting Fed action"
+      },
+      {
+        "id": "scc_actives_yoy",
+        "dial_id": "mls_scc_active_sfr",
+        "rule": "SCC active SFR count above +40% YoY or below 0% YoY for two consecutive weeks (YoY against realtor_active_scc until our own history exists)"
+      },
+      {
+        "id": "scc_price_reduced_record",
+        "dial_id": "realtor_price_reduced_share_scc",
+        "rule": "SCC price-reduced share above its Realtor.com 2016-2025 maximum for two consecutive weeks"
+      },
+      {
+        "id": "scc_warn_spike",
+        "dial_id": "scc_warn_workers",
+        "rule": "SCC WARN workers in a month above 2x the 2025 monthly average"
+      },
+      {
+        "id": "claim_early",
+        "dial_id": null,
+        "rule": "Any claim's falsifier (or truth condition) fires early"
+      }
+    ],
+    "posted_no_review": [
+      "One of Ryan's listed properties gets an offer or a price cut, or crosses a day-on-market checkpoint"
+    ],
+    "silent": [
+      "A scheduled release landing far from consensus",
+      "A panel geography crossing a line SCC hasn't"
+    ]
+  },
+  "dials": [
+    {
+      "id": "cpi_yoy",
+      "name": "US CPI, all items, YoY",
+      "cadence": "monthly",
+      "category": "oil_inflation",
+      "source": {
+        "name": "FRED / BLS",
+        "series_id": "CPIAUCSL",
+        "url": "https://fred.stlouisfed.org/graph/fredgraph.csv?id=CPIAUCSL"
+      },
+      "fetch": "fred_csv",
+      "units": "% YoY",
+      "transform": "yoy_pct",
+      "direction_map": {
+        "up": "bear",
+        "down": "bull"
+      },
+      "band_rule": "seasonal_1sd",
+      "corridor": null,
+      "has_history": true,
+      "votes": true,
+      "geography": "us"
+    },
+    {
+      "id": "core_cpi_yoy",
+      "name": "US core CPI, YoY",
+      "cadence": "monthly",
+      "category": "oil_inflation",
+      "source": {
+        "name": "FRED / BLS",
+        "series_id": "CPILFESL",
+        "url": "https://fred.stlouisfed.org/graph/fredgraph.csv?id=CPILFESL"
+      },
+      "fetch": "fred_csv",
+      "units": "% YoY",
+      "transform": "yoy_pct",
+      "direction_map": {
+        "up": "bear",
+        "down": "bull"
+      },
+      "band_rule": "seasonal_1sd",
+      "corridor": null,
+      "has_history": true,
+      "votes": true,
+      "geography": "us"
+    },
+    {
+      "id": "pce_yoy",
+      "name": "US PCE price index, YoY",
+      "cadence": "monthly",
+      "category": "oil_inflation",
+      "source": {
+        "name": "FRED / BEA",
+        "series_id": "PCEPI",
+        "url": "https://fred.stlouisfed.org/graph/fredgraph.csv?id=PCEPI"
+      },
+      "fetch": "fred_csv",
+      "units": "% YoY",
+      "transform": "yoy_pct",
+      "direction_map": {
+        "up": "bear",
+        "down": "bull"
+      },
+      "band_rule": "seasonal_1sd",
+      "corridor": null,
+      "has_history": true,
+      "votes": true,
+      "geography": "us"
+    },
+    {
+      "id": "core_pce_yoy",
+      "name": "US core PCE price index, YoY",
+      "cadence": "monthly",
+      "category": "oil_inflation",
+      "source": {
+        "name": "FRED / BEA",
+        "series_id": "PCEPILFE",
+        "url": "https://fred.stlouisfed.org/graph/fredgraph.csv?id=PCEPILFE"
+      },
+      "fetch": "fred_csv",
+      "units": "% YoY",
+      "transform": "yoy_pct",
+      "direction_map": {
+        "up": "bear",
+        "down": "bull"
+      },
+      "band_rule": "seasonal_1sd",
+      "corridor": null,
+      "has_history": true,
+      "votes": true,
+      "geography": "us"
+    },
+    {
+      "id": "payrolls_mom",
+      "name": "US nonfarm payrolls, monthly change",
+      "cadence": "monthly",
+      "category": "macro",
+      "source": {
+        "name": "FRED / BLS",
+        "series_id": "PAYEMS",
+        "url": "https://fred.stlouisfed.org/graph/fredgraph.csv?id=PAYEMS"
+      },
+      "fetch": "fred_csv",
+      "units": "thousands of jobs, MoM change",
+      "transform": "diff",
+      "direction_map": {
+        "up": "bull",
+        "down": "bear"
+      },
+      "band_rule": "seasonal_1sd",
+      "corridor": null,
+      "has_history": true,
+      "votes": true,
+      "geography": "us"
+    },
+    {
+      "id": "unrate_us",
+      "name": "US unemployment rate",
+      "cadence": "monthly",
+      "category": "macro",
+      "source": {
+        "name": "FRED / BLS",
+        "series_id": "UNRATE",
+        "url": "https://fred.stlouisfed.org/graph/fredgraph.csv?id=UNRATE"
+      },
+      "fetch": "fred_csv",
+      "units": "%",
+      "transform": "level",
+      "direction_map": {
+        "up": "bear",
+        "down": "bull"
+      },
+      "band_rule": "seasonal_1sd",
+      "corridor": null,
+      "has_history": true,
+      "votes": true,
+      "geography": "us"
+    },
+    {
+      "id": "initial_claims_4wk",
+      "name": "US initial claims, 4-week average",
+      "cadence": "weekly",
+      "category": "macro",
+      "source": {
+        "name": "FRED / DOL",
+        "series_id": "IC4WSA",
+        "url": "https://fred.stlouisfed.org/graph/fredgraph.csv?id=IC4WSA"
+      },
+      "fetch": "fred_csv",
+      "units": "claims",
+      "transform": "level",
+      "direction_map": {
+        "up": "bear",
+        "down": "bull"
+      },
+      "band_rule": "seasonal_1sd",
+      "corridor": null,
+      "has_history": true,
+      "votes": true,
+      "geography": "us"
+    },
+    {
+      "id": "sahm_gap",
+      "name": "Sahm rule recession indicator (real-time)",
+      "cadence": "monthly",
+      "category": "macro",
+      "source": {
+        "name": "FRED",
+        "series_id": "SAHMREALTIME",
+        "url": "https://fred.stlouisfed.org/graph/fredgraph.csv?id=SAHMREALTIME"
+      },
+      "fetch": "fred_csv",
+      "units": "percentage points",
+      "transform": "level",
+      "direction_map": {
+        "up": "bear",
+        "down": "bull"
+      },
+      "band_rule": "seasonal_1sd",
+      "corridor": null,
+      "has_history": true,
+      "votes": true,
+      "geography": "us",
+      "notes": "Trigger level 0.50."
+    },
+    {
+      "id": "us_real_gdp_qoq",
+      "name": "US real GDP growth, QoQ SAAR",
+      "cadence": "quarterly",
+      "category": "macro",
+      "source": {
+        "name": "FRED / BEA",
+        "series_id": "A191RL1Q225SBEA",
+        "url": "https://fred.stlouisfed.org/graph/fredgraph.csv?id=A191RL1Q225SBEA"
+      },
+      "fetch": "fred_csv",
+      "units": "% SAAR",
+      "transform": "level",
+      "direction_map": {
+        "up": "bull",
+        "down": "bear"
+      },
+      "band_rule": "seasonal_1sd",
+      "corridor": null,
+      "has_history": true,
+      "votes": true,
+      "geography": "us",
+      "notes": "Two consecutive negative quarters is one of C4's truth conditions."
+    },
+    {
+      "id": "fed_funds_target_upper",
+      "name": "Fed funds target range, upper bound",
+      "cadence": "daily",
+      "category": "rates",
+      "source": {
+        "name": "FRED / Federal Reserve",
+        "series_id": "DFEDTARU",
+        "url": "https://fred.stlouisfed.org/graph/fredgraph.csv?id=DFEDTARU"
+      },
+      "fetch": "fred_csv",
+      "units": "%",
+      "transform": "level",
+      "direction_map": {
+        "up": "bear",
+        "down": "bull"
+      },
+      "band_rule": "event",
+      "corridor": null,
+      "has_history": true,
+      "votes": true,
+      "geography": "us",
+      "notes": "Moves only at FOMC (or inter-meeting) decisions; resolves C5-C7."
+    },
+    {
+      "id": "ust10y",
+      "name": "10-year Treasury yield",
+      "cadence": "daily",
+      "category": "rates",
+      "source": {
+        "name": "FRED / Treasury",
+        "series_id": "DGS10",
+        "url": "https://fred.stlouisfed.org/graph/fredgraph.csv?id=DGS10"
+      },
+      "fetch": "fred_csv",
+      "units": "%",
+      "transform": "level",
+      "direction_map": {
+        "up": "bear",
+        "down": "bull"
+      },
+      "band_rule": "corridor",
+      "corridor": null,
+      "has_history": true,
+      "votes": true,
+      "geography": "us",
+      "notes": "Read as a 10-day average, never one print (brief 3.4)."
+    },
+    {
+      "id": "ust2y",
+      "name": "2-year Treasury yield",
+      "cadence": "daily",
+      "category": "rates",
+      "source": {
+        "name": "FRED / Treasury",
+        "series_id": "DGS2",
+        "url": "https://fred.stlouisfed.org/graph/fredgraph.csv?id=DGS2"
+      },
+      "fetch": "fred_csv",
+      "units": "%",
+      "transform": "level",
+      "direction_map": {
+        "up": "bear",
+        "down": "bull"
+      },
+      "band_rule": "corridor",
+      "corridor": null,
+      "has_history": true,
+      "votes": true,
+      "geography": "us"
+    },
+    {
+      "id": "curve_2s10s",
+      "name": "10-year minus 2-year Treasury slope",
+      "cadence": "daily",
+      "category": "rates",
+      "source": {
+        "name": "FRED",
+        "series_id": "T10Y2Y",
+        "url": "https://fred.stlouisfed.org/graph/fredgraph.csv?id=T10Y2Y"
+      },
+      "fetch": "fred_csv",
+      "units": "percentage points",
+      "transform": "level",
+      "direction_map": {
+        "up": "neutral",
+        "down": "bear"
+      },
+      "band_rule": "corridor",
+      "corridor": null,
+      "has_history": true,
+      "votes": true,
+      "geography": "us",
+      "notes": "Steep curve argues against the 2000 analog; a move back toward inversion favours bear."
+    },
+    {
+      "id": "mortgage30",
+      "name": "Freddie Mac 30-year fixed average",
+      "cadence": "weekly",
+      "category": "rates",
+      "source": {
+        "name": "FRED / Freddie Mac PMMS",
+        "series_id": "MORTGAGE30US",
+        "url": "https://fred.stlouisfed.org/graph/fredgraph.csv?id=MORTGAGE30US"
+      },
+      "fetch": "fred_csv",
+      "units": "%",
+      "transform": "level",
+      "direction_map": {
+        "up": "bear",
+        "down": "bull"
+      },
+      "band_rule": "corridor",
+      "corridor": null,
+      "has_history": true,
+      "votes": true,
+      "geography": "us"
+    },
+    {
+      "id": "mortgage_spread",
+      "name": "Mortgage spread: Freddie 30-yr minus 10-yr Treasury",
+      "cadence": "weekly",
+      "category": "rates",
+      "source": {
+        "name": "Derived: MORTGAGE30US - DGS10 (10-yr = latest daily close on or before the PMMS date)",
+        "series_id": "MORTGAGE30US-DGS10",
+        "url": "https://fred.stlouisfed.org/graph/fredgraph.csv?id=MORTGAGE30US"
+      },
+      "fetch": "fred_csv",
+      "units": "basis points",
+      "transform": "derived_spread_bp",
+      "direction_map": {
+        "up": "bear",
+        "down": "bull"
+      },
+      "band_rule": "corridor",
+      "corridor": null,
+      "has_history": true,
+      "votes": true,
+      "geography": "us",
+      "notes": "~170 bp norm per brief 1.2 item 8; C11 threshold 180 bp."
+    },
+    {
+      "id": "brent",
+      "name": "Brent crude spot",
+      "cadence": "daily",
+      "category": "oil_inflation",
+      "source": {
+        "name": "FRED / EIA",
+        "series_id": "DCOILBRENTEU",
+        "url": "https://fred.stlouisfed.org/graph/fredgraph.csv?id=DCOILBRENTEU"
+      },
+      "fetch": "fred_csv",
+      "units": "USD/bbl",
+      "transform": "level",
+      "direction_map": {
+        "up": "bear",
+        "down": "bull"
+      },
+      "band_rule": "corridor",
+      "corridor": null,
+      "has_history": true,
+      "votes": true,
+      "geography": "global"
+    },
+    {
+      "id": "ccc_oas",
+      "name": "ICE BofA US High Yield CCC & lower OAS",
+      "cadence": "daily",
+      "category": "credit",
+      "source": {
+        "name": "FRED / ICE BofA",
+        "series_id": "BAMLH0A3HYC",
+        "url": "https://fred.stlouisfed.org/graph/fredgraph.csv?id=BAMLH0A3HYC"
+      },
+      "fetch": "fred_csv",
+      "units": "percentage points",
+      "transform": "level",
+      "direction_map": {
+        "up": "bear",
+        "down": "bull"
+      },
+      "band_rule": "corridor",
+      "corridor": null,
+      "has_history": true,
+      "votes": true,
+      "geography": "us",
+      "notes": "FRED serves only the last ~3 years of ICE data (licence), so the 2010-2025 maximum cannot be computed from FRED alone; see bootstrap output."
+    },
+    {
+      "id": "fitch_lev_loan_default",
+      "name": "Fitch US leveraged-loan TTM default rate",
+      "cadence": "quarterly",
+      "category": "credit",
+      "source": {
+        "name": "Fitch Ratings press releases",
+        "url": "https://www.fitchratings.com/research/corporate-finance"
+      },
+      "fetch": "web",
+      "units": "%",
+      "transform": "level",
+      "direction_map": {
+        "up": "bear",
+        "down": "bull"
+      },
+      "band_rule": "corridor",
+      "corridor": null,
+      "has_history": false,
+      "votes": true,
+      "geography": "us",
+      "notes": "C8 truth condition: >= 6%."
+    },
+    {
+      "id": "fitch_private_credit_default",
+      "name": "Fitch US private credit default rate",
+      "cadence": "quarterly",
+      "category": "credit",
+      "source": {
+        "name": "Fitch Ratings press releases",
+        "url": "https://www.fitchratings.com/research/corporate-finance"
+      },
+      "fetch": "web",
+      "units": "%",
+      "transform": "level",
+      "direction_map": {
+        "up": "bear",
+        "down": "bull"
+      },
+      "band_rule": "corridor",
+      "corridor": null,
+      "has_history": false,
+      "votes": true,
+      "geography": "us"
+    },
+    {
+      "id": "moodys_pik_default",
+      "name": "Moody's private credit default rate incl. PIK",
+      "cadence": "quarterly",
+      "category": "credit",
+      "source": {
+        "name": "Moody's press releases",
+        "url": "https://www.moodys.com/"
+      },
+      "fetch": "web",
+      "units": "%",
+      "transform": "level",
+      "direction_map": {
+        "up": "bear",
+        "down": "bull"
+      },
+      "band_rule": "corridor",
+      "corridor": null,
+      "has_history": false,
+      "votes": true,
+      "geography": "us"
+    },
+    {
+      "id": "credit_event",
+      "name": "Named credit event (>=$5B private-credit fund / BDC gates or defaults)",
+      "cadence": "event",
+      "category": "credit",
+      "source": {
+        "name": "News / press releases",
+        "url": null
+      },
+      "fetch": "manual",
+      "units": "binary",
+      "transform": "level",
+      "direction_map": {
+        "up": "bear",
+        "down": "neutral"
+      },
+      "band_rule": "event",
+      "corridor": null,
+      "has_history": false,
+      "votes": true,
+      "geography": "us"
+    },
+    {
+      "id": "sp500",
+      "name": "S&P 500 index close",
+      "cadence": "daily",
+      "category": "equities_ai",
+      "source": {
+        "name": "FRED / S&P Dow Jones Indices",
+        "series_id": "SP500",
+        "url": "https://fred.stlouisfed.org/graph/fredgraph.csv?id=SP500"
+      },
+      "fetch": "fred_csv",
+      "units": "index points",
+      "transform": "level",
+      "direction_map": {
+        "up": "bull",
+        "down": "bear"
+      },
+      "band_rule": "corridor",
+      "corridor": null,
+      "has_history": true,
+      "votes": true,
+      "geography": "us",
+      "notes": "Cycle-top reference: Oct 6, 2026 close (C1-C3). FRED carries ~10 years."
+    },
+    {
+      "id": "basket_index",
+      "name": "Local employer basket, equal-weight, monthly rebalance",
+      "cadence": "daily",
+      "category": "equities_ai",
+      "source": {
+        "name": "Daily closes for NVDA AAPL GOOGL META AVGO AMD AMAT LRCX KLAC INTC CSCO",
+        "url": "https://api.nasdaq.com/api/quote/{SYMBOL}/historical?assetclass=stocks"
+      },
+      "fetch": "nasdaq_api",
+      "units": "index (first bootstrap day = 100)",
+      "transform": "basket_equal_weight",
+      "direction_map": {
+        "up": "bull",
+        "down": "bear"
+      },
+      "band_rule": "corridor",
+      "corridor": null,
+      "has_history": true,
+      "votes": true,
+      "geography": "scc",
+      "notes": "Brief named Stooq (https://stooq.com/q/d/l/?s=nvda.us&i=d); Stooq now serves a JavaScript proof-of-work page to scripts, so the bootstrap tries Stooq first and falls back to the Nasdaq public historical API. C30 = drawdown from 52-week high."
+    },
+    {
+      "id": "big4_capex_2027",
+      "name": "Big-4 hyperscaler 2027 capex guidance vs 2026 actual (MSFT, GOOGL, AMZN, META)",
+      "cadence": "quarterly",
+      "category": "equities_ai",
+      "source": {
+        "name": "Q4 earnings calls / consensus",
+        "url": null
+      },
+      "fetch": "manual",
+      "units": "% change vs 2026 actual",
+      "transform": "level",
+      "direction_map": {
+        "up": "bull",
+        "down": "bear"
+      },
+      "band_rule": "event",
+      "corridor": null,
+      "has_history": false,
+      "votes": true,
+      "geography": "us",
+      "notes": "Resolves C28 and C29 (no-guide rule: first-reported 2027 consensus after the Q4 call)."
+    },
+    {
+      "id": "cape_fwd_pe",
+      "name": "S&P 500 CAPE and forward P/E",
+      "cadence": "quarterly",
+      "category": "equities_ai",
+      "source": {
+        "name": "multpl.com / FactSet Earnings Insight",
+        "url": null
+      },
+      "fetch": "manual",
+      "units": "ratio",
+      "transform": "level",
+      "direction_map": {
+        "up": "bear",
+        "down": "bull"
+      },
+      "band_rule": "corridor",
+      "corridor": null,
+      "has_history": false,
+      "votes": true,
+      "geography": "us"
+    },
+    {
+      "id": "ant_ipo",
+      "name": "Anthropic IPO (ticker ANT): pricing, day-1 close vs issue, staged lockup releases",
+      "cadence": "event",
+      "category": "equities_ai",
+      "source": {
+        "name": "S-1 / exchange data / news",
+        "url": null
+      },
+      "fetch": "manual",
+      "units": "% vs issue price",
+      "transform": "level",
+      "direction_map": {
+        "up": "bull",
+        "down": "bear"
+      },
+      "band_rule": "event",
+      "corridor": null,
+      "has_history": false,
+      "votes": true,
+      "geography": "us",
+      "notes": "Pulled / postponed past Dec 31 / closes below issue on day 1 = big tripwire."
+    },
+    {
+      "id": "spacex_lockup",
+      "name": "SpaceX final lockup expiry",
+      "cadence": "event",
+      "category": "equities_ai",
+      "source": {
+        "name": "News",
+        "url": null
+      },
+      "fetch": "manual",
+      "units": "binary",
+      "transform": "level",
+      "direction_map": {
+        "up": "neutral",
+        "down": "neutral"
+      },
+      "band_rule": "event",
+      "corridor": null,
+      "has_history": false,
+      "votes": true,
+      "geography": "us",
+      "notes": "Reported Dec 8-9, 2026 (unverified). Context for AI-liquidity counter-current."
+    },
+    {
+      "id": "ipo_calendar",
+      "name": "AI IPO / lockup calendar refresh",
+      "cadence": "quarterly",
+      "category": "equities_ai",
+      "source": {
+        "name": "News / S-1 filings",
+        "url": null
+      },
+      "fetch": "manual",
+      "units": "text",
+      "transform": "level",
+      "direction_map": {
+        "up": "bull",
+        "down": "bear"
+      },
+      "band_rule": "event",
+      "corridor": null,
+      "has_history": false,
+      "votes": true,
+      "geography": "us"
+    },
+    {
+      "id": "fomc_decision",
+      "name": "FOMC rate decision",
+      "cadence": "event",
+      "category": "events",
+      "source": {
+        "name": "Federal Reserve statements",
+        "url": null
+      },
+      "fetch": "manual",
+      "units": "bp change in target",
+      "transform": "level",
+      "direction_map": {
+        "up": "bear",
+        "down": "bull"
+      },
+      "band_rule": "event",
+      "corridor": null,
+      "has_history": false,
+      "votes": true,
+      "geography": "us",
+      "notes": "Inter-meeting action = big tripwire."
+    },
+    {
+      "id": "hormuz_status",
+      "name": "Strait of Hormuz status / US-Iran deal",
+      "cadence": "event",
+      "category": "events",
+      "source": {
+        "name": "News",
+        "url": null
+      },
+      "fetch": "manual",
+      "units": "binary (1 = reopened / deal signed)",
+      "transform": "level",
+      "direction_map": {
+        "up": "bull",
+        "down": "bear"
+      },
+      "band_rule": "event",
+      "corridor": null,
+      "has_history": false,
+      "votes": true,
+      "geography": "global",
+      "notes": "Reopening or a signed deal = big tripwire."
+    },
+    {
+      "id": "nber_recession",
+      "name": "NBER recession dating",
+      "cadence": "event",
+      "category": "events",
+      "source": {
+        "name": "NBER Business Cycle Dating Committee",
+        "url": "https://www.nber.org/research/business-cycle-dating"
+      },
+      "fetch": "manual",
+      "units": "binary",
+      "transform": "level",
+      "direction_map": {
+        "up": "bear",
+        "down": "bull"
+      },
+      "band_rule": "event",
+      "corridor": null,
+      "has_history": false,
+      "votes": true,
+      "geography": "us"
+    },
+    {
+      "id": "midterm_result",
+      "name": "2026 midterm result",
+      "cadence": "event",
+      "category": "events",
+      "source": {
+        "name": "News",
+        "url": null
+      },
+      "fetch": "manual",
+      "units": "text",
+      "transform": "level",
+      "direction_map": {
+        "up": "neutral",
+        "down": "neutral"
+      },
+      "band_rule": "event",
+      "corridor": null,
+      "has_history": false,
+      "votes": false,
+      "geography": "us",
+      "notes": "Context only (dropped as a claim)."
+    },
+    {
+      "id": "cs_national",
+      "name": "Case-Shiller US National HPI (NSA)",
+      "cadence": "monthly",
+      "category": "us_housing",
+      "source": {
+        "name": "FRED / S&P CoreLogic",
+        "series_id": "CSUSHPINSA",
+        "url": "https://fred.stlouisfed.org/graph/fredgraph.csv?id=CSUSHPINSA"
+      },
+      "fetch": "fred_csv",
+      "units": "index",
+      "transform": "level",
+      "direction_map": {
+        "up": "bull",
+        "down": "bear"
+      },
+      "band_rule": "seasonal_1sd",
+      "corridor": null,
+      "has_history": true,
+      "votes": true,
+      "geography": "us",
+      "notes": "C14 = nominal peak-to-trough."
+    },
+    {
+      "id": "cs_sf_metro",
+      "name": "Case-Shiller San Francisco metro HPI (SA) - NOT SCC",
+      "cadence": "monthly",
+      "category": "us_housing",
+      "source": {
+        "name": "FRED / S&P CoreLogic",
+        "series_id": "SFXRSA",
+        "url": "https://fred.stlouisfed.org/graph/fredgraph.csv?id=SFXRSA"
+      },
+      "fetch": "fred_csv",
+      "units": "index",
+      "transform": "yoy_pct",
+      "direction_map": {
+        "up": "bull",
+        "down": "bear"
+      },
+      "band_rule": "seasonal_1sd",
+      "corridor": null,
+      "has_history": true,
+      "votes": false,
+      "geography": "sf_metro",
+      "notes": "Covers Alameda, Contra Costa, Marin, SF, San Mateo. Excludes Santa Clara County."
+    },
+    {
+      "id": "fhfa_hpi_sj",
+      "name": "FHFA all-transactions HPI, San Jose MSA",
+      "cadence": "quarterly",
+      "category": "local_housing",
+      "source": {
+        "name": "FRED / FHFA",
+        "series_id": "ATNHPIUS41940Q",
+        "url": "https://fred.stlouisfed.org/graph/fredgraph.csv?id=ATNHPIUS41940Q"
+      },
+      "fetch": "fred_csv",
+      "units": "% YoY",
+      "transform": "yoy_pct",
+      "direction_map": {
+        "up": "bull",
+        "down": "bear"
+      },
+      "band_rule": "seasonal_1sd",
+      "corridor": null,
+      "has_history": true,
+      "votes": true,
+      "geography": "sj_msa"
+    },
+    {
+      "id": "zhvi_scc",
+      "name": "Zillow ZHVI, Santa Clara County, all homes (SA, smoothed)",
+      "cadence": "monthly",
+      "category": "local_housing",
+      "source": {
+        "name": "Zillow Research",
+        "url": "https://files.zillowstatic.com/research/public_csvs/zhvi/County_zhvi_uc_sfrcondo_tier_0.33_0.67_sm_sa_month.csv"
+      },
+      "fetch": "zillow_csv",
+      "units": "USD",
+      "transform": "level",
+      "direction_map": {
+        "up": "bull",
+        "down": "bear"
+      },
+      "band_rule": "corridor",
+      "corridor": null,
+      "has_history": true,
+      "votes": false,
+      "geography": "scc",
+      "notes": "Level series (C17 low-window test). Does not vote itself: zhvi_scc_yoy (seasonal band) and zhvi_scc_drawdown (scored object) do."
+    },
+    {
+      "id": "zhvi_scc_yoy",
+      "name": "Zillow ZHVI, Santa Clara County, all homes, YoY",
+      "cadence": "monthly",
+      "category": "local_housing",
+      "source": {
+        "name": "Zillow Research",
+        "url": "https://files.zillowstatic.com/research/public_csvs/zhvi/County_zhvi_uc_sfrcondo_tier_0.33_0.67_sm_sa_month.csv"
+      },
+      "fetch": "zillow_csv",
+      "units": "% YoY",
+      "transform": "yoy_pct",
+      "direction_map": {
+        "up": "bull",
+        "down": "bear"
+      },
+      "band_rule": "seasonal_1sd",
+      "corridor": null,
+      "has_history": true,
+      "votes": true,
+      "geography": "scc",
+      "notes": "C32."
+    },
+    {
+      "id": "zhvi_scc_drawdown",
+      "name": "SCC ZHVI drawdown from its 2026 peak (the scored scenario object)",
+      "cadence": "monthly",
+      "category": "local_housing",
+      "source": {
+        "name": "Zillow Research (derived)",
+        "url": "https://files.zillowstatic.com/research/public_csvs/zhvi/County_zhvi_uc_sfrcondo_tier_0.33_0.67_sm_sa_month.csv"
+      },
+      "fetch": "zillow_csv",
+      "units": "% from 2026 peak",
+      "transform": "drawdown_from_2026_peak",
+      "direction_map": {
+        "up": "bull",
+        "down": "bear"
+      },
+      "band_rule": "corridor",
+      "corridor": null,
+      "has_history": true,
+      "votes": true,
+      "geography": "scc",
+      "notes": "Partition: bull shallower than -8%, base -8% to -15%, bear -15% or worse (through Dec 2028). Peak month fixed at the shakedown."
+    },
+    {
+      "id": "zhvi_scc_top_yoy",
+      "name": "Zillow ZHVI top tier, Santa Clara County, YoY",
+      "cadence": "monthly",
+      "category": "local_housing",
+      "source": {
+        "name": "Zillow Research",
+        "url": "https://files.zillowstatic.com/research/public_csvs/zhvi/County_zhvi_uc_sfrcondo_tier_0.67_1.0_sm_sa_month.csv"
+      },
+      "fetch": "zillow_csv",
+      "units": "% YoY",
+      "transform": "yoy_pct",
+      "direction_map": {
+        "up": "bull",
+        "down": "bear"
+      },
+      "band_rule": "seasonal_1sd",
+      "corridor": null,
+      "has_history": true,
+      "votes": true,
+      "geography": "scc",
+      "notes": "C31."
+    },
+    {
+      "id": "zhvi_scc_bottom_yoy",
+      "name": "Zillow ZHVI bottom tier, Santa Clara County, YoY",
+      "cadence": "monthly",
+      "category": "local_housing",
+      "source": {
+        "name": "Zillow Research",
+        "url": "https://files.zillowstatic.com/research/public_csvs/zhvi/County_zhvi_uc_sfrcondo_tier_0.0_0.33_sm_sa_month.csv"
+      },
+      "fetch": "zillow_csv",
+      "units": "% YoY",
+      "transform": "yoy_pct",
+      "direction_map": {
+        "up": "bull",
+        "down": "bear"
+      },
+      "band_rule": "seasonal_1sd",
+      "corridor": null,
+      "has_history": true,
+      "votes": true,
+      "geography": "scc",
+      "notes": "C31."
+    },
+    {
+      "id": "zhvi_zip_95118",
+      "name": "Zillow ZHVI by zip 95118 (home), YoY",
+      "cadence": "monthly",
+      "category": "owned_property",
+      "source": {
+        "name": "Zillow Research",
+        "url": "https://files.zillowstatic.com/research/public_csvs/zhvi/Zip_zhvi_uc_sfrcondo_tier_0.33_0.67_sm_sa_month.csv"
+      },
+      "fetch": "zillow_csv",
+      "units": "% YoY",
+      "transform": "yoy_pct",
+      "direction_map": {
+        "up": "neutral",
+        "down": "neutral"
+      },
+      "band_rule": "seasonal_1sd",
+      "corridor": null,
+      "has_history": true,
+      "votes": false,
+      "geography": "zip:95118",
+      "notes": "Owned-property zip: ground truth, never a vote (brief 3.4)."
+    },
+    {
+      "id": "zhvi_zip_95123",
+      "name": "Zillow ZHVI by zip 95123 (Halleck), YoY",
+      "cadence": "monthly",
+      "category": "owned_property",
+      "source": {
+        "name": "Zillow Research",
+        "url": "https://files.zillowstatic.com/research/public_csvs/zhvi/Zip_zhvi_uc_sfrcondo_tier_0.33_0.67_sm_sa_month.csv"
+      },
+      "fetch": "zillow_csv",
+      "units": "% YoY",
+      "transform": "yoy_pct",
+      "direction_map": {
+        "up": "neutral",
+        "down": "neutral"
+      },
+      "band_rule": "seasonal_1sd",
+      "corridor": null,
+      "has_history": true,
+      "votes": false,
+      "geography": "zip:95123",
+      "notes": "Owned-property zip: ground truth, never a vote (brief 3.4)."
+    },
+    {
+      "id": "zhvi_zip_95130",
+      "name": "Zillow ZHVI by zip 95130 (Quito), YoY",
+      "cadence": "monthly",
+      "category": "owned_property",
+      "source": {
+        "name": "Zillow Research",
+        "url": "https://files.zillowstatic.com/research/public_csvs/zhvi/Zip_zhvi_uc_sfrcondo_tier_0.33_0.67_sm_sa_month.csv"
+      },
+      "fetch": "zillow_csv",
+      "units": "% YoY",
+      "transform": "yoy_pct",
+      "direction_map": {
+        "up": "neutral",
+        "down": "neutral"
+      },
+      "band_rule": "seasonal_1sd",
+      "corridor": null,
+      "has_history": true,
+      "votes": false,
+      "geography": "zip:95130",
+      "notes": "Owned-property zip: ground truth, never a vote (brief 3.4)."
+    },
+    {
+      "id": "realtor_active_scc",
+      "name": "Realtor.com active listing count, Santa Clara County",
+      "cadence": "monthly",
+      "category": "local_housing",
+      "source": {
+        "name": "FRED / Realtor.com",
+        "series_id": "ACTLISCOU6085",
+        "url": "https://fred.stlouisfed.org/graph/fredgraph.csv?id=ACTLISCOU6085"
+      },
+      "fetch": "fred_csv",
+      "units": "listings",
+      "transform": "level",
+      "direction_map": {
+        "up": "bear",
+        "down": "bull"
+      },
+      "band_rule": "seasonal_1sd",
+      "corridor": null,
+      "has_history": true,
+      "votes": true,
+      "geography": "scc",
+      "notes": "C18. FIPS form is 6085 (06085 returns 404)."
+    },
+    {
+      "id": "realtor_new_listings_scc",
+      "name": "Realtor.com new listing count, Santa Clara County",
+      "cadence": "monthly",
+      "category": "local_housing",
+      "source": {
+        "name": "FRED / Realtor.com",
+        "series_id": "NEWLISCOU6085",
+        "url": "https://fred.stlouisfed.org/graph/fredgraph.csv?id=NEWLISCOU6085"
+      },
+      "fetch": "fred_csv",
+      "units": "listings",
+      "transform": "level",
+      "direction_map": {
+        "up": "bear",
+        "down": "bull"
+      },
+      "band_rule": "seasonal_1sd",
+      "corridor": null,
+      "has_history": true,
+      "votes": true,
+      "geography": "scc"
+    },
+    {
+      "id": "realtor_dom_scc",
+      "name": "Realtor.com median days on market, Santa Clara County",
+      "cadence": "monthly",
+      "category": "local_housing",
+      "source": {
+        "name": "FRED / Realtor.com",
+        "series_id": "MEDDAYONMAR6085",
+        "url": "https://fred.stlouisfed.org/graph/fredgraph.csv?id=MEDDAYONMAR6085"
+      },
+      "fetch": "fred_csv",
+      "units": "days",
+      "transform": "level",
+      "direction_map": {
+        "up": "bear",
+        "down": "bull"
+      },
+      "band_rule": "seasonal_1sd",
+      "corridor": null,
+      "has_history": true,
+      "votes": true,
+      "geography": "scc"
+    },
+    {
+      "id": "realtor_pending_ratio_scc",
+      "name": "Realtor.com pending ratio, Santa Clara County",
+      "cadence": "monthly",
+      "category": "local_housing",
+      "source": {
+        "name": "FRED / Realtor.com",
+        "series_id": "PENRAT6085",
+        "url": "https://fred.stlouisfed.org/graph/fredgraph.csv?id=PENRAT6085"
+      },
+      "fetch": "fred_csv",
+      "units": "ratio (pending / active)",
+      "transform": "level",
+      "direction_map": {
+        "up": "bull",
+        "down": "bear"
+      },
+      "band_rule": "seasonal_1sd",
+      "corridor": null,
+      "has_history": true,
+      "votes": true,
+      "geography": "scc",
+      "notes": "PENRATMM6085 is the month-over-month change, not the ratio."
+    },
+    {
+      "id": "realtor_price_reduced_scc",
+      "name": "Realtor.com price-reduced listing count, Santa Clara County",
+      "cadence": "monthly",
+      "category": "local_housing",
+      "source": {
+        "name": "FRED / Realtor.com",
+        "series_id": "PRIREDCOU6085",
+        "url": "https://fred.stlouisfed.org/graph/fredgraph.csv?id=PRIREDCOU6085"
+      },
+      "fetch": "fred_csv",
+      "units": "listings",
+      "transform": "level",
+      "direction_map": {
+        "up": "bear",
+        "down": "bull"
+      },
+      "band_rule": "seasonal_1sd",
+      "corridor": null,
+      "has_history": true,
+      "votes": true,
+      "geography": "scc"
+    },
+    {
+      "id": "realtor_price_reduced_share_scc",
+      "name": "Realtor.com price-reduced share (price-reduced / active), Santa Clara County",
+      "cadence": "monthly",
+      "category": "local_housing",
+      "source": {
+        "name": "Derived: PRIREDCOU6085 / ACTLISCOU6085",
+        "series_id": "PRIREDCOU6085/ACTLISCOU6085",
+        "url": "https://fred.stlouisfed.org/graph/fredgraph.csv?id=PRIREDCOU6085"
+      },
+      "fetch": "fred_csv",
+      "units": "% of actives",
+      "transform": "derived_ratio_pct",
+      "direction_map": {
+        "up": "bear",
+        "down": "bull"
+      },
+      "band_rule": "corridor",
+      "corridor": null,
+      "has_history": true,
+      "votes": true,
+      "geography": "scc",
+      "notes": "C20 and tripwire: threshold = 2016-2025 maximum."
+    },
+    {
+      "id": "realtor_median_list_price_scc",
+      "name": "Realtor.com median listing price, Santa Clara County",
+      "cadence": "monthly",
+      "category": "local_housing",
+      "source": {
+        "name": "FRED / Realtor.com",
+        "series_id": "MEDLISPRI6085",
+        "url": "https://fred.stlouisfed.org/graph/fredgraph.csv?id=MEDLISPRI6085"
+      },
+      "fetch": "fred_csv",
+      "units": "USD",
+      "transform": "yoy_pct",
+      "direction_map": {
+        "up": "bull",
+        "down": "bear"
+      },
+      "band_rule": "seasonal_1sd",
+      "corridor": null,
+      "has_history": true,
+      "votes": false,
+      "geography": "scc",
+      "notes": "Mix-shift prone; context only."
+    },
+    {
+      "id": "car_scc_sfr_sales",
+      "name": "C.A.R. Santa Clara County SFR closed sales",
+      "cadence": "monthly",
+      "category": "local_housing",
+      "source": {
+        "name": "C.A.R. Historical Housing Data (Sales of Existing Single Family Homes)",
+        "url": "https://www.car.org/marketdata/data/housingdata"
+      },
+      "fetch": "car_xlsx",
+      "units": "sales",
+      "transform": "level",
+      "direction_map": {
+        "up": "bull",
+        "down": "bear"
+      },
+      "band_rule": "seasonal_1sd",
+      "corridor": null,
+      "has_history": true,
+      "votes": true,
+      "geography": "scc",
+      "notes": "C21; denominator of months of supply (C19)."
+    },
+    {
+      "id": "car_scc_sfr_median",
+      "name": "C.A.R. Santa Clara County SFR median price, YoY",
+      "cadence": "monthly",
+      "category": "local_housing",
+      "source": {
+        "name": "C.A.R. Historical Housing Data (Median Prices of Existing Single Family Homes)",
+        "url": "https://www.car.org/marketdata/data/housingdata"
+      },
+      "fetch": "car_xlsx",
+      "units": "% YoY",
+      "transform": "yoy_pct",
+      "direction_map": {
+        "up": "bull",
+        "down": "bear"
+      },
+      "band_rule": "seasonal_1sd",
+      "corridor": null,
+      "has_history": true,
+      "votes": true,
+      "geography": "scc",
+      "notes": "Median used YoY only (brief 1.2 item 2)."
+    },
+    {
+      "id": "car_sf_sfr_median_yoy",
+      "name": "C.A.R. San Francisco County SFR median price, YoY",
+      "cadence": "monthly",
+      "category": "local_housing",
+      "source": {
+        "name": "C.A.R. Historical Housing Data (Median Prices of Existing Single Family Homes)",
+        "url": "https://www.car.org/marketdata/data/housingdata"
+      },
+      "fetch": "car_xlsx",
+      "units": "% YoY",
+      "transform": "yoy_pct",
+      "direction_map": {
+        "up": "bull",
+        "down": "bear"
+      },
+      "band_rule": "seasonal_1sd",
+      "corridor": null,
+      "has_history": true,
+      "votes": false,
+      "geography": "san_francisco",
+      "notes": "C26. Panel geography."
+    },
+    {
+      "id": "scc_months_supply",
+      "name": "SCC months of supply (Realtor.com actives / C.A.R. closed SFR sales)",
+      "cadence": "monthly",
+      "category": "local_housing",
+      "source": {
+        "name": "Derived: ACTLISCOU6085 / car_scc_sfr_sales",
+        "url": null
+      },
+      "fetch": "web",
+      "units": "months",
+      "transform": "level",
+      "direction_map": {
+        "up": "bear",
+        "down": "bull"
+      },
+      "band_rule": "corridor",
+      "corridor": null,
+      "has_history": false,
+      "votes": true,
+      "geography": "scc",
+      "notes": "C19. History depends on the C.A.R. series."
+    },
+    {
+      "id": "scc_nod_count",
+      "name": "Santa Clara County Notices of Default, weekly count",
+      "cadence": "weekly",
+      "category": "local_housing",
+      "source": {
+        "name": "Santa Clara County Clerk-Recorder (free count)",
+        "url": "https://clerkrecorder.santaclaracounty.gov/"
+      },
+      "fetch": "web",
+      "units": "notices",
+      "transform": "level",
+      "direction_map": {
+        "up": "bear",
+        "down": "bull"
+      },
+      "band_rule": "corridor",
+      "corridor": null,
+      "has_history": false,
+      "votes": true,
+      "geography": "scc",
+      "notes": "C22 provisional; baseline = Dec 2026-Feb 2027 average."
+    },
+    {
+      "id": "scc_unemployment",
+      "name": "Santa Clara County unemployment rate (LAUS, NSA)",
+      "cadence": "monthly",
+      "category": "local_labor",
+      "source": {
+        "name": "FRED / BLS LAUS",
+        "series_id": "CASANT5URN",
+        "url": "https://fred.stlouisfed.org/graph/fredgraph.csv?id=CASANT5URN"
+      },
+      "fetch": "fred_csv",
+      "units": "%",
+      "transform": "level",
+      "direction_map": {
+        "up": "bear",
+        "down": "bull"
+      },
+      "band_rule": "seasonal_1sd",
+      "corridor": null,
+      "has_history": true,
+      "votes": true,
+      "geography": "scc",
+      "notes": "C24."
+    },
+    {
+      "id": "sj_msa_nonfarm_yoy",
+      "name": "San Jose MSA total nonfarm employment, YoY",
+      "cadence": "monthly",
+      "category": "local_labor",
+      "source": {
+        "name": "FRED / BLS CES",
+        "series_id": "SANJ906NA",
+        "url": "https://fred.stlouisfed.org/graph/fredgraph.csv?id=SANJ906NA"
+      },
+      "fetch": "fred_csv",
+      "units": "% YoY",
+      "transform": "yoy_pct",
+      "direction_map": {
+        "up": "bull",
+        "down": "bear"
+      },
+      "band_rule": "seasonal_1sd",
+      "corridor": null,
+      "has_history": true,
+      "votes": true,
+      "geography": "sj_msa",
+      "notes": "Tech-vs-healthcare split not on the keyless endpoint; total only."
+    },
+    {
+      "id": "scc_warn_workers",
+      "name": "Santa Clara County WARN-affected workers per month (by notice date)",
+      "cadence": "monthly",
+      "category": "local_labor",
+      "source": {
+        "name": "California EDD WARN reports",
+        "url": "https://edd.ca.gov/en/jobs_and_training/Layoff_Services_WARN/"
+      },
+      "fetch": "edd_warn_xlsx",
+      "units": "workers",
+      "transform": "level",
+      "direction_map": {
+        "up": "bear",
+        "down": "bull"
+      },
+      "band_rule": "corridor",
+      "corridor": null,
+      "has_history": true,
+      "votes": true,
+      "geography": "scc",
+      "notes": "Current FY from the 'Latest WARN report' xlsx; prior fiscal years are published as PDF only and are read with pdftotext. C23; tripwire = month > 2x 2025 monthly average."
+    },
+    {
+      "id": "indeed_postings_sj",
+      "name": "Indeed job postings index, San Jose metro (all postings)",
+      "cadence": "daily",
+      "category": "local_labor",
+      "source": {
+        "name": "Indeed Hiring Lab job_postings_tracker (GitHub)",
+        "url": "https://raw.githubusercontent.com/hiring-lab/job_postings_tracker/master/US/metro_job_postings_us.csv"
+      },
+      "fetch": "indeed_csv",
+      "units": "index (Feb 1 2020 = 100)",
+      "transform": "level",
+      "direction_map": {
+        "up": "bull",
+        "down": "bear"
+      },
+      "band_rule": "seasonal_1sd",
+      "corridor": null,
+      "has_history": true,
+      "votes": true,
+      "geography": "sj_msa",
+      "notes": "Brief asked for software postings for the SF Bay metro; Indeed publishes metro totals only. Software is national (indeed_software_us)."
+    },
+    {
+      "id": "indeed_software_us",
+      "name": "Indeed software development postings index, US",
+      "cadence": "daily",
+      "category": "local_labor",
+      "source": {
+        "name": "FRED / Indeed Hiring Lab",
+        "series_id": "IHLIDXUSTPSOFTDEVE",
+        "url": "https://fred.stlouisfed.org/graph/fredgraph.csv?id=IHLIDXUSTPSOFTDEVE"
+      },
+      "fetch": "fred_csv",
+      "units": "index (Feb 1 2020 = 100)",
+      "transform": "level",
+      "direction_map": {
+        "up": "bull",
+        "down": "bear"
+      },
+      "band_rule": "seasonal_1sd",
+      "corridor": null,
+      "has_history": true,
+      "votes": true,
+      "geography": "us"
+    },
+    {
+      "id": "sj_rent_yoy",
+      "name": "Apartment List rent estimate, San Jose city (overall), YoY",
+      "cadence": "monthly",
+      "category": "local_housing",
+      "source": {
+        "name": "Apartment List Rent Estimates CSV",
+        "url": "https://www.apartmentlist.com/research/category/data-rent-estimates"
+      },
+      "fetch": "apartmentlist",
+      "units": "% YoY",
+      "transform": "yoy_pct",
+      "direction_map": {
+        "up": "bull",
+        "down": "bear"
+      },
+      "band_rule": "seasonal_1sd",
+      "corridor": null,
+      "has_history": true,
+      "votes": true,
+      "geography": "san_jose",
+      "notes": "C25. Rising rents with falling prices compress price-to-rent (floor signal)."
+    },
+    {
+      "id": "dof_population",
+      "name": "CA DOF population and migration estimate, Santa Clara County",
+      "cadence": "quarterly",
+      "category": "structural",
+      "source": {
+        "name": "CA Department of Finance E-1/E-2",
+        "url": "https://dof.ca.gov/forecasting/demographics/estimates/"
+      },
+      "fetch": "web",
+      "units": "persons / net migration",
+      "transform": "level",
+      "direction_map": {
+        "up": "bull",
+        "down": "bear"
+      },
+      "band_rule": "event",
+      "corridor": null,
+      "has_history": false,
+      "votes": true,
+      "geography": "scc"
+    },
+    {
+      "id": "usps_net_flow",
+      "name": "USPS change-of-address net flow, Santa Clara County",
+      "cadence": "quarterly",
+      "category": "structural",
+      "source": {
+        "name": "USPS change-of-address data",
+        "url": null
+      },
+      "fetch": "manual",
+      "units": "households",
+      "transform": "level",
+      "direction_map": {
+        "up": "bull",
+        "down": "bear"
+      },
+      "band_rule": "event",
+      "corridor": null,
+      "has_history": false,
+      "votes": true,
+      "geography": "scc"
+    },
+    {
+      "id": "h1b_petitions",
+      "name": "H-1B petitions (Bay Area employers)",
+      "cadence": "quarterly",
+      "category": "structural",
+      "source": {
+        "name": "USCIS H-1B Employer Data Hub",
+        "url": "https://www.uscis.gov/tools/reports-and-studies/h-1b-employer-data-hub"
+      },
+      "fetch": "manual",
+      "units": "petitions",
+      "transform": "level",
+      "direction_map": {
+        "up": "bull",
+        "down": "bear"
+      },
+      "band_rule": "event",
+      "corridor": null,
+      "has_history": false,
+      "votes": true,
+      "geography": "us"
+    },
+    {
+      "id": "fair_plan",
+      "name": "CA FAIR Plan rate / insurance availability (hills only)",
+      "cadence": "quarterly",
+      "category": "structural",
+      "source": {
+        "name": "CA FAIR Plan / CDI",
+        "url": null
+      },
+      "fetch": "manual",
+      "units": "% rate change",
+      "transform": "level",
+      "direction_map": {
+        "up": "bear",
+        "down": "bull"
+      },
+      "band_rule": "event",
+      "corridor": null,
+      "has_history": false,
+      "votes": true,
+      "geography": "ca"
+    },
+    {
+      "id": "sb79_policy",
+      "name": "SB 79 transit upzoning / land-value policy",
+      "cadence": "quarterly",
+      "category": "structural",
+      "source": {
+        "name": "Legislature / city planning",
+        "url": null
+      },
+      "fetch": "manual",
+      "units": "text",
+      "transform": "level",
+      "direction_map": {
+        "up": "neutral",
+        "down": "neutral"
+      },
+      "band_rule": "event",
+      "corridor": null,
+      "has_history": false,
+      "votes": false,
+      "geography": "ca"
+    },
+    {
+      "id": "mls_scc_active_sfr",
+      "name": "MLSListings SCC active SFR count",
+      "cadence": "weekly",
+      "category": "local_housing",
+      "source": {
+        "name": "MLSListings public search (plain HTTP)",
+        "url": "https://www.mlslistings.com/"
+      },
+      "fetch": "mlslistings",
+      "units": "listings",
+      "transform": "level",
+      "direction_map": {
+        "up": "bear",
+        "down": "bull"
+      },
+      "band_rule": "corridor",
+      "corridor": null,
+      "has_history": false,
+      "votes": true,
+      "geography": "scc",
+      "notes": "Self-collected; cross-checked against the Realtor.com monthly series until our own history exists."
+    },
+    {
+      "id": "mls_scc_pending_ratio",
+      "name": "MLSListings SCC pending + active-under-contract / active",
+      "cadence": "weekly",
+      "category": "local_housing",
+      "source": {
+        "name": "MLSListings public search (plain HTTP)",
+        "url": "https://www.mlslistings.com/"
+      },
+      "fetch": "mlslistings",
+      "units": "ratio",
+      "transform": "level",
+      "direction_map": {
+        "up": "bull",
+        "down": "bear"
+      },
+      "band_rule": "corridor",
+      "corridor": null,
+      "has_history": false,
+      "votes": true,
+      "geography": "scc",
+      "notes": "Self-collected; cross-checked against the Realtor.com monthly series until our own history exists."
+    },
+    {
+      "id": "mls_scc_new_listings_7d",
+      "name": "MLSListings SCC new listings, last 7 days",
+      "cadence": "weekly",
+      "category": "local_housing",
+      "source": {
+        "name": "MLSListings public search (plain HTTP)",
+        "url": "https://www.mlslistings.com/"
+      },
+      "fetch": "mlslistings",
+      "units": "listings",
+      "transform": "level",
+      "direction_map": {
+        "up": "bear",
+        "down": "bull"
+      },
+      "band_rule": "corridor",
+      "corridor": null,
+      "has_history": false,
+      "votes": true,
+      "geography": "scc",
+      "notes": "Self-collected; cross-checked against the Realtor.com monthly series until our own history exists."
+    },
+    {
+      "id": "mls_scc_median_dos",
+      "name": "MLSListings SCC median days on site of actives",
+      "cadence": "weekly",
+      "category": "local_housing",
+      "source": {
+        "name": "MLSListings public search (plain HTTP)",
+        "url": "https://www.mlslistings.com/"
+      },
+      "fetch": "mlslistings",
+      "units": "days",
+      "transform": "level",
+      "direction_map": {
+        "up": "bear",
+        "down": "bull"
+      },
+      "band_rule": "corridor",
+      "corridor": null,
+      "has_history": false,
+      "votes": true,
+      "geography": "scc",
+      "notes": "Self-collected; cross-checked against the Realtor.com monthly series until our own history exists."
+    },
+    {
+      "id": "mls_scc_price_cut_share",
+      "name": "MLSListings SCC share of actives with a price cut (from our stored weekly prices)",
+      "cadence": "weekly",
+      "category": "local_housing",
+      "source": {
+        "name": "MLSListings public search (plain HTTP)",
+        "url": "https://www.mlslistings.com/"
+      },
+      "fetch": "mlslistings",
+      "units": "% of actives",
+      "transform": "level",
+      "direction_map": {
+        "up": "bear",
+        "down": "bull"
+      },
+      "band_rule": "corridor",
+      "corridor": null,
+      "has_history": false,
+      "votes": true,
+      "geography": "scc",
+      "notes": "Self-collected; cross-checked against the Realtor.com monthly series until our own history exists."
+    },
+    {
+      "id": "mls_scc_withdrawn_share",
+      "name": "MLSListings SCC withdrawn / relisted share",
+      "cadence": "weekly",
+      "category": "local_housing",
+      "source": {
+        "name": "MLSListings public search (plain HTTP)",
+        "url": "https://www.mlslistings.com/"
+      },
+      "fetch": "mlslistings",
+      "units": "% of actives",
+      "transform": "level",
+      "direction_map": {
+        "up": "bear",
+        "down": "bull"
+      },
+      "band_rule": "corridor",
+      "corridor": null,
+      "has_history": false,
+      "votes": true,
+      "geography": "scc",
+      "notes": "Self-collected; cross-checked against the Realtor.com monthly series until our own history exists."
+    },
+    {
+      "id": "mls_scc_list_to_sale",
+      "name": "MLSListings SCC list-to-sale ratio, recently sold cards",
+      "cadence": "weekly",
+      "category": "local_housing",
+      "source": {
+        "name": "MLSListings public search (plain HTTP)",
+        "url": "https://www.mlslistings.com/"
+      },
+      "fetch": "mlslistings",
+      "units": "% of list",
+      "transform": "level",
+      "direction_map": {
+        "up": "bull",
+        "down": "bear"
+      },
+      "band_rule": "corridor",
+      "corridor": null,
+      "has_history": false,
+      "votes": true,
+      "geography": "scc",
+      "notes": "Self-collected; cross-checked against the Realtor.com monthly series until our own history exists."
+    },
+    {
+      "id": "mls_scc_tier_lt_1_3m_active_sfr",
+      "name": "MLSListings SCC <$1.3M tier active SFR count",
+      "cadence": "weekly",
+      "category": "local_housing",
+      "source": {
+        "name": "MLSListings public search",
+        "url": "https://www.mlslistings.com/"
+      },
+      "fetch": "mlslistings",
+      "units": "listings",
+      "transform": "level",
+      "direction_map": {
+        "up": "bear",
+        "down": "bull"
+      },
+      "band_rule": "corridor",
+      "corridor": null,
+      "has_history": false,
+      "votes": true,
+      "geography": "scc:tier:lt_1_3m"
+    },
+    {
+      "id": "mls_scc_tier_lt_1_3m_price_cut_share",
+      "name": "MLSListings SCC <$1.3M tier share of actives with a price cut (from our stored weekly prices)",
+      "cadence": "weekly",
+      "category": "local_housing",
+      "source": {
+        "name": "MLSListings public search",
+        "url": "https://www.mlslistings.com/"
+      },
+      "fetch": "mlslistings",
+      "units": "% of actives",
+      "transform": "level",
+      "direction_map": {
+        "up": "bear",
+        "down": "bull"
+      },
+      "band_rule": "corridor",
+      "corridor": null,
+      "has_history": false,
+      "votes": true,
+      "geography": "scc:tier:lt_1_3m"
+    },
+    {
+      "id": "mls_scc_tier_1_3m_2m_active_sfr",
+      "name": "MLSListings SCC $1.3-2M tier active SFR count",
+      "cadence": "weekly",
+      "category": "local_housing",
+      "source": {
+        "name": "MLSListings public search",
+        "url": "https://www.mlslistings.com/"
+      },
+      "fetch": "mlslistings",
+      "units": "listings",
+      "transform": "level",
+      "direction_map": {
+        "up": "bear",
+        "down": "bull"
+      },
+      "band_rule": "corridor",
+      "corridor": null,
+      "has_history": false,
+      "votes": true,
+      "geography": "scc:tier:1_3m_2m"
+    },
+    {
+      "id": "mls_scc_tier_1_3m_2m_price_cut_share",
+      "name": "MLSListings SCC $1.3-2M tier share of actives with a price cut (from our stored weekly prices)",
+      "cadence": "weekly",
+      "category": "local_housing",
+      "source": {
+        "name": "MLSListings public search",
+        "url": "https://www.mlslistings.com/"
+      },
+      "fetch": "mlslistings",
+      "units": "% of actives",
+      "transform": "level",
+      "direction_map": {
+        "up": "bear",
+        "down": "bull"
+      },
+      "band_rule": "corridor",
+      "corridor": null,
+      "has_history": false,
+      "votes": true,
+      "geography": "scc:tier:1_3m_2m"
+    },
+    {
+      "id": "mls_scc_tier_2m_3m_active_sfr",
+      "name": "MLSListings SCC $2-3M tier active SFR count",
+      "cadence": "weekly",
+      "category": "local_housing",
+      "source": {
+        "name": "MLSListings public search",
+        "url": "https://www.mlslistings.com/"
+      },
+      "fetch": "mlslistings",
+      "units": "listings",
+      "transform": "level",
+      "direction_map": {
+        "up": "bear",
+        "down": "bull"
+      },
+      "band_rule": "corridor",
+      "corridor": null,
+      "has_history": false,
+      "votes": true,
+      "geography": "scc:tier:2m_3m"
+    },
+    {
+      "id": "mls_scc_tier_2m_3m_price_cut_share",
+      "name": "MLSListings SCC $2-3M tier share of actives with a price cut (from our stored weekly prices)",
+      "cadence": "weekly",
+      "category": "local_housing",
+      "source": {
+        "name": "MLSListings public search",
+        "url": "https://www.mlslistings.com/"
+      },
+      "fetch": "mlslistings",
+      "units": "% of actives",
+      "transform": "level",
+      "direction_map": {
+        "up": "bear",
+        "down": "bull"
+      },
+      "band_rule": "corridor",
+      "corridor": null,
+      "has_history": false,
+      "votes": true,
+      "geography": "scc:tier:2m_3m"
+    },
+    {
+      "id": "mls_scc_tier_3m_plus_active_sfr",
+      "name": "MLSListings SCC $3M+ tier active SFR count",
+      "cadence": "weekly",
+      "category": "local_housing",
+      "source": {
+        "name": "MLSListings public search",
+        "url": "https://www.mlslistings.com/"
+      },
+      "fetch": "mlslistings",
+      "units": "listings",
+      "transform": "level",
+      "direction_map": {
+        "up": "bear",
+        "down": "bull"
+      },
+      "band_rule": "corridor",
+      "corridor": null,
+      "has_history": false,
+      "votes": true,
+      "geography": "scc:tier:3m_plus"
+    },
+    {
+      "id": "mls_scc_tier_3m_plus_price_cut_share",
+      "name": "MLSListings SCC $3M+ tier share of actives with a price cut (from our stored weekly prices)",
+      "cadence": "weekly",
+      "category": "local_housing",
+      "source": {
+        "name": "MLSListings public search",
+        "url": "https://www.mlslistings.com/"
+      },
+      "fetch": "mlslistings",
+      "units": "% of actives",
+      "transform": "level",
+      "direction_map": {
+        "up": "bear",
+        "down": "bull"
+      },
+      "band_rule": "corridor",
+      "corridor": null,
+      "has_history": false,
+      "votes": true,
+      "geography": "scc:tier:3m_plus"
+    },
+    {
+      "id": "mls_panel_san_mateo_active_sfr",
+      "name": "MLSListings panel San Mateo County active SFR count",
+      "cadence": "weekly",
+      "category": "local_housing",
+      "source": {
+        "name": "MLSListings public search",
+        "url": "https://www.mlslistings.com/"
+      },
+      "fetch": "mlslistings",
+      "units": "listings",
+      "transform": "level",
+      "direction_map": {
+        "up": "bear",
+        "down": "bull"
+      },
+      "band_rule": "corridor",
+      "corridor": null,
+      "has_history": false,
+      "votes": false,
+      "geography": "panel:san_mateo",
+      "notes": "Panel: silent unless it crosses a line SCC hasn't (brief 3.4). SF/Fremont coverage verified at build; C.A.R. county tables are the fallback."
+    },
+    {
+      "id": "mls_panel_san_mateo_price_cut_share",
+      "name": "MLSListings panel San Mateo County share of actives with a price cut (from our stored weekly prices)",
+      "cadence": "weekly",
+      "category": "local_housing",
+      "source": {
+        "name": "MLSListings public search",
+        "url": "https://www.mlslistings.com/"
+      },
+      "fetch": "mlslistings",
+      "units": "% of actives",
+      "transform": "level",
+      "direction_map": {
+        "up": "bear",
+        "down": "bull"
+      },
+      "band_rule": "corridor",
+      "corridor": null,
+      "has_history": false,
+      "votes": false,
+      "geography": "panel:san_mateo",
+      "notes": "Panel: silent unless it crosses a line SCC hasn't (brief 3.4). SF/Fremont coverage verified at build; C.A.R. county tables are the fallback."
+    },
+    {
+      "id": "mls_panel_sf_houses_active_sfr",
+      "name": "MLSListings panel San Francisco (houses) active SFR count",
+      "cadence": "weekly",
+      "category": "local_housing",
+      "source": {
+        "name": "MLSListings public search",
+        "url": "https://www.mlslistings.com/"
+      },
+      "fetch": "mlslistings",
+      "units": "listings",
+      "transform": "level",
+      "direction_map": {
+        "up": "bear",
+        "down": "bull"
+      },
+      "band_rule": "corridor",
+      "corridor": null,
+      "has_history": false,
+      "votes": false,
+      "geography": "panel:sf_houses",
+      "notes": "Panel: silent unless it crosses a line SCC hasn't (brief 3.4). SF/Fremont coverage verified at build; C.A.R. county tables are the fallback."
+    },
+    {
+      "id": "mls_panel_sf_houses_price_cut_share",
+      "name": "MLSListings panel San Francisco (houses) share of actives with a price cut (from our stored weekly prices)",
+      "cadence": "weekly",
+      "category": "local_housing",
+      "source": {
+        "name": "MLSListings public search",
+        "url": "https://www.mlslistings.com/"
+      },
+      "fetch": "mlslistings",
+      "units": "% of actives",
+      "transform": "level",
+      "direction_map": {
+        "up": "bear",
+        "down": "bull"
+      },
+      "band_rule": "corridor",
+      "corridor": null,
+      "has_history": false,
+      "votes": false,
+      "geography": "panel:sf_houses",
+      "notes": "Panel: silent unless it crosses a line SCC hasn't (brief 3.4). SF/Fremont coverage verified at build; C.A.R. county tables are the fallback."
+    },
+    {
+      "id": "mls_panel_sf_condos_active_sfr",
+      "name": "MLSListings panel San Francisco (condos) active SFR count",
+      "cadence": "weekly",
+      "category": "local_housing",
+      "source": {
+        "name": "MLSListings public search",
+        "url": "https://www.mlslistings.com/"
+      },
+      "fetch": "mlslistings",
+      "units": "listings",
+      "transform": "level",
+      "direction_map": {
+        "up": "bear",
+        "down": "bull"
+      },
+      "band_rule": "corridor",
+      "corridor": null,
+      "has_history": false,
+      "votes": false,
+      "geography": "panel:sf_condos",
+      "notes": "Panel: silent unless it crosses a line SCC hasn't (brief 3.4). SF/Fremont coverage verified at build; C.A.R. county tables are the fallback."
+    },
+    {
+      "id": "mls_panel_sf_condos_price_cut_share",
+      "name": "MLSListings panel San Francisco (condos) share of actives with a price cut (from our stored weekly prices)",
+      "cadence": "weekly",
+      "category": "local_housing",
+      "source": {
+        "name": "MLSListings public search",
+        "url": "https://www.mlslistings.com/"
+      },
+      "fetch": "mlslistings",
+      "units": "% of actives",
+      "transform": "level",
+      "direction_map": {
+        "up": "bear",
+        "down": "bull"
+      },
+      "band_rule": "corridor",
+      "corridor": null,
+      "has_history": false,
+      "votes": false,
+      "geography": "panel:sf_condos",
+      "notes": "Panel: silent unless it crosses a line SCC hasn't (brief 3.4). SF/Fremont coverage verified at build; C.A.R. county tables are the fallback."
+    },
+    {
+      "id": "mls_panel_santa_cruz_active_sfr",
+      "name": "MLSListings panel Santa Cruz County active SFR count",
+      "cadence": "weekly",
+      "category": "local_housing",
+      "source": {
+        "name": "MLSListings public search",
+        "url": "https://www.mlslistings.com/"
+      },
+      "fetch": "mlslistings",
+      "units": "listings",
+      "transform": "level",
+      "direction_map": {
+        "up": "bear",
+        "down": "bull"
+      },
+      "band_rule": "corridor",
+      "corridor": null,
+      "has_history": false,
+      "votes": false,
+      "geography": "panel:santa_cruz",
+      "notes": "Panel: silent unless it crosses a line SCC hasn't (brief 3.4). SF/Fremont coverage verified at build; C.A.R. county tables are the fallback."
+    },
+    {
+      "id": "mls_panel_santa_cruz_price_cut_share",
+      "name": "MLSListings panel Santa Cruz County share of actives with a price cut (from our stored weekly prices)",
+      "cadence": "weekly",
+      "category": "local_housing",
+      "source": {
+        "name": "MLSListings public search",
+        "url": "https://www.mlslistings.com/"
+      },
+      "fetch": "mlslistings",
+      "units": "% of actives",
+      "transform": "level",
+      "direction_map": {
+        "up": "bear",
+        "down": "bull"
+      },
+      "band_rule": "corridor",
+      "corridor": null,
+      "has_history": false,
+      "votes": false,
+      "geography": "panel:santa_cruz",
+      "notes": "Panel: silent unless it crosses a line SCC hasn't (brief 3.4). SF/Fremont coverage verified at build; C.A.R. county tables are the fallback."
+    },
+    {
+      "id": "mls_panel_fremont_active_sfr",
+      "name": "MLSListings panel Fremont active SFR count",
+      "cadence": "weekly",
+      "category": "local_housing",
+      "source": {
+        "name": "MLSListings public search",
+        "url": "https://www.mlslistings.com/"
+      },
+      "fetch": "mlslistings",
+      "units": "listings",
+      "transform": "level",
+      "direction_map": {
+        "up": "bear",
+        "down": "bull"
+      },
+      "band_rule": "corridor",
+      "corridor": null,
+      "has_history": false,
+      "votes": false,
+      "geography": "panel:fremont",
+      "notes": "Panel: silent unless it crosses a line SCC hasn't (brief 3.4). SF/Fremont coverage verified at build; C.A.R. county tables are the fallback."
+    },
+    {
+      "id": "mls_panel_fremont_price_cut_share",
+      "name": "MLSListings panel Fremont share of actives with a price cut (from our stored weekly prices)",
+      "cadence": "weekly",
+      "category": "local_housing",
+      "source": {
+        "name": "MLSListings public search",
+        "url": "https://www.mlslistings.com/"
+      },
+      "fetch": "mlslistings",
+      "units": "% of actives",
+      "transform": "level",
+      "direction_map": {
+        "up": "bear",
+        "down": "bull"
+      },
+      "band_rule": "corridor",
+      "corridor": null,
+      "has_history": false,
+      "votes": false,
+      "geography": "panel:fremont",
+      "notes": "Panel: silent unless it crosses a line SCC hasn't (brief 3.4). SF/Fremont coverage verified at build; C.A.R. county tables are the fallback."
+    }
+  ],
+  "dial_templates": [
+    {
+      "id_pattern": "mls_zip_{zip}_{metric}",
+      "metrics": [
+        "active_sfr",
+        "median_dos",
+        "price_cut_share",
+        "sold_ppsf_90d"
+      ],
+      "source": "MLSListings public search",
+      "fetch": "mlslistings",
+      "cadence": "weekly",
+      "applies_to": "every zip in cycle_owned_properties (95118 permanently)",
+      "votes": false,
+      "notes": "Owned-property zips: ground truth, low weight, never a vote. Home value estimate from sq ft vs similar-size solds shows on /cycle only."
+    }
+  ],
+  "fetch_methods": [
+    "fred_csv",
+    "zillow_csv",
+    "edd_warn_xlsx",
+    "apartmentlist",
+    "stooq",
+    "nasdaq_api",
+    "indeed_csv",
+    "car_xlsx",
+    "mlslistings",
+    "web",
+    "manual"
+  ],
+  "calendar": [
+    {
+      "date": "2026-11-06",
+      "name": "Employment Situation (Oct)",
+      "dial_id": "payrolls_mom",
+      "tentative": false
+    },
+    {
+      "date": "2026-11-10",
+      "name": "CPI (Oct)",
+      "dial_id": "cpi_yoy",
+      "tentative": false
+    },
+    {
+      "date": "2026-11-24",
+      "name": "Case-Shiller (Sep)",
+      "dial_id": "cs_national",
+      "tentative": false
+    },
+    {
+      "date": "2026-11-25",
+      "name": "PCE (Oct)",
+      "dial_id": "pce_yoy",
+      "tentative": false
+    },
+    {
+      "date": "2026-12-04",
+      "name": "Employment Situation (Nov)",
+      "dial_id": "payrolls_mom",
+      "tentative": false
+    },
+    {
+      "date": "2026-12-08",
+      "name": "SpaceX final lockup expiry (~Dec 8-9, TBC)",
+      "dial_id": "spacex_lockup",
+      "tentative": true
+    },
+    {
+      "date": "2026-12-10",
+      "name": "CPI (Nov)",
+      "dial_id": "cpi_yoy",
+      "tentative": false
+    },
+    {
+      "date": "2026-12-16",
+      "name": "FOMC decision",
+      "dial_id": "fomc_decision",
+      "tentative": false
+    },
+    {
+      "date": "TBD",
+      "name": "Anthropic (ANT) IPO pricing",
+      "dial_id": "ant_ipo",
+      "tentative": true
+    },
+    {
+      "date": "2027-01-08",
+      "name": "Employment Situation (Dec)",
+      "dial_id": "payrolls_mom",
+      "tentative": false
+    },
+    {
+      "date": "2027-01-13",
+      "name": "CPI (Dec) (~Jan 13)",
+      "dial_id": "cpi_yoy",
+      "tentative": true
+    },
+    {
+      "date": "2027-01-27",
+      "name": "FOMC decision (Jan 26-27)",
+      "dial_id": "fomc_decision",
+      "tentative": true
+    },
+    {
+      "date": "TBD",
+      "name": "Hyperscaler Q4 earnings calls / 2027 capex guidance (late Jan-early Feb)",
+      "dial_id": "big4_capex_2027",
+      "tentative": true
+    }
+  ],
+  "calendar_notes": "The Fed's and BLS's full 2027 calendars are loaded at build (brief 3.1 item 6).",
+  "checkpoint_schedule": {
+    "shakedown": "2026-12-14",
+    "first_formal": "2027-01-18",
+    "monthly": "Monday after the CPI release (12th-21st)",
+    "quarterly_rewrite_months": [
+      "Feb",
+      "May",
+      "Aug",
+      "Nov"
+    ],
+    "first_quarterly": "mid-Feb 2027"
+  },
+  "geographies": {
+    "scored": {
+      "id": "scc",
+      "name": "Santa Clara County",
+      "fips": "06085"
+    },
+    "panels": [
+      {
+        "id": "san_mateo",
+        "name": "San Mateo County"
+      },
+      {
+        "id": "sf_houses",
+        "name": "San Francisco (houses)"
+      },
+      {
+        "id": "sf_condos",
+        "name": "San Francisco (condos)"
+      },
+      {
+        "id": "santa_cruz",
+        "name": "Santa Cruz County"
+      },
+      {
+        "id": "fremont",
+        "name": "Fremont"
+      }
+    ],
+    "tiers": [
+      {
+        "id": "lt_1_3m",
+        "label": "<$1.3M",
+        "min": null,
+        "max": 1300000
+      },
+      {
+        "id": "1_3m_2m",
+        "label": "$1.3-2M",
+        "min": 1300000,
+        "max": 2000000
+      },
+      {
+        "id": "2m_3m",
+        "label": "$2-3M",
+        "min": 2000000,
+        "max": 3000000
+      },
+      {
+        "id": "3m_plus",
+        "label": "$3M+",
+        "min": 3000000,
+        "max": null
+      }
+    ],
+    "owned_zips_seed": [
+      "95118",
+      "95123",
+      "95130"
+    ],
+    "permanent_zips": [
+      "95118"
+    ]
+  }
+}
