@@ -218,3 +218,17 @@ Weekly tripwire card is three lines: what crossed, the reading, "out-of-cycle re
 3. **Own listings input.** Read Amanda's texts and the showing emails automatically through the Pile and Gmail, or do you reply to the weekly card with a number? (Automatic is my pick; the card still shows what it found so you can correct it.)
 4. **NOD source.** Start free (county count + recorder index) and only pay for PropertyRadar if the free count proves unreliable? (My recommendation.)
 5. **Deal line on the card.** You said this isn't an underwriting tool. Do you want one line at the bottom tying the month to the live positions ("base case says Quito's spring relist window is intact"), or keep the card strictly about the cycle?
+
+---
+
+## Part 4 — Decisions from Ryan's review (2026-11-01, supersedes the matching lines above)
+
+- **Weights:** start from v1.1 (Bear 35 / Base 45 / Bull 20). Tripwire cards between checkpoints: yes. Sources: free only, no PropertyRadar. Card stays about the cycle; no holdings or portfolio line.
+- **Geography:** Santa Clara County countywide is the scored core (claims are written against it). Comparison panels with the same weekly metrics: San Mateo County, San Francisco (houses vs condos split), Santa Cruz County, Fremont. Only SF carries its own claim (C26). Santa Cruz and Fremont show as trends, never votes. SF/Fremont coverage through the MLSListings data share must be verified in the build; fall back to a free monthly source if thin.
+- **Owned-property registry (replaces the hard-coded 95123/95130 panels):** every address Ryan owns with zip and a flag (for sale / held / home). Maintained by the inbox agent's settlement-statement filing (buyer statement adds, seller statement retires, listing agreement or MLS hit marks on-market) with a one-line Telegram fallback; adds/retires are confirmed on the card, no tap required. Each owned zip gets a panel: actives, days on site, cut share, 90-day sold $/sf. **95118 (Ryan's home) is a permanent "home" entry:** Zillow ZHVI by ZIP (free monthly CSV) plus a rough value from his sf × similar-size 95118 solds, on the details page only. Showings/feedback for listed properties come from the Pile.
+- **Cadence (anchored to data, not the calendar):**
+  - Weekly collector Monday 06:00, silent unless a tripwire fires. Optional 4-line weekly pulse (weights unchanged, biggest movers, own listings' showings + DOM) — Ryan to confirm on/off.
+  - **Monthly checkpoint = the Monday after the CPI release** (12th–18th), when the prior month's jobs, CPI, local sales reports, Case-Shiller and any FOMC are all in.
+  - **Shakedown card Mon Dec 14, 2026** (format test, real data). **First formal review Mon Jan 18, 2027.**
+  - **Quarterly rewrite = the Feb / May / Aug / Nov checkpoint** (after each earnings season; first one mid-Feb 2027 after 2027 capex guidance). Claims change only at rewrites; weights may change any month.
+- **Tripwires (revised thresholds):** see §3.4; the inventory line becomes "SCC active SFR count > +40% YoY or < 0% YoY for two consecutive weeks" (current reading is already +26%, so ±30% would fire on noise).
