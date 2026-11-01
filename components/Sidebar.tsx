@@ -7,7 +7,7 @@ import { cn } from "@/lib/utils"
 import {
   Home, Activity, Calendar, MessageSquare, Terminal, Bot, Monitor,
   FileText, Zap, BarChart2, TrendingUp, Search, Dumbbell, FolderKanban,
-  Brain, Menu, X, Bug, Users, Phone, Megaphone, Target,
+  Brain, Menu, X, Bug, Users, Phone, Megaphone, Target, Gauge,
 } from "lucide-react"
 
 const navGroups = [
@@ -31,6 +31,7 @@ const navGroups = [
       { href: "/email-campaign", label: "Email Drip", icon: Zap },
       { href: "/redfin", label: "Redfin Search", icon: Search },
       { href: "/deal-flow", label: "Deal Flow", icon: BarChart2 },
+      { href: "/cycle", label: "Market Cycle", icon: Gauge },
     ],
   },
   {

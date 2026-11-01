@@ -1,0 +1,53 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Market-cycle review (briefs/BRIEF_MARKET_CYCLE_TRACKER_2026-11-01.md §3.3).
+  Daily 07:30 PT. `check` makes it a no-op on every day that is not a
+  checkpoint (shakedown Dec 14 2026, Monday after CPI from Jan 18 2027,
+  quarterly Feb/May/Aug/Nov) unless a tripwire event is pending review.
+  When due: Opus review via lib/llm.ts, rows to Supabase, one card from the
+  Marketing bot. A failure posts a Telegram alert.
+
+  NOT INSTALLED. Install (Mac mini) once the cycle_* migration is applied:
+    cp infrastructure/launchd/com.lrghomes.market-cycle-review.plist ~/Library/LaunchAgents/
+    launchctl load ~/Library/LaunchAgents/com.lrghomes.market-cycle-review.plist
+  Dry run by hand:  npx tsx scripts/market-cycle/review.ts --check
+  Logs:             /tmp/lrg-market-cycle-review.log, /tmp/lrg-market-cycle-review-err.log
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.lrghomes.market-cycle-review</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/opt/homebrew/bin/npx</string>
+    <string>tsx</string>
+    <string>scripts/market-cycle/review.ts</string>
+    <string>--check</string>
+    <string>--write</string>
+    <string>--send</string>
+  </array>
+  <key>WorkingDirectory</key>
+  <string>/Users/ryanlarocca/Projects/PROJECTS/mission-control</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+    <key>HOME</key>
+    <string>/Users/ryanlarocca</string>
+  </dict>
+  <key>StartCalendarInterval</key>
+  <dict>
+    <key>Hour</key>
+    <integer>7</integer>
+    <key>Minute</key>
+    <integer>30</integer>
+  </dict>
+  <key>StandardOutPath</key>
+  <string>/tmp/lrg-market-cycle-review.log</string>
+  <key>StandardErrorPath</key>
+  <string>/tmp/lrg-market-cycle-review-err.log</string>
+  <key>RunAtLoad</key>
+  <false/>
+</dict>
+</plist>
