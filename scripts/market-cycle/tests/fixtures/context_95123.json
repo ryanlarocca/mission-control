@@ -1,0 +1,34 @@
+{
+  "_note": "Test fixture for scripts/market-cycle/cycle-context.py and lib/cycleContext.ts. ILLUSTRATIVE numbers shaped like the cycle_* tables (only the Jan 2025 peak and the Sep 2026 SCC print are real). Absent on purpose: mls_scc_list_to_sale, the tier's median_dos / sold_ppsf_90d, a checkpoint row and calendar rows (config calendar is the fallback).",
+  "today": "2026-11-01",
+  "weight_move": { "date": "2026-11-01", "to_weights": { "bear": 35, "base": 45, "bull": 20 } },
+  "checkpoint": null,
+  "calendar": [],
+  "readings": {
+    "zhvi_scc": [
+      ["2025-01-31", 1630177], ["2025-02-28", 1625000], ["2025-03-31", 1612000], ["2025-04-30", 1598000],
+      ["2025-05-31", 1590000], ["2025-06-30", 1575000], ["2025-07-31", 1560000], ["2025-08-31", 1551929],
+      ["2025-09-30", 1556000], ["2025-10-31", 1560000], ["2025-11-30", 1565000], ["2025-12-31", 1580000],
+      ["2026-01-31", 1603555], ["2026-02-28", 1598000], ["2026-03-31", 1590000], ["2026-04-30", 1585000],
+      ["2026-05-31", 1580000], ["2026-06-30", 1576000], ["2026-07-31", 1572000], ["2026-08-31", 1567000],
+      ["2026-09-30", 1562682]
+    ],
+    "zhvi_scc_yoy": [["2026-08-31", 0.45], ["2026-09-30", 0.43]],
+    "realtor_active_scc": [["2025-09-01", 2000], ["2026-08-01", 2480], ["2026-09-01", 2520]],
+    "realtor_dom_scc": [["2026-09-01", 24]],
+    "realtor_price_reduced_share_scc": [["2026-09-01", 31.2]],
+    "mls_scc_active_sfr": [["2026-10-19", 2410], ["2026-10-26", 2455]],
+    "mls_scc_median_dos": [["2026-10-26", 27]],
+    "mls_scc_price_cut_share": [["2026-10-26", 28.4]],
+    "mls_scc_tier_lt_1_3m_active_sfr": [["2026-10-26", 905]],
+    "mls_scc_tier_lt_1_3m_price_cut_share": [["2026-10-26", 24.6]],
+    "mls_zip_95123_active_sfr": [["2026-10-26", 31]],
+    "mls_zip_95123_median_dos": [["2026-10-26", 19]],
+    "mls_zip_95123_price_cut_share": [["2026-10-26", 22.6]],
+    "mls_zip_95123_sold_ppsf_90d": [["2026-10-26", 912]],
+    "zhvi_zip_95123": [["2026-09-30", -1.9]],
+    "zhvi_zip_95123_level": [
+      ["2026-05-31", 1210000], ["2026-06-30", 1205000], ["2026-07-31", 1199000], ["2026-08-31", 1192500], ["2026-09-30", 1188000]
+    ]
+  }
+}

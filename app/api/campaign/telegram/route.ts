@@ -45,6 +45,7 @@ import {
 import { CALENDAR_INTENT_RE, createCalendarEvent, extractEvent } from "@/lib/calendarIntake"
 import { INBOX_CB_PREFIX, advanceSetup, answerInboxQuestion, bindReplyPrompt, draftDealReply, findInboxByTgMessage, handleInboxCallback, handleInboxCommand, looksLikeQuestion, recordInboxReply, takeOpenReplyPrompt } from "@/lib/inboxAgent"
 import { OFFER_CB_PREFIX, applyOfferText, getOfferDraft, handleOfferCallback, isOfferMessage, promptForTerms, sendOfferHelp, startOffer } from "@/lib/offerBot"
+import { cycleRegistryOn, parseOwnCommand, runOwnCommand, type OwnCommand } from "@/lib/cycleRegistry"
 
 // Dedicated campaign-bot webhook — the ZERO-TOKEN action path (2026-07-23,
 // Ryan: "get the thinking time down... maybe even no tokens"). The campaign
@@ -635,6 +636,26 @@ export async function POST(request: Request) {
     }
     waitUntil(runMini(chatId, verb, msg.message_id))
     return NextResponse.json({ ok: true })
+  }
+
+  // ---- Market-cycle owned-property registry (CYCLE_REGISTRY=on only) ----
+  // "own add <address> <zip> [held|for_sale|home]" · "own sold <address>" ·
+  // "own list" — the fallback for what the inbox agent's settlement-statement
+  // hook misses. One-line reply. With the flag off this is not a command and the
+  // text falls through exactly as before.
+  if (cycleRegistryOn()) {
+    const own = parseOwnCommand(body) as OwnCommand | null
+    if (own) {
+      let text: string
+      try {
+        text = await runOwnCommand(own)
+      } catch (e) {
+        console.error("[campaign-tg] registry command failed:", e instanceof Error ? e.message : String(e))
+        text = `⚠️ Registry: ${e instanceof Error ? e.message : String(e)}`
+      }
+      await tg("sendMessage", { chat_id: chatId, text, reply_to_message_id: msg.message_id })
+      return NextResponse.json({ ok: true })
+    }
   }
 
   // ---- Offer bot (briefs/OFFER_BOT.md, 2026-10-15) ----

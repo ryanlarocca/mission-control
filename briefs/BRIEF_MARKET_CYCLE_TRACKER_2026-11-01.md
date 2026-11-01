@@ -219,6 +219,16 @@ Four same-direction votes from four categories plus a tripwire; Bull cut because
 - Thesis file: `config/market-cycle/thesis.v1.1.json` generated from Part 2; this brief stays the human copy.
 - Project tracking: new memo folder `../market-cycle-tracker/` (new project per MEMO_INDEX).
 
+### 3.7 Comps context for agents
+
+When an agent pulls comps for a flip (`scripts/comps.py`, pocket comps, Redfin/Zillow in Chrome), it may add a short, clearly labelled macro block for the property's zip and price. **Context, never a substitute for comps:** it never adjusts a comp, sets a price or changes an underwriting number, and a deal write-up quotes it under its own heading.
+
+- **Command (Mac mini or any checkout with `.env.local`):** `python3 scripts/market-cycle/cycle-context.py --zip 95123 --price 1150000 [--exit-month 2027-04]`. Reads Supabase over PostgREST (GET only). `--fixture <json>` renders from a file instead; `--json` prints `{lines, text}`.
+- **Route (cloud agents):** `GET /api/cycle/context?zip=95123&price=1150000[&exit_month=2027-04]` → `{ok, label, zip, price, exit_month, as_of, lines, text}`. Same session-cookie auth as every non-webhook route; reads only. Same block as the script (`lib/cycleContext.ts` is a line-for-line port; a unit test renders one fixture through both).
+- **What it prints (≤10 lines), headed "MACRO CONTEXT (market-cycle tracker) — context, not comps":** current weights and where SCC ZHVI's max drawdown sits in the partition; county ZHVI YoY, actives YoY, median days on site, price-cut share, list-to-sale; the price tier (thesis tiers) and the zip: actives, days on site, cut share, 90-day sold $/sf when stored; stale-comp drift (zip ZHVI change over the last 60 and 90 days — "a comp sold 90 days ago: index moved X% since"; falls back to the county index, labelled, until zip ZHVI levels are stored); with an exit month, each scenario's implied move by then; the last checkpoint's one-line read and the next checkpoint date.
+- **Exit framing is an approximation, said so in the line:** straight line from today's county drawdown to the midpoint of each scenario's band by its typical trough (Bull 2027-01, Base 2027-05, Bear 2028-06; Bear's band floor = the series' 2007–11 −31.1%, Bull's ceiling = the deepest drawdown so far), flat after; the tier is assumed to follow the county.
+- **Missing data says "n/a (no reading yet)"**, never a number. Before the Phase 1 collectors run, most MLS lines are n/a; that is expected.
+
 ---
 
 ## Part 4 — Scope of work (for approval)

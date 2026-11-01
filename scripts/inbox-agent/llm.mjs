@@ -129,14 +129,16 @@ export function subfolderFor(docType, stage) {
 export const PS_LABEL = { purchase_agreement: "Offer RPA", counter: "Counter Offer", addendum: "Addendum", contingency_removal: "Contingency Removal" }
 
 export const VERIFY_SYSTEM = `You read the first pages of a real-estate document and report which property it is about. Be literal: copy the street address exactly as printed; if there is an Assessor's Parcel Number, copy it. If no property is named, say null. Output strict JSON.`
-export function verifyPrompt({ filename, candidates }) {
+export function verifyPrompt({ filename, candidates, closingDate = false }) {
   return `DOCUMENT: ${filename}
 Ryan's active properties: ${candidates.join("; ") || "(none listed)"}
 
 Which property is this document about? Look at the first page(s): the "Property" line of a purchase agreement, the property address on a settlement statement, prelim, disclosure, insurance binder, loan document, or report.
 Return JSON only: {"address": "2116 Quito Rd, San Jose, CA 95130" | null, "label": "2116 Quito Rd" | null, "apn": "403-29-017" | null, "matches": "<one of Ryan's active properties above, exactly as listed, or null>", "stage": "quote"|"application"|"estimated"|"final"|"bound"|"signed"|null, "buyer": "Coko LLC" | null, "seller": "Ryan LaRocca" | null, "price": 1500000 | null, "confidence": 0.0-1.0}
-"label" = number + street name only. "buyer" / "seller" / "price": only for a purchase agreement, counter offer, addendum or contingency removal — copy the buyer's and seller's names exactly as printed on the first page (an LLC stays an LLC; several buyers joined with " & "), and the purchase price as a plain number; null for every other kind of document. "stage": final/FINAL in a title → final; "estimated"/"preliminary" → estimated; an insurance binder, declarations page or evidence of insurance naming a lender → bound; an insurance quote or proposal → quote; a loan application → application; a fully executed contract → signed.`
+"label" = number + street name only. "buyer" / "seller" / "price": only for a purchase agreement, counter offer, addendum or contingency removal — copy the buyer's and seller's names exactly as printed on the first page (an LLC stays an LLC; several buyers joined with " & "), and the purchase price as a plain number; null for every other kind of document. "stage": final/FINAL in a title → final; "estimated"/"preliminary" → estimated; an insurance binder, declarations page or evidence of insurance naming a lender → bound; an insurance quote or proposal → quote; a loan application → application; a fully executed contract → signed.${closingDate ? CLOSING_DATE_ASK : ""}`
 }
+// Market-cycle registry (CYCLE_REGISTRY=on only): the closing date a FINAL settlement statement adds or retires a property with.
+const CLOSING_DATE_ASK = `\nAlso include "closing_date": "YYYY-MM-DD" | null — for a settlement / closing statement only, the closing (settlement or disbursement) date printed on it; null for every other document.`
 
 export const CLASSIFY_SYSTEM = `You are the inbox triage layer for Ryan LaRocca, a real-estate investor (LRG Homes, San Jose CA). He flips houses and buys small multifamily, sells his own flips through listing agents, and works with escrow officers (Chicago Title), lenders (Kiavi, Conventus), insurance (Obie), contractors, and agents who send him deals.
 You read ONE inbound email and return strict JSON. Be literal and conservative: never invent an address; if a property cannot be identified say null. Ignore email signatures, disclaimers and marketing footers when judging what the sender wants.`
