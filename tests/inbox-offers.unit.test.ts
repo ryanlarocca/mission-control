@@ -81,7 +81,7 @@ describe("filingDecision with the offer flag", () => {
   it("package membership vs the whitelist", () => {
     expect(WHITELIST.has("proof_of_funds")).toBe(false)
     expect(DOC_TYPES).toContain("proof_of_funds")
-    expect([...OFFER_PACKAGE_TYPES].every((t) => DOC_TYPES.includes(t))).toBe(true)
+    expect(Array.from(OFFER_PACKAGE_TYPES).every((t) => DOC_TYPES.includes(t))).toBe(true)
   })
 })
 
