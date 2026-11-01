@@ -37,6 +37,7 @@ export const PROOF_FILE_RE = /proof/i
 const PROOF_OF_FUNDS_RE = /proof of\b|\bPOF\b/i // proof of funds / insurance / payment — never a print proof
 // "1541" alone would turn "1541 Foo Ave Addendum.pdf" into a tax form; the regulation is cited as 1541.5 / Reg 1541.
 export const TAX_FORM_FILE_RE = /exempt|CDTFA|\b230-?P\b|1541\.5|\breg(?:ulation)?\.?\s*1541\b/i
+export const DOCUSIGN_SUMMARY_RE = /^summary\.pdf$/i
 
 /** Filename / sender heuristics on top of the classifier. Fixes the cases the model
  *  gets wrong on short attachment names ("Ryan Quito BPA.pdf" is not an RPA). */
@@ -44,6 +45,7 @@ export function refineDocType(filename, docType, senderEmail, subject = "") {
   const f = String(filename || "")
   const sender = String(senderEmail || "").toLowerCase()
   const insuranceContext = INSURER_RE.test(sender) || /\b(insurance|policy|dwelling|binder)\b/i.test(String(subject || ""))
+  if (DOCUSIGN_SUMMARY_RE.test(f) && /docusign|^completed:/i.test(String(subject || ""))) return "other" // DocuSign's certificate of completion rides along with every envelope
   if (PROOF_OF_FUNDS_RE.test(f) && !/insurance|payment/i.test(f)) return "proof_of_funds"
   if (docType === "proof" && !PROOF_FILE_RE.test(f)) docType = "other" // the classifier's "proof" is a print proof; anything else so labelled is just unknown
   if (DRAW_FILE_RE.test(f)) return "draw_request"
@@ -315,6 +317,48 @@ export function driveDuplicateOf({ size, md5 }, files) {
     if (String(f.md5Checksum || "").toLowerCase() === want) return f
   }
   return null
+}
+
+// Ryan 2026-11-01: "sometimes humans make errors, they send them twice etc but we
+// should dedupe the disclosures on our end." The Quito disclosure set arrived
+// three times: DocuSign's Completed email carried the PDFs as attachments AND the
+// link fetcher pulled the same envelope (DocuSign regenerates each PDF, so the
+// bytes differ by a few bytes and neither sha256 nor md5 matched), then a second
+// envelope re-sent the NHD as "… (1) (1).pdf". Names survive what bytes don't:
+// "Market_Conditions_Advisory_-_6_24.pdf" and "Market Conditions Advisory - 624.pdf"
+// are the same document, as are "X.pdf" and "X (1).pdf".
+
+/** Filename reduced to what the sender can't vary: letters and digits, no extension, no "(1)" / "copy". */
+export function normalizeDocName(name) {
+  return String(name || "")
+    .toLowerCase()
+    .replace(/\.[a-z0-9]{1,6}$/, "")
+    .replace(/\s*[([]\s*\d+\s*[)\]]/g, "")
+    .replace(/\b(copy|duplicate)\b/g, "")
+    .replace(/[^a-z0-9]+/g, "")
+}
+export function sameDocName(a, b) {
+  const x = normalizeDocName(a)
+  return x.length >= 6 && x === normalizeDocName(b)
+}
+
+/**
+ * A file in the property's Drive subtree with the same (normalized) name.
+ * `same` = also the same size within 0.5% (floor 512 bytes) → the same document,
+ * regenerated; `same: false` = a namesake with materially different bytes — a new
+ * version, to be filed next to the old one under its spelling. null = nothing.
+ * @param {{ name: string, size: number|null|undefined }} att
+ * @param {Array<{ id?: string, name?: string, size?: number|string|null, path?: string, webViewLink?: string|null }>} files
+ * @returns {{ file: { id?: string, name?: string, size?: number|string|null, path?: string, webViewLink?: string|null }, same: boolean } | null}
+ */
+export function driveNamesakeOf({ name, size }, files, { tolerance = 0.005, floor = 512 } = {}) {
+  const want = normalizeDocName(name)
+  if (want.length < 6) return null
+  const hits = (files || []).filter((f) => normalizeDocName(f?.name) === want)
+  if (!hits.length) return null
+  const n = Number(size)
+  const close = Number.isFinite(n) && n > 0 ? hits.find((f) => f.size != null && Math.abs(Number(f.size) - n) <= Math.max(floor, n * tolerance)) : null
+  return close ? { file: close, same: true } : { file: hits[0], same: false }
 }
 
 /** "5764 Halleck Dr Buyer Statement 2026-10-02 FINAL.pdf" → same-day second copy gets the time appended. */

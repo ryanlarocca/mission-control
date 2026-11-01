@@ -61,7 +61,7 @@ import {
   CLASSIFY_SYSTEM, FILING_SYSTEM, RULES_SYSTEM, SCREEN_SYSTEM, SONNET, VERIFY_SYSTEM,
   BAY_AREA_RE, CONDO_RE, blastSignalsPass,
   changePrompt, classifyPrompt, complete, completeJson, filingPrompt, rulesPrompt, screenPrompt, verifyPrompt, WHITELIST } from "./llm.mjs"
-import { OFFERS_SUBFOLDER, OUR_NAMES_DEFAULT, destinationFor, driveDuplicateOf, filingDecision, inboundOfferFrom, isPurchaseDoc, nextSequence, offerDocName, offerFolderMatch, offerPackageFolder, refineDocType, stageOf, vendorFilename, vendorPropertyFolder, withTimeSuffix } from "./filing.mjs"
+import { OFFERS_SUBFOLDER, OUR_NAMES_DEFAULT, destinationFor, driveDuplicateOf, driveNamesakeOf, filingDecision, sameDocName, inboundOfferFrom, isPurchaseDoc, nextSequence, offerDocName, offerFolderMatch, offerPackageFolder, refineDocType, stageOf, vendorFilename, vendorPropertyFolder, withTimeSuffix } from "./filing.mjs"
 import { AWAITING_PAYMENT_MAX_TRIES, MAX_FETCH_ATTEMPTS, NEW_LINK_ERROR, NEW_LINK_GUARD_MS, awaitingPaymentNext, documentLinks, fetchDocuments, freshbooksAddress, newLinkGuard, nextTryAt, paymentWakeTargets, propertyWebsiteLinks, providerKind, providerLabel, queuesForVendor, queuesOnSystemEmail, readFetchedBytes, requeueDecision, saveFetchedBytes, tapinspectShareId, waitsClosedBy, waitsTimedOut } from "./fetch/index.mjs"
 import { invoiceDiffLines, isPaidName, matchVendor, money, paidName, parentCampaignOf, pickCampaign, stagingInvoiceRowFor, stagingNumberFrom, supersedeRenames, vendorDocType, vendorFilingDecision, vendorRules } from "./vendors.mjs"
 import { DUP_STATUSES, gmailLink, photoDedupeVerdict, propertyFolderFromReply, propertyLabelFromSubject, suffixedFilename } from "./photos.mjs"
@@ -550,6 +550,8 @@ async function postFiledConfirmation(ctx, msg, filed) {
 // filed; before an attachment becomes a proposal, Drive itself is consulted —
 // one walk per root per pass, cached on ctx.
 const DRIVE_DEDUPE_STATUSES = new Set(["pending", "interview", "waiting", "approved"])
+/** Doc types destinationFor files under the sender's own filename (see its default branch). */
+const KEEPS_SENDER_NAME = new Set(["disclosure", "nhd", "inspection", "appraisal", "evidence_of_insurance", "loan_docs", "draw_request"])
 
 /** The Drive subtree an attachment could already live in: Marketing/<year> for marketing lists, the property's own folder for property documents; null when there is nothing to check. */
 async function driveFilesFor(ctx, att, msg, label) {
@@ -579,11 +581,34 @@ async function recordAttachment(ctx, msg, att, cls, status, { source = "attachme
   const { data: dup } = await sb().from("inbox_files").select("id, status, final_folder, final_name, proposed_folder, proposed_name").eq("sha256", hash).in("status", ["filed", "pending", "approved", "waiting", "interview", "changed", "change_requested"]).limit(1)
   const label = att.property_label || cls?.property?.label || null
   let dupRow = dup?.[0] || null
-  // Part G: the sha lookup missed → is the file already in Drive under another name? Size first, then md5.
+  let namesake = null
+  // Ryan 2026-11-01 (Quito disclosures ×3): the same email carrying a document twice —
+  // as an attachment and again behind its DocuSign link — is one document. Same
+  // name on the same email wins before any byte comparison (the Drive walk below is
+  // cached per pass and may not see what this pass just filed).
+  if (!dupRow && DRIVE_DEDUPE_STATUSES.has(status)) {
+    try {
+      const { data: sibs } = await sb().from("inbox_files").select("id, status, filename, attachment_id, fetch_id, final_folder, final_name, drive_file_id, drive_url").eq("gmail_id", msg.id).in("status", ["filed", "pending", "approved", "waiting", "interview", "changed", "change_requested"])
+      const sib = (sibs || []).find((r) => !(r.attachment_id && r.attachment_id === (att.attachmentId || null) && r.fetch_id === (fetchId || null)) && sameDocName(r.filename, att.filename))
+      if (sib) {
+        log(`duplicate (same email): ${att.filename} = ${sib.filename}${sib.final_name ? ` → ${sib.final_name}` : ""}`)
+        dupRow = { id: sib.id, status: sib.status, final_folder: sib.final_folder, final_name: sib.final_name, drive_file_id: sib.drive_file_id, drive_url: sib.drive_url, ...(sib.drive_file_id ? { drive: true } : {}) }
+      }
+    } catch (e) {
+      warn(`same-email dedupe for ${att.filename} failed:`, e.message)
+    }
+  }
+  // Part G: the sha lookup missed → is the file already in Drive under another name? Size first, then md5;
+  // then (2026-11-01) the same name with the same size = the same document re-sent / regenerated.
   if (!dupRow && DRIVE_DEDUPE_STATUSES.has(status)) {
     try {
       const files = await driveFilesFor(ctx, att, msg, label)
-      const hit = files?.length ? driveDuplicateOf({ size: bytes.length, md5: md5(bytes) }, files) : null
+      let hit = files?.length ? driveDuplicateOf({ size: bytes.length, md5: md5(bytes) }, files) : null
+      if (!hit && files?.length) {
+        const ns = driveNamesakeOf({ name: att.cleanName || att.filename, size: bytes.length }, files)
+        if (ns?.same) hit = ns.file
+        else if (ns) namesake = ns.file
+      }
       if (hit) {
         log(`duplicate (drive): ${att.filename} = ${hit.path}`)
         dupRow = { id: hit.id, status: "filed", final_folder: hit.path.replace(/\/[^/]*$/, ""), final_name: hit.name, drive_file_id: hit.id, drive_url: hit.webViewLink, drive: true }
@@ -613,10 +638,10 @@ async function recordAttachment(ctx, msg, att, cls, status, { source = "attachme
     // A Drive hit records where the existing copy lives (the brief's "Skipped as duplicates" line shows the name; no card).
     ...(dupRow?.drive ? { final_folder: dupRow.final_folder, final_name: dupRow.final_name, drive_file_id: dupRow.drive_file_id, drive_url: dupRow.drive_url, resolved_at: isoNow() } : {}),
   }
-  if (DRY) return { row: { ...row, id: "dry-run" }, bytes, dup: dupRow }
+  if (DRY) return { row: { ...row, id: "dry-run" }, bytes, dup: dupRow, namesake }
   const { data, error } = await sb().from("inbox_files").insert(row).select("*").single()
   if (error) throw new Error(`inbox_files insert: ${error.message}`)
-  return { row: data, bytes, dup: dupRow }
+  return { row: data, bytes, dup: dupRow, namesake }
 }
 
 // ------------------------------------------------------------------ filing proposals
@@ -1079,6 +1104,12 @@ async function fileDocuments(ctx, msg, cls, docs, { source = "attachment", fetch
     }
     const dest = offer ? await offerDest(ctx, pf, att, msg, offer) : await deterministicDest(ctx, pf, att, msg, stage, source)
     if (!dest) continue
+    // A namesake with different bytes (a re-signed disclosure, an updated report) is a new
+    // version: it takes the existing file's spelling so the time suffix lands it alongside.
+    if (!offer && rec.namesake && KEEPS_SENDER_NAME.has(att.doc_type) && rec.namesake.path.replace(/\/[^/]*$/, "") === dest.folder) {
+      log(`new version: ${dest.name} → ${rec.namesake.name} (+time)`)
+      dest.name = rec.namesake.name
+    }
     const r = await fileToDrive(ctx, rowNow, dest.folder, dest.name, { suffixOnExisting: true, bytes: rec.bytes })
     if (!r.ok) {
       await tgSend(`⚠️ Couldn't file <b>${esc(dest.name)}</b> → ${esc(dest.folder)} — ${esc(r.error)}`, { dryRun: DRY })
