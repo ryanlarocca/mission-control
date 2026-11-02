@@ -568,7 +568,10 @@ export function LeadsTab() {
   const [sendSuccess, setSendSuccess]   = useState<string | null>(null)
   const [callingFor, setCallingFor]     = useState<string | null>(null)
   const [callError, setCallError]       = useState<string | null>(null)
-  const [callSuccess, setCallSuccess]   = useState<string | null>(null)
+  // Last placed call: which card + the line the lead sees. Stays up (no
+  // timeout) so Ryan can read the callback number off the card while he
+  // leaves a voicemail (2026-11-02).
+  const [callSuccess, setCallSuccess]   = useState<{ phone: string; from: string | null } | null>(null)
   const [phoneDraft, setPhoneDraft]     = useState<Record<string, string>>({})
   const [savingPhoneFor, setSavingPhoneFor] = useState<string | null>(null)
   const [phoneError, setPhoneError]     = useState<string | null>(null)
@@ -1150,8 +1153,7 @@ export function LeadsTab() {
       if (!res.ok || !data.success) {
         throw new Error(data.error || `HTTP ${res.status}`)
       }
-      setCallSuccess(group.phone)
-      setTimeout(() => setCallSuccess(null), 4000)
+      setCallSuccess({ phone: group.phone, from: data.callerId || data.from || null })
       // Phase 7C — Part 5: clear any pending follow-up recommendation
       // since Ryan just acted on it. analyze-call will regenerate a new
       // recommendation from the recording's transcript when it lands.
@@ -1969,7 +1971,8 @@ export function LeadsTab() {
               onCall={() => callLead(group)}
               calling={callingFor === group.phone}
               callError={callingFor === null && callError && expandedPhone === group.phone ? callError : null}
-              callSuccess={callSuccess === group.phone}
+              callSuccess={callSuccess?.phone === group.phone}
+              callFrom={callSuccess?.phone === group.phone ? callSuccess.from : null}
               phoneDraft={phoneDraft[group.phone] ?? ""}
               onEditPhoneDraft={(v) => setPhoneDraft(prev => ({ ...prev, [group.phone]: v }))}
               onSavePhone={() => addPhone(group, phoneDraft[group.phone] ?? "")}
@@ -2048,6 +2051,7 @@ interface LeadCardProps {
   calling: boolean
   callError: string | null
   callSuccess: boolean
+  callFrom: string | null
   phoneDraft: string
   onEditPhoneDraft: (v: string) => void
   onSavePhone: () => void
@@ -2517,8 +2521,9 @@ function LeadCard(p: LeadCardProps) {
                   {p.calling ? "Dialing…" : "Call"}
                 </button>
                 {p.callSuccess && (
-                  <span className="text-emerald-400 text-xs inline-flex items-center gap-1">
-                    <Check className="w-3 h-3" /> Ringing your cell
+                  <span className="text-emerald-400 text-sm font-medium inline-flex items-center gap-1">
+                    <Check className="w-3.5 h-3.5" />
+                    {p.callFrom ? `Calling from ${formatPhone(p.callFrom) ?? p.callFrom}` : "Ringing your cell"}
                   </span>
                 )}
                 {p.callError && (

@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react"
 import { isOnMarket, listingChipLabel, type LeadListing } from "@/lib/listing"
 import {
-  Phone, PhoneOutgoing, Bot, Mail, MessageSquare, Send, Pencil, X, Check,
+  Phone, PhoneOutgoing, PhoneOff, Bot, Mail, MessageSquare, Send, Pencil, X, Check,
   Clock, Loader2, RefreshCw, AlertTriangle, ChevronDown, ChevronRight,
   Sparkles, SkipForward, Eye, ExternalLink, CalendarClock, Ban, ShieldOff,
 } from "lucide-react"
@@ -195,6 +195,41 @@ function prepareSkipLabel(body: { outcome?: string; reason?: string }): string {
   return reason ? `No draft — engine skipped (${reason})` : "No draft — engine skipped this lead"
 }
 
+// ---- on-call pins ---------------------------------------------------------
+// Tapping Call registers the touch server-side right away (drip skipped,
+// follow-up consumed), so the next refetch drops the contact — the card
+// vanished while Ryan was still dialing and he had to hunt for them in Leads
+// (2026-11-02). A placed call now pins a snapshot of the card where it was,
+// showing the line the lead sees, until Ryan taps End call. Kept in
+// localStorage so a refresh mid-call doesn't lose it; pins expire after a
+// few hours in case End call is never tapped.
+interface OnCallPin { row: ContactRow; from: string | null; at: number }
+const ON_CALL_KEY = "mc.followups.onCall"
+const ON_CALL_TTL_MS = 3 * 60 * 60 * 1000
+
+function loadOnCallPins(): Record<string, OnCallPin> {
+  if (typeof window === "undefined") return {}
+  try {
+    const raw = JSON.parse(window.localStorage.getItem(ON_CALL_KEY) || "{}") as Record<string, OnCallPin>
+    const cutoff = Date.now() - ON_CALL_TTL_MS
+    return Object.fromEntries(Object.entries(raw).filter(([, p]) => p && p.row && p.at > cutoff))
+  } catch {
+    return {}
+  }
+}
+
+// Re-insert pinned rows the server no longer returns, at the index they held
+// in the previous list, so the card stays in place instead of jumping.
+function keepPinnedRows(next: ContactRow[], prev: ContactRow[] | undefined, pins: Record<string, OnCallPin>): ContactRow[] {
+  const out = [...next]
+  for (const [key, pin] of Object.entries(pins)) {
+    if (out.some(r => r.clusterKey === key)) continue
+    const at = prev ? prev.findIndex(r => r.clusterKey === key) : -1
+    out.splice(at >= 0 ? Math.min(at, out.length) : 0, 0, pin.row)
+  }
+  return out
+}
+
 export function FollowUpsTab() {
   const [data, setData] = useState<FollowUpsPayload | null>(null)
   const [loading, setLoading] = useState(false)
@@ -214,6 +249,21 @@ export function FollowUpsTab() {
   // Collapsed sections — Today's work is the default focus; the rest open
   // on demand.
   const [openSections, setOpenSections] = useState<Record<string, boolean>>({})
+  // Cards pinned on screen during a call, keyed by clusterKey. The ref lets
+  // the (stable) fetchData read the current pins.
+  const [onCall, setOnCall] = useState<Record<string, OnCallPin>>({})
+  const onCallRef = useRef<Record<string, OnCallPin>>({})
+  useEffect(() => {
+    const pins = loadOnCallPins()
+    onCallRef.current = pins
+    setOnCall(pins)
+  }, [])
+  function updateOnCall(fn: (prev: Record<string, OnCallPin>) => Record<string, OnCallPin>) {
+    const next = fn(onCallRef.current)
+    onCallRef.current = next
+    setOnCall(next)
+    try { window.localStorage.setItem(ON_CALL_KEY, JSON.stringify(next)) } catch { /* private mode */ }
+  }
 
   const fetchData = useCallback(async (silent = false) => {
     if (!silent) setLoading(true)
@@ -221,7 +271,8 @@ export function FollowUpsTab() {
       const res = await fetch("/api/follow-ups", { cache: "no-store" })
       if (handleSessionExpired(res)) return
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
-      setData(await res.json() as FollowUpsPayload)
+      const payload = await res.json() as FollowUpsPayload
+      setData(prev => ({ ...payload, rows: keepPinnedRows(payload.rows, prev?.rows, onCallRef.current) }))
       // Only clear the error banner on an explicit (non-silent) load —
       // initial mount or a manual Refresh. A SILENT refetch (the 30s poll,
       // or the refetch fired right after a send) must NOT wipe an action
@@ -261,7 +312,15 @@ export function FollowUpsTab() {
 
   // Drop a row from the visible list immediately; the next refetch is the
   // source of truth (a both-row with a remaining touch reappears).
+  // Any action that clears the card also ends its on-call pin.
   function dropRow(clusterKey: string) {
+    if (onCallRef.current[clusterKey]) {
+      updateOnCall(prev => {
+        const next = { ...prev }
+        delete next[clusterKey]
+        return next
+      })
+    }
     setData(prev => (prev ? { ...prev, rows: prev.rows.filter(r => r.clusterKey !== clusterKey) } : prev))
   }
 
@@ -551,12 +610,22 @@ export function FollowUpsTab() {
       })
       const body = await res.json().catch(() => ({}))
       if (!res.ok || !body.success) throw new Error(body.error || `HTTP ${res.status}`)
-      showToast("Calling — clear this once you've connected")
+      const from: string | null = body.callerId || body.from || null
+      updateOnCall(prev => ({ ...prev, [row.clusterKey]: { row, from, at: Date.now() } }))
+      showToast(from ? `Calling from ${formatPhone(from) ?? from}` : "Calling — ringing your cell")
     } catch (e) {
       setErr(`Call failed: ${e instanceof Error ? e.message : String(e)}`)
     } finally {
       setActingOn(null)
     }
+  }
+
+  // End call — just unpins the card. The call already registered as a touch
+  // and the call analysis schedules the next follow-up; the refetch shows
+  // the card again only if something is genuinely still due.
+  function endCall(row: ContactRow) {
+    dropRow(row.clusterKey)
+    void fetchData(true)
   }
 
   // manualTouch=true tells the API this came from a completed call (Done) —
@@ -831,7 +900,8 @@ export function FollowUpsTab() {
 
   const dueCount = buckets.ready.length + buckets.overdue.length + buckets.today.length
   const cardProps = {
-    actingOn, editing, intervalOpenFor,
+    actingOn, editing, intervalOpenFor, onCall,
+    onEndCall: endCall,
     onOpenLead: (row: ContactRow) => { const k = leadOverlayKey(row); if (k) setLeadOverlay(k) },
     onSendDrip: sendDrip,
     onRegenerateDrip: regenerateDrip,
@@ -857,7 +927,7 @@ export function FollowUpsTab() {
     onSaveEdit: saveEdit,
     onPrepare: prepareForecast,
     onSkipForecast: skipForecast,
-    onCall: placeCall,
+    onPlaceCall: placeCall,
     onSnoozeContact: snoozeContact,
     onDoneCall: doneCall,
     onPickInterval: applyInterval,
@@ -1048,6 +1118,8 @@ interface CardHandlers {
   actingOn: string | null
   editing: Map<string, { message: string; subject: string }>
   intervalOpenFor: string | null
+  onCall: Record<string, OnCallPin>
+  onEndCall: (row: ContactRow) => void
   onOpenLead: (row: ContactRow) => void
   onSendDrip: (row: ContactRow, queueId: string, opts?: { force?: boolean }) => void
   onRegenerateDrip: (row: ContactRow, queueId: string) => void
@@ -1061,7 +1133,7 @@ interface CardHandlers {
   onSaveEdit: (row: ContactRow, queueId: string) => void
   onPrepare: (row: ContactRow) => void
   onSkipForecast: (row: ContactRow) => void
-  onCall: (row: ContactRow) => void
+  onPlaceCall: (row: ContactRow) => void
   onSnoozeContact: (row: ContactRow, days: number) => void
   onDoneCall: (row: ContactRow) => void
   onPickInterval: (row: ContactRow, opt: { key: string; label: string; days?: number; months?: number }) => void
@@ -1465,9 +1537,11 @@ function ContactCard({ row, ...h }: { row: ContactRow } & CardHandlers) {
     row.primary.kind === "drip" ? row.primary : row.secondary?.kind === "drip" ? row.secondary : null
   const overdue = classifyUrgency(row.primary) === "overdue"
   const temp = row.temperature ? TEMP_BADGE[row.temperature] : null
+  const pin = h.onCall[row.clusterKey]
+  const callingStrip = pin && row.phone ? <CallingFromStrip from={pin.from} onEnd={() => h.onEndCall(row)} /> : null
 
   return (
-    <div className={`rounded-md border overflow-hidden ${overdue ? "border-red-900/50 bg-red-950/20" : "border-zinc-800 bg-zinc-950"}`}>
+    <div className={`rounded-md border overflow-hidden ${pin ? "border-emerald-700/70 bg-emerald-950/10" : overdue ? "border-red-900/50 bg-red-950/20" : "border-zinc-800 bg-zinc-950"}`}>
       {/* header */}
       <div className="px-3 py-2 flex items-center gap-2 text-xs flex-wrap">
         {temp && <span className={temp.cls} title={row.temperature ?? ""}>{temp.emoji}</span>}
@@ -1531,7 +1605,7 @@ function ContactCard({ row, ...h }: { row: ContactRow } & CardHandlers) {
         <CallBlock
           row={row} touch={callTouch} acting={acting}
           intervalOpen={h.intervalOpenFor === row.clusterKey}
-          onCall={() => h.onCall(row)}
+          onCall={() => h.onPlaceCall(row)}
           onSnooze={(d) => h.onSnoozeContact(row, d)}
           onDone={() => h.onDoneCall(row)}
           onPickInterval={(opt) => h.onPickInterval(row, opt)}
@@ -1539,6 +1613,7 @@ function ContactCard({ row, ...h }: { row: ContactRow } & CardHandlers) {
           onText={() => h.onText(row)}
         />
       )}
+      {callTouch && callingStrip}
 
       {/* drip block */}
       {dripTouch && (
@@ -1546,7 +1621,7 @@ function ContactCard({ row, ...h }: { row: ContactRow } & CardHandlers) {
           row={row} touch={dripTouch} acting={acting} hasCallAbove={!!callTouch}
           editDraft={dripTouch.queueId ? h.editing.get(dripTouch.queueId) ?? null : null}
           onOpenLead={() => h.onOpenLead(row)}
-          onCall={() => h.onCall(row)}
+          onCall={() => h.onPlaceCall(row)}
           onSend={(opts) => dripTouch.queueId && h.onSendDrip(row, dripTouch.queueId, opts)}
           onRegenerate={() => dripTouch.queueId && h.onRegenerateDrip(row, dripTouch.queueId)}
           onRedraft={(why) => dripTouch.queueId && h.onRedraftDrip(row, dripTouch.queueId, why)}
@@ -1562,6 +1637,26 @@ function ContactCard({ row, ...h }: { row: ContactRow } & CardHandlers) {
           onSkipForecast={() => h.onSkipForecast(row)}
         />
       )}
+      {!callTouch && callingStrip}
+    </div>
+  )
+}
+
+// Shown under the Call button while a call is live: the number the lead
+// sees (so Ryan can leave it on a voicemail) and End call to unpin the card.
+function CallingFromStrip({ from, onEnd }: { from: string | null; onEnd: () => void }) {
+  return (
+    <div className="px-3 py-2 border-t border-emerald-900/60 bg-emerald-950/30 flex items-center gap-2 flex-wrap">
+      <PhoneOutgoing className="w-4 h-4 text-emerald-400 shrink-0" />
+      <span className="text-sm font-semibold text-emerald-300">
+        {from ? `Calling from ${formatPhone(from) ?? from}` : "Calling — ringing your cell"}
+      </span>
+      <button
+        onClick={onEnd}
+        className="ml-auto inline-flex items-center gap-1.5 px-3 py-1.5 min-h-[34px] rounded bg-zinc-900 border border-zinc-700 hover:border-zinc-500 text-zinc-200 text-xs font-medium transition-colors"
+      >
+        <PhoneOff className="w-3.5 h-3.5" /> End call
+      </button>
     </div>
   )
 }
