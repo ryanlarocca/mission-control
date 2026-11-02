@@ -268,7 +268,8 @@ def main():
     print("market-cycle bootstrap %s — %s — %d dials with history — %s" % (cfg["version"], TODAY.isoformat(), len(dials), "WRITE" if a.write else "DRY RUN (no database access)"))
     print("%-34s %-30s %-8s %6s  %-10s  %-10s  %s" % ("dial", "source", "status", "rows", "first", "last", "latest"))
     results = {}
-    for d in dials:
+
+    def fetch_one(d):
         src = d["source"].get("series_id") or d["fetch"]
         try:
             rows, url, note, extras = S.fetch_dial(d, cfg, backfill=True)
@@ -286,8 +287,21 @@ def main():
             results[d["id"]] = {"status": "FAILED", "reason": str(e)}
             print("%-34s %-30s FAILED(%s)" % (d["id"], src[:30], e))
         sys.stdout.flush()
+
+    for d in dials:
+        fetch_one(d)
+    again = [d for d in dials if results[d["id"]]["status"] == "FAILED"]
+    if again:
+        # a dropped connection can outlast one dial's retries: ask each failed source once more
+        S.forget_failures()
+        print("\nSECOND PASS over %d FAILED dial(s)" % len(again))
+        for d in again:
+            fetch_one(d)
     nok = sum(1 for r in results.values() if r["status"] == "OK")
     print("\n%d OK, %d FAILED" % (nok, len(results) - nok))
+    partial = sorted(k for k, r in results.items() if r["status"] == "OK" and "FAILED" in (r["note"] or ""))
+    if partial:
+        print("OK but with some pages/files FAILED (see each note; those months are missing, never filled): " + ", ".join(partial))
     corridors, lines = compute_corridors(results, cfg)
     print("\nCORRIDORS (written under corridor.computed; authored config keys win)")
     print("\n".join(lines))

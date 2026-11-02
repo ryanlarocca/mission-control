@@ -46,8 +46,26 @@ def load_config(path=CONFIG):
 
 
 # ---------------------------------------------------------------- HTTP
-def http_get(url, accept=None, attempts=2, timeout=45, ua=None):
-    """GET with at most `attempts` tries (never hammer a blocked site). Returns (bytes, final_url, content_type)."""
+HTTP_ATTEMPTS = 5          # transient transport errors only (truncated bodies, resets, timeouts)
+NO_RETRY_CODES = (401, 403, 404, 410, 429)
+
+
+def _transient(e):
+    """A dropped connection or truncated body: worth another try. HTTP status errors
+    are decided by the caller; a proxy/tunnel refusal is not transient."""
+    if isinstance(e, urllib.error.HTTPError):
+        return e.code not in NO_RETRY_CODES
+    return "Tunnel connection failed" not in str(e) and "not on the allow list" not in str(e)
+
+
+def _sleep_before_retry(i):
+    time.sleep(min(2 * (i + 1), 8))
+
+
+def http_get(url, accept=None, attempts=HTTP_ATTEMPTS, timeout=45, ua=None):
+    """GET with at most `attempts` tries. Blocked or missing pages (401/403/404/410/429)
+    are never retried (never hammer a blocked site); dropped connections and truncated
+    bodies (IncompleteRead) are. A truncated body is never used. Returns (bytes, final_url, content_type)."""
     last = None
     for i in range(attempts):
         try:
@@ -59,31 +77,49 @@ def http_get(url, accept=None, attempts=2, timeout=45, ua=None):
                 return r.read(), r.geturl(), r.headers.get("Content-Type", "")
         except urllib.error.HTTPError as e:
             last = "HTTP %d" % e.code
-            if e.code in (401, 403, 404, 410, 429):
+            e.close()
+            if not _transient(e):
                 break                       # blocked or missing: retrying won't help
-        except Exception as e:              # timeouts, DNS, resets
+        except Exception as e:              # timeouts, DNS, resets, IncompleteRead
             last = "%s: %s" % (type(e).__name__, e)
+            if not _transient(e):
+                break
         if i + 1 < attempts:
-            time.sleep(3)
+            _sleep_before_retry(i)
     raise SourceError(last or "unknown error")
 
 
-def http_lines(url, attempts=2, timeout=300):
-    """Stream a large text file line by line (Zillow zip file, Indeed metro file)."""
+def http_lines(url, timeout=300):
+    """Open a large text file for streaming (Zillow zip file, Indeed metro file). One try:
+    callers wrap open + full read in stream_retry, since a stream can break mid-file."""
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": UA})
+        r = urllib.request.urlopen(req, timeout=timeout)
+        return io.TextIOWrapper(r, encoding="utf-8", errors="replace", newline="")
+    except urllib.error.HTTPError as e:
+        raise SourceError("HTTP %d" % e.code) from e
+    except Exception as e:
+        raise SourceError("%s: %s" % (type(e).__name__, e)) from e
+
+
+def stream_retry(fn, attempts=HTTP_ATTEMPTS):
+    """Run fn() (open a stream and read it to the end) up to `attempts` times on transient
+    errors. A stream that breaks mid-file is re-read from the start, never used partially."""
     last = None
     for i in range(attempts):
         try:
-            req = urllib.request.Request(url, headers={"User-Agent": UA})
-            r = urllib.request.urlopen(req, timeout=timeout)
-            return io.TextIOWrapper(r, encoding="utf-8", errors="replace", newline="")
-        except urllib.error.HTTPError as e:
-            last = "HTTP %d" % e.code
-            if e.code in (401, 403, 404, 410, 429):
-                break
-        except Exception as e:
+            return fn()
+        except SourceError as e:
+            cause = e.__cause__
+            last = str(e)
+            if cause is None or not _transient(cause):
+                raise
+        except Exception as e:              # truncated stream while iterating
             last = "%s: %s" % (type(e).__name__, e)
+            if not _transient(e):
+                break
         if i + 1 < attempts:
-            time.sleep(3)
+            _sleep_before_retry(i)
     raise SourceError(last or "unknown error")
 
 
@@ -103,6 +139,12 @@ def cached(key, fn):
     if st == "err":
         raise SourceError(val)
     return val
+
+
+def forget_failures():
+    """Drop memoised failures so a second pass over FAILED dials asks each source once more."""
+    for k in [k for k, (st, _) in _cache.items() if st == "err"]:
+        del _cache[k]
 
 
 def find_pdftotext():
@@ -145,22 +187,30 @@ ZILLOW = "https://files.zillowstatic.com/research/public_csvs/zhvi/"
 
 
 def zillow_county(fname, county="Santa Clara County", state="CA"):
-    def go():
-        body, _, _ = http_get(ZILLOW + fname)
-        rdr = csv.reader(io.StringIO(body.decode("utf-8", "replace")))
+    def read():
+        # Streamed to the end of the file (not stopped at the matching row) so a
+        # truncated download is always detected and re-read, never half-used.
+        rdr = csv.reader(http_lines(ZILLOW + fname))
         hdr = next(rdr)
         dates = [(i, h) for i, h in enumerate(hdr) if re.match(r"\d{4}-\d{2}-\d{2}$", h)]
+        ri, si, got = hdr.index("RegionName"), hdr.index("State"), None
         for row in rdr:
-            if row[hdr.index("RegionName")] == county and row[hdr.index("State")] == state:
-                return [(h, float(row[i])) for i, h in dates if row[i]]
-        raise SourceError("%s not found in %s" % (county, fname))
+            if got is None and len(row) > si and row[ri] == county and row[si] == state:
+                got = [(h, float(row[i])) for i, h in dates if i < len(row) and row[i]]
+        return got
+
+    def go():
+        got = stream_retry(read)
+        if not got:
+            raise SourceError("%s not found in %s" % (county, fname))
+        return got
     return cached("zillow:" + fname + county, go)
 
 
 def zillow_zips(zips):
     fname = "Zip_zhvi_uc_sfrcondo_tier_0.33_0.67_sm_sa_month.csv"
 
-    def go():
+    def read():
         rdr = csv.reader(http_lines(ZILLOW + fname))
         hdr = next(rdr)
         dates = [(i, h) for i, h in enumerate(hdr) if re.match(r"\d{4}-\d{2}-\d{2}$", h)]
@@ -169,7 +219,7 @@ def zillow_zips(zips):
             if len(row) > ri and row[ri] in zips:
                 out[row[ri]] = [(h, float(row[i])) for i, h in dates if i < len(row) and row[i]]
         return out
-    return cached("zillow:zips", go)
+    return cached("zillow:zips", lambda: stream_retry(read))
 
 
 # ---------------------------------------------------------------- EDD WARN
@@ -350,11 +400,14 @@ INDEED_METRO = "https://raw.githubusercontent.com/hiring-lab/job_postings_tracke
 
 
 def indeed_metro(cbsa="41940"):
-    def go():
+    def read():
         rdr = csv.reader(http_lines(INDEED_METRO))
         hdr = next(rdr)
         ci, di, vi = hdr.index("cbsa_code"), hdr.index("date"), hdr.index("indeed_job_postings_index")
-        out = [(r[di], float(r[vi])) for r in rdr if len(r) > vi and r[ci] == cbsa and r[vi]]
+        return [(r[di], float(r[vi])) for r in rdr if len(r) > vi and r[ci] == cbsa and r[vi]]
+
+    def go():
+        out = stream_retry(read)
         if not out:
             raise SourceError("CBSA %s not found" % cbsa)
         return sorted(out)
@@ -537,30 +590,43 @@ def car_releases(backfill=False):
         first_year = CAR_BACKFILL_FROM_YEAR if backfill else TODAY.year - 1
         links, status = [], []
         for y in range(TODAY.year, first_year - 1, -1):
-            try:
-                body, _, _ = http_get(CAR_INDEX % y, accept="text/html")
-                got = car_release_links(body.decode("utf-8", "replace"), y)
-                links += got
-                status.append("index %d OK (%d sales releases)" % (y, len(got)))
-            except SourceError as e:
-                status.append("index %d FAILED (%s)" % (y, e))
+            for rnd in (1, 2):             # an index page whose download broke gets one more round
+                try:
+                    body, _, _ = http_get(CAR_INDEX % y, accept="text/html")
+                    got = car_release_links(body.decode("utf-8", "replace"), y)
+                    links += got
+                    status.append("index %d OK (%d sales releases)" % (y, len(got)))
+                    break
+                except SourceError as e:
+                    if rnd == 2 or str(e).startswith("HTTP 4"):
+                        status.append("index %d FAILED (%s)" % (y, e))
+                        break
+                    _sleep_before_retry(3)
         if not links:
             raise SourceError("no C.A.R. sales releases found: " + "; ".join(status))
         links.sort(key=lambda x: x[1] or "", reverse=True)
         if not backfill:
             links = [l for l in links if l[1]][:CAR_RECENT]
-        out, failed = {}, []
-        for url, slug_m in links:
-            if slug_m and slug_m in out:
-                continue                       # duplicate slug for a month already read (e.g. 2july2024sales)
-            try:
-                body, _, _ = http_get(url, accept="text/html")
-                rel = parse_car_release(body.decode("utf-8", "replace"))
-            except SourceError as e:
-                failed.append("%s (%s)" % (url.rsplit("/", 1)[-1], e))
-                continue
-            if rel["month"] not in out:
-                out[rel["month"]] = {"url": url, "counties": rel["counties"]}
+        out, failed, again = {}, [], []
+        for rnd in (1, 2):                     # round 2: pages whose download broke in round 1, once more
+            for url, slug_m in (links if rnd == 1 else again):
+                if slug_m and slug_m in out:
+                    continue                   # duplicate slug for a month already read (e.g. 2july2024sales)
+                try:
+                    body, _, _ = http_get(url, accept="text/html")
+                except SourceError as e:
+                    if rnd == 1 and not str(e).startswith("HTTP 4"):
+                        again.append((url, slug_m))
+                    else:
+                        failed.append("%s (%s)" % (url.rsplit("/", 1)[-1], e))
+                    continue
+                try:
+                    rel = parse_car_release(body.decode("utf-8", "replace"))
+                except SourceError as e:
+                    failed.append("%s (%s)" % (url.rsplit("/", 1)[-1], e))
+                    continue
+                if rel["month"] not in out:
+                    out[rel["month"]] = {"url": url, "counties": rel["counties"]}
         status.append("%d releases parsed (%s..%s)" % (len(out), min(out) if out else "-", max(out) if out else "-"))
         if failed:
             status.append("FAILED pages: " + "; ".join(failed))
@@ -578,8 +644,9 @@ def car_releases(backfill=False):
 # Aug 2026 onward) carry median, sales and average DOM in prose and are used
 # to cross-check the PDF, or as the source when a month has no PDF yet.
 SCCAOR_STATS = "https://www.sccaor.com/housing-stats/"
-SCCAOR_UPLOADS = "https://www.sccaor.com/wp-content/uploads/"
-SCCAOR_POSTS = "https://www.sccaor.com/wp-json/wp/v2/posts?search=housing%20statistics&per_page=24&_fields=link,title"
+SCCAOR_STATS_JSON = "https://www.sccaor.com/wp-json/wp/v2/pages?slug=housing-stats&_fields=link,content"
+SCCAOR_UPLOADS ="https://www.sccaor.com/wp-content/uploads/"
+SCCAOR_POSTS = "https://www.sccaor.com/wp-json/wp/v2/posts?search=housing%20statistics&per_page=24&_fields=link,title,content"
 SCCAOR_BACKFILL_FROM = "2023-01"
 SCCAOR_RECENT = 3
 
@@ -653,11 +720,21 @@ def sccaor_months(backfill=False):
     """-> ({month: rec + source_url}, status_lines)."""
     def go():
         status = []
-        body, _, _ = http_get(SCCAOR_STATS, accept="text/html")
-        listed = sccaor_index_links(body.decode("utf-8", "replace"))
+        try:
+            body, _, _ = http_get(SCCAOR_STATS, accept="text/html")
+            listed, via = sccaor_index_links(body.decode("utf-8", "replace")), "page"
+        except SourceError as e:
+            # Same page's content over the WordPress REST API (12 KB vs 110 KB of theme HTML).
+            try:
+                pb, _, _ = http_get(SCCAOR_STATS_JSON, accept="application/json")
+                pages = json.loads(pb)
+                listed = sccaor_index_links(pages[0]["content"]["rendered"]) if pages else {}
+                via = "page unreadable (%s), read via its WordPress JSON copy:" % e
+            except (SourceError, ValueError, KeyError) as e2:
+                raise SourceError("housing-stats page FAILED (%s); JSON copy FAILED (%s)" % (e, e2))
         if not listed:
             raise SourceError("no monthly PDF links on the SCCAOR housing-stats page")
-        status.append("housing-stats page OK (%d monthly PDFs %s..%s)" % (len(listed), min(listed), max(listed)))
+        status.append("housing-stats %s OK (%d monthly PDFs %s..%s)" % (via, len(listed), min(listed), max(listed)))
         months = sorted(listed, reverse=True)
         if not backfill:
             months = months[:SCCAOR_RECENT]
@@ -672,28 +749,36 @@ def sccaor_months(backfill=False):
         if not pdftotext:
             status.append("PDFs FAILED (pdftotext is not installed)")
         else:
-            for m in sorted(cands, reverse=True):
-                got = None
-                for url in cands[m]:
-                    try:
-                        blob, _, ctype = http_get(url, attempts=1)
-                    except SourceError:
-                        continue
-                    if not blob.startswith(b"%PDF"):
-                        continue
-                    try:
-                        pm, rec = parse_sccaor_pdf_text(pdf_text(blob, pdftotext))
-                    except SourceError as e:
-                        bad.append("%s (%s)" % (m, e)); got = False; break
-                    if pm != m:
-                        bad.append("%s (PDF is for %s)" % (m, pm)); got = False; break
-                    rec["source_url"] = url
-                    got = rec
-                    break
-                if got:
-                    out[m] = got
-                elif got is None:
-                    missing.append(m)
+            again = []
+            for rnd in (1, 2):             # round 2: months whose download broke in round 1, once more
+                for m in (sorted(cands, reverse=True) if rnd == 1 else again):
+                    got, errs = None, []
+                    for url in cands[m]:
+                        try:
+                            blob, _, ctype = http_get(url)       # 404s (wrong guessed path) are not retried
+                        except SourceError as e:
+                            if str(e) != "HTTP 404":
+                                errs.append(str(e))
+                            continue
+                        if not blob.startswith(b"%PDF"):
+                            continue
+                        try:
+                            pm, rec = parse_sccaor_pdf_text(pdf_text(blob, pdftotext))
+                        except SourceError as e:
+                            bad.append("%s (%s)" % (m, e)); got = False; break
+                        if pm != m:
+                            bad.append("%s (PDF is for %s)" % (m, pm)); got = False; break
+                        rec["source_url"] = url
+                        got = rec
+                        break
+                    if got:
+                        out[m] = got
+                    elif got is None and errs and rnd == 1:
+                        again.append(m)
+                    elif got is None and errs:
+                        bad.append("%s (%s)" % (m, errs[-1]))
+                    elif got is None:
+                        missing.append(m)
             status.append("%d monthly PDFs parsed" % len(out))
             if missing:
                 status.append("no PDF found for %s" % ", ".join(sorted(missing)))
@@ -708,8 +793,9 @@ def sccaor_months(backfill=False):
             checked = []
             for p in posts:
                 try:
-                    hb, _, _ = http_get(p["link"], accept="text/html")
-                    pm, prec = parse_sccaor_post_html(hb.decode("utf-8", "replace"))
+                    # the post's own title + body from the REST API (the rendered page wraps the
+                    # same text in ~100 KB of theme HTML); same parser either way
+                    pm, prec = parse_sccaor_post_html("<h1>%s</h1>%s" % (p["title"]["rendered"], (p.get("content") or {}).get("rendered", "")))
                 except SourceError as e:
                     status.append("post FAILED %s (%s)" % (p.get("link"), e)); continue
                 if pm in out:
@@ -883,6 +969,13 @@ def new_only(rows, latest_as_of):
 
 
 # ---------------------------------------------------------------- per-dial fetch
+# zhvi_scc_drawdown's transform is still named "drawdown_from_2026_peak" in the config,
+# but the authored scored_object.reference_peak (rule: the series' all-time high; Jan
+# 2025, "the Jan 2026 local high is NOT the reference") defines the peak. Both names
+# read the configured reference peak; the config label is left for the owner to rename.
+REFERENCE_PEAK_TRANSFORMS = ("drawdown_from_reference_peak", "drawdown_from_2026_peak")
+
+
 def fetch_dial(dial, cfg, backfill=False):
     """-> (rows [(date, value)], source_url, note, extras {as_of: {"source_url"?, "raw"?}}).
     backfill=True reads the full public archive for the monthly-release sources
@@ -913,7 +1006,7 @@ def fetch_dial(dial, cfg, backfill=False):
         rows = zillow_county(fname)
         if tr == "yoy_pct":
             rows = yoy_pct(rows)
-        elif tr == "drawdown_from_reference_peak":
+        elif tr in REFERENCE_PEAK_TRANSFORMS:
             ref = cfg["scored_object"]["reference_peak"]
             seen = dict((d[:7], v) for d, v in rows).get(ref["month"])
             rows = drawdown_from_fixed(rows, ref["value"], since=ref["month"] + "-01")
@@ -935,7 +1028,7 @@ def fetch_dial(dial, cfg, backfill=False):
         try:
             stooq_probe(); note.append("stooq OK")
         except SourceError as e:
-            note.append("stooq FAILED (%s); using Nasdaq API" % e)
+            note.append("stooq unusable (%s); using Nasdaq API" % e)
         series, missing = {}, []
         for s in BASKET:
             try:

@@ -1653,7 +1653,7 @@
     },
     {
       "id": "zhvi_scc_drawdown",
-      "name": "SCC ZHVI drawdown from the reference peak (the scored scenario object)",
+      "name": "SCC ZHVI drawdown from its 2026 peak (the scored scenario object)",
       "cadence": "monthly",
       "category": "local_housing",
       "source": {
@@ -1661,8 +1661,8 @@
         "url": "https://files.zillowstatic.com/research/public_csvs/zhvi/County_zhvi_uc_sfrcondo_tier_0.33_0.67_sm_sa_month.csv"
       },
       "fetch": "zillow_csv",
-      "units": "% from reference peak (scored_object.reference_peak)",
-      "transform": "drawdown_from_reference_peak",
+      "units": "% from 2026 peak",
+      "transform": "drawdown_from_2026_peak",
       "direction_map": {
         "up": "bull",
         "down": "bear"
@@ -1672,7 +1672,7 @@
       "has_history": true,
       "votes": true,
       "geography": "scc",
-      "notes": "Partition: bull shallower than -8%, base -8% to -15%, bear -15% or worse (through Dec 2028). Reference peak = the series' all-time high, fixed in scored_object.reference_peak (Jan 2025 = $1,630,177)."
+      "notes": "Partition: bull shallower than -8%, base -8% to -15%, bear -15% or worse (through Dec 2028). Peak month fixed at the shakedown."
     },
     {
       "id": "zhvi_scc_top_yoy",
@@ -2056,59 +2056,6 @@
       "notes": "C26. Panel geography. Value = C.A.R.'s published Price YTY% Chg for San Francisco (public monthly release pages)."
     },
     {
-      "id": "car_scc_sfr_median_dom",
-      "name": "C.A.R. Santa Clara County SFR median time on market",
-      "cadence": "monthly",
-      "category": "local_housing",
-      "source": {
-        "name": "C.A.R. monthly home sales and price news release (Median Time on Market table)",
-        "url": "https://www.car.org/aboutus/mediacenter/newsreleases",
-        "county": "Santa Clara",
-        "field": "median_dom"
-      },
-      "fetch": "car_html",
-      "units": "days",
-      "transform": "level",
-      "direction_map": {
-        "up": "bear",
-        "down": "bull"
-      },
-      "band_rule": "corridor",
-      "corridor": {
-        "display_only": true
-      },
-      "has_history": true,
-      "votes": false,
-      "geography": "scc",
-      "notes": "Context only (realtor_dom_scc votes). raw carries C.A.R.'s Unsold Inventory Index for the county."
-    },
-    {
-      "id": "sccaor_scc_sfr_avg_dom",
-      "name": "SCCAOR Santa Clara County SFR average days on market",
-      "cadence": "monthly",
-      "category": "local_housing",
-      "source": {
-        "name": "SCCAOR monthly housing statistics (Single Family Residence summary row)",
-        "url": "https://www.sccaor.com/housing-stats/",
-        "field": "avg_dom"
-      },
-      "fetch": "sccaor_html",
-      "units": "days",
-      "transform": "level",
-      "direction_map": {
-        "up": "bear",
-        "down": "bull"
-      },
-      "band_rule": "corridor",
-      "corridor": {
-        "display_only": true
-      },
-      "has_history": true,
-      "votes": false,
-      "geography": "scc",
-      "notes": "Context only (realtor_dom_scc votes)."
-    },
-    {
       "id": "scc_months_supply",
       "name": "SCC months of supply (Realtor.com actives / C.A.R. closed SFR sales)",
       "cadence": "monthly",
@@ -2134,7 +2081,7 @@
       "has_history": true,
       "votes": true,
       "geography": "scc",
-      "notes": "C19 as written: Realtor.com actives (all listing types) / SFR closed sales. raw also carries SCCAOR's SFR-only inventory / SFR sales for comparison (C.A.R.'s Unsold Inventory Index is in car_scc_sfr_median_dom's raw)."
+      "notes": "C19 as written: Realtor.com actives (all listing types) / SFR closed sales. raw also carries SCCAOR's SFR-only inventory / SFR sales for comparison (C.A.R.'s Unsold Inventory Index and median time on market are in car_scc_sfr_median's raw)."
     },
     {
       "id": "scc_nod_count",

@@ -106,39 +106,56 @@ def run(cfg, db=None, only=None, fetch=None, today=None):
     cal_dates, cal_ids = calendar_index(calendar)
     known = db.dial_ids() if db else None
     results = []
-    for d in collectable(cfg, only):
+    dials = collectable(cfg, only)
+    for d in dials:
         r = {"dial": d, "status": "OK", "reason": None, "series": [], "note_row": None, "cal_ids": cal_ids.get(d["id"], set())}
         results.append(r)
-        if known is not None and d["id"] not in known:
-            r["status"], r["reason"] = "SKIPPED", "dial not in cycle_dials (run sync-registry.py --write)"
-            continue
-        try:
-            rows, url, note, extras = fetch(d, cfg)
-            if not rows:
-                raise S.SourceError("parsed 0 rows")
-        except S.SourceError as e:
-            r["status"], r["reason"] = "FAILED", str(e)
-            continue
-        r.update(source_url=url, source_note=note, extras=extras)
-        for variant, vrows in [("", rows)] + S.corridor_variants(d, rows):
-            if isinstance(vrows, Exception):
-                r["series"].append({"variant": variant, "error": str(vrows)})
-                continue
-            latest = db.latest(d["id"], variant) if db else None
-            r["series"].append({"variant": variant, "rows": vrows, "latest_stored": latest,
-                                "new": [x for x in S.new_only(vrows, latest) if x[0][:10] >= S.STORE_SINCE]})
-        if d["id"] in cal_ids:
-            base = r["series"][0]
-            txt = S.release_note(d, base["rows"], base["new"], cal_dates.get(d["id"], []), base["latest_stored"])
-            if txt:
-                r["note_row"] = {"date": today, "dial_id": d["id"], "text": txt, "kind": "release"}
+        collect_one(r, d, cfg, db, fetch, known, cal_ids, cal_dates, today)
+    again = [r for r in results if r["status"] == "FAILED"]
+    if again:
+        # a dropped connection can outlast one dial's retries: ask each failed source once more
+        S.forget_failures()
+        for r in again:
+            r.update(status="OK", reason=None, series=[], note_row=None)
+            collect_one(r, r["dial"], cfg, db, fetch, known, cal_ids, cal_dates, today)
     return results
+
+
+def collect_one(r, d, cfg, db, fetch, known, cal_ids, cal_dates, today):
+    """Fetch one dial into result r (status, series with new-only readings, release note)."""
+    if known is not None and d["id"] not in known:
+        r["status"], r["reason"] = "SKIPPED", "dial not in cycle_dials (run sync-registry.py --write)"
+        return
+    try:
+        rows, url, note, extras = fetch(d, cfg)
+        if not rows:
+            raise S.SourceError("parsed 0 rows")
+    except S.SourceError as e:
+        r["status"], r["reason"] = "FAILED", str(e)
+        return
+    r.update(source_url=url, source_note=note, extras=extras)
+    if "FAILED" in (note or ""):
+        # some pages/files of a multi-page source failed (C.A.R. index, a SCCAOR PDF,
+        # an EDD file): readings that did parse are kept; the failure is reported.
+        r["status"], r["reason"] = "PARTIAL", note
+    for variant, vrows in [("", rows)] + S.corridor_variants(d, rows):
+        if isinstance(vrows, Exception):
+            r["series"].append({"variant": variant, "error": str(vrows)})
+            continue
+        latest = db.latest(d["id"], variant) if db else None
+        r["series"].append({"variant": variant, "rows": vrows, "latest_stored": latest,
+                            "new": [x for x in S.new_only(vrows, latest) if x[0][:10] >= S.STORE_SINCE]})
+    if d["id"] in cal_ids:
+        base = r["series"][0]
+        txt = S.release_note(d, base["rows"], base["new"], cal_dates.get(d["id"], []), base["latest_stored"])
+        if txt:
+            r["note_row"] = {"date": today, "dial_id": d["id"], "text": txt, "kind": "release"}
 
 
 def new_reading_rows(results):
     out = []
     for r in results:
-        if r["status"] != "OK":
+        if r["status"] not in ("OK", "PARTIAL"):
             continue
         for s in r["series"]:
             if "new" in s:
@@ -151,7 +168,7 @@ def print_report(results, dry):
     print("%-42s %-8s %6s  %-14s %s" % ("dial", "status", "new", "latest value", "as_of"))
     for r in results:
         did = r["dial"]["id"]
-        if r["status"] != "OK":
+        if r["status"] not in ("OK", "PARTIAL"):
             print("%-42s %-8s %6s  %-14s %s" % (did, r["status"], "-", "-", "-"))
             continue
         for s in r["series"]:
@@ -160,17 +177,17 @@ def print_report(results, dry):
                 print("%-42s %-8s %6s  %-14s %s" % (name[:42], "FAILED", "-", "-", "-"))
                 continue
             ld, lv = s["rows"][-1] if s["rows"] else ("-", None)
-            print("%-42s %-8s %6d  %-14s %s" % (name[:42], "OK", len(s["new"]), fmt(lv), ld[:10]))
+            print("%-42s %-8s %6d  %-14s %s" % (name[:42], r["status"] if not s["variant"] else "OK", len(s["new"]), fmt(lv), ld[:10]))
     if dry:
         print("\nLATEST %d NEW READINGS PER DIAL (dry run: nothing assumed stored)" % SHOW_LATEST)
         for r in results:
-            for s in r["series"] if r["status"] == "OK" else []:
+            for s in r["series"] if r["status"] in ("OK", "PARTIAL") else []:
                 if s.get("new"):
                     name = r["dial"]["id"] + ("#" + s["variant"] if s["variant"] else "")
                     print("  %-44s %s" % (name, "  ".join("%s=%s" % (d[:10], fmt(v)) for d, v in s["new"][-SHOW_LATEST:])))
-    bad = [r for r in results if r["status"] in ("FAILED", "SKIPPED")] + \
+    bad = [r for r in results if r["status"] in ("FAILED", "PARTIAL", "SKIPPED")] + \
           [dict(r, status="FAILED", reason="variant %s: %s" % (s["variant"], s["error"])) for r in results for s in r["series"] if "error" in s]
-    print("\nFAILED / SKIPPED SOURCES: %s" % ("none" if not bad else ""))
+    print("\nFAILED / PARTIAL / SKIPPED SOURCES: %s" % ("none" if not bad else ""))
     for r in bad:
         print("  %-36s %s: %s" % (r["dial"]["id"], r["status"], r["reason"]))
     notes = [r["note_row"] for r in results if r["note_row"]]
@@ -178,8 +195,9 @@ def print_report(results, dry):
     for n in notes:
         print("  [%s] %s" % (n["dial_id"], n["text"]))
     ok = sum(1 for r in results if r["status"] == "OK")
-    print("\n%d dials: %d OK, %d FAILED, %d SKIPPED; %d new readings (incl. variants)" % (
-        len(results), ok, sum(1 for r in results if r["status"] == "FAILED"), sum(1 for r in results if r["status"] == "SKIPPED"),
+    print("\n%d dials: %d OK, %d PARTIAL, %d FAILED, %d SKIPPED; %d new readings (incl. variants)" % (
+        len(results), ok, sum(1 for r in results if r["status"] == "PARTIAL"), sum(1 for r in results if r["status"] == "FAILED"),
+        sum(1 for r in results if r["status"] == "SKIPPED"),
         sum(len(s.get("new", [])) for r in results for s in r["series"])))
     return bad, notes
 
