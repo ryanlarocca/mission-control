@@ -122,12 +122,14 @@ describe("parseMoney — numbers as input", () => {
     expect(parseMoney(-Infinity)).toBeNull()
   })
 
-  it("NOTE: numbers skip the under-1,000 rule that strings get", () => {
-    // NOTE: the string "1.2" is null (ambiguous), but the number 1.2 is
-    // accepted as $1.20. Current behavior, documented here; not changed.
-    expect(parseMoney(1.2)).toBe(1.2)
-    expect(parseMoney(500)).toBe(500)
+  it("numbers follow the same under-1,000 rule as strings (1.2 must never become $1.20)", () => {
+    expect(parseMoney(1.2)).toBeNull()
+    expect(parseMoney("1.2")).toBeNull()
+    expect(parseMoney(500)).toBeNull()
     expect(parseMoney("500")).toBeNull()
+    expect(parseMoney(999.99)).toBeNull()
+    expect(parseMoney(1000)).toBe(1000)
+    expect(parseMoney(1_200_000)).toBe(1_200_000)
   })
 })
 

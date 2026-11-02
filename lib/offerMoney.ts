@@ -10,11 +10,14 @@
  *   1.52M · 1.52mm · $1.52 million · 1.2 mil · 1520k · 10 thousand ·
  *   1,520,000 · 1520000 · $10,000 · 1,520,000.00
  * Returns null for anything else — percentages ("2.5%"), words, and bare
- * numbers under 1,000 with no suffix ("1.2" could be 1.2M or $1.20: ask).
+ * numbers under 1,000 with no suffix, typed or numeric ("1.2" or 1.2 could be
+ * 1.2M or $1.20: ask).
  */
 export function parseMoney(raw: string | number | null | undefined): number | null {
   if (raw === null || raw === undefined) return null
-  if (typeof raw === "number") return Number.isFinite(raw) && raw > 0 ? round2(raw) : null
+  // Numbers follow the same under-1,000 rule as text: a bare 1.2 is ambiguous
+  // ($1.20 or 1.2M), so it comes back null and the bot asks.
+  if (typeof raw === "number") return Number.isFinite(raw) && raw >= 1000 ? round2(raw) : null
   let s = String(raw).trim().toLowerCase()
   if (!s) return null
   if (s.includes("%")) return null
