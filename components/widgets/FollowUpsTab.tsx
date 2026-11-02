@@ -197,7 +197,7 @@ function prepareSkipLabel(body: { outcome?: string; reason?: string }): string {
 
 // ---- on-call pins ---------------------------------------------------------
 // Tapping Call registers the touch server-side right away (drip skipped,
-// follow-up consumed), so the next refetch drops the contact — the card
+// follow-up consumed), so the next refetch reschedules or drops the contact — the card
 // vanished while Ryan was still dialing and he had to hunt for them in Leads
 // (2026-11-02). A placed call now pins a snapshot of the card where it was,
 // showing the line the lead sees, until Ryan taps End call. Kept in
@@ -218,16 +218,15 @@ function loadOnCallPins(): Record<string, OnCallPin> {
   }
 }
 
-// Re-insert pinned rows the server no longer returns, at the index they held
-// in the previous list, so the card stays in place instead of jumping.
-function keepPinnedRows(next: ContactRow[], prev: ContactRow[] | undefined, pins: Record<string, OnCallPin>): ContactRow[] {
-  const out = [...next]
-  for (const [key, pin] of Object.entries(pins)) {
-    if (out.some(r => r.clusterKey === key)) continue
-    const at = prev ? prev.findIndex(r => r.clusterKey === key) : -1
-    out.splice(at >= 0 ? Math.min(at, out.length) : 0, 0, pin.row)
-  }
-  return out
+// While a card is pinned, its snapshot replaces whatever the server now says
+// about that contact. The call reschedules the next touch (a drip forecast
+// days out), so the fresh row moved to the collapsed "upcoming" section —
+// the card still vanished from where Ryan was looking (2026-11-02). The
+// snapshot keeps its old fields, so it buckets and sorts exactly as before.
+function keepPinnedRows(next: ContactRow[], pins: Record<string, OnCallPin>): ContactRow[] {
+  const pinned = Object.values(pins).map(p => p.row)
+  if (pinned.length === 0) return next
+  return [...next.filter(r => !pins[r.clusterKey]), ...pinned]
 }
 
 export function FollowUpsTab() {
@@ -272,7 +271,7 @@ export function FollowUpsTab() {
       if (handleSessionExpired(res)) return
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
       const payload = await res.json() as FollowUpsPayload
-      setData(prev => ({ ...payload, rows: keepPinnedRows(payload.rows, prev?.rows, onCallRef.current) }))
+      setData({ ...payload, rows: keepPinnedRows(payload.rows, onCallRef.current) })
       // Only clear the error banner on an explicit (non-silent) load —
       // initial mount or a manual Refresh. A SILENT refetch (the 30s poll,
       // or the refetch fired right after a send) must NOT wipe an action
