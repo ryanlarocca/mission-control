@@ -838,7 +838,7 @@ def write(sb, key, readings, snaps):
         rows.append({"dial_id": r["dial_id"], "as_of": r["as_of"], "value": r["value"], "source_url": r["source_url"],
                      "raw": json.dumps(dict(raw, n=r["n"]))})
     for i in range(0, len(rows), 500):
-        sb_req(sb, key, "POST", "cycle_readings?on_conflict=dial_id,as_of,source_url", rows[i:i + 500], prefer="resolution=merge-duplicates,return=minimal")
+        sb_req(sb, key, "POST", "cycle_readings?on_conflict=dial_id,variant,as_of,source_url", rows[i:i + 500], prefer="resolution=merge-duplicates,return=minimal")
     for i in range(0, len(snaps), 500):
         sb_req(sb, key, "POST", "cycle_listing_snapshots?on_conflict=mls,week", snaps[i:i + 500], prefer="resolution=merge-duplicates,return=minimal")
     print("\nWRITTEN: %d readings, %d listing snapshots" % (len(rows), len(snaps)))

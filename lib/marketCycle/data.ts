@@ -77,9 +77,12 @@ export async function loadFromSupabase(sb: SupabaseClient, today: string = today
   const recentSince = shiftDays(today, -400)
   const seasonalSince = shiftDays(today, -6 * 366)
   const sel = "dial_id, as_of, value, source_url, raw"
+  // Base series only (variant ''). collect-macro/bootstrap also store corridor variants
+  // (10d_avg, 2d_close, drawdowns) under the same dial_id; votes compute their own reads
+  // from the base prints, so a variant row here would be read as a second value that day.
   const [recent, older] = await Promise.all([
-    paginate<Reading>((a, b) => sb.from("cycle_readings").select(sel).gte("as_of", recentSince).lte("as_of", today).order("as_of").order("id").range(a, b)),
-    paginate<Reading>((a, b) => sb.from("cycle_readings").select(sel).in("dial_id", seasonalIds).gte("as_of", seasonalSince).lt("as_of", recentSince).order("as_of").order("id").range(a, b)),
+    paginate<Reading>((a, b) => sb.from("cycle_readings").select(sel).eq("variant", "").gte("as_of", recentSince).lte("as_of", today).order("as_of").order("id").range(a, b)),
+    paginate<Reading>((a, b) => sb.from("cycle_readings").select(sel).eq("variant", "").in("dial_id", seasonalIds).gte("as_of", seasonalSince).lt("as_of", recentSince).order("as_of").order("id").range(a, b)),
   ])
 
   const [claims, checkpoints, weightMoves, calendar, owned, events, notes] = await Promise.all([

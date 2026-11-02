@@ -263,7 +263,7 @@ def live_inputs(cfg, env, today):
         sys.exit("LRG_SUPABASE_URL / LRG_SUPABASE_SERVICE_KEY missing")
     ids = sorted({t["dial_id"] for t in cfg["tripwires"]["big"] if t["dial_id"]} | {"realtor_active_scc"})
     since = (today - dt.timedelta(days=430)).isoformat()
-    readings = sb_get_all(sb, key, "cycle_readings?select=dial_id,as_of,value,source_url,raw&dial_id=in.(%s)&as_of=gte.%s&order=as_of.asc,id.asc"
+    readings = sb_get_all(sb, key, "cycle_readings?select=dial_id,as_of,value,source_url,raw&variant=eq.&dial_id=in.(%s)&as_of=gte.%s&order=as_of.asc,id.asc"
                           % (",".join(ids), since))
     events = sb_get_all(sb, key, "cycle_tripwire_events?select=tripwire_id,fired_on&order=id.asc")
     return readings, events, sb, key
@@ -304,7 +304,7 @@ def record_manual(cfg, a, env):
     print(json.dumps(row, ensure_ascii=False))
     if a.write:
         sb, key = env.get("LRG_SUPABASE_URL"), env.get("LRG_SUPABASE_SERVICE_KEY")
-        sb_req(sb, key, "POST", "cycle_readings?on_conflict=dial_id,as_of,source_url", [row], prefer="resolution=merge-duplicates,return=minimal")
+        sb_req(sb, key, "POST", "cycle_readings?on_conflict=dial_id,variant,as_of,source_url", [row], prefer="resolution=merge-duplicates,return=minimal")
         print("inserted")
     else:
         print("dry run: add --write to insert")
