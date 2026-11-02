@@ -1546,6 +1546,7 @@ function ContactCard({ row, ...h }: { row: ContactRow } & CardHandlers) {
           row={row} touch={dripTouch} acting={acting} hasCallAbove={!!callTouch}
           editDraft={dripTouch.queueId ? h.editing.get(dripTouch.queueId) ?? null : null}
           onOpenLead={() => h.onOpenLead(row)}
+          onCall={() => h.onCall(row)}
           onSend={(opts) => dripTouch.queueId && h.onSendDrip(row, dripTouch.queueId, opts)}
           onRegenerate={() => dripTouch.queueId && h.onRegenerateDrip(row, dripTouch.queueId)}
           onRedraft={(why) => dripTouch.queueId && h.onRedraftDrip(row, dripTouch.queueId, why)}
@@ -1698,7 +1699,7 @@ function CallBlock({
 
 function DripBlock({
   row, touch, acting, hasCallAbove, editDraft,
-  onOpenLead, onSend, onRegenerate, onRedraft, onCoach, coachRead, onSkip, onSnooze,
+  onOpenLead, onCall, onSend, onRegenerate, onRedraft, onCoach, coachRead, onSkip, onSnooze,
   onStartEdit, onChangeEdit, onCancelEdit, onSaveEdit,
   onPrepare, onSkipForecast,
 }: {
@@ -1708,6 +1709,7 @@ function DripBlock({
   hasCallAbove: boolean
   editDraft: { message: string; subject: string } | null
   onOpenLead: () => void
+  onCall: () => void
   onSend: (opts?: { force?: boolean }) => void
   onRegenerate: () => void
   onRedraft: (why?: string) => void
@@ -1808,6 +1810,19 @@ function DripBlock({
 
       {/* actions */}
       <div className="mt-2 flex items-center gap-1.5 flex-wrap justify-end">
+        {/* A drip-only card (no follow-up call scheduled) had no way to
+            call — Ryan couldn't ring a historic seller straight from the
+            card (2026-11-02). When a CallBlock sits above, its Call covers it. */}
+        {row.phone && !hasCallAbove && !isEditing && (
+          <button
+            onClick={onCall}
+            disabled={acting}
+            title={`Call ${formatPhone(row.phone) ?? row.phone}`}
+            className="inline-flex items-center gap-1.5 px-2.5 py-1.5 min-h-[34px] rounded bg-emerald-900/30 border border-emerald-800/60 text-emerald-200 hover:bg-emerald-900/50 text-xs font-medium transition-colors disabled:opacity-60"
+          >
+            <PhoneOutgoing className="w-3.5 h-3.5" /> Call
+          </button>
+        )}
         {touch.isQueued && !isEditing && (
           <>
             <button
