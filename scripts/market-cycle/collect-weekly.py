@@ -796,7 +796,7 @@ def main():
 # Dials this collector creates on the fly. Panels, owned zips and listed properties are
 # context, never votes (brief §3.4), and owned zips / listed properties come and go with
 # the registry, so they can't live in the static thesis config. Registered display-only.
-AUTO_DIAL_RE = re.compile(r"^(mls_panel_[a-z_]+|mls_zip_\d{5}_[a-z0-9_]+|listed_[a-z0-9_]+_pile_mentions_7d|scc_nod_filings_monthly)$")
+AUTO_DIAL_RE = re.compile(r"^(mls_panel_[a-z0-9_]+|mls_zip_\d{5}_[a-z0-9_]+|listed_[a-z0-9_]+_pile_mentions_7d|scc_nod_filings_monthly)$")
 METRIC_UP = {"active_sfr": "bear", "pending_ratio": "bull", "new_listings_7d": "bear", "median_dos": "bear",
              "price_cut_share": "bear", "withdrawn_share": "bear", "list_to_sale": "bull", "sold_ppsf_90d": "bull",
              "home_value_est": "bull", "nod_filings_month": "bear"}
