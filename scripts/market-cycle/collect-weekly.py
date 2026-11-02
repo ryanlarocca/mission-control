@@ -527,8 +527,9 @@ def geo_readings(prefix, label, cards_buy, cards_sold, kind, as_of, today, first
     add("median_dos", median([c["days_on_site"] for c in act]), len(act), {"status": "OK"})
     pc = price_cut_share(act, first_seen, last_week)
     first_run = pc["with_history"] == 0
-    add("price_cut_share", pc["share_first"], pc["n"], {"status": "OK", **pc,
-        "note": "first run: no earlier snapshot, 0 by construction" if first_run else "share of actives below their first recorded price"})
+    # No earlier snapshot = no measurement. Store null (NO_HISTORY), never a 0 the review could read as "nobody is cutting".
+    add("price_cut_share", None if first_run else pc["share_first"], pc["n"], {"status": "NO_HISTORY" if first_run else "OK", **pc,
+        "note": "first run: no earlier snapshot to compare against" if first_run else "share of actives below their first recorded price"})
     pr_geo = [r for r in prior_rows if f(r.get("type"))]
     ws, wd = withdrawn_relist(act, all_buy_mls, all_sold_mls, pr_geo)
     add("withdrawn_share", ws, wd["prior_actives"], {"status": "OK" if ws is not None else "NO_HISTORY", **wd,
@@ -545,8 +546,8 @@ def geo_readings(prefix, label, cards_buy, cards_sold, kind, as_of, today, first
             r["secs"] = secs
             out.append(r)
             tpc = price_cut_share(ta, first_seen, last_week)
-            r = R("%s_tier_%s_price_cut_share" % (prefix, t["id"]), as_of, tpc["share_first"], tpc["n"], MLS_URL, label + " " + t["label"], "price_cut_share",
-                  {"status": "OK", **tpc, "note": "first run: 0 by construction" if tpc["with_history"] == 0 else None})
+            r = R("%s_tier_%s_price_cut_share" % (prefix, t["id"]), as_of, None if tpc["with_history"] == 0 else tpc["share_first"], tpc["n"], MLS_URL, label + " " + t["label"], "price_cut_share",
+                  {"status": "NO_HISTORY" if tpc["with_history"] == 0 else "OK", **tpc, "note": "first run: no earlier snapshot" if tpc["with_history"] == 0 else None})
             r["secs"] = secs
             out.append(r)
     return out
@@ -565,8 +566,8 @@ def zip_readings(z, all_buy, all_sold, as_of, today, first_seen, last_week, home
     out.append(R(pfx + "active_sfr", as_of, len(act), len(act), MLS_URL, "zip " + z, "active_sfr", {"status": "OK"}))
     out.append(R(pfx + "median_dos", as_of, median([c["days_on_site"] for c in act]), len(act), MLS_URL, "zip " + z, "median_dos", {"status": "OK"}))
     pc = price_cut_share(act, first_seen, last_week)
-    out.append(R(pfx + "price_cut_share", as_of, pc["share_first"], pc["n"], MLS_URL, "zip " + z, "price_cut_share",
-                 {"status": "OK", **pc, "note": "first run: 0 by construction" if pc["with_history"] == 0 else None}))
+    out.append(R(pfx + "price_cut_share", as_of, None if pc["with_history"] == 0 else pc["share_first"], pc["n"], MLS_URL, "zip " + z, "price_cut_share",
+                 {"status": "NO_HISTORY" if pc["with_history"] == 0 else "OK", **pc, "note": "first run: no earlier snapshot" if pc["with_history"] == 0 else None}))
     ppsf, n = sold_ppsf(solds)
     dates = [c["sold_date"] for c in solds]
     out.append(R(pfx + "sold_ppsf_90d", as_of, ppsf, n, MLS_URL, "zip " + z, "sold_ppsf_90d",
@@ -712,7 +713,7 @@ def main():
     last_week = {r["mls"]: r["price"] for r in prior_rows}
     first_seen = {r["mls"]: (r.get("first_seen_price") or r["price"]) for r in prior_rows}
     first_seen.update({k: v for k, v in first_extra.items() if k not in first_seen})
-    print("\nprior snapshot: %s — %d rows%s" % (src, len(prior_rows), "" if prior_rows else " → price-cut share is 0 by construction this run; withdrawn and list-to-sale need history"))
+    print("\nprior snapshot: %s — %d rows%s" % (src, len(prior_rows), "" if prior_rows else " → price-cut share, withdrawn and list-to-sale need history (stored as NO_HISTORY, not 0)"))
 
     all_buy_mls = {c["mls"] for c in all_buy}
     all_sold_mls = {c["mls"] for c in all_sold}
@@ -777,9 +778,41 @@ def main():
         sys.exit(1)
 
 
+# Dials this collector creates on the fly. Panels, owned zips and listed properties are
+# context, never votes (brief §3.4), and owned zips / listed properties come and go with
+# the registry, so they can't live in the static thesis config. Registered display-only.
+AUTO_DIAL_RE = re.compile(r"^(mls_panel_[a-z_]+|mls_zip_\d{5}_[a-z0-9_]+|listed_[a-z0-9_]+_pile_mentions_7d|scc_nod_filings_monthly)$")
+METRIC_UP = {"active_sfr": "bear", "pending_ratio": "bull", "new_listings_7d": "bear", "median_dos": "bear",
+             "price_cut_share": "bear", "withdrawn_share": "bear", "list_to_sale": "bull", "sold_ppsf_90d": "bull",
+             "home_value_est": "bull", "nod_filings_month": "bear"}
+FLIP = {"bear": "bull", "bull": "bear", "neutral": "neutral"}
+
+
+def auto_dial_row(r):
+    did = r["dial_id"]
+    if did.startswith("listed_"):
+        cat, geo, up = "owned_property", r.get("geography"), "neutral"
+    elif did.startswith("mls_zip_"):
+        cat, geo, up = "owned_property", "zip " + did.split("_")[2], "neutral"
+    elif did == "scc_nod_filings_monthly":
+        cat, geo, up = "local_housing", "SCC", "bear"
+    else:
+        cat, geo, up = "local_housing", r.get("geography"), METRIC_UP.get(r.get("metric"), "neutral")
+    return {"id": did, "name": "%s %s" % (r.get("geography") or did, r.get("metric") or ""), "cadence": "monthly" if did == "scc_nod_filings_monthly" else "weekly",
+            "category": cat, "source": {"name": "collect-weekly.py", "url": r["source_url"]}, "fetch_method": "pile" if did.startswith("listed_") else ("web" if did.startswith("scc_nod") else "mlslistings"),
+            "units": None, "transform": "level", "direction_map": {"up": up, "down": FLIP[up]}, "band_rule": "corridor",
+            "corridor": {"note": "auto-registered by collect-weekly.py; context only"}, "has_history": False, "votes": False, "geography": geo,
+            "notes": "auto-registered (dynamic dial)"}
+
+
 def write(sb, key, readings, snaps):
     known = {d["id"] for d in sb_get_all(sb, key, "cycle_dials?select=id&order=id")}
     rows, skipped = [], {}
+    new_dials = {r["dial_id"]: auto_dial_row(r) for r in readings if r["dial_id"] not in known and AUTO_DIAL_RE.match(r["dial_id"])}
+    if new_dials:
+        sb_req(sb, key, "POST", "cycle_dials?on_conflict=id", list(new_dials.values()), prefer="resolution=ignore-duplicates,return=minimal")
+        known |= set(new_dials)
+        print("REGISTERED %d dynamic dials (display-only): %s" % (len(new_dials), ", ".join(sorted(new_dials))))
     for r in readings:
         raw = r["raw"] if isinstance(r["raw"], dict) else {}
         if r["value"] is None and raw.get("status") not in ("FAILED", "SKIPPED"):

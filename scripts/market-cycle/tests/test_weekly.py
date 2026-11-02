@@ -246,3 +246,26 @@ class Tripwires(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+
+class TestAutoDials(unittest.TestCase):
+    """Dynamic dials (panels, owned zips, listed properties, NOD filings) register display-only."""
+
+    def test_patterns_and_rows(self):
+        R = cw.R
+        cases = [
+            (R("mls_panel_fremont_pending_ratio", "2026-11-01", 0.52, 163, "u", "fremont", "pending_ratio", {}), "local_housing", "bull"),
+            (R("mls_zip_95118_sold_ppsf_90d", "2026-11-01", 1084, 51, "u", "zip 95118", "sold_ppsf_90d", {}), "owned_property", "neutral"),
+            (R("listed_halleck_pile_mentions_7d", "2026-11-01", 5, 5, "pile:Halleck", "listed:Halleck", "pile_mentions_7d", {}), "owned_property", "neutral"),
+            (R("scc_nod_filings_monthly", "2026-10-31", 46, 1, "u", "SCC", "nod_filings_month", {}), "local_housing", "bear"),
+        ]
+        for r, cat, up in cases:
+            self.assertTrue(cw.AUTO_DIAL_RE.match(r["dial_id"]), r["dial_id"])
+            row = cw.auto_dial_row(r)
+            self.assertEqual(row["category"], cat)
+            self.assertEqual(row["direction_map"]["up"], up)
+            self.assertFalse(row["votes"])
+            self.assertEqual(row["band_rule"], "corridor")
+        for static in ("mls_scc_active_sfr", "realtor_active_scc", "ccc_oas"):
+            self.assertIsNone(cw.AUTO_DIAL_RE.match(static), static)
