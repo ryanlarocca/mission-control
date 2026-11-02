@@ -27,7 +27,7 @@ function handle(request: NextRequest): NextResponse {
   const callerId = request.nextUrl.searchParams.get("line") === "card" ? CARD_LINE : relationshipCallerId()
   return xml(`<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-  <Dial timeout="30" callerId="${callerId}" action="${statusUrl}" method="POST" record="record-from-answer" recordingStatusCallback="${recordingUrl}" recordingStatusCallbackMethod="POST">
+  <Dial timeout="30" callerId="${callerId}" action="${statusUrl}" method="POST" record="record-from-answer-dual" recordingStatusCallback="${recordingUrl}" recordingStatusCallbackMethod="POST">
     <Number>${to}</Number>
   </Dial>
 </Response>`)

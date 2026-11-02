@@ -53,6 +53,42 @@ export interface LeadCallResult {
   callerId?: string
 }
 
+// The line a lead's call rings out from and the number they see. Shared by
+// startLeadCall and the Sales Coach script (lib/coach) so the voicemail
+// script says the same number the lead's caller ID shows. Throws when no
+// Twilio line is configured at all.
+export async function resolveLeadCallerId(
+  sb: ReturnType<typeof getLeadsClient>,
+  leadPhone: string,
+): Promise<{ fromNumber: string; callerId: string }> {
+  let fromNumber = getTwilioNumber()
+  // Present the line the lead already knows. Voice caller ID has no A2P
+  // registration requirement, so any line we own is usable as-is.
+  try {
+    const line = await resolveReplyLine(sb, leadPhone)
+    if (line) fromNumber = line
+  } catch (e) {
+    console.error("[leads/call] reply-line lookup threw:", e)
+  }
+  // "My Cell" lead → present Ryan's verified cell to the lead. Checked by
+  // phone cluster, same as sendLeadSms' transport pick. The first leg (ring
+  // Ryan) still comes From the business line — Twilio can't dial his cell
+  // From his own cell.
+  let callerId = fromNumber
+  try {
+    const { data: pcRows } = await sb
+      .from("leads")
+      .select("id")
+      .eq("caller_phone", leadPhone)
+      .eq("use_personal_cell", true)
+      .limit(1)
+    if (pcRows && pcRows.length > 0) callerId = relationshipCallerId()
+  } catch (e) {
+    console.error("[leads/call] personal-cell check threw:", e)
+  }
+  return { fromNumber, callerId }
+}
+
 export async function startLeadCall(body: { phone?: unknown; source?: string | null }): Promise<LeadCallResult> {
   const phoneInput = body.phone
   if (!phoneInput || typeof phoneInput !== "string") {
@@ -79,35 +115,11 @@ export async function startLeadCall(body: { phone?: unknown; source?: string | n
     return { ok: false, status: 500, error: "TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN must be set" }
   }
   let fromNumber: string
+  let callerId: string
   try {
-    fromNumber = getTwilioNumber()
+    ;({ fromNumber, callerId } = await resolveLeadCallerId(getLeadsClient(), leadPhone))
   } catch (e) {
     return { ok: false, status: 500, error: e instanceof Error ? e.message : String(e) }
-  }
-  // Present the line the lead already knows. Voice caller ID has no A2P
-  // registration requirement, so any line we own is usable as-is.
-  try {
-    const line = await resolveReplyLine(getLeadsClient(), leadPhone)
-    if (line) fromNumber = line
-  } catch (e) {
-    console.error("[leads/call] reply-line lookup threw:", e)
-  }
-
-  // "My Cell" lead → present Ryan's verified cell to the lead. Checked by
-  // phone cluster, same as sendLeadSms' transport pick. The first leg (ring
-  // Ryan) still comes From the business line — Twilio can't dial his cell
-  // From his own cell.
-  let callerId = fromNumber
-  try {
-    const { data: pcRows } = await getLeadsClient()
-      .from("leads")
-      .select("id")
-      .eq("caller_phone", leadPhone)
-      .eq("use_personal_cell", true)
-      .limit(1)
-    if (pcRows && pcRows.length > 0) callerId = relationshipCallerId()
-  } catch (e) {
-    console.error("[leads/call] personal-cell check threw:", e)
   }
 
   // Insert the outbound call row first so we have a leadId to thread

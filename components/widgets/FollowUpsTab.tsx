@@ -5,8 +5,9 @@ import { isOnMarket, listingChipLabel, type LeadListing } from "@/lib/listing"
 import {
   Phone, PhoneOutgoing, PhoneOff, Bot, Mail, MessageSquare, Send, Pencil, X, Check,
   Clock, Loader2, RefreshCw, AlertTriangle, ChevronDown, ChevronRight,
-  Sparkles, SkipForward, Eye, ExternalLink, CalendarClock, Ban, ShieldOff,
+  Sparkles, SkipForward, Eye, ExternalLink, CalendarClock, Ban, ShieldOff, FileText,
 } from "lucide-react"
+import { CallScriptPanel } from "./CallScriptPanel"
 import { formatPhone } from "@/lib/utils"
 import { handleSessionExpired } from "@/lib/session-expired"
 import { splitLeadNotes, joinLeadNotes, ryanNotes } from "@/lib/lead-notes"
@@ -203,7 +204,9 @@ function prepareSkipLabel(body: { outcome?: string; reason?: string }): string {
 // showing the line the lead sees, until Ryan taps End call. Kept in
 // localStorage so a refresh mid-call doesn't lose it; pins expire after a
 // few hours in case End call is never tapped.
-interface OnCallPin { row: ContactRow; from: string | null; at: number }
+// `leadId` is the outbound call row /api/leads/call created — the script
+// panel saves the script on it so the post-call rater sees what was shown.
+interface OnCallPin { row: ContactRow; from: string | null; at: number; leadId?: string | null }
 const ON_CALL_KEY = "mc.followups.onCall"
 const ON_CALL_TTL_MS = 3 * 60 * 60 * 1000
 
@@ -610,7 +613,8 @@ export function FollowUpsTab() {
       const body = await res.json().catch(() => ({}))
       if (!res.ok || !body.success) throw new Error(body.error || `HTTP ${res.status}`)
       const from: string | null = body.callerId || body.from || null
-      updateOnCall(prev => ({ ...prev, [row.clusterKey]: { row, from, at: Date.now() } }))
+      const leadId: string | null = typeof body.leadId === "string" ? body.leadId : null
+      updateOnCall(prev => ({ ...prev, [row.clusterKey]: { row, from, at: Date.now(), leadId } }))
       showToast(from ? `Calling from ${formatPhone(from) ?? from}` : "Calling — ringing your cell")
     } catch (e) {
       setErr(`Call failed: ${e instanceof Error ? e.message : String(e)}`)
@@ -1538,6 +1542,13 @@ function ContactCard({ row, ...h }: { row: ContactRow } & CardHandlers) {
   const temp = row.temperature ? TEMP_BADGE[row.temperature] : null
   const pin = h.onCall[row.clusterKey]
   const callingStrip = pin && row.phone ? <CallingFromStrip from={pin.from} onEnd={() => h.onEndCall(row)} /> : null
+  // Sales Coach script (CallScriptPanel): opens on its own when a call is
+  // placed (the card is pinned), or on the Script button before dialing.
+  const [scriptOpen, setScriptOpen] = useState(false)
+  useEffect(() => { if (pin) setScriptOpen(true) }, [pin])
+  const scriptPanel = row.phone && scriptOpen
+    ? <CallScriptPanel phone={row.phone} leadId={pin?.leadId ?? null} callerId={pin?.from ?? null} onClose={() => setScriptOpen(false)} />
+    : null
 
   return (
     <div className={`rounded-md border overflow-hidden ${pin ? "border-emerald-700/70 bg-emerald-950/10" : overdue ? "border-red-900/50 bg-red-950/20" : "border-zinc-800 bg-zinc-950"}`}>
@@ -1605,6 +1616,7 @@ function ContactCard({ row, ...h }: { row: ContactRow } & CardHandlers) {
           row={row} touch={callTouch} acting={acting}
           intervalOpen={h.intervalOpenFor === row.clusterKey}
           onCall={() => h.onPlaceCall(row)}
+          onScript={() => setScriptOpen(v => !v)}
           onSnooze={(d) => h.onSnoozeContact(row, d)}
           onDone={() => h.onDoneCall(row)}
           onPickInterval={(opt) => h.onPickInterval(row, opt)}
@@ -1637,6 +1649,7 @@ function ContactCard({ row, ...h }: { row: ContactRow } & CardHandlers) {
         />
       )}
       {!callTouch && callingStrip}
+      {scriptPanel}
     </div>
   )
 }
@@ -1669,13 +1682,14 @@ function ChannelIcon({ channel }: { channel: string }) {
 // ---- call block ----------------------------------------------------------
 
 function CallBlock({
-  row, touch, acting, intervalOpen, onCall, onSnooze, onDone, onPickInterval, onEmail, onText,
+  row, touch, acting, intervalOpen, onCall, onScript, onSnooze, onDone, onPickInterval, onEmail, onText,
 }: {
   row: ContactRow
   touch: NextTouch
   acting: boolean
   intervalOpen: boolean
   onCall: () => void
+  onScript: () => void
   onSnooze: (days: number) => void
   onDone: () => void
   onPickInterval: (opt: { key: string; label: string; days?: number; months?: number }) => void
@@ -1707,6 +1721,15 @@ function CallBlock({
       </div>
       {touch.reason && <div className="mt-1 text-xs text-zinc-400 italic">{stripOwedPrefix(touch.reason)}</div>}
       <div className="mt-2 flex items-center gap-1.5 flex-wrap justify-end">
+        {row.phone && (
+          <button
+            onClick={onScript}
+            title="Read the voicemail + live script before dialing"
+            className="inline-flex items-center gap-1.5 px-2.5 py-1.5 min-h-[34px] rounded bg-zinc-900 border border-zinc-700 hover:border-zinc-500 text-zinc-200 text-xs font-medium transition-colors"
+          >
+            <FileText className="w-3.5 h-3.5" /> Script
+          </button>
+        )}
         {row.phone && (
           <button
             onClick={onCall}

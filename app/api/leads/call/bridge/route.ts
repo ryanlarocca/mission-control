@@ -26,7 +26,7 @@ const PROD_BASE = "https://mission-control-three-chi.vercel.app"
 function buildTwiml(leadPhone: string, recordingUrl: string, statusUrl: string, callerId: string): string {
   return `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-  <Dial timeout="30" callerId="${callerId}" action="${statusUrl}" method="POST" record="record-from-answer" recordingStatusCallback="${recordingUrl}" recordingStatusCallbackMethod="POST">
+  <Dial timeout="30" callerId="${callerId}" action="${statusUrl}" method="POST" record="record-from-answer-dual" recordingStatusCallback="${recordingUrl}" recordingStatusCallbackMethod="POST">
     <Number>${leadPhone}</Number>
   </Dial>
 </Response>`

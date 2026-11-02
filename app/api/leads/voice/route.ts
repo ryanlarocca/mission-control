@@ -35,7 +35,7 @@ import { scoreLeadSpam, spamAlertLines, spamReviewColumns, type SpamScore } from
 // imperceptible to the caller. Telegram stays fire-and-forget after the
 // response since it's not load-bearing for the data layer.
 
-// `record="record-from-answer"` records both legs of the live call (silently —
+// `record="record-from-answer-dual"` records both legs of the live call (silently —
 // disclosure TwiML will be added later as a separate change). When the
 // recording is ready Twilio fires `recordingStatusCallback`, which hits the
 // same endpoint used for voicemails — that handler attaches recording_url +
@@ -56,7 +56,7 @@ function buildTwiml(callerId: string, screen: { leadId: string; callSid: string 
   if (!screen) {
     return `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-  <Dial timeout="12" action="/api/leads/voice/no-answer" method="POST" callerId="${callerId}" record="record-from-answer" recordingStatusCallback="${RECORDING_CALLBACK_URL}" recordingStatusCallbackMethod="POST">
+  <Dial timeout="12" action="/api/leads/voice/no-answer" method="POST" callerId="${callerId}" record="record-from-answer-dual" recordingStatusCallback="${RECORDING_CALLBACK_URL}" recordingStatusCallbackMethod="POST">
     <Number>${FORWARD_TO}</Number>
   </Dial>
 </Response>`
@@ -79,7 +79,7 @@ function buildRelationshipTwiml(callerId: string, touchId: string): string {
   const q = `?touchId=${encodeURIComponent(touchId)}`
   return `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-  <Dial timeout="12" action="${PROD_BASE}/api/crms/call/inbound${q}" method="POST" callerId="${callerId}" record="record-from-answer" recordingStatusCallback="${PROD_BASE}/api/crms/call/recording${q}" recordingStatusCallbackMethod="POST">
+  <Dial timeout="12" action="${PROD_BASE}/api/crms/call/inbound${q}" method="POST" callerId="${callerId}" record="record-from-answer-dual" recordingStatusCallback="${PROD_BASE}/api/crms/call/recording${q}" recordingStatusCallbackMethod="POST">
     <Number>${FORWARD_TO}</Number>
   </Dial>
 </Response>`

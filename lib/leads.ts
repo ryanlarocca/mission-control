@@ -1873,8 +1873,25 @@ export async function processRecordingBackground(args: {
     }
 
     let transcription: string | null = null
+    // Sales Coach (2026-11-02): <Dial> recordings are dual-channel now, so
+    // a live call or an outbound voicemail gets a speaker-separated
+    // "Ryan: / Lead:" transcript (lib/coach/transcript). Inbound <Record>
+    // voicemails are mono and Jackie's calls are hers, not Ryan's — those
+    // keep the mixed-track path. Any dual failure falls back to it too.
+    let separated = false
+    let talkRatio: number | null = null
     if (audio) {
-      transcription = await transcribeAudio(audio)
+      if (kind === "call" && !args.jackie) {
+        const { transcribeDualChannel } = await import("@/lib/coach/transcript")
+        const dual = await transcribeDualChannel({ mp3Url: fullUrl, ryanChannel: direction === "outbound" ? 0 : 1, otherLabel: "Lead" })
+        if (dual) {
+          transcription = dual.labeled
+          separated = true
+          const total = dual.ryanSec + dual.otherSec
+          talkRatio = total > 0 ? dual.ryanSec / total : null
+        }
+      }
+      if (!transcription) transcription = await transcribeAudio(audio)
       if (transcription && args.jackie) {
         const { JACKIE_TRANSCRIPT_PREFIX } = await import("@/lib/jackie")
         transcription = JACKIE_TRANSCRIPT_PREFIX + transcription
@@ -2094,6 +2111,18 @@ export async function processRecordingBackground(args: {
     if (transcription && leadId) {
       const { runAutoStatusForLead } = await import("@/lib/leadStatus")
       await runAutoStatusForLead(leadId)
+    }
+
+    // Sales Coach rating (lib/coach/rate): every call Ryan went into — his
+    // outbound calls (voicemail or conversation) and inbound calls he
+    // answered — gets a score + critique on Telegram and coach_rating on
+    // the row. Short calls and Jackie's are skipped inside. Never throws.
+    if (kind === "call" && !args.jackie && transcription && leadId) {
+      const { rateLeadCall } = await import("@/lib/coach/rate")
+      await rateLeadCall({
+        leadId, callerPhone, direction, transcript: transcription, separated, talkRatio,
+        durationSec: args.recordingDurationSec ?? null,
+      })
     }
 
     if (kind !== "voicemail") {

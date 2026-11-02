@@ -68,7 +68,7 @@ function cardDialTwiml(touchId: string, campaignContactId: string | null): strin
   const q = twimlAttr(`?touchId=${encodeURIComponent(touchId)}&line=agents${campaignContactId ? `&campaignContactId=${encodeURIComponent(campaignContactId)}` : ""}`)
   return `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-  <Dial timeout="20" action="/api/campaign/voice/status${q}" method="POST" callerId="${AGENTS_LINE}" record="record-from-answer" recordingStatusCallback="${PROD_BASE}/api/crms/call/recording${q}" recordingStatusCallbackMethod="POST">
+  <Dial timeout="20" action="/api/campaign/voice/status${q}" method="POST" callerId="${AGENTS_LINE}" record="record-from-answer-dual" recordingStatusCallback="${PROD_BASE}/api/crms/call/recording${q}" recordingStatusCallbackMethod="POST">
     <Number>${FORWARD_TO}</Number>
   </Dial>
 </Response>`

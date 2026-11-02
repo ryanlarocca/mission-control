@@ -9,6 +9,7 @@ import {
   Sparkles, PhoneOff, Ban, ShieldOff, Zap, Wand2, Pencil, Search, SlidersHorizontal,
   Maximize2, Hourglass, Smartphone, Copy,
 } from "lucide-react"
+import { CallScriptPanel } from "./CallScriptPanel"
 import {
   resolveNextTouch, describeTouchWhen, classifyUrgency, isOwedReason, stripOwedPrefix,
   type NextTouch, type NextTouchSummary,
@@ -571,7 +572,7 @@ export function LeadsTab() {
   // Last placed call: which card + the line the lead sees. Stays up (no
   // timeout) so Ryan can read the callback number off the card while he
   // leaves a voicemail (2026-11-02).
-  const [callSuccess, setCallSuccess]   = useState<{ phone: string; from: string | null } | null>(null)
+  const [callSuccess, setCallSuccess]   = useState<{ phone: string; from: string | null; leadId: string | null } | null>(null)
   const [phoneDraft, setPhoneDraft]     = useState<Record<string, string>>({})
   const [savingPhoneFor, setSavingPhoneFor] = useState<string | null>(null)
   const [phoneError, setPhoneError]     = useState<string | null>(null)
@@ -1153,7 +1154,7 @@ export function LeadsTab() {
       if (!res.ok || !data.success) {
         throw new Error(data.error || `HTTP ${res.status}`)
       }
-      setCallSuccess({ phone: group.phone, from: data.callerId || data.from || null })
+      setCallSuccess({ phone: group.phone, from: data.callerId || data.from || null, leadId: typeof data.leadId === "string" ? data.leadId : null })
       // Phase 7C — Part 5: clear any pending follow-up recommendation
       // since Ryan just acted on it. analyze-call will regenerate a new
       // recommendation from the recording's transcript when it lands.
@@ -1973,6 +1974,7 @@ export function LeadsTab() {
               callError={callingFor === null && callError && expandedPhone === group.phone ? callError : null}
               callSuccess={callSuccess?.phone === group.phone}
               callFrom={callSuccess?.phone === group.phone ? callSuccess.from : null}
+              callLeadId={callSuccess?.phone === group.phone ? callSuccess.leadId : null}
               phoneDraft={phoneDraft[group.phone] ?? ""}
               onEditPhoneDraft={(v) => setPhoneDraft(prev => ({ ...prev, [group.phone]: v }))}
               onSavePhone={() => addPhone(group, phoneDraft[group.phone] ?? "")}
@@ -2052,6 +2054,8 @@ interface LeadCardProps {
   callError: string | null
   callSuccess: boolean
   callFrom: string | null
+  // The outbound call row the Call just created (null before/without one).
+  callLeadId: string | null
   phoneDraft: string
   onEditPhoneDraft: (v: string) => void
   onSavePhone: () => void
@@ -2273,6 +2277,10 @@ function LeadCard(p: LeadCardProps) {
   const [mailRecord, setMailRecord] = useState<MailRecordLite | null>(null)
   const [mailRecordLoading, setMailRecordLoading] = useState(false)
   const [mailPickerOpen, setMailPickerOpen] = useState(false)
+  // Sales Coach script (CallScriptPanel): opens on its own once a call is
+  // placed, or on the Script button before dialing.
+  const [scriptOpen, setScriptOpen] = useState(false)
+  useEffect(() => { if (p.callSuccess) setScriptOpen(true) }, [p.callSuccess])
   const [mailSaving, setMailSaving] = useState(false)
   const [mailError, setMailError] = useState<string | null>(null)
   useEffect(() => {
@@ -2520,6 +2528,14 @@ function LeadCard(p: LeadCardProps) {
                   {p.calling ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <PhoneOutgoing className="w-3.5 h-3.5" />}
                   {p.calling ? "Dialing…" : "Call"}
                 </button>
+                <button
+                  onClick={() => setScriptOpen(v => !v)}
+                  className="inline-flex items-center gap-1.5 px-2.5 py-1.5 min-h-[36px] rounded bg-zinc-900 border border-zinc-700 hover:border-zinc-500 text-zinc-200 text-xs font-medium transition-colors"
+                  title="Read the voicemail + live script before dialing"
+                >
+                  <ClipboardList className="w-3.5 h-3.5" />
+                  Script
+                </button>
                 {p.callSuccess && (
                   <span className="text-emerald-400 text-sm font-medium inline-flex items-center gap-1">
                     <Check className="w-3.5 h-3.5" />
@@ -2563,6 +2579,17 @@ function LeadCard(p: LeadCardProps) {
               </div>
             )}
           </div>
+
+          {group.contactPhone && scriptOpen && (
+            <div className="rounded-md border border-emerald-900/60 overflow-hidden">
+              <CallScriptPanel
+                phone={group.contactPhone}
+                leadId={p.callLeadId}
+                callerId={p.callFrom}
+                onClose={() => setScriptOpen(false)}
+              />
+            </div>
+          )}
 
           {/* Phase 7C+ — editable name / property / email. Self-identification
               in voicemail bodies is the most authoritative source, but parsers

@@ -203,7 +203,28 @@ export async function processRelationshipRecording(args: {
       return
     }
 
-    const transcript = await transcribeAudio(audio, "relationship-call.mp3")
+    // Sales Coach (2026-11-02): the bridges record dual-channel, so a call
+    // gets a speaker-separated "Ryan: / <Name>:" transcript; the office
+    // voicemail <Record> is mono and keeps the mixed path, as does any
+    // dual-channel failure.
+    let transcript: string | null = null
+    let separated = false
+    let talkRatio: number | null = null
+    if (kind !== "voicemail") {
+      const { transcribeDualChannel } = await import("@/lib/coach/transcript")
+      const dual = await transcribeDualChannel({
+        mp3Url: fullUrl,
+        ryanChannel: kind === "outbound" ? 0 : 1,
+        otherLabel: name === "a contact" || (phone && isPlaceholderName(name, phone)) ? "Caller" : name,
+      })
+      if (dual) {
+        transcript = dual.labeled
+        separated = true
+        const total = dual.ryanSec + dual.otherSec
+        talkRatio = total > 0 ? dual.ryanSec / total : null
+      }
+    }
+    if (!transcript) transcript = await transcribeAudio(audio, "relationship-call.mp3")
     if (!transcript) {
       await alert(`⚠️ ${label} ${name}: transcription failed — nothing saved to notes. Recording: ${fullUrl}`)
       return
@@ -241,6 +262,14 @@ export async function processRelationshipRecording(args: {
     const icon = kind === "voicemail" ? "📨" : "📞"
     await alert(`${icon} ${label} ${name}${recordingDurationSec ? ` (${Math.max(1, Math.round(recordingDurationSec / 60))} min)` : ""}\n\n${summary}${identified}`)
     await mirror(summary)
+
+    // Sales Coach rating (lib/coach/rate) for the calls Ryan was on. Posts
+    // to the Marketing bot and stores coach_rating on the touch. Personal
+    // contacts and short calls are skipped inside. Never throws.
+    if (kind !== "voicemail") {
+      const { rateRelationshipCall } = await import("@/lib/coach/rate")
+      await rateRelationshipCall({ touchId, relationshipId, kind, transcript, separated, talkRatio, durationSec: recordingDurationSec })
+    }
   } catch (e) {
     console.error("[crms/call] pipeline threw:", e)
     await alert(`⚠️ ${label} ${name}: transcript pipeline crashed (${e instanceof Error ? e.message : String(e)}). Recording: ${fullUrl}`)
