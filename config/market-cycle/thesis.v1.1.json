@@ -1976,14 +1976,15 @@
     },
     {
       "id": "car_scc_sfr_sales",
-      "name": "C.A.R. Santa Clara County SFR closed sales",
+      "name": "Santa Clara County SFR closed sales (SCCAOR)",
       "cadence": "monthly",
       "category": "local_housing",
       "source": {
-        "name": "C.A.R. Historical Housing Data (Sales of Existing Single Family Homes)",
-        "url": "https://www.car.org/marketdata/data/housingdata"
+        "name": "SCCAOR monthly housing statistics (Single Family Residence summary row)",
+        "url": "https://www.sccaor.com/housing-stats/",
+        "field": "sales"
       },
-      "fetch": "car_xlsx",
+      "fetch": "sccaor_html",
       "units": "sales",
       "transform": "level",
       "direction_map": {
@@ -1995,7 +1996,7 @@
       "has_history": true,
       "votes": true,
       "geography": "scc",
-      "notes": "C21; denominator of months of supply (C19)."
+      "notes": "C21; denominator of months of supply (C19). C.A.R. publishes county sales only as % changes on its public pages (counts are in the login-only xlsx), so the count comes from SCCAOR: the housing-stats page's monthly PDFs (older PDFs at wp-content/uploads/<publish yyyy>/<mm>/<Month><yyyy>.pdf, back to Feb 2023), cross-checked against the monthly 'Housing Statistics Month of ...' posts. Dial id kept for continuity with C19/C21."
     },
     {
       "id": "car_scc_sfr_median",
@@ -2003,10 +2004,12 @@
       "cadence": "monthly",
       "category": "local_housing",
       "source": {
-        "name": "C.A.R. Historical Housing Data (Median Prices of Existing Single Family Homes)",
-        "url": "https://www.car.org/marketdata/data/housingdata"
+        "name": "C.A.R. monthly home sales and price news release (county table)",
+        "url": "https://www.car.org/aboutus/mediacenter/newsreleases",
+        "county": "Santa Clara",
+        "field": "price_yoy_pct"
       },
-      "fetch": "car_xlsx",
+      "fetch": "car_html",
       "units": "% YoY",
       "transform": "yoy_pct",
       "direction_map": {
@@ -2022,7 +2025,7 @@
       "has_history": true,
       "votes": true,
       "geography": "scc",
-      "notes": "Median used YoY only (brief 1.2 item 2)."
+      "notes": "Median used YoY only (brief 1.2 item 2). Value = C.A.R.'s published Price YTY% Chg for Santa Clara; raw keeps the current / prior-month / year-ago medians. C.A.R.'s historical xlsx is behind a Microsoft 365 login, so this reads the public monthly release pages (car.org/aboutus/mediacenter/newsreleases/<yyyy>releases)."
     },
     {
       "id": "car_sf_sfr_median_yoy",
@@ -2030,10 +2033,12 @@
       "cadence": "monthly",
       "category": "local_housing",
       "source": {
-        "name": "C.A.R. Historical Housing Data (Median Prices of Existing Single Family Homes)",
-        "url": "https://www.car.org/marketdata/data/housingdata"
+        "name": "C.A.R. monthly home sales and price news release (county table)",
+        "url": "https://www.car.org/aboutus/mediacenter/newsreleases",
+        "county": "San Francisco",
+        "field": "price_yoy_pct"
       },
-      "fetch": "car_xlsx",
+      "fetch": "car_html",
       "units": "% YoY",
       "transform": "yoy_pct",
       "direction_map": {
@@ -2048,7 +2053,7 @@
       "has_history": true,
       "votes": false,
       "geography": "san_francisco",
-      "notes": "C26. Panel geography."
+      "notes": "C26. Panel geography. Value = C.A.R.'s published Price YTY% Chg for San Francisco (public monthly release pages)."
     },
     {
       "id": "scc_months_supply",
@@ -2056,10 +2061,12 @@
       "cadence": "monthly",
       "category": "local_housing",
       "source": {
-        "name": "Derived: ACTLISCOU6085 / car_scc_sfr_sales",
-        "url": null
+        "name": "Derived: Realtor.com active listings (ACTLISCOU6085) / SCCAOR closed SFR sales",
+        "url": null,
+        "numerator_dial": "realtor_active_scc",
+        "denominator_dial": "car_scc_sfr_sales"
       },
-      "fetch": "web",
+      "fetch": "derived",
       "units": "months",
       "transform": "level",
       "direction_map": {
@@ -2071,10 +2078,10 @@
         "bear_at_or_above": 3.0,
         "bull_at_or_below": 1.5
       },
-      "has_history": false,
+      "has_history": true,
       "votes": true,
       "geography": "scc",
-      "notes": "C19. History depends on the C.A.R. series."
+      "notes": "C19 as written: Realtor.com actives (all listing types) / SFR closed sales. raw also carries SCCAOR's SFR-only inventory / SFR sales for comparison (C.A.R.'s Unsold Inventory Index and median time on market are in car_scc_sfr_median's raw)."
     },
     {
       "id": "scc_nod_count",
@@ -3013,8 +3020,10 @@
     "stooq",
     "nasdaq_api",
     "indeed_csv",
-    "car_xlsx",
+    "car_html",
+    "sccaor_html",
     "mlslistings",
+    "derived",
     "web",
     "manual"
   ],
