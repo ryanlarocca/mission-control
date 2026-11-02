@@ -86,7 +86,8 @@ SANTA_CRUZ_CITIES = ["Santa Cruz", "Watsonville", "Scotts Valley", "Capitola", "
                      "Mount Hermon", "Bonny Doon"]
 # Fetch groups (one set of city searches each) → geographies computed from them.
 GROUPS = {
-    "scc": {"cities": SCC_CITIES, "geos": [("scc", "sfr", "mls_scc")]},
+    # SCC condo/TH is its own display-only panel (Ryan 2026-11-01: never blend condos into SFR numbers).
+    "scc": {"cities": SCC_CITIES, "geos": [("scc", "sfr", "mls_scc"), ("scc_condos", "condo", "mls_panel_scc_condos")]},
     "san_mateo": {"cities": SAN_MATEO_CITIES, "geos": [("san_mateo", "sfr", "mls_panel_san_mateo")]},
     "sf": {"cities": ["San Francisco"], "geos": [("sf_houses", "sfr", "mls_panel_sf_houses"), ("sf_condos", "condo", "mls_panel_sf_condos")]},
     "santa_cruz": {"cities": SANTA_CRUZ_CITIES, "geos": [("santa_cruz", "sfr", "mls_panel_santa_cruz")]},
@@ -386,6 +387,10 @@ def collect_nod(as_of, log):
         except Exception as e2:
             readings.append(R("scc_nod_count", as_of, None, 0, county_url, "SCC", "nod_stock",
                               {"status": "FAILED", "reason": "county page: %s; statewide page: %s: %s" % (e, type(e2).__name__, e2)}))
+    if got is not None:
+        # PropertyShark sits behind a Cloudflare challenge most weeks; asking it when Properant
+        # already answered would post a failure alert every Monday. Backup only.
+        return readings
     time.sleep(1)
     try:
         t = page_text(http_get(ps_url))
@@ -759,9 +764,15 @@ def main():
 
     snaps = snapshot_rows(group_cards, as_of, first_seen)
     fail_scc = "scc" in groups and not group_cards.get("scc")
+    # Silent failures must reach Telegram (Ryan 2026-11-01): one line naming every failed
+    # source, every geography that came back empty, and every reading the writer refused.
+    problems = ["%s (%s)" % (r["dial_id"], (r["raw"].get("reason") or "")[:80]) for r in readings
+                if isinstance(r["raw"], dict) and r["raw"].get("status") == "FAILED"]
+    problems += ["%s: no cards" % g for g in groups if not group_cards.get(g) and g != "scc"]
     if a.write:
         try:
-            write(sb, key, readings, snaps)
+            skipped = write(sb, key, readings, snaps) or {}
+            problems += ["%s: not in registry, dropped" % d for d in sorted(skipped)]
         except Exception as e:
             print("WRITE FAILED: %s: %s" % (type(e).__name__, e))
             if a.alert_on_failure:
@@ -771,6 +782,10 @@ def main():
         path = "/tmp/market-cycle-snapshot-%s.json" % as_of
         json.dump(snaps, open(path, "w"))
         print("\nDry run: nothing written to the database. This week's snapshot (%d rows) saved to %s" % (len(snaps), path))
+    if problems and a.write and a.alert_on_failure:
+        post_alert(env, "Market-cycle weekly collector, week %s: %d problem(s) — %s" % (as_of, len(problems), "; ".join(problems)[:600]))
+    elif problems:
+        print("\nPROBLEMS (would alert with --write --alert-on-failure): " + "; ".join(problems))
     if fail_scc and a.alert_on_failure:
         post_alert(env, "Market-cycle weekly collector: Santa Clara County MLS fetch returned nothing for week %s. %s" % (as_of, "; ".join(notes)[:300]))
     print("\nMLS requests: %d (retries %d). Total runtime %.0fs" % (mlsl.stats["requests"], mlsl.stats["retries"], time.time() - t_start))
@@ -829,6 +844,7 @@ def write(sb, key, readings, snaps):
     print("\nWRITTEN: %d readings, %d listing snapshots" % (len(rows), len(snaps)))
     if skipped:
         print("SKIPPED (dial id not in cycle_dials yet — extend the thesis registry): " + ", ".join(sorted(skipped)))
+    return skipped
 
 
 if __name__ == "__main__":

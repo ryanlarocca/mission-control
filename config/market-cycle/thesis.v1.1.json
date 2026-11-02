@@ -9,27 +9,28 @@
   "source_brief": "briefs/BRIEF_MARKET_CYCLE_TRACKER_2026-11-01.md",
   "scored_object": {
     "dial_id": "zhvi_scc_drawdown",
-    "description": "Santa Clara County ZHVI (seasonally adjusted, all homes), maximum drawdown from the reference peak, measured on monthly prints through Dec 2028.",
-    "reference_peak_rule": "The series' all-time high as of the shakedown. At bootstrap (2026-11-01) that is Jan 2025 = $1,630,177; the Jan 2026 local high ($1,603,555) is NOT the reference.",
+    "description": "Santa Clara County ZHVI, SINGLE-FAMILY ONLY (Zillow uc_sfr, seasonally adjusted), maximum drawdown from the reference peak, measured on monthly prints through Dec 2028. Condos/townhomes are never blended in (Ryan 2026-11-01).",
+    "reference_peak_rule": "The series' all-time high as of the shakedown. At bootstrap (2026-11-01, SFR-only series) that is Jan 2025 = $1,776,795; the Jan 2026 local high ($1,758,783) is NOT the reference.",
     "reference_peak": {
       "month": "2025-01",
-      "value": 1630177,
-      "fixed_on": "2026-11-01"
+      "value": 1776795,
+      "fixed_on": "2026-11-01",
+      "series": "County_zhvi_uc_sfr_tier_0.33_0.67_sm_sa_month"
     },
     "readings_at_bootstrap": {
-      "2026-09": 1562682,
-      "drawdown_pct": -4.1,
+      "2026-09": 1717141,
+      "drawdown_pct": -3.4,
       "deepest_so_far": {
         "month": "2025-08",
-        "pct": -4.8
+        "pct": -4.6
       }
     },
     "historical_drawdowns_same_series": {
-      "2022-05_to_2023-05": -12.1,
+      "2022-05_to_2023-04": -12.6,
       "2018-11_to_2019-08": -9.2,
-      "2007-04_to_2011-12": -31.1
+      "2007-04_to_2011-12": -29.9
     },
-    "calibration_note": "Base (-8 to -15) = the 2022-23 (-12.1%) and 2018-19 (-9.2%) magnitudes; Bear (<= -15) is beyond any rate-shock episode and needs a jobs shock; 2008 was -31.",
+    "calibration_note": "SFR-only series. Base (-8 to -15) = the 2022-23 (-12.6%) and 2018-19 (-9.2%) magnitudes; Bear (<= -15) is beyond any rate-shock episode and needs a jobs shock; 2008 was -29.9.",
     "measure_through": "2028-12-31"
   },
   "scenarios": [
@@ -1604,12 +1605,12 @@
     },
     {
       "id": "zhvi_scc",
-      "name": "Zillow ZHVI, Santa Clara County, all homes (SA, smoothed)",
+      "name": "Zillow ZHVI, Santa Clara County, single-family (SA, smoothed)",
       "cadence": "monthly",
       "category": "local_housing",
       "source": {
         "name": "Zillow Research",
-        "url": "https://files.zillowstatic.com/research/public_csvs/zhvi/County_zhvi_uc_sfrcondo_tier_0.33_0.67_sm_sa_month.csv"
+        "url": "https://files.zillowstatic.com/research/public_csvs/zhvi/County_zhvi_uc_sfr_tier_0.33_0.67_sm_sa_month.csv"
       },
       "fetch": "zillow_csv",
       "units": "USD",
@@ -1627,12 +1628,12 @@
     },
     {
       "id": "zhvi_scc_yoy",
-      "name": "Zillow ZHVI, Santa Clara County, all homes, YoY",
+      "name": "Zillow ZHVI, Santa Clara County, single-family, YoY",
       "cadence": "monthly",
       "category": "local_housing",
       "source": {
         "name": "Zillow Research",
-        "url": "https://files.zillowstatic.com/research/public_csvs/zhvi/County_zhvi_uc_sfrcondo_tier_0.33_0.67_sm_sa_month.csv"
+        "url": "https://files.zillowstatic.com/research/public_csvs/zhvi/County_zhvi_uc_sfr_tier_0.33_0.67_sm_sa_month.csv"
       },
       "fetch": "zillow_csv",
       "units": "% YoY",
@@ -1653,12 +1654,12 @@
     },
     {
       "id": "zhvi_scc_drawdown",
-      "name": "SCC ZHVI drawdown from its 2026 peak (the scored scenario object)",
+      "name": "SCC ZHVI drawdown from its 2026 peak (the scored scenario object) (single-family)",
       "cadence": "monthly",
       "category": "local_housing",
       "source": {
         "name": "Zillow Research (derived)",
-        "url": "https://files.zillowstatic.com/research/public_csvs/zhvi/County_zhvi_uc_sfrcondo_tier_0.33_0.67_sm_sa_month.csv"
+        "url": "https://files.zillowstatic.com/research/public_csvs/zhvi/County_zhvi_uc_sfr_tier_0.33_0.67_sm_sa_month.csv"
       },
       "fetch": "zillow_csv",
       "units": "% from reference peak (series all-time high)",
@@ -1676,12 +1677,12 @@
     },
     {
       "id": "zhvi_scc_top_yoy",
-      "name": "Zillow ZHVI top tier, Santa Clara County, YoY",
+      "name": "Zillow ZHVI top tier, Santa Clara County, YoY (single-family)",
       "cadence": "monthly",
       "category": "local_housing",
       "source": {
         "name": "Zillow Research",
-        "url": "https://files.zillowstatic.com/research/public_csvs/zhvi/County_zhvi_uc_sfrcondo_tier_0.67_1.0_sm_sa_month.csv"
+        "url": "https://files.zillowstatic.com/research/public_csvs/zhvi/County_zhvi_uc_sfr_tier_0.67_1.0_sm_sa_month.csv"
       },
       "fetch": "zillow_csv",
       "units": "% YoY",
@@ -1702,12 +1703,12 @@
     },
     {
       "id": "zhvi_scc_bottom_yoy",
-      "name": "Zillow ZHVI bottom tier, Santa Clara County, YoY",
+      "name": "Zillow ZHVI bottom tier, Santa Clara County, YoY (single-family)",
       "cadence": "monthly",
       "category": "local_housing",
       "source": {
         "name": "Zillow Research",
-        "url": "https://files.zillowstatic.com/research/public_csvs/zhvi/County_zhvi_uc_sfrcondo_tier_0.0_0.33_sm_sa_month.csv"
+        "url": "https://files.zillowstatic.com/research/public_csvs/zhvi/County_zhvi_uc_sfr_tier_0.0_0.33_sm_sa_month.csv"
       },
       "fetch": "zillow_csv",
       "units": "% YoY",
@@ -1728,12 +1729,12 @@
     },
     {
       "id": "zhvi_zip_95118",
-      "name": "Zillow ZHVI by zip 95118 (home), YoY",
+      "name": "Zillow ZHVI by zip 95118 (home), YoY (single-family)",
       "cadence": "monthly",
       "category": "owned_property",
       "source": {
         "name": "Zillow Research",
-        "url": "https://files.zillowstatic.com/research/public_csvs/zhvi/Zip_zhvi_uc_sfrcondo_tier_0.33_0.67_sm_sa_month.csv"
+        "url": "https://files.zillowstatic.com/research/public_csvs/zhvi/Zip_zhvi_uc_sfr_tier_0.33_0.67_sm_sa_month.csv"
       },
       "fetch": "zillow_csv",
       "units": "% YoY",
@@ -1753,12 +1754,12 @@
     },
     {
       "id": "zhvi_zip_95123",
-      "name": "Zillow ZHVI by zip 95123 (Halleck), YoY",
+      "name": "Zillow ZHVI by zip 95123 (Halleck), YoY (single-family)",
       "cadence": "monthly",
       "category": "owned_property",
       "source": {
         "name": "Zillow Research",
-        "url": "https://files.zillowstatic.com/research/public_csvs/zhvi/Zip_zhvi_uc_sfrcondo_tier_0.33_0.67_sm_sa_month.csv"
+        "url": "https://files.zillowstatic.com/research/public_csvs/zhvi/Zip_zhvi_uc_sfr_tier_0.33_0.67_sm_sa_month.csv"
       },
       "fetch": "zillow_csv",
       "units": "% YoY",
@@ -1778,12 +1779,12 @@
     },
     {
       "id": "zhvi_zip_95130",
-      "name": "Zillow ZHVI by zip 95130 (Quito), YoY",
+      "name": "Zillow ZHVI by zip 95130 (Quito), YoY (single-family)",
       "cadence": "monthly",
       "category": "owned_property",
       "source": {
         "name": "Zillow Research",
-        "url": "https://files.zillowstatic.com/research/public_csvs/zhvi/Zip_zhvi_uc_sfrcondo_tier_0.33_0.67_sm_sa_month.csv"
+        "url": "https://files.zillowstatic.com/research/public_csvs/zhvi/Zip_zhvi_uc_sfr_tier_0.33_0.67_sm_sa_month.csv"
       },
       "fetch": "zillow_csv",
       "units": "% YoY",
@@ -1803,7 +1804,7 @@
     },
     {
       "id": "realtor_active_scc",
-      "name": "Realtor.com active listing count, Santa Clara County",
+      "name": "Realtor.com active listing count, Santa Clara County (all property types; Realtor.com has no SFR split at county level)",
       "cadence": "monthly",
       "category": "local_housing",
       "source": {
@@ -1823,11 +1824,11 @@
       "has_history": true,
       "votes": true,
       "geography": "scc",
-      "notes": "C18. FIPS form is 6085 (06085 returns 404)."
+      "notes": "C18. FIPS form is 6085 (06085 returns 404). Mixed SFR+condo series: cross-check only, never compare directly to SFR-only numbers."
     },
     {
       "id": "realtor_new_listings_scc",
-      "name": "Realtor.com new listing count, Santa Clara County",
+      "name": "Realtor.com new listing count, Santa Clara County (all property types; Realtor.com has no SFR split at county level)",
       "cadence": "monthly",
       "category": "local_housing",
       "source": {
@@ -1846,11 +1847,12 @@
       "corridor": null,
       "has_history": true,
       "votes": true,
-      "geography": "scc"
+      "geography": "scc",
+      "notes": " Mixed SFR+condo series: cross-check only, never compare directly to SFR-only numbers."
     },
     {
       "id": "realtor_dom_scc",
-      "name": "Realtor.com median days on market, Santa Clara County",
+      "name": "Realtor.com median days on market, Santa Clara County (all property types; Realtor.com has no SFR split at county level)",
       "cadence": "monthly",
       "category": "local_housing",
       "source": {
@@ -1869,11 +1871,12 @@
       "corridor": null,
       "has_history": true,
       "votes": true,
-      "geography": "scc"
+      "geography": "scc",
+      "notes": " Mixed SFR+condo series: cross-check only, never compare directly to SFR-only numbers."
     },
     {
       "id": "realtor_pending_ratio_scc",
-      "name": "Realtor.com pending ratio, Santa Clara County",
+      "name": "Realtor.com pending ratio, Santa Clara County (all property types; Realtor.com has no SFR split at county level)",
       "cadence": "monthly",
       "category": "local_housing",
       "source": {
@@ -1893,11 +1896,11 @@
       "has_history": true,
       "votes": true,
       "geography": "scc",
-      "notes": "PENRATMM6085 is the month-over-month change, not the ratio."
+      "notes": "PENRATMM6085 is the month-over-month change, not the ratio. Mixed SFR+condo series: cross-check only, never compare directly to SFR-only numbers."
     },
     {
       "id": "realtor_price_reduced_scc",
-      "name": "Realtor.com price-reduced listing count, Santa Clara County",
+      "name": "Realtor.com price-reduced listing count, Santa Clara County (all property types; Realtor.com has no SFR split at county level)",
       "cadence": "monthly",
       "category": "local_housing",
       "source": {
@@ -1916,11 +1919,12 @@
       "corridor": null,
       "has_history": true,
       "votes": true,
-      "geography": "scc"
+      "geography": "scc",
+      "notes": " Mixed SFR+condo series: cross-check only, never compare directly to SFR-only numbers."
     },
     {
       "id": "realtor_price_reduced_share_scc",
-      "name": "Realtor.com price-reduced share (price-reduced / active), Santa Clara County",
+      "name": "Realtor.com price-reduced share (price-reduced / active), Santa Clara County (all property types; Realtor.com has no SFR split at county level)",
       "cadence": "monthly",
       "category": "local_housing",
       "source": {
@@ -1944,11 +1948,11 @@
       "has_history": true,
       "votes": true,
       "geography": "scc",
-      "notes": "C20 and tripwire: threshold = 2016-2025 maximum."
+      "notes": "C20 and tripwire: threshold = 2016-2025 maximum. Mixed SFR+condo series: cross-check only, never compare directly to SFR-only numbers."
     },
     {
       "id": "realtor_median_list_price_scc",
-      "name": "Realtor.com median listing price, Santa Clara County",
+      "name": "Realtor.com median listing price, Santa Clara County (all property types; Realtor.com has no SFR split at county level)",
       "cadence": "monthly",
       "category": "local_housing",
       "source": {
@@ -1972,7 +1976,7 @@
       "has_history": true,
       "votes": false,
       "geography": "scc",
-      "notes": "Mix-shift prone; context only."
+      "notes": "Mix-shift prone; context only. Mixed SFR+condo series: cross-check only, never compare directly to SFR-only numbers."
     },
     {
       "id": "car_scc_sfr_sales",
@@ -2994,6 +2998,31 @@
       "votes": false,
       "geography": "panel:fremont",
       "notes": "Panel: silent unless it crosses a line SCC hasn't (brief 3.4). SF/Fremont coverage verified at build; C.A.R. county tables are the fallback."
+    },
+    {
+      "id": "zhvi_scc_condo_yoy",
+      "name": "Santa Clara County ZHVI, condo/townhome only, YoY (display only)",
+      "cadence": "monthly",
+      "category": "local_housing",
+      "source": {
+        "name": "Zillow Research ZHVI (condo/co-op, mid-tier, SA)",
+        "url": "https://files.zillowstatic.com/research/public_csvs/zhvi/County_zhvi_uc_condo_tier_0.33_0.67_sm_sa_month.csv"
+      },
+      "fetch": "zillow_csv",
+      "units": "% YoY",
+      "transform": "yoy_pct",
+      "direction_map": {
+        "up": "bull",
+        "down": "bear"
+      },
+      "band_rule": "corridor",
+      "corridor": {
+        "display_only": true,
+        "note": "Condo/TH view kept separate from SFR (Ryan 2026-11-01). Context only, never a vote."
+      },
+      "has_history": true,
+      "votes": false,
+      "geography": "Santa Clara County (condo/TH)"
     }
   ],
   "dial_templates": [
@@ -3182,6 +3211,7 @@
     ],
     "permanent_zips": [
       "95118"
-    ]
+    ],
+    "property_type_rule": "Single-family is the scored lens everywhere. Condo/townhome data is a separate, display-only view; never blended into a scored number."
   }
 }

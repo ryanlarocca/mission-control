@@ -208,7 +208,7 @@ def zillow_county(fname, county="Santa Clara County", state="CA"):
 
 
 def zillow_zips(zips):
-    fname = "Zip_zhvi_uc_sfrcondo_tier_0.33_0.67_sm_sa_month.csv"
+    fname = "Zip_zhvi_uc_sfr_tier_0.33_0.67_sm_sa_month.csv"
 
     def read():
         rdr = csv.reader(http_lines(ZILLOW + fname))

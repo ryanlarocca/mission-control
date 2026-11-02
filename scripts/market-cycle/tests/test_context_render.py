@@ -97,12 +97,12 @@ class ExitFraming(unittest.TestCase):
             frac = min(1.0, gone / span)
             ddx = dd["today"] + (mid - dd["today"]) * frac
             return ((1 + ddx / 100) / (1 + dd["today"] / 100) - 1) * 100
-        self.assertAlmostEqual(moves["bear"], expected((-31.1 + -15) / 2, 21, 7))   # Sep 2026 → Jun 2028 trough
+        self.assertAlmostEqual(moves["bear"], expected((-29.9 + -15) / 2, 21, 7))   # Sep 2026 → Jun 2028 trough
         self.assertAlmostEqual(moves["base"], expected(-11.5, 8, 7))                # → May 2027
         self.assertAlmostEqual(moves["bull"], expected((-8 + dd["deepest"]) / 2, 4, 7))  # → Jan 2027, flat after
         line = cc.render(fixture(), CFG, "95123", 1150000, "2027-04")[6]
         self.assertTrue(line.startswith("Exit Apr 2027 (<$1.3M ≈ county; straight line from today's -4.1% to each band's midpoint by its typical trough, flat after): "))
-        self.assertIn("Bear -6.6% (~$1.07M)", line)
+        self.assertIn("Bear -6.4% (~$1.08M)", line)
         self.assertIn("Bull -2.4% (~$1.12M)", line)
 
     def test_exit_before_latest_print_is_no_move(self):
@@ -113,7 +113,7 @@ class ExitFraming(unittest.TestCase):
 
     def test_bull_ruled_out_once_drawdown_passes_minus_8(self):
         d = fixture()
-        d["readings"]["zhvi_scc"].append(["2026-10-31", 1630177 * 0.91])   # -9%
+        d["readings"]["zhvi_scc"].append(["2026-10-31", 1776795 * 0.91])   # -9%
         lines = cc.render(d, CFG, "95123", 1150000, "2027-04")
         self.assertIn("Base band reached, Bull ruled out", lines[1])
         self.assertIn("Bull ruled out", lines[6])

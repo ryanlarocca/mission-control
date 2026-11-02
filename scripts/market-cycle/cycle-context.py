@@ -19,7 +19,7 @@ Exit framing approximation: the county drawdown moves in a straight line from
 today's print to the midpoint of each scenario's band by that scenario's
 typical trough month, then stays flat; the tier is assumed to follow the county
 path. Band midpoints: Bear = midpoint of -15% and the series' worst historical
-drawdown (2007-11, -31.1%); Base = -11.5%; Bull = midpoint of -8% and the
+drawdown (2007-11, -29.9% on the SFR series); Base = -11.5%; Bull = midpoint of -8% and the
 deepest drawdown so far. Typical trough months come from the scenario markers
 (Bull Q4 2026-Q1 2027 -> 2027-01, Base H1-mid 2027 -> 2027-05, Bear 2028 ->
 2028-06) unless the config carries a scenario "trough_month".
