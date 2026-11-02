@@ -48,6 +48,8 @@ import { CYCLE_DISAGREE_PREFIX } from "@/lib/marketCycle/card"
 import { checkpointById, storeRyanNote } from "@/lib/marketCycle/data"
 import { OFFER_CB_PREFIX, applyOfferText, getOfferDraft, handleOfferCallback, isOfferMessage, promptForTerms, sendOfferHelp, startOffer } from "@/lib/offerBot"
 import { cycleRegistryOn, parseOwnCommand, runOwnCommand, type OwnCommand } from "@/lib/cycleRegistry"
+import { startLeadCall } from "@/lib/leadCall"
+import { LEAD_CALL_CB_PREFIX } from "@/lib/websiteLead"
 
 // Dedicated campaign-bot webhook — the ZERO-TOKEN action path (2026-07-23,
 // Ryan: "get the thinking time down... maybe even no tokens"). The campaign
@@ -490,6 +492,31 @@ export async function POST(request: Request) {
           await bindReplyPrompt(promptMid, cardMid).catch((e) => console.error("[inbox] bindReplyPrompt:", e instanceof Error ? e.message : String(e)))
         }
       }
+      return NextResponse.json({ ok: true })
+    }
+    // Lead-line 📞 Call (website-lead alerts + ladder reminders, 2026-11-02):
+    // the same recorded relay as the card's Call button — rings Ryan's cell,
+    // then dials the lead from the line they know.
+    if (cb.data.startsWith(LEAD_CALL_CB_PREFIX)) {
+      const digits = cb.data.slice(LEAD_CALL_CB_PREFIX.length)
+      await tg("answerCallbackQuery", { callback_query_id: cb.id, text: "Calling your cell now — answer to connect." })
+      const out = await startLeadCall({ phone: digits, source: null })
+      let label = `+1${digits}`
+      if (out.ok) {
+        try {
+          const name = await lookupLeadName(getLeadsClient(), `+1${digits}`)
+          if (name) label = name
+        } catch {
+          /* label stays as the phone */
+        }
+      }
+      await tg("sendMessage", {
+        chat_id: chatId,
+        text: out.ok
+          ? `📞 Calling your cell now — answer and you'll be connected to ${label}.`
+          : `⚠️ Couldn't start the call — ${out.error}`,
+        reply_to_message_id: cb.message?.message_id,
+      })
       return NextResponse.json({ ok: true })
     }
     const call = /^call:(\d{10})$/.exec(cb.data)
@@ -1199,6 +1226,19 @@ export async function POST(request: Request) {
       ? `+1${extractPhone(repliedText)}`
       : null
   if (leadPhone) {
+    // "call her back" on a lead alert places the card's recorded call
+    // instead of texting those words to the lead.
+    if (CALL_INTENT_RE.test(body)) {
+      const out = await startLeadCall({ phone: leadPhone, source: null })
+      await tg("sendMessage", {
+        chat_id: chatId,
+        text: out.ok
+          ? `📞 Calling your cell now — answer and you'll be connected to ${leadPhone}.`
+          : `⚠️ Couldn't start the call — ${out.error}`,
+        reply_to_message_id: msg.message_id,
+      })
+      return NextResponse.json({ ok: true })
+    }
     const result = await sendLeadSms({ phone: leadPhone, message: body, source: null })
     let label = leadPhone
     if (result.success) {

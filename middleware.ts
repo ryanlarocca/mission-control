@@ -44,6 +44,9 @@ const PUBLIC_PATHS = [
   "/api/campaign/sms",
   // Campaign-bot webhook (auth = secret token verified inside the route).
   "/api/campaign/telegram",
+  // lrghomes.com contact form → Mission Control (auth = x-website-secret
+  // header checked against WEBSITE_FORM_SECRET inside the route).
+  "/api/leads/website-form",
   // GPT-Live phone test line: OpenAI's incoming-call webhook (auth = Standard
   // Webhooks signature verified inside the route).
   "/api/voice-test",

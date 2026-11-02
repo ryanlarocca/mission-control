@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from "next/server"
+import { waitUntil } from "@vercel/functions"
 import { getLeadsClient, parseTwilioBody } from "@/lib/leads"
+import { CONVERSATION_MIN_SEC, afterLadderCall } from "@/lib/websiteLead"
 
 // <Dial action> callback for outbound calls placed from /api/leads/call.
 // Twilio POSTs here when the lead's leg ends, with DialCallStatus =
@@ -71,6 +73,32 @@ export async function POST(request: NextRequest) {
     } catch (e) {
       console.error("[call/status] threw:", e)
     }
+  }
+  // Website call ladder (lib/websiteLead, 2026-11-02). Stamp whether the
+  // lead's leg was a conversation: unanswered / busy / short = no. A
+  // completed call of CONVERSATION_MIN_SEC+ is left null — the recording
+  // pipeline reads the transcript (a long voicemail isn't a conversation).
+  // A missed call on a laddered lead gets the "just tried you" message; a
+  // failed dial (bad number) doesn't.
+  if (leadId && status) {
+    const conversation = status === "completed" && talkSec >= CONVERSATION_MIN_SEC ? null : false
+    waitUntil((async () => {
+      try {
+        const sb = getLeadsClient()
+        const { data: row, error } = await sb
+          .from("leads")
+          .update({ call_conversation: conversation })
+          .eq("id", leadId)
+          .select("caller_phone")
+          .maybeSingle()
+        if (error) console.error("[call/status] call_conversation write failed:", error.message)
+        if (row?.caller_phone && conversation === false) {
+          await afterLadderCall(sb, row.caller_phone, false, status !== "failed")
+        }
+      } catch (e) {
+        console.error("[call/status] ladder follow-up threw:", e)
+      }
+    })())
   }
   return new NextResponse(HANGUP, { headers: { "Content-Type": "text/xml" } })
 }

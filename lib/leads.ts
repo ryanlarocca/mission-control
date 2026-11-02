@@ -1639,24 +1639,47 @@ export function leadAlertBotToken(): string | undefined {
   return process.env.CAMPAIGN_BOT_TOKEN || process.env.TELEGRAM_BOT_TOKEN
 }
 
-export async function sendTelegramAlert(text: string): Promise<void> {
+export interface TelegramButton {
+  text: string
+  // callback_data (handled by /api/campaign/telegram) or a URL to open.
+  data?: string
+  url?: string
+}
+
+// Returns whether Telegram accepted the message — callers that must not
+// fail silently (the website-lead alert) check it; the rest ignore it.
+export async function sendTelegramAlert(
+  text: string,
+  opts?: { buttons?: TelegramButton[][] }
+): Promise<boolean> {
   const token = leadAlertBotToken()
   const chatId = process.env.TELEGRAM_CHAT_ID
   if (!token || !chatId) {
     console.warn("[telegram] Missing CAMPAIGN_BOT_TOKEN/TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID")
-    return
+    return false
+  }
+  const payload: Record<string, unknown> = { chat_id: chatId, text, parse_mode: "HTML" }
+  if (opts?.buttons?.length) {
+    payload.reply_markup = {
+      inline_keyboard: opts.buttons.map((row) =>
+        row.map((b) => (b.url ? { text: b.text, url: b.url } : { text: b.text, callback_data: b.data ?? "" }))
+      ),
+    }
   }
   try {
     const res = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ chat_id: chatId, text, parse_mode: "HTML" }),
+      body: JSON.stringify(payload),
     })
     if (!res.ok) {
       console.error(`[telegram] sendMessage failed ${res.status}: ${await res.text()}`)
+      return false
     }
+    return true
   } catch (e) {
     console.error("[telegram] Alert failed:", e)
+    return false
   }
 }
 
@@ -1872,6 +1895,18 @@ export async function processRecordingBackground(args: {
         } catch (e) {
           console.error("[recording-bg] Transcription save threw:", e)
         }
+      }
+    }
+
+    // Website call ladder (lib/websiteLead): a long outbound call the status
+    // callback couldn't call either way — the transcript decides whether it
+    // was a conversation or a voicemail ("just tried you" follows the latter).
+    if (direction === "outbound" && leadId) {
+      try {
+        const { classifyLadderCall } = await import("@/lib/websiteLead")
+        await classifyLadderCall(getLeadsClient(), leadId, transcription)
+      } catch (e) {
+        console.error("[ladder] classify failed:", e instanceof Error ? e.message : String(e))
       }
     }
 

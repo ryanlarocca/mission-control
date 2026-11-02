@@ -15,6 +15,8 @@ export type DripCampaignType =
   | "direct_mail_sms"
   | "direct_mail_email"
   | "long_term_nurture"
+  | "website_followup"
+  | "website_followup_email"
 
 export type DripChannel = "imessage" | "email"
 
@@ -103,6 +105,19 @@ const LONG_TERM_NURTURE_TOUCHES: DripTouch[] = [
   { touchNumber: 6, delayHours: 4200, channel: "imessage" },  // +175d → 540d
 ]
 
+// Website follow-up (2026-11-02, call-first website leads — lib/websiteLead):
+// starts only after three call attempts went unanswered. Four touches over
+// two weeks (day 1 / 3 / 7 / 14 after the last call), mapped onto the
+// engine's unresponsive angles (opening → terms → one question → close the
+// loop). The engine then hands the lead to long_term_nurture. Texts for
+// leads who ticked "texts OK"; the _email variant for those who didn't.
+const WEBSITE_FOLLOWUP_TOUCHES: DripTouch[] = [
+  { touchNumber: 1, delayHours: 24,  channel: "imessage" },
+  { touchNumber: 2, delayHours: 48,  channel: "imessage" },
+  { touchNumber: 3, delayHours: 96,  channel: "imessage" },
+  { touchNumber: 4, delayHours: 168, channel: "imessage" },
+]
+
 export const DRIP_CAMPAIGNS: Record<DripCampaignType, DripCampaign> = {
   google_ads_form: {
     type: "google_ads_form",
@@ -133,6 +148,16 @@ export const DRIP_CAMPAIGNS: Record<DripCampaignType, DripCampaign> = {
     type: "long_term_nurture",
     entryDelayHours: 0,
     touches: LONG_TERM_NURTURE_TOUCHES,
+  },
+  website_followup: {
+    type: "website_followup",
+    entryDelayHours: 0,
+    touches: WEBSITE_FOLLOWUP_TOUCHES,
+  },
+  website_followup_email: {
+    type: "website_followup_email",
+    entryDelayHours: 0,
+    touches: WEBSITE_FOLLOWUP_TOUCHES.map((t) => ({ ...t, channel: "email" as const })),
   },
 }
 
@@ -181,8 +206,9 @@ export function effectiveChannelForTouch(
 // in the drip engine's WHERE clause.
 export const DRIP_STOP_STATUSES = ["dead"] as const
 
-// Source-aware campaign selection for Apply Drip. Google Ads form leads
-// (historical) and Website leads get the AI-drafted google_ads_* campaigns
+// Source-aware campaign selection for Apply Drip. Website leads get the
+// short website_followup cadence (2026-11-02); Google Ads form leads
+// (historical) get the AI-drafted google_ads_* campaigns
 // — the cadence is named for its first source, not tied to it; legacy
 // direct-mail leads stay on direct_mail_*. Falling all the way through to
 // direct_mail_call for an unknown-source phone lead is the legacy behavior
@@ -194,7 +220,12 @@ export function pickCampaignType(lead: {
   source: string | null
 }): DripCampaignType | null {
   const src = (lead.source || "").toLowerCase()
-  if (src === "google ads" || src === "website") {
+  if (src === "website") {
+    if (lead.caller_phone) return "website_followup"
+    if (lead.email) return "website_followup_email"
+    return null
+  }
+  if (src === "google ads") {
     if (lead.caller_phone) return "google_ads_form"
     if (lead.email) return "google_ads_email_only"
     return null

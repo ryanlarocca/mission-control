@@ -145,7 +145,9 @@ interface SyntheticGmail {
 }
 
 function isOutbound(l: Lead): boolean {
-  return !l.twilio_number
+  // A form submission is always the lead talking — older website form rows
+  // were written with no twilio_number and rendered as "YOU".
+  return !l.twilio_number && l.lead_type !== "form"
 }
 
 interface LeadGroup {
@@ -2193,7 +2195,12 @@ function LeadCard(p: LeadCardProps) {
   // through to "Unknown".
   const displayCampaign = group.campaignLabel || group.source || "Unknown"
   const sourceClass = SOURCE_BADGE[displayCampaign] || SOURCE_BADGE.Unknown
-  const sourceTypeClass = group.sourceType ? SOURCE_TYPE_BADGE[group.sourceType] : null
+  // The source-type chip is dropped when it would just repeat the campaign
+  // chip (a Website lead showed WEBSITE · WEBSITE).
+  const sourceTypeLabel = group.sourceType ? (SOURCE_TYPE_LABEL[group.sourceType] || group.sourceType) : null
+  const sourceTypeClass = group.sourceType && sourceTypeLabel?.toLowerCase() !== displayCampaign.toLowerCase()
+    ? SOURCE_TYPE_BADGE[group.sourceType]
+    : null
   // Campaign + earlier campaigns + source type. Rendered twice in the
   // collapsed row: a column on desktop, inline chips on a phone.
   const sourceTags = (mainSize: string, extraSize: string) => (
@@ -2214,7 +2221,7 @@ function LeadCard(p: LeadCardProps) {
         ))}
       {sourceTypeClass && (
         <span className={`${extraSize} py-0.5 font-semibold rounded uppercase tracking-wider whitespace-nowrap ${sourceTypeClass}`}>
-          {SOURCE_TYPE_LABEL[group.sourceType!] || group.sourceType}
+          {sourceTypeLabel}
         </span>
       )}
     </>

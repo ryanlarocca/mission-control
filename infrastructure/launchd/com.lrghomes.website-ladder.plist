@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Website call-ladder sweep (2026-11-02): website-lead call reminders, the
+  15-minute "still not called" nudge, ladder → drip hand-off, and the
+  Website-line missed-call text. Every 5 minutes.
+
+  Install (Mac mini):
+    cp infrastructure/launchd/com.lrghomes.website-ladder.plist ~/Library/LaunchAgents/
+    launchctl load ~/Library/LaunchAgents/com.lrghomes.website-ladder.plist
+  Run once:  launchctl start com.lrghomes.website-ladder
+  Logs:      /tmp/lrg-website-ladder.log, /tmp/lrg-website-ladder-err.log
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.lrghomes.website-ladder</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/opt/homebrew/bin/node</string>
+    <string>scripts/website-ladder-sweep.mjs</string>
+  </array>
+  <key>WorkingDirectory</key>
+  <string>/Users/ryanlarocca/Projects/PROJECTS/mission-control</string>
+  <key>StartInterval</key>
+  <integer>300</integer>
+  <key>StandardOutPath</key>
+  <string>/tmp/lrg-website-ladder.log</string>
+  <key>StandardErrorPath</key>
+  <string>/tmp/lrg-website-ladder-err.log</string>
+  <key>RunAtLoad</key>
+  <true/>
+</dict>
+</plist>

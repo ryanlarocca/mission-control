@@ -120,6 +120,18 @@ const LONG_TERM_NURTURE_TOUCHES = [
   { touchNumber: 6, delayHours: 4200, channel: "imessage" },  // +175d → 540d
 ]
 
+// Website follow-up — must match lib/drip-campaigns.ts exactly. Starts only
+// after the website call ladder (lib/websiteLead.ts) ran 3 unanswered calls.
+// Day 1 / 3 / 7 / 14 after the last call; hands off to long_term_nurture
+// when the touches run out (processLead).
+const WEBSITE_FOLLOWUP_TOUCHES = [
+  { touchNumber: 1, delayHours: 24,  channel: "imessage" },
+  { touchNumber: 2, delayHours: 48,  channel: "imessage" },
+  { touchNumber: 3, delayHours: 96,  channel: "imessage" },
+  { touchNumber: 4, delayHours: 168, channel: "imessage" },
+]
+const WEBSITE_FOLLOWUP_TYPES = new Set(["website_followup", "website_followup_email"])
+
 const DRIP_CAMPAIGNS = {
   google_ads_form: {
     type: "google_ads_form",
@@ -150,6 +162,16 @@ const DRIP_CAMPAIGNS = {
     type: "long_term_nurture",
     entryDelayHours: 0,
     touches: LONG_TERM_NURTURE_TOUCHES,
+  },
+  website_followup: {
+    type: "website_followup",
+    entryDelayHours: 0,
+    touches: WEBSITE_FOLLOWUP_TOUCHES,
+  },
+  website_followup_email: {
+    type: "website_followup_email",
+    entryDelayHours: 0,
+    touches: ALL_EMAIL(WEBSITE_FOLLOWUP_TOUCHES),
   },
 }
 
@@ -660,7 +682,7 @@ function phaseGuidanceFor(touchNumber, sig) {
 
 function buildSystemPrompt(args) {
   const { lead, campaign, touchNumber, channel, history, clarify, daysSinceCreated, responsiveness } = args
-  const isGoogleAds = campaign.type.startsWith("google_ads")
+  const isGoogleAds = campaign.type.startsWith("google_ads") || WEBSITE_FOLLOWUP_TYPES.has(campaign.type)
   const isLongTermNurture = campaign.type === "long_term_nurture"
   const phaseGuidance = phaseGuidanceFor(touchNumber, responsiveness)
   const responsivenessBlock = buildResponsivenessBlock(responsiveness)
@@ -1098,7 +1120,7 @@ async function sendDripEmail({ lead, body, subject }) {
     if (lead.twilio_number && String(lead.twilio_number).startsWith("email:")) {
       return String(lead.twilio_number).slice("email:".length)
     }
-    if (lead.source_type === "google_ads") {
+    if (lead.source_type === "google_ads" || lead.source_type === "website") {
       return "info@lrghomes.com"
     }
     return process.env.DRIP_DEFAULT_MAILBOX || "ryan@lrghomes.com"
@@ -1493,7 +1515,21 @@ async function processLead(sb, lead) {
     nextTouch = campaign.touches.find((t) => t.touchNumber > baseTouch)
   }
 
-  if (!nextTouch) return { skipped: "no_more_touches" }
+  if (!nextTouch) {
+    // Website follow-up ran its four touches → the slow long-term nurture
+    // (60d / 120d / …), clock starting now. Same stamp as the card's
+    // long-term-nurture action, minus its 6-month call reminder.
+    if (WEBSITE_FOLLOWUP_TYPES.has(campaign.type) && !DRY_RUN) {
+      const { error } = await sb
+        .from("leads")
+        .update({ drip_campaign_type: "long_term_nurture", drip_touch_number: 0, last_drip_sent_at: new Date().toISOString() })
+        .eq("id", lead.id)
+      if (error) console.error(`[drip] nurture hand-off failed for ${lead.id}:`, error.message)
+      else console.log(`[drip] lead ${lead.id} finished website_followup → long_term_nurture`)
+      return { skipped: "handed_off_to_nurture" }
+    }
+    return { skipped: "no_more_touches" }
+  }
 
   // Enforce the entry delay for the very first touch.
   const sinceLast = lead.last_drip_sent_at
