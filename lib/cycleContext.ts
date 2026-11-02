@@ -311,7 +311,7 @@ export function contextDials(cfg: CycleConfig, zip: string, price: number): stri
 export async function loadCycleContextData(client: SupabaseClient, zip: string, price: number, today: string, cfg: CycleConfig = THESIS): Promise<CycleContextData> {
   const readings: Record<string, Reading[]> = {}
   await Promise.all(contextDials(cfg, zip, price).map(async (d) => {
-    const { data, error } = await client.from("cycle_readings").select("as_of, value").eq("dial_id", d).lte("as_of", today).order("as_of", { ascending: false }).limit(60)
+    const { data, error } = await client.from("cycle_readings").select("as_of, value").eq("dial_id", d).eq("variant", "").lte("as_of", today).order("as_of", { ascending: false }).limit(60)
     if (error) throw new Error(`cycle_readings ${d}: ${error.message}`)
     if (data && data.length) readings[d] = data.slice().reverse().map((r) => [String(r.as_of), r.value === null ? null : Number(r.value)] as Reading)
   }))

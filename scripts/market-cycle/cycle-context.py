@@ -407,7 +407,7 @@ def fetch_data(cfg, zip_code, price, today):
     q = urllib.parse.quote
     readings = {}
     for d in context_dials(cfg, zip_code, price):
-        rows = get("cycle_readings?select=as_of,value&dial_id=eq.%s&as_of=lte.%s&order=as_of.desc&limit=60" % (q(d), today))
+        rows = get("cycle_readings?select=as_of,value&dial_id=eq.%s&variant=eq.&as_of=lte.%s&order=as_of.desc&limit=60" % (q(d), today))
         if rows:
             readings[d] = [[r["as_of"], r["value"]] for r in reversed(rows)]
     wm = get("cycle_weight_moves?select=date,to_weights&order=date.desc,id.desc&limit=1")
