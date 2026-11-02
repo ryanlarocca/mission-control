@@ -256,6 +256,8 @@ class TestAutoDials(unittest.TestCase):
         R = cw.R
         cases = [
             (R("mls_panel_fremont_pending_ratio", "2026-11-01", 0.52, 163, "u", "fremont", "pending_ratio", {}), "local_housing", "bull"),
+            # digits in the metric name (new_listings_7d) were dropped on the first live write 2026-11-01
+            (R("mls_panel_scc_condos_new_listings_7d", "2026-11-01", 30, 400, "u", "scc_condos", "new_listings_7d", {}), "local_housing", "bear"),
             (R("mls_zip_95118_sold_ppsf_90d", "2026-11-01", 1084, 51, "u", "zip 95118", "sold_ppsf_90d", {}), "owned_property", "neutral"),
             (R("listed_halleck_pile_mentions_7d", "2026-11-01", 5, 5, "pile:Halleck", "listed:Halleck", "pile_mentions_7d", {}), "owned_property", "neutral"),
             (R("scc_nod_filings_monthly", "2026-10-31", 46, 1, "u", "SCC", "nod_filings_month", {}), "local_housing", "bear"),
