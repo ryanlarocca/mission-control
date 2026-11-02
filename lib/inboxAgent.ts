@@ -131,6 +131,15 @@ async function markPromptUsed(promptMid: number): Promise<void> {
   const sb = getLeadsClient()
   await sb.from("inbox_settings").upsert({ key: "reply_prompts", value: { map }, updated_at: new Date().toISOString() })
 }
+/** The card a force-reply prompt was bound to (bindReplyPrompt), or null.
+ *  Marks the prompt used. For card types outside the inbox agent that reuse
+ *  the same prompt map (the market-cycle ✋ Disagree prompt). */
+export async function cardForReplyPrompt(promptMid: number): Promise<number | null> {
+  const p = (await promptMap())[String(promptMid)]
+  if (!p || p.card === promptMid) return null
+  await markPromptUsed(promptMid)
+  return p.card
+}
 
 // ------------------------------------------------------------- which card?
 /** Which inbox-agent card did Ryan reply to? Checked by the webhook before

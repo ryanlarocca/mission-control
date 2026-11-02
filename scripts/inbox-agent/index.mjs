@@ -67,6 +67,7 @@ import { invoiceDiffLines, isPaidName, matchVendor, money, paidName, parentCampa
 import { DUP_STATUSES, gmailLink, photoDedupeVerdict, propertyFolderFromReply, propertyLabelFromSubject, suffixedFilename } from "./photos.mjs"
 import { LOOP_ACTIVE_STATUSES, LOOP_KEY_WINDOW_MS, SENT_LOOKBACK_DAYS, answeredBy, completionCloses, completionDismisses, completionEvent, envelopeMatches, isLooseEnd, loopEligible, loopKey, loopKeyMatch, mergeLoop, normalizeEnvelope, owedBy, reportFiledEvent, resolutionKind, splitLoops } from "./loops.mjs"
 import { applyEventDecisions, eventBrief, postEventCards, scanEvents } from "./events-run.mjs"
+import { applyRegistryEvent, closingDateFor, cycleRegistryOn, isListingAgreementName, shortAddress, zipFrom } from "../market-cycle/registry.mjs"
 
 // ------------------------------------------------------------------ args
 const argv = process.argv.slice(2)
@@ -76,6 +77,8 @@ const opt = (n, d) => {
   return a ? a.slice(n.length + 3) : d
 }
 const DRY = flag("dry-run")
+// Market-cycle owned-property registry hook (briefs/BRIEF_MARKET_CYCLE_TRACKER_2026-11-01.md §3.1 item 5). Off unless CYCLE_REGISTRY=on.
+const REGISTRY_ON = cycleRegistryOn()
 const LIMIT = Number(opt("limit", 25))
 const BACKFILL = opt("backfill", null) // e.g. "3d"
 const MESSAGE = opt("message", null) // one gmail id, for testing
@@ -444,7 +447,7 @@ async function recordIgnored(msg, att, why, { source = "attachment", fetchId = n
 async function verifyProperty(ctx, bytes, filename) {
   await loadTree(ctx)
   const candidates = ctx.propFolders.filter((f) => !/^(19|20)\d{2}$|^old$|^_unsorted$|^pitched/i.test(f.name)).map((f) => f.name)
-  return completeJson({ model: SONNET, thinking: false, system: VERIFY_SYSTEM, prompt: verifyPrompt({ filename, candidates }), docs: [{ kind: "pdf", data: bytes, mime: "application/pdf", name: filename }], maxTokens: 300, tag: "[verify]" })
+  return completeJson({ model: SONNET, thinking: false, system: VERIFY_SYSTEM, prompt: verifyPrompt({ filename, candidates, closingDate: REGISTRY_ON }), docs: [{ kind: "pdf", data: bytes, mime: "application/pdf", name: filename }], maxTokens: 300, tag: "[verify]" })
 }
 function labelFromVerify(v) {
   if (!v) return null
@@ -535,10 +538,10 @@ function undoRows(filed) {
 }
 
 /** One confirmation per email for everything filed straight in (no approval card). */
-async function postFiledConfirmation(ctx, msg, filed) {
+async function postFiledConfirmation(ctx, msg, filed, registryLines = []) {
   if (!filed.length) return
   const who = msg.from.name || msg.from.email
-  const lines = [`🗂 <b>Filed ${filed.length === 1 ? "1 document" : `${filed.length} documents`}</b> from ${esc(who)} · ${ptDateLabel(msg.internalDate)} · “${esc(shortSubject(msg.subject))}”`, ...filedLines(filed)]
+  const lines = [`🗂 <b>Filed ${filed.length === 1 ? "1 document" : `${filed.length} documents`}</b> from ${esc(who)} · ${ptDateLabel(msg.internalDate)} · “${esc(shortSubject(msg.subject))}”`, ...filedLines(filed), ...registryLines.map(esc)]
   lines.push(`Reply to this card to move or rename any of them.`)
   const mid = await tgSend(lines.join("\n"), { rows: undoRows(filed), dryRun: DRY })
   if (!DRY && mid) await sb().from("inbox_files").update({ tg_message_id: mid }).in("id", filed.map((f) => f.row.id))
@@ -1013,6 +1016,31 @@ async function handleSupabaseAlert(ctx, msg) {
   await tgSend(advisorSummary(r, esc), { dryRun: DRY })
 }
 
+// ------------------------------------------------------------------ market-cycle registry hook
+// CYCLE_REGISTRY=on only. A FINAL settlement statement filed on Ryan's own deal
+// (never an offer package) adds the property as held (Buyer Statement) or retires
+// it (Seller Statement) — the side is the one the filing name already carries; a
+// signed listing agreement marks an owned property for sale. Each change is one
+// line on the email's existing confirmation card; nothing new is sent.
+async function registryLine(event, { emailDate = false } = {}) {
+  try {
+    const { op, line } = await applyRegistryEvent(sb(), event, { dryRun: DRY })
+    if (line) log(line)
+    return line ? `${line}${emailDate && op !== "none" ? " · date = email day" : ""}` : null
+  } catch (e) {
+    warn("registry:", e.message)
+    return `⚠️ Registry: couldn't update ${shortAddress(event.address)} — ${e.message}`
+  }
+}
+async function registryFromStatement(msg, cls, verify, pf, destName) {
+  const seller = /\bSeller Statement\b/.test(destName || "")
+  const address = verify?.address || cls?.property?.address || pf.name
+  const zip = zipFrom(verify?.address) || zipFrom(cls?.property?.address)
+  const { date, fromEmail } = closingDateFor(verify, ptDate(msg.internalDate))
+  const event = seller ? { kind: "sold", address, date, source: "inbox-agent" } : { kind: "bought", address, zip, date, source: "inbox-agent" }
+  return registryLine(event, { emailDate: fromEmail })
+}
+
 /**
  * The filing pipeline for one email's documents — attachments (`docs` from
  * relevantAttachments) or documents pulled from behind a link (`docs` from
@@ -1036,7 +1064,12 @@ async function fileDocuments(ctx, msg, cls, docs, { source = "attachment", fetch
   let property = cls?.property?.label || null // the email's property; refined by the first verified PDF
   const offer = rulesApproved && ctx.drive ? await detectInboundOffer(ctx, msg, docs) : null
   if (offer?.label && !property) property = offer.label
+  const registryLines = []
   for (const att of docs) {
+    if (REGISTRY_ON && !offer && att.signed !== false && isListingAgreementName(att.cleanName || att.filename) && (cls?.property?.address || property)) {
+      const line = await registryLine({ kind: "listed", address: cls?.property?.address || property, date: ptDate(msg.internalDate), source: "inbox-agent" })
+      if (line) registryLines.push(line)
+    }
     const isDeal = cls?.deal && (kind === "deal_lead" || kind === "broker_blast")
     const stage0 = stageOf({ filename: att.cleanName, subject: msg.subject, modelStage: att.stage })
     const pre = filingDecision(att.doc_type, stage0, { offer: !!offer })
@@ -1120,10 +1153,14 @@ async function fileDocuments(ctx, msg, cls, docs, { source = "attachment", fetch
     if (!offer && /^(closing_statement|net_sheet)$/.test(att.doc_type) && r.folderId && !DRY) diff = await statementDiff(ctx, r.folderId, rec.bytes, r.name || dest.name, pf.name)
     filed.push({ row: rowNow, folder: dest.folder, name: r.name || dest.name, url: r.url, diff })
     note(att, "filed", `${dest.folder}/${r.name || dest.name}`)
+    if (REGISTRY_ON && !offer && att.doc_type === "closing_statement" && stage === "final") {
+      const line = await registryFromStatement(msg, cls, verify, pf, r.name || dest.name)
+      if (line) registryLines.push(line)
+    }
   }
   if (batch.length >= 2) await postBatch(ctx, msg, batch)
   else for (const it of batch) await routeProposal(ctx, it.row, it.p)
-  return { filed, pdfDocs, outcomes }
+  return { filed, pdfDocs, outcomes, registryLines }
 }
 
 // ------------------------------------------------------------------ 2a. vendor filing (ITI Direct Mail → campaign folder)
@@ -1818,7 +1855,7 @@ async function runFetchJob(ctx, job, msg, cls) {
   const merged = { ...(cls || {}), attachments: cls2?.attachments || cls?.attachments || [], property: cls?.property || cls2?.property || null }
   if (!DRY && cls2) await sb().from("inbox_messages").update({ classification: merged }).eq("gmail_id", msg.id)
   const docs = fetchedDocs(files, msg, merged, job.provider)
-  const { filed, outcomes } = await fileDocuments(ctx, msg, merged, docs, { source: job.kind === "manual" ? "manual" : job.provider, fetchId: DRY ? null : job.id })
+  const { filed, outcomes, registryLines } = await fileDocuments(ctx, msg, merged, docs, { source: job.kind === "manual" ? "manual" : job.provider, fetchId: DRY ? null : job.id })
   // Part C (2026-10-17): a FILED HomeSentry report is a completion — the "sign / pay"
   // loops and the results loop for that property are done, whatever the email said.
   if (job.provider === "tapinspect") {
@@ -1828,6 +1865,7 @@ async function runFetchJob(ctx, job, msg, cls) {
   const lines = [`📥 <b>Pulled ${files.length === 1 ? "1 document" : `${files.length} documents`} from ${label}</b> — “${esc(subj)}”`, ...filedLines(filed)]
   for (const o of outcomes.filter((x) => x.outcome !== "filed")) lines.push(`• ${esc(o.filename)} — ${o.outcome}${o.why ? ` (${esc(shortSubject(o.why, 80))})` : ""}`)
   if (!files.length) lines.push("The envelope opened but held no documents to download.")
+  for (const l of registryLines) lines.push(esc(l))
   if (filed.length) lines.push(`Reply to this card to move or rename any of them.`)
   const rows = [...(job.kind === "docusign_request" ? [[openBtn]] : []), ...undoRows(filed)]
   // Every pulled file was already on file (a forward of the same share link, an
@@ -2058,8 +2096,8 @@ async function handleMessage(ctx, msg) {
     if (kind !== "media_delivery") {
       const docs = relevantAttachments(msg, cls).filter((a) => !vendorHandled.has(a.filename) && WHITELIST.has(a.doc_type))
       if (docs.length) {
-        const { filed } = await fileDocuments(ctx, msg, cls, docs, { source: "attachment" })
-        await postFiledConfirmation(ctx, msg, filed)
+        const { filed, registryLines } = await fileDocuments(ctx, msg, cls, docs, { source: "attachment" })
+        await postFiledConfirmation(ctx, msg, filed, registryLines)
       }
     }
     return
@@ -2067,8 +2105,8 @@ async function handleMessage(ctx, msg) {
 
   // --- attachments → the filing pipeline (shared with documents pulled from links).
   const atts = relevantAttachments(msg, cls).filter((a) => !vendorHandled.has(a.filename))
-  const { filed, pdfDocs } = await fileDocuments(ctx, msg, cls, atts, { source: "attachment" })
-  await postFiledConfirmation(ctx, msg, filed)
+  const { filed, pdfDocs, registryLines } = await fileDocuments(ctx, msg, cls, atts, { source: "attachment" })
+  await postFiledConfirmation(ctx, msg, filed, registryLines)
 
   // --- documents behind links (DocuSign first; briefs/BRIEF_INBOX_LINK_FETCH_2026-10-12.md; StyleMe's FreshBooks links ride the vendor rule)
   await enqueueFetches(ctx, msg, cls, kind, atts, vendor)

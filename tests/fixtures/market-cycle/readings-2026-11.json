@@ -1,0 +1,36 @@
+{
+  "_about": "Market-cycle review fixture built from the real numbers in briefs/BRIEF_MARKET_CYCLE_TRACKER_2026-11-01.md (Phase 0 findings + Part 1). Monthly series are dated the first of the month they describe (Sep 2026 = 2026-09-01). Seasonal bands (by_month) are the brief's 2021-25 Sep norms. Values marked 'approx date' carry the brief's number with an as-of date chosen for the fixture. No other numbers were invented: dials without a brief number are absent.",
+  "today": "2026-11-01",
+  "dial_corridors": {
+    "realtor_active_scc": { "rule": "seasonal_1sd", "years": [2021, 2025], "by_month": { "09": { "mean": 1360, "sd": 239, "n": 5 } } },
+    "realtor_pending_ratio_scc": { "rule": "seasonal_1sd", "years": [2021, 2025], "by_month": { "09": { "mean": 0.853, "sd": 0.335, "n": 5 } } },
+    "realtor_price_reduced_scc": { "rule": "seasonal_1sd", "years": [2021, 2025], "by_month": { "09": { "mean": 409, "sd": 115, "n": 5 } } }
+  },
+  "readings": [
+    { "dial_id": "ccc_oas", "as_of": "2026-10-29", "value": 13.25, "source_url": "https://fred.stlouisfed.org/graph/fredgraph.csv?id=BAMLH0A3HYC", "raw": "brief Phase 0: latest 13.25% (approx date)" },
+    { "dial_id": "basket_index", "as_of": "2026-06-30", "value": 100.0, "source_url": "fixture", "raw": "52-week high (Jun 30) normalised to 100" },
+    { "dial_id": "basket_index", "as_of": "2026-10-30", "value": 79.5, "source_url": "fixture", "raw": "brief Phase 0: basket -20.5% from its Jun 30 high" },
+    { "dial_id": "realtor_active_scc", "as_of": "2026-09-01", "value": 1987, "source_url": "https://fred.stlouisfed.org/graph/fredgraph.csv?id=ACTLISCOU6085", "raw": "brief Phase 0: Sep 1987 vs 2021-25 Sep band 1360 +/- 239" },
+    { "dial_id": "realtor_pending_ratio_scc", "as_of": "2026-09-01", "value": 0.427, "source_url": "https://fred.stlouisfed.org/graph/fredgraph.csv?id=PENRAT6085", "raw": "brief Phase 0: Sep 0.427 vs band 0.853 +/- 0.335" },
+    { "dial_id": "realtor_price_reduced_scc", "as_of": "2026-09-01", "value": 620, "source_url": "https://fred.stlouisfed.org/graph/fredgraph.csv?id=PRIREDCOU6085", "raw": "brief Phase 0: Sep 620 vs band 409 +/- 115" },
+    { "dial_id": "realtor_price_reduced_share_scc", "as_of": "2026-09-01", "value": 31.2, "source_url": "derived PRIREDCOU6085/ACTLISCOU6085", "raw": "brief Phase 0: latest 31.2% (2016-25 max 58.5%)" },
+    { "dial_id": "zhvi_scc_drawdown", "as_of": "2026-09-01", "value": -4.1, "source_url": "zillow ZHVI county CSV", "raw": "brief 2.1: Sep 2026 -4.1% from the Jan 2025 all-time high" },
+    { "dial_id": "sj_rent_yoy", "as_of": "2026-09-01", "value": 7.9, "source_url": "apartmentlist", "raw": "San Jose rent YoY 7.9% (approx date)" },
+    { "dial_id": "scc_unemployment", "as_of": "2026-08-01", "value": 4.3, "source_url": "https://fred.stlouisfed.org/graph/fredgraph.csv?id=CASANT5URN", "raw": "brief 1.2 #6: SCC unemployment 4.3% in Aug 2026" },
+    { "dial_id": "scc_unemployment", "as_of": "2026-09-01", "value": 4.2, "source_url": "https://fred.stlouisfed.org/graph/fredgraph.csv?id=CASANT5URN", "raw": "SCC unemployment 4.2% (approx date)" },
+    { "dial_id": "mortgage30", "as_of": "2026-10-29", "value": 7.24, "source_url": "https://fred.stlouisfed.org/graph/fredgraph.csv?id=MORTGAGE30US", "raw": "Freddie 30-yr 7.24% (approx date)" },
+    { "dial_id": "ust10y", "as_of": "2026-10-29", "value": 4.98, "source_url": "https://fred.stlouisfed.org/graph/fredgraph.csv?id=DGS10", "raw": "10-yr 4.98% (approx date)" },
+    { "dial_id": "mortgage_spread", "as_of": "2026-10-29", "value": 226, "source_url": "derived MORTGAGE30US-DGS10", "raw": "7.24 - 4.98 = 226 bp" },
+    { "dial_id": "brent", "as_of": "2026-10-26", "value": 123, "source_url": "https://fred.stlouisfed.org/graph/fredgraph.csv?id=DCOILBRENTEU", "raw": "Brent $123 (approx date)" },
+    { "dial_id": "cpi_yoy", "as_of": "2026-09-01", "value": 3.7, "source_url": "https://fred.stlouisfed.org/graph/fredgraph.csv?id=CPIAUCSL", "raw": "brief 1.1: CPI 3.7% (from the thesis, unverified)" },
+    { "dial_id": "curve_2s10s", "as_of": "2026-10-30", "value": 0.38, "source_url": "https://fred.stlouisfed.org/graph/fredgraph.csv?id=T10Y2Y", "raw": "brief 1.2 #7: 2s10s about +38 bp at Oct 30" },
+    { "dial_id": "fed_funds_target_upper", "as_of": "2026-10-28", "value": 4.0, "source_url": "https://fred.stlouisfed.org/graph/fredgraph.csv?id=DFEDTARU", "raw": "brief 1.1: 3.75-4.00 after the Sep hike; Oct 28 hold" },
+    { "dial_id": "car_scc_sfr_median", "as_of": "2026-09-01", "value": -4.0, "source_url": "C.A.R. Sep release", "raw": "brief 1.1: C.A.R. Sep SCC SFR median $1.92M, -4.0% YoY" }
+  ],
+  "tripwire_events": [],
+  "notes": [
+    { "date": "2026-10-20", "dial_id": "car_scc_sfr_sales", "text": "SCCAOR Sep: median $1.88M (-4% YoY), sales +3.7% YoY, DOM 27.", "kind": "release", "surfaced_at": null },
+    { "date": "2026-10-30", "dial_id": "scc_warn_workers", "text": "Q3 WARN: Bay Area 7,570 (+15% YoY) but Santa Clara County 2,273 (-27% YoY).", "kind": "release", "surfaced_at": null },
+    { "date": "2026-10-22", "dial_id": null, "text": "2116 Quito Rd listed Oct 22, 2026; 5764 Halleck Dr listed Oct 14, 2026.", "kind": "listed_property", "surfaced_at": null }
+  ]
+}

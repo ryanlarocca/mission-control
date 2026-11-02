@@ -43,8 +43,11 @@ import {
   type Tier,
 } from "@/lib/contactIntake"
 import { CALENDAR_INTENT_RE, createCalendarEvent, extractEvent } from "@/lib/calendarIntake"
-import { INBOX_CB_PREFIX, advanceSetup, answerInboxQuestion, bindReplyPrompt, draftDealReply, findInboxByTgMessage, handleInboxCallback, handleInboxCommand, looksLikeQuestion, recordInboxReply, takeOpenReplyPrompt } from "@/lib/inboxAgent"
+import { INBOX_CB_PREFIX, advanceSetup, answerInboxQuestion, bindReplyPrompt, cardForReplyPrompt, draftDealReply, findInboxByTgMessage, handleInboxCallback, handleInboxCommand, looksLikeQuestion, recordInboxReply, takeOpenReplyPrompt } from "@/lib/inboxAgent"
+import { CYCLE_DISAGREE_PREFIX } from "@/lib/marketCycle/card"
+import { checkpointById, storeRyanNote } from "@/lib/marketCycle/data"
 import { OFFER_CB_PREFIX, applyOfferText, getOfferDraft, handleOfferCallback, isOfferMessage, promptForTerms, sendOfferHelp, startOffer } from "@/lib/offerBot"
+import { cycleRegistryOn, parseOwnCommand, runOwnCommand, type OwnCommand } from "@/lib/cycleRegistry"
 
 // Dedicated campaign-bot webhook — the ZERO-TOKEN action path (2026-07-23,
 // Ryan: "get the thinking time down... maybe even no tokens"). The campaign
@@ -428,6 +431,26 @@ export async function POST(request: Request) {
       if (out.ok) await tg("sendMessage", { chat_id: chatId, text: `↩️ Undone — ${out.label}.`, reply_to_message_id: cb.message?.message_id })
       return NextResponse.json({ ok: true })
     }
+    // Market-cycle card ✋ Disagree (briefs/BRIEF_MARKET_CYCLE_TRACKER_2026-11-01.md
+    // §3.5): a force-reply prompt bound to the card; the typed answer lands
+    // on the checkpoint as ryan_note (reply branch below).
+    if (cb.data.startsWith(CYCLE_DISAGREE_PREFIX) && typeof chatId === "number") {
+      const id = cb.data.slice(CYCLE_DISAGREE_PREFIX.length)
+      const cp = /^[0-9a-f-]{36}$/.test(id) ? await checkpointById(getLeadsClient(), id).catch(() => null) : null
+      await tg("answerCallbackQuery", { callback_query_id: cb.id, text: cp ? "Tell me what's off" : "⚠️ Checkpoint not found" })
+      const cardMid = cb.message?.message_id
+      if (cp && typeof cardMid === "number") {
+        const sent = await tg("sendMessage", {
+          chat_id: chatId,
+          text: `✋ What's off with the market-cycle checkpoint of ${cp.date}? Your note is stored on it and shown at the next review.`,
+          reply_to_message_id: cardMid,
+          reply_markup: { force_reply: true, input_field_placeholder: "What's off?" },
+        })
+        const promptMid = sent?.result?.message_id
+        if (typeof promptMid === "number") await bindReplyPrompt(promptMid, cardMid).catch((e) => console.error("[cycle] bindReplyPrompt:", e instanceof Error ? e.message : String(e)))
+      }
+      return NextResponse.json({ ok: true })
+    }
     // Inbox Agent (2026-09-24): filing approvals, interview answers, open
     // loops, deal screens. Supabase-only here; the Mac mini worker executes.
     if (cb.data.startsWith(INBOX_CB_PREFIX)) {
@@ -635,6 +658,26 @@ export async function POST(request: Request) {
     }
     waitUntil(runMini(chatId, verb, msg.message_id))
     return NextResponse.json({ ok: true })
+  }
+
+  // ---- Market-cycle owned-property registry (CYCLE_REGISTRY=on only) ----
+  // "own add <address> <zip> [held|for_sale|home]" · "own sold <address>" ·
+  // "own list" — the fallback for what the inbox agent's settlement-statement
+  // hook misses. One-line reply. With the flag off this is not a command and the
+  // text falls through exactly as before.
+  if (cycleRegistryOn()) {
+    const own = parseOwnCommand(body) as OwnCommand | null
+    if (own) {
+      let text: string
+      try {
+        text = await runOwnCommand(own)
+      } catch (e) {
+        console.error("[campaign-tg] registry command failed:", e instanceof Error ? e.message : String(e))
+        text = `⚠️ Registry: ${e instanceof Error ? e.message : String(e)}`
+      }
+      await tg("sendMessage", { chat_id: chatId, text, reply_to_message_id: msg.message_id })
+      return NextResponse.json({ ok: true })
+    }
   }
 
   // ---- Offer bot (briefs/OFFER_BOT.md, 2026-10-15) ----
@@ -966,6 +1009,19 @@ export async function POST(request: Request) {
   const openPrompt = typeof msg.reply_to_message?.message_id === "number" ? null : await takeOpenReplyPrompt().catch(() => null)
   const repliedTgId = msg.reply_to_message?.message_id ?? openPrompt?.cardMid
   if (typeof repliedTgId === "number") {
+    // Market-cycle Disagree note: a reply to the ✋ prompt (or to the card
+    // itself, or typed right after the tap) → ryan_note on that checkpoint.
+    if (/^✋ What's off with the market-cycle checkpoint|^📊 Market cycle —/.test(repliedText) || openPrompt) {
+      const cardMid = openPrompt?.cardMid ?? (await cardForReplyPrompt(repliedTgId).catch(() => null)) ?? repliedTgId
+      const date = await storeRyanNote(getLeadsClient(), cardMid, body).catch((e) => {
+        console.error("[cycle] storeRyanNote:", e instanceof Error ? e.message : String(e))
+        return null
+      })
+      if (date) {
+        await tg("sendMessage", { chat_id: chatId, text: `📝 Noted on the ${date} checkpoint — it goes in front of the next review.`, reply_to_message_id: msg.message_id })
+        return NextResponse.json({ ok: true })
+      }
+    }
     // Reply Planner draft (lead alert): the reply text is Ryan's "why" —
     // redraft with it and post v2. Checked first so the lead-phone branch
     // below never sends his note to the lead as a text.
