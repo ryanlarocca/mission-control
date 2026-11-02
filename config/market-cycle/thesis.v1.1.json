@@ -398,7 +398,7 @@
     },
     {
       "id": "C19",
-      "text": "SCC months of supply (Realtor.com actives / C.A.R. monthly closed SFR sales) exceeds 3.0 in any month of 2027",
+      "text": "SCC single-family months of supply (SCCAOR SFR inventory / SCCAOR SFR closed sales) exceeds 3.0 in any month of 2027",
       "category": "scc_housing",
       "scenario_tag": "bear",
       "prob_chat_claude": null,
@@ -1661,8 +1661,8 @@
         "url": "https://files.zillowstatic.com/research/public_csvs/zhvi/County_zhvi_uc_sfrcondo_tier_0.33_0.67_sm_sa_month.csv"
       },
       "fetch": "zillow_csv",
-      "units": "% from 2026 peak",
-      "transform": "drawdown_from_2026_peak",
+      "units": "% from reference peak (series all-time high)",
+      "transform": "drawdown_from_reference_peak",
       "direction_map": {
         "up": "bull",
         "down": "bear"
@@ -2057,14 +2057,15 @@
     },
     {
       "id": "scc_months_supply",
-      "name": "SCC months of supply (Realtor.com actives / C.A.R. closed SFR sales)",
+      "name": "SCC months of supply, single-family (SCCAOR SFR inventory / SCCAOR SFR closed sales)",
       "cadence": "monthly",
       "category": "local_housing",
       "source": {
-        "name": "Derived: Realtor.com active listings (ACTLISCOU6085) / SCCAOR closed SFR sales",
+        "name": "Derived: SCCAOR SFR inventory / SCCAOR SFR closed sales (Realtor.com all-types ratio kept in raw)",
         "url": null,
         "numerator_dial": "realtor_active_scc",
-        "denominator_dial": "car_scc_sfr_sales"
+        "denominator_dial": "car_scc_sfr_sales",
+        "value": "sfr_only"
       },
       "fetch": "derived",
       "units": "months",

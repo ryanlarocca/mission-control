@@ -148,7 +148,7 @@ class TestReleaseNotes(unittest.TestCase):
 
 
 class TestMonthsSupply(unittest.TestCase):
-    def test_derived_months_supply_divides_actives_by_sccaor_sales(self):
+    def test_derived_months_supply_is_sfr_inventory_over_sfr_sales(self):
         cfg = S.load_config()
         dial = next(d for d in cfg["dials"] if d["id"] == "scc_months_supply")
         fred_rows = [("2026-08-01", 1859.0), ("2026-09-01", 1987.0)]
@@ -156,8 +156,11 @@ class TestMonthsSupply(unittest.TestCase):
                    "2026-10": {"sales": 700.0, "inventory": 1300.0, "avg_dom": 30.0, "source_url": "u"}}, [])
         with mock.patch.object(S, "fred", return_value=fred_rows), mock.patch.object(S, "sccaor_months", return_value=sccaor):
             rows, _, _, extras = S.fetch_dial(dial, cfg)
-        self.assertEqual(rows, [("2026-09-01", 2.74)])                # only months with both
-        self.assertEqual(extras["2026-09-01"]["raw"]["sfr_only_months"], 1.69)
+        # like for like: SCCAOR SFR inventory / SFR sales, every month SCCAOR has both
+        self.assertEqual(rows, [("2026-09-01", 1.69), ("2026-10-01", 1.86)])
+        # the old all-types ratio stays in raw for reference (None when Realtor.com has no month)
+        self.assertEqual(extras["2026-09-01"]["raw"]["all_types_actives_over_sfr_sales"], 2.74)
+        self.assertIsNone(extras["2026-10-01"]["raw"]["all_types_actives_over_sfr_sales"])
 
 
 if __name__ == "__main__":

@@ -1071,15 +1071,26 @@ def fetch_dial(dial, cfg, backfill=False):
         drows, _, _, dext = fetch_dial(dials[src["denominator_dial"]], cfg, backfill)
         a = dict((d[:7], v) for d, v in nrows)
         rows, extras = [], {}
+        sfr_only = src.get("value") == "sfr_only"   # scc_months_supply: SFR inventory / SFR sales (like for like)
         for d, v in drows:
-            if v and a.get(d[:7]) is not None:
-                rows.append((d, round(a[d[:7]] / v, 2)))
-                raw = {"numerator": a[d[:7]], "denominator": v, "numerator_dial": src["numerator_dial"], "denominator_dial": src["denominator_dial"]}
-                inv = ((dext.get(d) or {}).get("raw") or {}).get("inventory")
-                if inv is not None:
-                    raw["sccaor_sfr_inventory"] = inv
-                    raw["sfr_only_months"] = round(inv / v, 2)
-                extras[d] = {"raw": raw}
+            if not v:
+                continue
+            inv = ((dext.get(d) or {}).get("raw") or {}).get("inventory")
+            mixed = round(a[d[:7]] / v, 2) if a.get(d[:7]) is not None else None
+            if sfr_only:
+                if inv is None:
+                    continue                # no like-for-like value this month; never mix property types
+                val = round(inv / v, 2)
+            elif mixed is None:
+                continue
+            else:
+                val = mixed
+            rows.append((d, val))
+            raw = {"numerator": inv if sfr_only else a[d[:7]], "denominator": v, "numerator_dial": "sccaor_sfr_inventory" if sfr_only else src["numerator_dial"],
+                   "denominator_dial": src["denominator_dial"], "all_types_actives_over_sfr_sales": mixed}
+            if inv is not None:
+                raw["sccaor_sfr_inventory"] = inv
+            extras[d] = {"raw": raw}
         if not rows:
             raise SourceError("no month has both %s and %s" % (src["numerator_dial"], src["denominator_dial"]))
         return rows, "derived:%s/%s" % (src["numerator_dial"], src["denominator_dial"]), "%s / %s" % (src["numerator_dial"], src["denominator_dial"]), extras

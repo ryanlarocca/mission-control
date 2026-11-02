@@ -24,7 +24,7 @@ Decisions from Ryan (2026-11-01): start from v1.1 weights · tripwire cards yes 
 | SF median +17.4% YoY, 131% of list | Not re-checked; SF rents hit a record in late Oct (coverage ties it to AI hiring and IPO anticipation) | Unverified; a city median, mix-shift prone |
 | Bay Area tech layoffs ~14,500 in 2026 | Q3 WARN: Bay Area 7,570 (+15% YoY) but **Santa Clara County 2,273 (−27% YoY)**; SF +141%, San Mateo +78% | Layoffs are shifting to SF, not rising in SCC |
 
-**Taken from the thesis without independent check** (log as unverified until the first data pull): Q3 GDP 3.4%, Sep payrolls +29k, CPI 3.7%, forward P/E 18.7, CAPE 40.7. **My own approximations to verify when history loads:** SCC 2000–02 median decline (−10% to −15%), SCC 2022–23 decline (~$1.95M → ~$1.6M, about −18% in eight months), pre-2008 SCC NOD norm (150–300/month), months of supply ~1.5 (from 45 days of inventory), FAIR Plan +29.1% effective Oct 15.
+**Taken from the thesis without independent check** (log as unverified until the first data pull): Q3 GDP 3.4%, Sep payrolls +29k, CPI 3.7%, forward P/E 18.7, CAPE 40.7. **My own approximations to verify when history loads:** SCC 2000–02 median decline (−10% to −15%), SCC 2022–23 decline (~$1.95M → ~$1.6M, about −18% in eight months), pre-2008 SCC NOD norm (150–300/month), months of supply ~1.5 (from 45 days of inventory; Phase 1 measured 1.69 SFR-only for Sep 2026), FAIR Plan +29.1% effective Oct 15.
 
 ### 1.2 What's weakest
 
@@ -91,7 +91,7 @@ Probabilities: chat Claude's → v1.1. "Resolves" is the first date the data can
 | C16 | SCC ZHVI drawdown reaches **−15% or worse at any print through Dec 2028** (the thesis's "trough $1.65–1.80M") | implied ~60 → **35** | 2029-02-15 | Never −15 | [prob; audit: = Bear weight by construction] |
 | C17 | The lowest SCC ZHVI print through Dec 2027 occurs in Nov 2026–Jun 2027 **and** the Dec 2027 print is above it (the 2022 analog) | — → **40** | 2028-02-15 | Low after Jun 2027, or Dec 2027 not above it | [new; audit: defined on a closed window] |
 | C18 | Realtor.com active listing count for SCC (FRED, monthly) for Mar 2027 is ≥25% above Mar 2026 | — → 55 | 2027-04-30 | <25% YoY | [new; audit: source with history] |
-| C19 | SCC months of supply (Realtor.com actives ÷ C.A.R. monthly closed SFR sales) exceeds 3.0 in any month of 2027 | — → 30 | 2028-01-31 | Never >3.0 | [new] |
+| C19 | SCC single-family months of supply (SCCAOR SFR inventory ÷ SCCAOR SFR closed sales) exceeds 3.0 in any month of 2027 | — → 30 | 2028-01-31 | Never >3.0 | [new] |
 | C20 | SCC price-reduced share (Realtor.com price-reduced count ÷ active count, monthly) exceeds its 2016–2025 maximum in any month Feb–May 2027 | — → 40 | 2027-06-30 | Never exceeds | [new; audit: threshold defined by history, not a guessed 40%] |
 | C21 | C.A.R. SCC SFR closed sales for Mar–May 2027 total below Mar–May 2026 | — → 50 | 2027-06-30 | Spring 2027 ≥ spring 2026 | [new; volume leads price] |
 | C22 | SCC Notices of Default in any calendar month of 2027 are ≥2× the average of the first three months we count (Dec 2026–Feb 2027) | — → 25 | 2028-01-31 | Never 2× | [new; **provisional** until a 2025 baseline is sourced] |
