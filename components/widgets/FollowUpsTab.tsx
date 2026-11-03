@@ -267,6 +267,30 @@ export function FollowUpsTab() {
     try { window.localStorage.setItem(ON_CALL_KEY, JSON.stringify(next)) } catch { /* private mode */ }
   }
 
+  // Sales Coach scripts take Opus ~15 s; Ryan saw the panel fill 5–6 s into
+  // a call (2026-11-02). Warm the server cache for the call-due cards as
+  // soon as the queue loads, two at a time, each phone once per session —
+  // /api/coach/script then answers the tap from the cached copy.
+  const prefetchedScripts = useRef<Set<string>>(new Set())
+  const prefetchScripts = useCallback((rows: ContactRow[]) => {
+    const phones = rows
+      .filter(r => r.phone && (r.primary.kind === "call" || r.secondary?.kind === "call"))
+      .map(r => r.phone as string)
+      .filter(p => !prefetchedScripts.current.has(p))
+      .slice(0, 8)
+    if (!phones.length) return
+    phones.forEach(p => prefetchedScripts.current.add(p))
+    const run = async (queue: string[]) => {
+      for (const phone of queue) {
+        try {
+          await fetch("/api/coach/script", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ phone }) })
+        } catch { /* best effort — the tap generates on demand */ }
+      }
+    }
+    void run(phones.filter((_, i) => i % 2 === 0))
+    void run(phones.filter((_, i) => i % 2 === 1))
+  }, [])
+
   const fetchData = useCallback(async (silent = false) => {
     if (!silent) setLoading(true)
     try {
@@ -275,6 +299,7 @@ export function FollowUpsTab() {
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
       const payload = await res.json() as FollowUpsPayload
       setData({ ...payload, rows: keepPinnedRows(payload.rows, onCallRef.current) })
+      prefetchScripts(payload.rows)
       // Only clear the error banner on an explicit (non-silent) load —
       // initial mount or a manual Refresh. A SILENT refetch (the 30s poll,
       // or the refetch fired right after a send) must NOT wipe an action

@@ -2195,6 +2195,9 @@ function NextTouchPill({ summary }: { summary: NextTouchSummary }) {
   )
 }
 
+// Phones whose Sales Coach script was already requested this page load.
+const prefetchedScriptPhones = new Set<string>()
+
 function LeadCard(p: LeadCardProps) {
   const { group, expanded } = p
   const Icon = TYPE_ICON[group.mostRecentEvent.lead_type ?? "call"] || Phone
@@ -2281,6 +2284,14 @@ function LeadCard(p: LeadCardProps) {
   // placed, or on the Script button before dialing.
   const [scriptOpen, setScriptOpen] = useState(false)
   useEffect(() => { if (p.callSuccess) setScriptOpen(true) }, [p.callSuccess])
+  // Warm the script cache when the card is opened, so Call / Script is
+  // instant (Opus takes ~15 s cold). Once per phone per page load.
+  useEffect(() => {
+    const phone = group.contactPhone
+    if (!expanded || !phone || prefetchedScriptPhones.has(phone)) return
+    prefetchedScriptPhones.add(phone)
+    void fetch("/api/coach/script", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ phone }) }).catch(() => {})
+  }, [expanded, group.contactPhone])
   const [mailSaving, setMailSaving] = useState(false)
   const [mailError, setMailError] = useState<string | null>(null)
   useEffect(() => {

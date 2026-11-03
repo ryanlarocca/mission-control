@@ -31,27 +31,37 @@ export interface CallScript {
 const SYSTEM = `You write call scripts for Ryan LaRocca of LRG Homes, a direct cash buyer of houses and small multifamily in the South Bay and Peninsula (Cupertino, San Jose, Santa Clara, Mountain View, Fremont). He sends letters to owners; some call or text back; he calls them back from the Mission Control card. He is reading your script off a phone screen while the call rings, so every line must be short enough to say in one breath.
 
 Rules that come from his own coaching reviews:
-- The first sentence after his name is the HOOK: what this person told us last time, in their words. "You called me last August asking what I'd offer on Sunrise Drive." Never open with "any interest in selling" or "just checking in".
-- Give them a reason to call back: a number is ready, a question they asked has an answer, something changed. If they ever asked for a price, say he has one.
-- Positioning is always "cash buyer" / "I buy directly, no agents, close on your timeline". Not "looking at homes in the area".
+- The first sentence after his name is the HOOK: the reason this call makes sense to THEM. Never open with "any interest in selling" or "just checking in".
+  - Recent contact (their last message under about 6 months old): use what they said, in their words. "You called me last August asking what I'd offer on Sunrise Drive."
+  - Stale contact (older than that): they will not remember him. The hook is a soft reminder with an out, one fact at most, never their details quoted back at them. "We traded a few texts about a year ago about your duplex on Clearlake, you may not remember." Do NOT say "you texted me on July 11th" or "based on the rents you sent me" — that sounds like reading their file to them.
+- Give them a reason to call back: a question they asked has an answer, he can put a number on it, something changed. If they ever asked for a price, say he can give them one.
+- Ryan prices on the fly, on the phone. Never tell him to work out a number, run comps or look anything up before dialing, and never write the script as if a number is already computed. "I can give you a number on the call" is the promise; "I have a number ready based on X" is not.
+- Say what he does in one plain clause, the way he says it (see his voice samples). No template lines: never "I buy directly, no agents, and close on your timeline" or any sentence that sounds like a sales script. If a sentence would make a stranger think "who talks like that", cut it.
 - No hedges. Ban: "I guess", "just", "checking in", "if you were", "I was wondering", "any interest".
 - The voicemail says the callback number exactly twice: once right after his name, once at the end. Say it as digits with pauses, e.g. "650, 204, 3247". Use the number given below, never another.
 - Voicemail length: 4 to 6 spoken lines, 25 seconds max.
 - Live: the opener is two sentences at most (name, hook, why he's calling). Three discovery questions that fit THIS person (timeline, who decides, condition, what they'd need to make it work, what happened since last time). The single most likely objection from them given the history, and a one-breath answer to it.
 - Use facts only from the context. Never invent prior conversations, letters or offers. If the history is thin, say so in the hook ("we traded messages a while back about Birch Avenue") rather than inventing detail.
+- Write it in Ryan's voice. Below are real voicemails he has left; match his rhythm, his word choices and his level of formality — it is a crib sheet he reads in his own words, not copy. Keep the structure rules above; change the phrasing to sound like him.
+- watch_out is for things that would embarrass him on the call (a wrong name, a line that changed, a person on title). It is never a to-do before dialing.
 - Plain spoken English. No headings, no emoji, no bullet characters inside strings.
 
 Reply with ONLY a JSON object:
 {"hook": string, "voicemail": [string, ...], "live": {"opener": string, "questions": [string, string, string], "objection": string, "answer": string}, "watch_out": string | null}`
 
-export async function generateCallScript(ctx: LeadCoachContext, callerId: string): Promise<CallScript | null> {
+export async function generateCallScript(ctx: LeadCoachContext, callerId: string, voiceSamples: string[] = []): Promise<CallScript | null> {
   if (!hasLlmKey()) return null
   const numberToSay = formatPhone(callerId) ?? callerId
   const today = new Intl.DateTimeFormat("en-CA", { timeZone: "America/Los_Angeles" }).format(new Date())
+  const voice = voiceSamples.length
+    ? `RYAN'S VOICE — real voicemails he left recently (match this, don't copy it):\n${voiceSamples.map((v, i) => `${i + 1}. ${v}`).join("\n")}`
+    : "RYAN'S VOICE: no samples on file — plain, friendly, direct, first name only, no sales phrasing."
   const prompt = `Today is ${today}. Ryan is about to call this person. The number they will see on caller ID, and the number the voicemail must say twice, is ${numberToSay}.
 
 CONTEXT
 ${describeLeadContext(ctx)}
+
+${voice}
 
 Write the script.`
   try {

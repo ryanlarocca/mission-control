@@ -27,14 +27,15 @@ export function CallScriptPanel({
   const [loading, setLoading] = useState(false)
   const [err, setErr] = useState<string | null>(null)
 
-  const load = useCallback(async () => {
+  // force=true (the refresh button) skips the server's day-old cache.
+  const load = useCallback(async (force = false) => {
     setLoading(true)
     setErr(null)
     try {
       const res = await fetch("/api/coach/script", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ phone, leadId, callerId }),
+        body: JSON.stringify({ phone, leadId, callerId, force }),
       })
       const body = await res.json().catch(() => ({}))
       if (!res.ok || !body.script) throw new Error(body.error || `HTTP ${res.status}`)
@@ -57,7 +58,7 @@ export function CallScriptPanel({
         <span className="text-zinc-300 font-medium">Script</span>
         {script?.numberToSay && <span className="text-zinc-500">· say {script.numberToSay}</span>}
         <button
-          onClick={() => void load()}
+          onClick={() => void load(true)}
           disabled={loading}
           title="Write it again"
           className="ml-auto inline-flex items-center gap-1 px-2 py-1 min-h-[30px] rounded border border-zinc-800 text-zinc-400 hover:text-zinc-200 hover:border-zinc-600 disabled:opacity-50"

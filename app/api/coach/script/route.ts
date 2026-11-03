@@ -1,8 +1,9 @@
 import { NextRequest, NextResponse } from "next/server"
 import { getLeadsClient } from "@/lib/leads"
 import { resolveLeadCallerId } from "@/lib/leadCall"
-import { gatherLeadContext } from "@/lib/coach/context"
-import { generateCallScript } from "@/lib/coach/script"
+import { gatherLeadContext, gatherRyanVoiceSamples } from "@/lib/coach/context"
+import { generateCallScript, type CallScript } from "@/lib/coach/script"
+import { formatPhone } from "@/lib/utils"
 
 // Pre-call script for a lead (Sales Coach, 2026-11-02). The card calls this
 // when Ryan taps Call (with the new call row's leadId, so the script is
@@ -24,7 +25,7 @@ function normalizeE164(raw: string): string | null {
 }
 
 export async function POST(request: NextRequest) {
-  let body: { phone?: unknown; leadId?: unknown; callerId?: unknown } = {}
+  let body: { phone?: unknown; leadId?: unknown; callerId?: unknown; force?: unknown } = {}
   try {
     body = await request.json()
   } catch {
@@ -44,13 +45,35 @@ export async function POST(request: NextRequest) {
     }
   }
 
+  const force = body && typeof body === "object" && (body as { force?: unknown }).force === true
   const ctx = await gatherLeadContext(sb, phone)
-  const script = await generateCallScript(ctx, callerId)
-  if (!script) return NextResponse.json({ error: "Script generation failed — try again" }, { status: 502 })
 
-  if (leadId) {
-    const { error } = await sb.from("leads").update({ coach_script: script }).eq("id", leadId)
-    if (error) console.error(`[coach/script] coach_script write failed (${leadId}): ${error.message}`)
+  // Reuse a fresh script (Ryan, 2026-11-02: "it took until 5 or 6 seconds
+  // into the call for that to populate"). Fresh = under a day old, written
+  // for the same caller ID, and nothing new from them since. The Follow Ups
+  // tab prefetches scripts for the call-due cards, so the tap hits this.
+  const cached = ctx.lastScript as CallScript | null
+  const freshMs = 24 * 60 * 60 * 1000
+  const numberToSay = formatPhone(callerId) ?? callerId
+  const fresh = !force && cached && ctx.lastScriptAt
+    && Date.now() - new Date(ctx.lastScriptAt).getTime() < freshMs
+    && cached.numberToSay === numberToSay
+    && (!ctx.lastFromThem || ctx.lastFromThem <= ctx.lastScriptAt.slice(0, 10))
+  let script: CallScript | null = fresh ? cached : null
+  let reused = !!script
+  if (!script) {
+    const voice = await gatherRyanVoiceSamples(sb)
+    script = await generateCallScript(ctx, callerId, voice)
+    if (!script) return NextResponse.json({ error: "Script generation failed — try again" }, { status: 502 })
+    reused = false
   }
-  return NextResponse.json({ script })
+
+  // Save on the call row when there is one (the rater reads it there);
+  // otherwise cache it on the newest row of the cluster for the next tap.
+  const target = leadId ?? (reused ? null : ctx.newestId)
+  if (target) {
+    const { error } = await sb.from("leads").update({ coach_script: script }).eq("id", target)
+    if (error) console.error(`[coach/script] coach_script write failed (${target}): ${error.message}`)
+  }
+  return NextResponse.json({ script, reused })
 }

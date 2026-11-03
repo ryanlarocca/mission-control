@@ -23,8 +23,18 @@ export interface LeadCoachContext {
   aiSummary: string | null
   // "[2025-08-02] voicemail (lead): hi Brian my name is Rita…" lines.
   timeline: string[]
-  // The script Opus wrote for the most recent call, if any (coach_script).
+  // The most recent script Opus wrote for this person (coach_script on any
+  // row of the cluster) and when — reused by /api/coach/script while it is
+  // fresh, so the tap is instant after the first generation.
   lastScript: unknown | null
+  lastScriptAt: string | null
+  // Newest row in the cluster — where a pre-dial script is cached.
+  newestId: string | null
+  // Date of the last message from THEM, and how long ago — the script's
+  // hook changes register once a contact is stale (Ryan, 2026-11-02: a
+  // 15-month-old text quoted back "comes off a little bit strange").
+  lastFromThem: string | null
+  daysSinceThem: number | null
 }
 
 export async function gatherLeadContext(sb: SupabaseClient, phone: string): Promise<LeadCoachContext> {
@@ -38,7 +48,7 @@ export async function gatherLeadContext(sb: SupabaseClient, phone: string): Prom
   const ctx: LeadCoachContext = {
     phone, name: null, propertyAddress: null, sources: [], status: null, temperature: null,
     offerAmount: null, offerVerbalizedAt: null, mailPieces: null, notes: [], aiNotes: null, aiSummary: null,
-    timeline: [], lastScript: null,
+    timeline: [], lastScript: null, lastScriptAt: null, newestId: null, lastFromThem: null, daysSinceThem: null,
   }
   const seenNotes = new Set<string>()
   for (const r of rows) {
@@ -51,17 +61,59 @@ export async function gatherLeadContext(sb: SupabaseClient, phone: string): Prom
     if (r.mail_pieces_detail) ctx.mailPieces = typeof r.mail_pieces_detail === "string" ? r.mail_pieces_detail : JSON.stringify(r.mail_pieces_detail)
     if (r.ai_notes) ctx.aiNotes = r.ai_notes
     if (r.ai_summary) ctx.aiSummary = r.ai_summary
-    if (r.coach_script) ctx.lastScript = r.coach_script
+    ctx.newestId = r.id
+    if (r.coach_script && typeof r.coach_script === "object") {
+      const at = (r.coach_script as { generatedAt?: unknown }).generatedAt
+      const atStr = typeof at === "string" ? at : null
+      if (!ctx.lastScriptAt || (atStr && atStr > ctx.lastScriptAt)) { ctx.lastScript = r.coach_script; ctx.lastScriptAt = atStr }
+    }
     const mine = ryanNotes(r.notes)
     if (mine && !seenNotes.has(mine)) { seenNotes.add(mine); ctx.notes.push(mine) }
     const text = (r.message || "").trim()
     if (text) {
       const dir = r.twilio_number ? "them" : "ryan"
       ctx.timeline.push(`[${String(r.created_at).slice(0, 10)}] ${r.lead_type || "?"} (${dir}): ${text.slice(0, 3000)}`)
+      if (r.twilio_number) ctx.lastFromThem = String(r.created_at).slice(0, 10)
     }
   }
   ctx.timeline = ctx.timeline.slice(-20)
+  if (ctx.lastFromThem) ctx.daysSinceThem = Math.max(0, Math.round((Date.now() - new Date(ctx.lastFromThem).getTime()) / 86_400_000))
   return ctx
+}
+
+// Ryan's own recent voicemails, for the script's voice. Outbound call rows
+// whose transcript holds his message: dual-channel ones are read from the
+// "Ryan:" turns; older mixed ones are taken whole when they are clearly a
+// message (not a no-answer stamp). Short greetings-only rows are skipped.
+export async function gatherRyanVoiceSamples(sb: SupabaseClient, limit = 8): Promise<string[]> {
+  const { data } = await sb
+    .from("leads")
+    .select("message, created_at")
+    .is("twilio_number", null)
+    .eq("lead_type", "call")
+    .not("message", "is", null)
+    .order("created_at", { ascending: false })
+    .limit(40)
+  const out: string[] = []
+  for (const r of data ?? []) {
+    const text = String(r.message || "")
+    if (text.startsWith("📵")) continue
+    let mine: string
+    if (/^Ryan:/m.test(text)) {
+      mine = text.split("\n").filter((l) => l.startsWith("Ryan:")).map((l) => l.slice(5).trim()).join(" ")
+    } else {
+      // Mixed transcript: skip the other side's greeting / screener prompt
+      // and start where his message starts.
+      const m = text.match(/\b(yeah,?\s+)?(hi|hey|hello)\b[^.]{0,40}?\b(this is|it'?s) ryan\b|\bthis is ryan\b/i)
+      mine = m && m.index != null ? text.slice(m.index) : text
+    }
+    mine = mine.replace(/\s+/g, " ").trim()
+    // A real message, not "this is Ryan, looking for Rita" at a screener.
+    if (mine.length < 140 || mine.length > 900) continue
+    out.push(mine)
+    if (out.length >= limit) break
+  }
+  return out
 }
 
 export function describeLeadContext(ctx: LeadCoachContext): string {
@@ -70,6 +122,11 @@ export function describeLeadContext(ctx: LeadCoachContext): string {
   lines.push(`Phone: ${formatPhone(ctx.phone) ?? ctx.phone}`)
   lines.push(`Property: ${ctx.propertyAddress || "unknown"}`)
   if (ctx.sources.length) lines.push(`How they reached us: ${ctx.sources.join(", ")}`)
+  if (ctx.lastFromThem) {
+    const d = ctx.daysSinceThem ?? 0
+    const stale = d > 180
+    lines.push(`Last message from them: ${ctx.lastFromThem} (${d} days ago)${stale ? " — STALE: they will not remember the exchange; soft reminder with an out, no details quoted back" : " — recent: use their words"}`)
+  }
   if (ctx.status) lines.push(`Status: ${ctx.status}${ctx.temperature ? ` · ${ctx.temperature}` : ""}`)
   if (ctx.offerAmount != null) lines.push(`Offer on file: $${ctx.offerAmount.toLocaleString()}${ctx.offerVerbalizedAt ? ` (verbalized ${ctx.offerVerbalizedAt.slice(0, 10)})` : ""}`)
   if (ctx.mailPieces) lines.push(`Mail they received: ${ctx.mailPieces.slice(0, 600)}`)
