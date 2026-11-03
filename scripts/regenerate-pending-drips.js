@@ -1,10 +1,13 @@
 #!/usr/bin/env node
 /**
- * Regenerate the `message` field on existing pending drip_queue rows using
- * the current drip-engine prompt. Use this after a prompt change (e.g.
- * adding responsiveness signals) so previously-queued drips pick up the
- * new tone without having to skip + re-queue (which would push the touch
- * counter forward).
+ * Rewrite the `message` on existing pending drip_queue rows with the current
+ * writer (Mission Control's Opus coach writer via /api/reply/drip-draft,
+ * the same path the engine uses since 2026-11-03). Use after a writer or
+ * prompt change so queued drips pick it up without skip + re-queue (which
+ * would push the touch counter forward).
+ *
+ * Skips rows Ryan edited, rows already on the current writer, and any row
+ * whose text changed while the rewrite ran. Three at a time.
  *
  * Usage:
  *   node scripts/regenerate-pending-drips.js                       # all pending
@@ -44,53 +47,59 @@ const engine = require("./drip-engine.js")
 const { createClient } = require(path.join(REPO_ROOT, "node_modules/@supabase/supabase-js"))
 const sb = createClient(process.env.LRG_SUPABASE_URL, process.env.LRG_SUPABASE_SERVICE_KEY, { auth: { persistSession: false } })
 
+const CURRENT_PROMPT = "auto-coach-v1-2026-11-03"
+const CONCURRENCY = 3
+
+async function rewriteRow(row) {
+  const { data: drafts } = await sb.from("reply_drafts").select("id, model, prompt_version, draft_body").eq("drip_queue_id", row.id).order("created_at", { ascending: true })
+  const latest = drafts && drafts.length ? drafts[drafts.length - 1] : null
+  if ((drafts || []).some((d) => d.model === "ryan-edit")) return { skip: "edited by Ryan" }
+  if (latest && latest.prompt_version === CURRENT_PROMPT) return { skip: "already on the new writer" }
+  if (latest && latest.draft_body && latest.draft_body.trim() !== (row.message || "").trim()) return { skip: "text differs from its draft (hand-edited)" }
+
+  const { data: lead } = await sb.from("leads").select("*").eq("id", row.lead_id).maybeSingle()
+  if (!lead) return { skip: "lead not found" }
+  const campaign = engine.DRIP_CAMPAIGNS[row.campaign_type] || engine.DRIP_CAMPAIGNS[lead.drip_campaign_type]
+  if (!campaign) return { skip: `unknown campaign ${row.campaign_type}` }
+  const history = await engine.buildConversationHistory(lead, sb)
+  const responsiveness = await engine.extractResponsivenessSignals(lead, sb)
+  const daysSinceCreated = Math.floor((Date.now() - new Date(lead.created_at).getTime()) / 86400000)
+  const out = await engine.writeTouchWithOpus({ lead, campaign, touchNumber: row.touch_number, channel: row.channel, history, clarify: false, daysSinceCreated, responsiveness })
+  if (!out.draft) return { fail: out.error }
+  const name = lead.name || lead.caller_phone || lead.email || "(unknown)"
+  const preview = `${row.id.slice(0, 8)} ${name} touch #${row.touch_number}\n    OLD: ${row.message.slice(0, 160).replace(/\n/g, " ")}\n    NEW: ${out.draft.body.slice(0, 160).replace(/\n/g, " ")}`
+  if (DRY_RUN) return { ok: preview }
+  // Only if nothing touched the row meanwhile (Ryan may be working the queue).
+  const { data: upd, error: upErr } = await sb.from("drip_queue").update({ message: out.draft.body })
+    .eq("id", row.id).eq("status", "pending").eq("message", row.message).select("id")
+  if (upErr) return { fail: upErr.message }
+  if (!upd || !upd.length) return { skip: "changed or sent while rewriting" }
+  await engine.recordDripDraft(sb, { lead, queueId: row.id, channel: row.channel, message: out.draft.body, subject: row.subject, critic: out.draft.critic || null, parentId: latest && latest.id, writer: out.draft })
+  return { ok: preview }
+}
+
 async function main() {
   let q = sb.from("drip_queue").select("*").eq("status", "pending").order("created_at", { ascending: true })
   if (LEAD_FILTER) q = q.eq("lead_id", LEAD_FILTER)
   if (LIMIT) q = q.limit(LIMIT)
   const { data: rows, error } = await q
   if (error) { console.error("query failed:", error.message); process.exit(1) }
-  if (!rows || rows.length === 0) { console.log("no pending rows to regenerate."); return }
-  console.log(`regenerating ${rows.length} pending drip(s)${DRY_RUN ? " (DRY RUN)" : ""}`)
+  if (!rows || rows.length === 0) { console.log("no pending rows to rewrite."); return }
+  console.log(`rewriting ${rows.length} pending drip(s)${DRY_RUN ? " (DRY RUN)" : ""}`)
 
   let ok = 0, skip = 0, fail = 0
-  for (const row of rows) {
-    const { data: lead } = await sb.from("leads").select("*").eq("id", row.lead_id).maybeSingle()
-    if (!lead) { console.warn(`  row ${row.id.slice(0,8)}: lead not found — skipping`); skip++; continue }
-
-    const campaign = engine.DRIP_CAMPAIGNS[lead.drip_campaign_type]
-    if (!campaign) { console.warn(`  row ${row.id.slice(0,8)}: unknown campaign ${lead.drip_campaign_type} — skipping`); skip++; continue }
-
-    const history = await engine.buildConversationHistory(lead, sb)
-    const responsiveness = await engine.extractResponsivenessSignals(lead, sb)
-    const daysSinceCreated = Math.floor((Date.now() - new Date(lead.created_at).getTime()) / 86400000)
-
-    const newMessage = await engine.generateMessage({
-      lead,
-      campaign,
-      touchNumber: row.touch_number,
-      channel: row.channel,
-      history,
-      clarify: false, // suppress clarify on regen — most leads we're regenerating are unresponsive
-      daysSinceCreated,
-      responsiveness,
-    })
-    if (!newMessage) { console.warn(`  row ${row.id.slice(0,8)}: generation failed`); fail++; continue }
-
-    const name = lead.name || lead.caller_phone || lead.email || "(unknown)"
-    console.log(`\n  ${row.id.slice(0,8)} ${name} touch #${row.touch_number} state=${responsiveness?.state || "n/a"}`)
-    console.log(`    OLD: ${row.message.slice(0, 140).replace(/\n/g, " ")}`)
-    console.log(`    NEW: ${newMessage.slice(0, 140).replace(/\n/g, " ")}`)
-
-    if (!DRY_RUN) {
-      const { error: upErr } = await sb.from("drip_queue").update({ message: newMessage }).eq("id", row.id).eq("status", "pending")
-      if (upErr) { console.error(`    update failed: ${upErr.message}`); fail++; continue }
-      // Reply Planner: keep the old/new pair instead of only printing it.
-      const { data: prior } = await sb.from("reply_drafts").select("id").eq("drip_queue_id", row.id).order("created_at", { ascending: false }).limit(1).maybeSingle()
-      await engine.recordDripDraft(sb, { lead, queueId: row.id, channel: row.channel, message: newMessage, subject: row.subject, critic: null, parentId: prior && prior.id, whyText: "bulk regenerate (prompt change)" })
+  const queue = rows.slice()
+  async function worker() {
+    while (queue.length) {
+      const row = queue.shift()
+      let r
+      try { r = await rewriteRow(row) } catch (e) { r = { fail: e.message } }
+      if (r.ok) { ok++; console.log(`\n  ${r.ok}`) }
+      else if (r.skip) { skip++; console.log(`  ${row.id.slice(0, 8)}: skip — ${r.skip}`) }
+      else { fail++; console.warn(`  ${row.id.slice(0, 8)}: FAILED — ${r.fail}`) }
     }
-    ok++
   }
+  await Promise.all(Array.from({ length: CONCURRENCY }, worker))
   console.log(`\ndone — ok=${ok} skip=${skip} fail=${fail}`)
 }
 main().catch(e => { console.error("fatal:", e); process.exit(1) })

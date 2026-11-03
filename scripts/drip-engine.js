@@ -921,14 +921,18 @@ async function recordDripDraft(sb, { lead, queueId, channel, message, subject, c
 }
 
 // After a real send: stamp the latest reply_drafts row for the queue row as
-// sent, was_edited = differs from the engine's original (root) draft.
+// sent, was_edited = differs from the last generated draft.
 async function markDripDraftSent(sb, queueId, message, subject) {
   if (!queueId) return
   try {
-    const { data: rows } = await sb.from("reply_drafts").select("id, draft_body, parent_draft_id, created_at")
+    const { data: rows } = await sb.from("reply_drafts").select("id, draft_body, parent_draft_id, created_at, model")
       .eq("drip_queue_id", queueId).order("created_at", { ascending: true })
     if (!rows || !rows.length) return
-    const root = rows.find((r) => !r.parent_draft_id) || rows[0]
+    // was_edited = differs from the last draft Ryan was shown (the newest
+    // generated row, not his own edit rows), so a rewritten or redrafted
+    // touch sent as written counts as untouched.
+    const generated = rows.filter((r) => r.model !== "ryan-edit")
+    const root = generated.length ? generated[generated.length - 1] : rows[0]
     const latest = rows[rows.length - 1]
     const norm = (t) => (t || "").replace(/\s+/g, " ").trim()
     await sb.from("reply_drafts").update({

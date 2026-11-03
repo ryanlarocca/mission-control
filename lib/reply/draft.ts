@@ -54,7 +54,8 @@ export { VOICE_SYSTEM, channelRules } from "./voice"
 
 /** Rebuild a "Not right" session as coach turns from the reply_drafts parent
  *  chain (oldest first): each turn is a draft plus the note that produced it
- *  (turns[0].gist = the root's gist, "" for an auto draft). Ryan's manual
+ *  (turns[0].gist = the root's gist, "" for an auto draft). A no-note draft
+ *  (plain Redraft, bulk rewrite) restarts the chain. Ryan's manual
  *  edits (model "ryan-edit") replace the body of the turn they edited. The
  *  newest body is what the card actually showed, when the caller has it. */
 export async function loadDraftChain(parentDraftId: string, latestBody?: string | null): Promise<CoachTurn[]> {
@@ -76,7 +77,12 @@ export async function loadDraftChain(parentDraftId: string, latestBody?: string 
     const body = (r.draft_body ?? "").trim()
     if (!body) continue
     if (r.model === "ryan-edit" && turns.length) { turns[turns.length - 1].body = body; continue }
-    turns.push({ gist: (r.why_text ?? r.gist ?? "").trim(), body })
+    // System rewrites ("bulk regenerate …") are not Ryan's notes.
+    const note = /^bulk (regenerate|rewrite)/i.test(r.why_text ?? "") ? "" : (r.why_text ?? r.gist ?? "").trim()
+    // A draft made with no note (plain Redraft, a bulk rewrite) started
+    // fresh, so the chain restarts there.
+    if (!note && turns.length) turns.length = 0
+    turns.push({ gist: note, body })
   }
   if (turns.length && latestBody?.trim()) turns[turns.length - 1].body = latestBody.trim()
   return turns
