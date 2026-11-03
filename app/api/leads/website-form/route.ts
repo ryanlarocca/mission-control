@@ -8,7 +8,7 @@ import {
   normalizeE164,
   sendTwilioSms,
 } from "@/lib/leads"
-import { autoLinkMailRecord } from "@/lib/mailMatch"
+import { autoLinkMailRecord, creditWebsiteFormToMailCampaign } from "@/lib/mailMatch"
 import {
   FORM_ROW_COLUMNS,
   confirmationEmail,
@@ -169,9 +169,13 @@ async function runIntake(a: IntakeArgs): Promise<void> {
     const recordId = (linked?.mail_record_id as string | null) ?? m?.record?.id ?? null
     if (recordId) {
       const { data: rec } = await sb.from("mail_records").select("owner_name, campaign_id").eq("id", recordId).maybeSingle()
+      // Count this lead under the mailer in Campaign Performance (A/B child
+      // by the record's piece) — the alert names the same campaign.
+      const credited = await creditWebsiteFormToMailCampaign(sb, form, recordId)
       let campaignName = ""
-      if (rec?.campaign_id) {
-        const { data: c } = await sb.from("campaigns").select("name").eq("id", rec.campaign_id).maybeSingle()
+      const nameId = credited ?? (rec?.campaign_id as string | undefined)
+      if (nameId) {
+        const { data: c } = await sb.from("campaigns").select("name").eq("id", nameId).maybeSingle()
         campaignName = (c?.name as string | undefined) || ""
       }
       const owner = (rec?.owner_name as string | undefined) || ""

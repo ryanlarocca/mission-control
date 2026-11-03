@@ -328,3 +328,51 @@ export async function autoLinkMailRecord(sb: SupabaseClient, leadId: string): Pr
   }
   return result
 }
+
+/**
+ * Website form leads carry no campaign_id — the form isn't a mailer line —
+ * so Campaign Performance never counted a mailer recipient who answered on
+ * lrghomes.com (Maryam Norton, NOO Q4 B, 2026-11-02). Once the cluster is
+ * linked to a mailed record, credit its website form rows to that record's
+ * campaign: the A/B piece child when the list is split (record.piece), else
+ * the list's own campaign. Only website FORM rows are written — a call or
+ * text to a mailer line keeps that line's attribution on its own row — so a
+ * re-link moves the credit and an unlink (null) clears it. Returns the
+ * campaign id written, or null.
+ */
+export async function creditWebsiteFormToMailCampaign(
+  sb: SupabaseClient,
+  lead: ClusterIdentityLite,
+  recordId: string | null
+): Promise<string | null> {
+  const ors: string[] = []
+  if (lead.caller_phone && !ANON.has(lead.caller_phone.trim().toLowerCase())) ors.push(`caller_phone.eq.${lead.caller_phone}`)
+  if (lead.email) ors.push(`email.eq.${lead.email.toLowerCase()}`)
+  const scope = ors.length ? `id.eq.${lead.id},${ors.join(",")}` : `id.eq.${lead.id}`
+
+  if (!recordId) {
+    // Unlink: drop the campaign credit from website form rows (they never
+    // have one of their own).
+    const { error } = await sb.from("leads").update({ campaign_id: null })
+      .or(scope).eq("lead_type", "form").eq("source_type", "website")
+    if (error) throw new Error(`website campaign clear failed: ${error.message}`)
+    return null
+  }
+
+  const { data: rec } = await sb.from("mail_records").select("campaign_id, piece").eq("id", recordId).maybeSingle()
+  if (!rec?.campaign_id) return null
+  let campaignId = rec.campaign_id as string
+  if (rec.piece) {
+    const { data: child } = await sb
+      .from("campaigns")
+      .select("id")
+      .eq("parent_campaign_id", rec.campaign_id)
+      .eq("piece", rec.piece)
+      .limit(1)
+    if (child?.[0]?.id) campaignId = child[0].id as string
+  }
+  const { error } = await sb.from("leads").update({ campaign_id: campaignId })
+    .or(scope).eq("lead_type", "form").eq("source_type", "website")
+  if (error) throw new Error(`website campaign credit failed: ${error.message}`)
+  return campaignId
+}

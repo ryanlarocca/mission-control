@@ -1,9 +1,10 @@
 import { NextRequest, NextResponse } from "next/server"
 import { getLeadsClient } from "@/lib/leads"
-import { MAIL_RECORD_LITE_COLUMNS, linkMailRecordToCluster, type MailRecordLite } from "@/lib/mailMatch"
+import { MAIL_RECORD_LITE_COLUMNS, creditWebsiteFormToMailCampaign, linkMailRecordToCluster, type MailRecordLite } from "@/lib/mailMatch"
 
 // Manual lead ↔ mailed-record link from the card. Body { mail_record_id: uuid | null }.
-// Writes the link to every row in the caller's cluster (phone / thread / email).
+// Writes the link to every row in the caller's cluster (phone / thread / email),
+// and credits website form rows to the record's campaign (Campaign Performance).
 export const dynamic = "force-dynamic"
 
 export async function PATCH(request: NextRequest, { params }: { params: { id: string } }) {
@@ -34,6 +35,8 @@ export async function PATCH(request: NextRequest, { params }: { params: { id: st
       record = rec as unknown as MailRecordLite
     }
     const updated = await linkMailRecordToCluster(sb, lead, recordId, "manual", null, record?.prior_pieces ?? null)
+    // A website form lead linked by hand counts under that mailer too.
+    await creditWebsiteFormToMailCampaign(sb, lead, recordId)
     return NextResponse.json({ ok: true, updated, record })
   } catch (e) {
     return NextResponse.json({ error: e instanceof Error ? e.message : String(e) }, { status: 500 })
