@@ -544,13 +544,28 @@ function CRMSTabInner() {
     const fam = famOverride ?? familiarity
     const ch = chOverride ?? channel
     const msgKey = msgKeyFor(contact, mod, ch)
-    if (!force && (editedMessages[msgKey] || generatedMessages[msgKey])) return
+    if (!force && (editedMessages[msgKey] || generatedMessages[msgKey])) {
+      const pre = prefetchStatusRef.current.get(msgKey)
+      if (pre !== undefined) setDraftStatus(pre)
+      return
+    }
 
     generateAbortRef.current?.abort()
     const controller = new AbortController()
     generateAbortRef.current = controller
 
     setGeneratingFor(contact.id)
+    // Already being drafted in the background: wait for that one instead of
+    // starting a second (it fills generatedMessages itself).
+    const inFlight = !force ? prefetchRef.current.get(msgKey) : undefined
+    if (inFlight) {
+      await inFlight
+      if (generateAbortRef.current === controller) {
+        setDraftStatus(prefetchStatusRef.current.get(msgKey) ?? null)
+        setGeneratingFor(null)
+      }
+      return
+    }
     try {
       const intent = modalityToIntent(mod)
       const moment = momentFor(contact, intent)
@@ -580,6 +595,57 @@ function CRMSTabInner() {
         setGeneratingFor(null)
       }
     }
+  }
+
+  // ── Prefetch (2026-11-03) — drafts take ~3–10 s on the Opus writer, so the
+  // next two contacts in the queue are drafted in the background while Ryan
+  // works the current one. Same choices handleSelectContact makes (modality,
+  // channel, familiarity), so opening the contact finds the draft waiting.
+  const prefetchRef = useRef<Map<string, Promise<void>>>(new Map())
+  const prefetchedRef = useRef<Set<string>>(new Set())
+  const prefetchStatusRef = useRef<Map<string, string | null>>(new Map())
+
+  async function prefetchDraft(contact: CRMSContact) {
+    if (prefetchedRef.current.has(contact.id)) return
+    prefetchedRef.current.add(contact.id)
+    let mod: Modality = (MODALITIES_BY_TYPE[contact.type] as string[]).includes(modality)
+      ? modality
+      : DEFAULT_MODALITY[contact.type]
+    const [t] = await Promise.all([
+      fetchTouches(contact.phone),
+      (async () => {
+        try {
+          const res = await fetch(`/api/crms/generate?phone=${encodeURIComponent(contact.phone)}`)
+          const data = await res.json()
+          if (data.preferred_modality) mod = coerceModality(data.preferred_modality, contact.type)
+        } catch {}
+      })(),
+    ])
+    const ch = pickChannel(contact, t)
+    const msgKey = msgKeyFor(contact, mod, ch)
+    if (prefetchRef.current.has(msgKey)) return
+    const run = (async () => {
+      try {
+        const intent = modalityToIntent(mod)
+        const data = await requestDraft({
+          relationshipId: contact.id,
+          channel: ch === "email" ? "email" : "imessage",
+          surface: "relationships",
+          plan: { moment: momentFor(contact, intent), temperature: null, next_action: "send", reason: "", source: "ryan", familiarity: deriveFamiliarity(contact), intent },
+        })
+        if (!data.body) return
+        prefetchStatusRef.current.set(msgKey, data.critic && !data.critic.ok && data.critic.issues.length ? `check: ${data.critic.issues.join("; ")}` : null)
+        // Never overwrite a draft Ryan already has on that card.
+        setGeneratedMessages(prev => (prev[msgKey] ? prev : { ...prev, [msgKey]: data.body }))
+        setDraftIds(prev => (prev[msgKey] ? prev : { ...prev, [msgKey]: data.draftId }))
+        if (ch === "email" && data.subject) setSubjects(prev => (prev[msgKey] ? prev : { ...prev, [msgKey]: data.subject as string }))
+      } catch {
+        prefetchedRef.current.delete(contact.id) // opening it drafts normally
+      } finally {
+        prefetchRef.current.delete(msgKey)
+      }
+    })()
+    prefetchRef.current.set(msgKey, run)
   }
 
   // ── Contact selection — debounced to avoid hammering on rapid clicks ──
@@ -1147,6 +1213,23 @@ function CRMSTabInner() {
   // Send / Skip / Remove / Mark Done all advance explicitly, so this only
   // ever shows an already-worked contact after a call.
   const selectedContact = dueContacts.find(c => c.id === selectedId)
+
+  // Once the open card's draft is on screen (never competing with it), draft
+  // the next two contacts in the queue.
+  const openKey = selectedContact ? msgKeyFor(selectedContact, modality, channel) : null
+  const openDrafted = !!openKey && !!(generatedMessages[openKey] || editedMessages[openKey])
+  const nextToPrefetch = (() => {
+    const i = dueContacts.findIndex(c => c.id === selectedId)
+    return i >= 0 ? dueContacts.slice(i + 1, i + 3).map(c => c.id).join(",") : ""
+  })()
+  useEffect(() => {
+    if (generatingFor || !openDrafted || !nextToPrefetch) return
+    for (const id of nextToPrefetch.split(",")) {
+      const c = dueContacts.find(x => x.id === id)
+      if (c) void prefetchDraft(c)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [nextToPrefetch, generatingFor, openDrafted])
     ?? contacts.find(c => c.id === selectedId)
     ?? null
   const selectedWorked  = !!selectedContact && !dueContacts.some(c => c.id === selectedContact.id)
