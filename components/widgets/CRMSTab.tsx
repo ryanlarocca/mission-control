@@ -570,7 +570,7 @@ function CRMSTabInner() {
         setEditedMessages(prev => { const n = { ...prev }; delete n[msgKey]; return n })
         setDraftIds(prev => ({ ...prev, [msgKey]: data.draftId }))
         if (ch === "email" && data.subject) setSubjects(prev => ({ ...prev, [msgKey]: data.subject as string }))
-        setDraftStatus(data.critic?.rewritten ? `checked: ${data.critic.issues.join("; ")}` : why ? "redrafted from your note" : null)
+        setDraftStatus(data.critic && !data.critic.ok && data.critic.issues.length ? `check: ${data.critic.issues.join("; ")}` : why ? "redrafted from your note" : null)
       }
     } catch (e) {
       if (!controller.signal.aborted) setSendError(`Draft failed: ${e instanceof Error ? e.message : String(e)}`)
@@ -698,7 +698,7 @@ function CRMSTabInner() {
       setDraftIds(prev => ({ ...prev, [msgKey]: data.draftId }))
       if (channel === "email" && data.subject) setSubjects(prev => ({ ...prev, [msgKey]: data.subject as string }))
       setCoachRead(data.read || null)
-      setDraftStatus(data.critic?.rewritten ? `checked: ${data.critic.issues.join("; ")}` : args.turns.length ? "refined" : "coached")
+      setDraftStatus(data.critic && !data.critic.ok && data.critic.issues.length ? `check: ${data.critic.issues.join("; ")}` : args.turns.length ? "refined" : "coached")
       return true
     } catch (e) {
       if (!controller.signal.aborted) setSendError(`Coach failed: ${e instanceof Error ? e.message : String(e)}`)

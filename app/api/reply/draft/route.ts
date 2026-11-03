@@ -14,6 +14,8 @@ import {
 // }
 // Returns { draftId, subject, body, plan, critic }.
 export const dynamic = "force-dynamic"
+// The auto writer is Opus with thinking (lib/reply/coach.ts).
+export const maxDuration = 120
 
 export async function POST(request: NextRequest) {
   let body: {

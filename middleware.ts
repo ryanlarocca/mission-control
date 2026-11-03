@@ -13,6 +13,9 @@ const PUBLIC_PATHS = [
   // Reply Planner: intake webhooks ask this route to post the plan + draft
   // to Telegram; it checks a shared secret header instead of the cookie.
   "/api/reply/telegram-draft",
+  // The drip engine (Mac mini) asks this route to write a queued touch with
+  // the Opus writer; same shared-secret header as telegram-draft.
+  "/api/reply/drip-draft",
   // Twilio fetches these for outbound call relay (initiated from /api/leads/call,
   // which itself stays auth-gated).
   "/api/leads/call/bridge",

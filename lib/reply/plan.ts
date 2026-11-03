@@ -9,7 +9,7 @@ import {
   LEAD_MOMENT_RUBRIC, LEAD_NEXT_ACTIONS, RELATIONSHIP_MOMENTS, RELATIONSHIP_NEXT_ACTIONS,
   isLeadMoment, isRelationshipMoment,
 } from "./moments"
-import { describeContact, formatThread, type ReplyContext } from "./context"
+import { describeContact, formatThread, type ReplyContext, type LeadContext } from "./context"
 
 export interface Plan {
   moment: string
@@ -142,4 +142,16 @@ export async function stampLeadMoment(clusterIds: string[], moment: string): Pro
   } catch (e) {
     console.error("[reply/plan] moment stamp threw:", e instanceof Error ? e.message : String(e))
   }
+}
+
+/** A drip touch's plan: the lead's stamped moment (or a fresh proposal),
+ *  next action always "drip". Shared by the engine's first draft and the
+ *  card's "Not right" on a queued touch. */
+export async function planForDrip(ctx: LeadContext, touchNumber: number | null, campaignType: string | null): Promise<Plan> {
+  const reason = `drip touch #${touchNumber ?? "?"} (${campaignType || "drip"})`
+  let plan: Plan | null = ctx.moment
+    ? { moment: ctx.moment, temperature: ctx.temperature, next_action: "drip", reason, source: "ai" }
+    : await proposePlan(ctx)
+  if (!plan) plan = { moment: "silence_breaker", temperature: ctx.temperature, next_action: "drip", reason, source: "ai" }
+  return { ...plan, next_action: "drip" }
 }

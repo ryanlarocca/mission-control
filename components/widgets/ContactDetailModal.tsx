@@ -168,7 +168,7 @@ export function ContactDetailModal({ contact, onClose, onSendToast, onNotesSaved
       })
       setPlan(data.plan)
       setDraftId(data.draftId)
-      setDraftStatus(data.critic?.rewritten ? `checked: ${data.critic.issues.join("; ")}` : opts?.why ? "redrafted from your note" : null)
+      setDraftStatus(data.critic && !data.critic.ok && data.critic.issues.length ? `check: ${data.critic.issues.join("; ")}` : opts?.why ? "redrafted from your note" : null)
       setQuickMessage(data.body || "")
       if (ch === "email" && data.subject) setQuickSubject(data.subject)
     } catch (e) {
@@ -195,7 +195,7 @@ export function ContactDetailModal({ contact, onClose, onSendToast, onNotesSaved
       setPlan(data.plan)
       setDraftId(data.draftId)
       setCoachRead(data.read || null)
-      setDraftStatus(data.critic?.rewritten ? `checked: ${data.critic.issues.join("; ")}` : args.turns.length ? "refined" : "coached")
+      setDraftStatus(data.critic && !data.critic.ok && data.critic.issues.length ? `check: ${data.critic.issues.join("; ")}` : args.turns.length ? "refined" : "coached")
       setQuickMessage(data.body || "")
       if (channel === "email" && data.subject) setQuickSubject(data.subject)
       return true

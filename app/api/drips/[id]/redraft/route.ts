@@ -1,13 +1,17 @@
 import { NextRequest, NextResponse } from "next/server"
 import { getLeadsClient } from "@/lib/leads"
-import { buildLeadContext, proposePlan, draftReply, type Plan } from "@/lib/reply"
+import { buildLeadContext, planForDrip, draftReply } from "@/lib/reply"
 
 // Reply Planner Phase 4 — "Not right" on a queued drip. Redrafts the pending
-// drip_queue row through the shared engine (full thread + playbook + Ryan's
-// why), records the redraft chained to the engine's original, and replaces
-// the queued text in place. No sidecar hop.
+// drip_queue row through the shared writer (Opus, full thread + playbook +
+// every note Ryan gave on this touch, not just the latest), records the
+// redraft chained to the engine's original, and replaces the queued text in
+// place. The engine's touch brief (stored on the root draft's plan_json)
+// keeps the redraft under the same rules for this touch. No sidecar hop.
 // Body: { why?: string }. Returns { item } (the updated drip_queue row).
 export const dynamic = "force-dynamic"
+// The auto writer is Opus with thinking (lib/reply/coach.ts).
+export const maxDuration = 120
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
 export async function POST(request: NextRequest, { params }: { params: { id: string } }) {
@@ -28,13 +32,11 @@ export async function POST(request: NextRequest, { params }: { params: { id: str
   try {
     const ctx = await buildLeadContext(q.lead_id)
     if (!ctx) return NextResponse.json({ error: "lead not found" }, { status: 404 })
-    let plan: Plan | null = ctx.moment
-      ? { moment: ctx.moment, temperature: ctx.temperature, next_action: "drip", reason: `drip touch #${q.touch_number} (${q.campaign_type})`, source: "ai" }
-      : await proposePlan(ctx)
-    if (!plan) plan = { moment: "silence_breaker", temperature: ctx.temperature, next_action: "drip", reason: "", source: "ai" }
-    plan = { ...plan, next_action: "drip" }
+    const plan = await planForDrip(ctx, q.touch_number, q.campaign_type)
 
-    const { data: prior } = await sb.from("reply_drafts").select("id").eq("drip_queue_id", id).order("created_at", { ascending: false }).limit(1).maybeSingle()
+    const { data: drafts } = await sb.from("reply_drafts").select("id, plan_json").eq("drip_queue_id", id).order("created_at", { ascending: true })
+    const prior = drafts?.length ? drafts[drafts.length - 1] : null
+    const brief = (drafts?.[0]?.plan_json as { touch_brief?: unknown } | null)?.touch_brief
     const result = await draftReply({
       ctx, plan,
       channel: q.channel === "email" ? "email" : "sms",
@@ -43,6 +45,8 @@ export async function POST(request: NextRequest, { params }: { params: { id: str
       parentDraftId: prior?.id ?? null,
       previousDraft: { subject: q.subject, body: q.message },
       dripQueueId: id,
+      touchBrief: typeof brief === "string" ? brief : null,
+      notes: ctx.notes,
     })
     if (!result) return NextResponse.json({ error: "draft unavailable" }, { status: 502 })
 

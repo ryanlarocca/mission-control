@@ -5,7 +5,7 @@ import { postPlannerDraft } from "@/lib/reply/telegram"
 // Public path (intake webhooks call it server-to-server after the alert);
 // gated by a shared secret header instead of the session cookie.
 export const dynamic = "force-dynamic"
-export const maxDuration = 60
+export const maxDuration = 120
 
 export async function POST(request: NextRequest) {
   const secret = process.env.REPLY_INTERNAL_SECRET || process.env.MC_PASSWORD || ""

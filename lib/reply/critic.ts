@@ -1,8 +1,10 @@
 // Reply Planner — the check before Ryan sees a draft. Plain questions the
 // structural failures fail: re-pitching after a no, promising what the plan
 // doesn't include, contradicting the thread, inventing a figure, copying an
-// exemplar line. Returns the draft unchanged when it passes; rewritten once
-// when it doesn't. The verdict is stored on the draft row (critic_json).
+// exemplar line. Flags only (2026-11-03): the draft always comes back
+// unchanged. The rewrite used to run blind to Ryan's "Not right" notes and
+// undid them — it rewrote 61% of Relationships drafts. The verdict is stored
+// on the draft row (critic_json) and the issues surface on the card.
 
 import { completeText, extractJsonObject, SONNET } from "@/lib/llm"
 import { describeContact, formatThread, type ReplyContext } from "./context"
@@ -61,19 +63,15 @@ QUESTIONS (a draft fails only when the answer is clearly yes)
 6. Does it clearly break a written principle above?
 
 Respond in JSON only:
-{ "ok": true | false, "issues": ["short phrase per failed question, empty if ok"], "subject": "<rewritten subject or null if unchanged/none>", "body": "<rewritten body if not ok, otherwise the draft unchanged>" }
-Default to ok:true. Rewrite minimally: fix only what failed, keep Ryan's register, length, and any placeholders.`
+{ "ok": true | false, "issues": ["short phrase per failed question, empty if ok"] }
+Default to ok:true. Do not rewrite the draft.`
 
   try {
-    const out = await completeText({ model: SONNET, prompt, maxTokens: 4096, thinking: false, tag: "[reply/critic]" })
-    const parsed = JSON.parse(extractJsonObject(out.text)) as { ok?: unknown; issues?: unknown; subject?: unknown; body?: unknown }
-    const ok = parsed.ok === true
+    const out = await completeText({ model: SONNET, prompt, maxTokens: 1024, thinking: false, tag: "[reply/critic]" })
+    const parsed = JSON.parse(extractJsonObject(out.text)) as { ok?: unknown; issues?: unknown }
     const issues = Array.isArray(parsed.issues) ? parsed.issues.filter((x): x is string => typeof x === "string") : []
-    if (ok || typeof parsed.body !== "string" || !parsed.body.trim()) {
-      return { verdict: { ok: true, issues, rewritten: false }, subject, body }
-    }
-    const newSubject = typeof parsed.subject === "string" && parsed.subject.trim() ? parsed.subject.trim() : subject
-    return { verdict: { ok: false, issues, rewritten: true }, subject: newSubject, body: parsed.body.trim() }
+    const ok = parsed.ok !== false || issues.length === 0
+    return { verdict: { ok, issues: ok ? [] : issues, rewritten: false }, subject, body }
   } catch (e) {
     console.error("[reply/critic] failed (draft passed through):", e instanceof Error ? e.message : String(e))
     return { verdict: { ok: true, issues: ["critic unavailable"], rewritten: false }, subject, body }

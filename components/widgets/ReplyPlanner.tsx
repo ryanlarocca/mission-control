@@ -25,9 +25,9 @@ interface SpeechRecognitionLike {
   lang: string
   interimResults: boolean
   continuous: boolean
-  onresult: ((e: { results: ArrayLike<ArrayLike<{ transcript: string }>> }) => void) | null
+  onresult: ((e: { resultIndex?: number; results: ArrayLike<ArrayLike<{ transcript: string }> & { isFinal?: boolean }> }) => void) | null
   onend: (() => void) | null
-  onerror: (() => void) | null
+  onerror: ((e?: { error?: string }) => void) | null
   start: () => void
   stop: () => void
 }
@@ -83,55 +83,92 @@ export function ReplyPlanner(p: {
   const [lastGist, setLastGist] = useState<string | null>(null)
   const [listening, setListening] = useState<MicTarget | null>(null)
   const recRef = useRef<SpeechRecognitionLike | null>(null)
+  // The mic Ryan turned on. Cleared only by his tap (or a send / contact
+  // change); the browser ending a session on a pause restarts it.
+  const micWantedRef = useRef<MicTarget | null>(null)
   const inputRef = useRef<HTMLInputElement | null>(null)
   const gistRef = useRef<HTMLTextAreaElement | null>(null)
   const refineRef = useRef<HTMLInputElement | null>(null)
   const canListen = !!getSpeech()
 
-  useEffect(() => () => { recRef.current?.stop() }, [])
+  function stopMic() {
+    micWantedRef.current = null
+    recRef.current?.stop()
+    setListening(null)
+  }
+
+  useEffect(() => () => { micWantedRef.current = null; recRef.current?.stop() }, [])
 
   // New contact → fresh coach box (see contactKey above).
   const firstKeyRef = useRef(true)
   useEffect(() => {
     if (firstKeyRef.current) { firstKeyRef.current = false; return }
-    recRef.current?.stop()
-    setListening(null)
+    stopMic()
     setGist(""); setRefine(""); setWhy("")
     setTurns([]); setLastGist(null)
     setOpen(false)
   }, [p.contactKey])
 
-  function toggleMic(target: MicTarget) {
-    if (listening) { recRef.current?.stop(); setListening(null); if (listening === target) return }
+  // Every box listens until Ryan taps the mic off (2026-11-03: the Not right
+  // and Refine boxes used to stop at his first pause). Safari ends a session
+  // on silence even with continuous on, so onend starts a fresh one while
+  // the mic is still wanted.
+  function startSession(target: MicTarget) {
     const Ctor = getSpeech()
-    if (!Ctor) {
-      if (target === "why") inputRef.current?.focus()
-      else if (target === "gist") gistRef.current?.focus()
-      else refineRef.current?.focus()
-      return
-    }
+    if (!Ctor) return
     const rec = new Ctor()
     rec.lang = "en-US"; rec.interimResults = false
-    // The gist is a few sentences of speech; keep listening until Ryan stops.
-    rec.continuous = target === "gist"
+    rec.continuous = true
+    let failed = false
     rec.onresult = (e) => {
-      const t = Array.from({ length: e.results.length }, (_, i) => e.results[i][0]?.transcript ?? "").join(" ").trim()
+      // Only the results new in this event; a continuous session re-sends
+      // the earlier ones.
+      const from = typeof e.resultIndex === "number" ? e.resultIndex : 0
+      const parts: string[] = []
+      for (let i = from; i < e.results.length; i++) {
+        if (e.results[i].isFinal === false) continue
+        const t = e.results[i][0]?.transcript?.trim()
+        if (t) parts.push(t)
+      }
+      const t = parts.join(" ")
       if (!t) return
       const append = (prev: string) => (prev ? `${prev} ${t}` : t)
       if (target === "why") setWhy(append)
       else if (target === "gist") setGist(append)
       else setRefine(append)
     }
-    rec.onend = () => setListening(null)
-    rec.onerror = () => setListening(null)
+    // A long silence ("no-speech") is a pause, not a failure; a denied or
+    // missing mic is.
+    rec.onerror = (e) => { if (e?.error !== "no-speech" && e?.error !== "aborted") failed = true }
+    rec.onend = () => {
+      if (recRef.current !== rec) return
+      if (!failed && micWantedRef.current === target) {
+        try { startSession(target); return } catch { /* fall through */ }
+      }
+      micWantedRef.current = null
+      setListening(null)
+    }
     recRef.current = rec
-    setListening(target)
     rec.start()
+  }
+
+  function toggleMic(target: MicTarget) {
+    if (listening) { const was = listening; stopMic(); if (was === target) return }
+    if (!getSpeech()) {
+      if (target === "why") inputRef.current?.focus()
+      else if (target === "gist") gistRef.current?.focus()
+      else refineRef.current?.focus()
+      return
+    }
+    micWantedRef.current = target
+    setListening(target)
+    startSession(target)
   }
 
   function submitWhy() {
     const text = why.trim()
     if (!text) return
+    if (listening) stopMic()
     p.onRegenerate(text)
     setWhy("")
     setOpen(false)
@@ -141,7 +178,7 @@ export function ReplyPlanner(p: {
     if (!coach) return
     const text = gist.trim()
     if (!text || busy) return
-    if (listening) { recRef.current?.stop(); setListening(null) }
+    if (listening) stopMic()
     const ok = await coach.onDraft({ gist: text, turns: [], plan })
     if (ok) { setTurns([]); setLastGist(text) }
   }
@@ -150,7 +187,7 @@ export function ReplyPlanner(p: {
     if (!coach || !lastGist) return
     const text = refine.trim()
     if (!text || busy) return
-    if (listening) { recRef.current?.stop(); setListening(null) }
+    if (listening) stopMic()
     const nextTurns = [...turns, { gist: lastGist, body: coach.currentBody }]
     const ok = await coach.onDraft({ gist: text, turns: nextTurns, plan })
     if (ok) { setTurns(nextTurns); setLastGist(text); setRefine("") }
@@ -169,7 +206,7 @@ export function ReplyPlanner(p: {
 
   function switchMode(next: DraftMode) {
     if (next === mode) return
-    if (listening) { recRef.current?.stop(); setListening(null) }
+    if (listening) stopMic()
     setMode(next)
     setOpen(false)
     if (next === "coach") setTimeout(() => gistRef.current?.focus(), 0)

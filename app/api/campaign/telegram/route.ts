@@ -67,7 +67,9 @@ import { LEAD_CALL_CB_PREFIX } from "@/lib/websiteLead"
 
 export const dynamic = "force-dynamic"
 export const runtime = "nodejs"
-export const maxDuration = 60 // draft:/photo intake wait on a Claude API call
+// draft:/photo intake wait on a Claude API call; planner redrafts run the
+// Opus writer in waitUntil after the webhook has answered.
+export const maxDuration = 120
 
 const CALL_INTENT_RE = /^(please\s+)?call(\s+(her|him|them|back))*(\s+back)?[.!\s]*$/i
 
@@ -558,8 +560,10 @@ export async function POST(request: Request) {
     }
     if (rredo) {
       await tg("answerCallbackQuery", { callback_query_id: cb.id, text: "Redrafting…" })
-      const out = await redraftFromTelegram(rredo[1], null, cb.message?.message_id)
-      if (!out.ok) await tg("sendMessage", { chat_id: chatId, text: `⚠️ Couldn't redraft — ${out.error}`, reply_to_message_id: cb.message?.message_id })
+      waitUntil((async () => {
+        const out = await redraftFromTelegram(rredo[1], null, cb.message?.message_id)
+        if (!out.ok) await tg("sendMessage", { chat_id: chatId, text: `⚠️ Couldn't redraft — ${out.error}`, reply_to_message_id: cb.message?.message_id })
+      })())
       return NextResponse.json({ ok: true })
     }
     if (rdisc) {
@@ -1054,8 +1058,10 @@ export async function POST(request: Request) {
     // below never sends his note to the lead as a text.
     const planner = await findPlannerDraftByTgMessage(repliedTgId)
     if (planner) {
-      const out = await redraftFromTelegram(planner.id, body, msg.message_id)
-      if (!out.ok) await tg("sendMessage", { chat_id: chatId, text: `⚠️ Couldn't redraft — ${out.error}`, reply_to_message_id: msg.message_id })
+      waitUntil((async () => {
+        const out = await redraftFromTelegram(planner.id, body, msg.message_id)
+        if (!out.ok) await tg("sendMessage", { chat_id: chatId, text: `⚠️ Couldn't redraft — ${out.error}`, reply_to_message_id: msg.message_id })
+      })())
       return NextResponse.json({ ok: true })
     }
     // Inbox Agent message (filing proposal / interview question / rules doc /

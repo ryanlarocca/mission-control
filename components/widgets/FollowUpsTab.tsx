@@ -2235,7 +2235,7 @@ function ComposeModal({
       setPlan(data.plan)
       setDraftId(data.draftId)
       setCoachRead(data.read || null)
-      setPlanStatus(data.critic?.rewritten ? `checked: ${data.critic.issues.join("; ")}` : args.turns.length ? "refined" : "coached")
+      setPlanStatus(data.critic && !data.critic.ok && data.critic.issues.length ? `check: ${data.critic.issues.join("; ")}` : args.turns.length ? "refined" : "coached")
       setBody(data.body || "")
       if (isEmail && data.subject && !threaded) setSubject(data.subject)
       return true
@@ -2262,7 +2262,7 @@ function ComposeModal({
       })
       setPlan(data.plan)
       setDraftId(data.draftId)
-      setPlanStatus(data.critic?.rewritten ? `checked: ${data.critic.issues.join("; ")}` : opts?.why ? "redrafted from your note" : null)
+      setPlanStatus(data.critic && !data.critic.ok && data.critic.issues.length ? `check: ${data.critic.issues.join("; ")}` : opts?.why ? "redrafted from your note" : null)
       setBody(data.body || "")
       if (isEmail && data.subject && !threaded) setSubject(data.subject)
     } catch (e) {

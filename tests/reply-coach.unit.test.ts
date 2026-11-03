@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest"
-import { buildCoachPrompt, coachChannelRules, COACH_SYSTEM } from "@/lib/reply/coach"
+import { buildCoachPrompt, coachChannelRules, COACH_SYSTEM, AUTO_SYSTEM } from "@/lib/reply/coach"
 import { coachNoteLine, appendNote } from "@/lib/reply/facts"
 import { channelRules } from "@/lib/reply/draft"
 import { leadRowsToThread, mergeThread } from "@/lib/reply/context"
@@ -76,5 +76,53 @@ describe("coach prompt assembly — Herb", () => {
     const p = buildCoachPrompt({ ctx: ctx(), plan, channel: "email", gist: GIST, turns: [], principles: null, exemplarText: "(none yet)", today: "2026-10-15" })
     expect(p).toContain('"subject": "..."')
     expect(p).toContain("Reply channel: EMAIL")
+  })
+})
+
+// Auto = the coach writer with no gist (2026-11-03). "Not right" notes stack
+// as turns so an earlier fix survives the next redraft (Arthur, 2026-11-02:
+// the intro fix was lost when he asked for a new second part).
+describe("auto prompt assembly — the coach writer with no gist", () => {
+  it("drafts from the record with no gist block and the normal text ceiling", () => {
+    const p = buildCoachPrompt({ ctx: ctx(), plan, channel: "sms", gist: "", turns: [], principles: null, exemplarText: "(none yet)", today: "2026-11-03" })
+    expect(p).toContain("NO GIST — Ryan has not said what he wants to say.")
+    expect(p).not.toContain("RYAN'S GIST")
+    expect(p).toContain(FLOOR_SENTENCE)
+    expect(p).toContain("One to three sentences")
+    expect(p).not.toContain("THE DRAFTS SO FAR")
+    expect(p).toMatch(/"read": "\.\.\.", "subject": null, "body": "\.\.\."/)
+    expect(AUTO_SYSTEM).toContain("AUTO MODE")
+    expect(AUTO_SYSTEM).toContain("Every note he gave still stands")
+  })
+
+  it("keeps every Not right note in order, the latest last", () => {
+    const turns = [
+      { gist: "", body: "Hi Arthur, got your message about the fourplex." },
+      { gist: "the dates are years old, don't act like he just called", body: "Hi Arthur, I sent you a letter a while back about the fourplex." },
+    ]
+    const p = buildCoachPrompt({ ctx: ctx(), plan, channel: "sms", gist: "rework the second part, ask if he still owns it", turns, principles: null, exemplarText: "(none yet)", today: "2026-11-03" })
+    expect(p).toContain("NO GIST")
+    expect(p).toContain("WHAT RYAN SAID WAS OFF AFTER EACH")
+    expect(p).not.toContain("(from the gist above)")
+    const first = p.indexOf(`Ryan's note: "the dates are years old`)
+    const latest = p.indexOf(`Ryan's note: "rework the second part`)
+    expect(first).toBeGreaterThan(-1)
+    expect(latest).toBeGreaterThan(first)
+    expect(p).toContain("a problem he already flagged must not come back")
+  })
+
+  it("a coached root keeps coach semantics on a later Not right", () => {
+    const turns = [{ gist: GIST, body: "Hi Herb, I'm at about $950K." }]
+    const p = buildCoachPrompt({ ctx: ctx(), plan, channel: "sms", gist: "warmer", turns, principles: null, exemplarText: "(none yet)", today: "2026-11-03" })
+    expect(p).toContain(`"${GIST}"`)
+    expect(p).not.toContain("NO GIST")
+  })
+
+  it("carries lead notes and the drip touch brief when given", () => {
+    const p = buildCoachPrompt({ ctx: ctx(), plan, channel: "sms", gist: "", turns: [], principles: null, exemplarText: "(none yet)", today: "2026-11-03", notes: "tenant in unit B", touchBrief: "ANGLE — terms: lead with the concrete offer" })
+    expect(p).toContain("RYAN'S NOTES ON THIS CONTACT")
+    expect(p).toContain("tenant in unit B")
+    expect(p).toContain("DRIP TOUCH BRIEF")
+    expect(p).toContain("ANGLE — terms")
   })
 })

@@ -842,7 +842,8 @@ ${p}
 `
 }
 
-// Critic — the same six questions the card's drafter uses (lib/reply/critic.ts).
+// Critic — the same questions the card's drafter uses (lib/reply/critic.ts).
+// Only runs on the fallback path; the Opus writer route runs its own.
 async function critiqueTouch({ lead, message, channel, touchNumber, history }) {
   if (!process.env.ANTHROPIC_API_KEY) return { verdict: { ok: true, issues: ["critic skipped"], rewritten: false }, message }
   const principles = momentPrinciples(lead.moment)
@@ -865,8 +866,8 @@ QUESTIONS (fail only on a clear yes)
 4. Does it assert a figure, date, or personal fact that appears nowhere in the conversation? (A bracketed placeholder is fine.)
 5. Does it clearly break a principle above?
 
-Respond in JSON only: { "ok": true | false, "issues": ["short phrase per failed question"], "body": "<rewritten body if not ok, else the draft unchanged>" }
-Default to ok:true. Rewrite minimally, keep Ryan's register and length.`
+Respond in JSON only: { "ok": true | false, "issues": ["short phrase per failed question"] }
+Default to ok:true. Do not rewrite the draft.`
   try {
     const res = await getAnthropic().messages.create({
       model: SONNET_MODEL,
@@ -879,10 +880,9 @@ Default to ok:true. Rewrite minimally, keep Ryan's register and length.`
     const start = cleaned.indexOf("{"), end = cleaned.lastIndexOf("}")
     const parsed = JSON.parse(cleaned.slice(start, end + 1))
     const issues = Array.isArray(parsed.issues) ? parsed.issues.filter((x) => typeof x === "string") : []
-    if (parsed.ok === true || typeof parsed.body !== "string" || !parsed.body.trim()) {
-      return { verdict: { ok: true, issues, rewritten: false }, message }
-    }
-    return { verdict: { ok: false, issues, rewritten: true }, message: parsed.body.trim() }
+    // Flags only (2026-11-03) — the rewrite never saw Ryan's notes.
+    if (parsed.ok !== false || !issues.length) return { verdict: { ok: true, issues: [], rewritten: false }, message }
+    return { verdict: { ok: false, issues, rewritten: false }, message }
   } catch (e) {
     console.warn("[drip] critic failed (draft passed through):", e.message)
     return { verdict: { ok: true, issues: ["critic unavailable"], rewritten: false }, message }
@@ -891,7 +891,7 @@ Default to ok:true. Rewrite minimally, keep Ryan's register and length.`
 
 // reply_drafts row for a generated / regenerated touch. parentId links an
 // edit or regeneration to the row it replaced. Never throws.
-async function recordDripDraft(sb, { lead, queueId, channel, message, subject, critic, parentId, model, whyText }) {
+async function recordDripDraft(sb, { lead, queueId, channel, message, subject, critic, parentId, model, whyText, writer }) {
   try {
     const { data, error } = await sb.from("reply_drafts").insert({
       surface: "drip",
@@ -901,12 +901,13 @@ async function recordDripDraft(sb, { lead, queueId, channel, message, subject, c
       moment: lead.moment || null,
       temperature: lead.temperature || null,
       next_action: "drip",
-      plan_json: { moment: lead.moment || null, campaign: lead.drip_campaign_type || null },
+      plan_json: (writer && writer.plan) || { moment: lead.moment || null, campaign: lead.drip_campaign_type || null },
       draft_subject: subject || null,
       draft_body: message,
-      model: model || DRIP_MODEL,
-      prompt_version: DRIP_PROMPT_VERSION,
-      playbook_version: loadPlaybook().version,
+      model: (writer && writer.model) || model || DRIP_MODEL,
+      prompt_version: (writer && writer.promptVersion) || DRIP_PROMPT_VERSION,
+      playbook_version: (writer && writer.playbookVersion) || loadPlaybook().version,
+      read_text: (writer && writer.read) || null,
       critic_json: critic || null,
       parent_draft_id: parentId || null,
       why_text: whyText || null,
@@ -936,6 +937,50 @@ async function markDripDraftSent(sb, queueId, message, subject) {
     }).eq("id", latest.id)
   } catch (e) {
     console.warn("[drip] reply_drafts markSent failed:", e.message)
+  }
+}
+
+// ─── Opus writer (2026-11-03) ────────────────────────────────────────────────
+// Every queued touch is written by Mission Control's coach writer (Opus with
+// thinking, the full record, Ryan's playbook) — the same one the card uses —
+// via /api/reply/drip-draft. Ryan sent 2 of 73 drafts from the old in-engine
+// writer. This engine's per-touch rules (buildSystemPrompt: angle by touch
+// number, responsiveness, banned phrases) go along as the touch brief. If the
+// route can't be reached, the old writer below is the fallback and the
+// reply_drafts row says so (model "<sonnet>:fallback").
+const MC_BASE_URL = (process.env.MC_BASE_URL || "https://mission-control-three-chi.vercel.app").trim().replace(/\/$/, "")
+// The Prepare button waits 90s on the whole engine run (sidecar execFile).
+const OPUS_WRITER_TIMEOUT_MS = 70000
+
+function touchBriefFor(args) {
+  return buildSystemPrompt({ ...args, history: "(the full conversation is given separately in this prompt)" })
+    .replace(/\n*Output ONLY the message body[^\n]*\s*$/, "")
+    // The writer's voice rules are plain ASCII with "Ryan" on its own line.
+    .replace("Sign off only with — Ryan.", "Sign off with \"Ryan\" alone on the last line.")
+    .trim()
+}
+
+async function writeTouchWithOpus(args) {
+  const secret = (process.env.REPLY_INTERNAL_SECRET || process.env.MC_PASSWORD || "").trim()
+  if (!secret) return { error: "no shared secret in env" }
+  try {
+    const res = await fetch(`${MC_BASE_URL}/api/reply/drip-draft`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "x-reply-secret": secret },
+      body: JSON.stringify({
+        leadId: args.lead.id,
+        touchNumber: args.touchNumber,
+        campaignType: args.campaign.type,
+        channel: args.channel,
+        touchBrief: touchBriefFor(args),
+      }),
+      signal: AbortSignal.timeout(OPUS_WRITER_TIMEOUT_MS),
+    })
+    const data = await res.json().catch(() => ({}))
+    if (!res.ok || typeof data.body !== "string" || !data.body.trim()) return { error: data.error || `HTTP ${res.status}` }
+    return { draft: { ...data, body: data.body.trim() } }
+  } catch (e) {
+    return { error: e.message }
   }
 }
 
@@ -1622,13 +1667,16 @@ async function processLead(sb, lead) {
     console.log(`[drip] is_bad_number=true on ${lead.id} — skipping to email touch #${activeTouch.touchNumber}`)
   }
 
-  // Special-case missed-call touch 0 — fixed copy, no Haiku.
+  // Special-case missed-call touch 0 — fixed copy, no model call.
   let messageBody
+  let critic = null
+  let writer = null
+  let fallbackModel = null
   if (isMissedCall && activeTouch.touchNumber === 0) {
     messageBody = missedCallTouch0Body()
   } else {
     const daysSinceCreated = Math.floor((Date.now() - new Date(lead.created_at).getTime()) / 86400000)
-    messageBody = await generateMessage({
+    const genArgs = {
       lead,
       campaign,
       touchNumber: activeTouch.touchNumber,
@@ -1637,18 +1685,24 @@ async function processLead(sb, lead) {
       clarify,
       daysSinceCreated,
       responsiveness,
-    })
+    }
+    const opus = await writeTouchWithOpus(genArgs)
+    if (opus.draft) {
+      writer = opus.draft
+      messageBody = writer.body
+      critic = writer.critic || null
+    } else {
+      console.warn(`[drip] Opus writer unavailable for ${lead.id} (${opus.error}) — falling back to the engine's own writer`)
+      messageBody = await generateMessage(genArgs)
+      if (messageBody) {
+        const checked = await critiqueTouch({ lead, message: messageBody, channel: activeChannel, touchNumber: activeTouch.touchNumber, history })
+        critic = { ...checked.verdict, issues: [...checked.verdict.issues, `fallback writer (${String(opus.error).slice(0, 80)})`] }
+        fallbackModel = `${DRIP_MODEL}:fallback`
+      }
+    }
   }
   if (!messageBody) return { skipped: "generation_failed" }
-
-  // Critic pass before anything is queued (Reply Planner Phase 4).
-  let critic = null
-  if (!(isMissedCall && activeTouch.touchNumber === 0)) {
-    const checked = await critiqueTouch({ lead, message: messageBody, channel: activeChannel, touchNumber: activeTouch.touchNumber, history })
-    critic = checked.verdict
-    if (checked.verdict.rewritten) console.log(`[drip] critic rewrote touch for ${lead.id}: ${checked.verdict.issues.join("; ")}`)
-    messageBody = checked.message
-  }
+  if (critic && !critic.ok) console.log(`[drip] critic flagged touch for ${lead.id}: ${critic.issues.join("; ")}`)
 
   const channel = activeChannel
   // Channel guards — skip if we can't actually send. e.g. email-only campaign
@@ -1660,7 +1714,7 @@ async function processLead(sb, lead) {
   const subject = channel === "email" ? dripEmailSubject(lead) : null
 
   if (DRY_RUN) {
-    console.log(`[drip] DRY-RUN lead ${lead.id} touch #${activeTouch.touchNumber} (${channel}):\n${messageBody}\n`)
+    console.log(`[drip] DRY-RUN lead ${lead.id} touch #${activeTouch.touchNumber} (${channel}) via ${writer ? "opus writer" : fallbackModel || "fixed copy"}:\n${messageBody}\n${writer && writer.read ? `read: ${writer.read}\n` : ""}`)
     return { processed: true, dryRun: true }
   }
 
@@ -1713,7 +1767,7 @@ async function processLead(sb, lead) {
   }
 
   console.log(`[drip] QUEUED lead ${lead.id} touch #${activeTouch.touchNumber} (${channel}) queue=${queued.id}`)
-  await recordDripDraft(sb, { lead, queueId: queued.id, channel, message: messageBody, subject, critic })
+  await recordDripDraft(sb, { lead, queueId: queued.id, channel, message: messageBody, subject, critic, writer, model: fallbackModel })
   return { processed: true, queued: queued.id }
 }
 
@@ -1786,6 +1840,8 @@ module.exports = {
   extractResponsivenessSignals,
   generateMessage,
   buildSystemPrompt,
+  touchBriefFor,
+  writeTouchWithOpus,
   sendSms,
 }
 

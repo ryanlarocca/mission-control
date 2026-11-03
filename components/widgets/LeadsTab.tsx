@@ -928,7 +928,7 @@ export function LeadsTab() {
       setReplyDraftId(prev => ({ ...prev, [key]: data.draftId }))
       setReplyStatus(prev => ({
         ...prev,
-        [group.phone]: data.critic?.rewritten ? `checked: ${data.critic.issues.join("; ")}` : opts?.why ? "redrafted from your note" : null,
+        [group.phone]: data.critic && !data.critic.ok && data.critic.issues.length ? `check: ${data.critic.issues.join("; ")}` : opts?.why ? "redrafted from your note" : null,
       }))
       if (channel === "imessage") {
         setDraftMessage(prev => ({ ...prev, [group.phone]: data.body || "" }))
@@ -970,7 +970,7 @@ export function LeadsTab() {
       setCoachRead(prev => ({ ...prev, [group.phone]: data.read || null }))
       setReplyStatus(prev => ({
         ...prev,
-        [group.phone]: data.critic?.rewritten ? `checked: ${data.critic.issues.join("; ")}` : args.turns.length ? "refined" : "coached",
+        [group.phone]: data.critic && !data.critic.ok && data.critic.issues.length ? `check: ${data.critic.issues.join("; ")}` : args.turns.length ? "refined" : "coached",
       }))
       if (channel === "imessage") {
         setDraftMessage(prev => ({ ...prev, [group.phone]: data.body || "" }))
