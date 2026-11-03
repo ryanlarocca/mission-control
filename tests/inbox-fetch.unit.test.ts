@@ -16,6 +16,8 @@ import { tgButton, tgKeyboard } from "../scripts/inbox-agent/telegram.mjs"
 // The real shapes from the Ridgeview Completed email (gmail 1a1135bbe462b5b1, 2026-10-06).
 const EMAIL_START = "https://na4.docusign.net/Signing/EmailStart.aspx?a=9c1f2e0a-6b7d-4f1e-8a2b-3c4d5e6f7a8b&etti=24&r=1f2e3d4c-5b6a-4978-8a9b-0c1d2e3f4a5b"
 const IN_SESSION = "https://na4.docusign.net/Signing/?ti=abc123def456"
+// The newer short email link (Halleck SCO#1, 2026-11-03).
+const EMAIL_V1 = "https://na4.docusign.net/signing/emails/v1-9758e976a00147a0aa92da906f4f5a77c28b8f5104568a23819d5d39a3bbb426"
 const APP_LINK = "https://app.docusign.com/documents/details/0f1e2d3c-4b5a-6978-8a9b-0c1d2e3f4a5b"
 const FOOTER = [
   "https://protect.docusign.net/products/esignature",
@@ -31,6 +33,8 @@ describe("detectProvider", () => {
   it("recognises both DocuSign recipient link shapes and the app link", () => {
     expect(detectProvider(EMAIL_START)).toBe("docusign")
     expect(detectProvider(IN_SESSION)).toBe("docusign")
+    expect(detectProvider(EMAIL_V1)).toBe("docusign")
+    expect(detectProvider(EMAIL_V1 + "?lang=en")).toBe("docusign")
     expect(detectProvider("https://demo.docusign.net/Signing/EmailStart.aspx?a=1&etti=2&r=3")).toBe("docusign")
     expect(detectProvider(APP_LINK)).toBe("docusign")
     expect(detectProvider(EMAIL_START.toUpperCase().replace("HTTPS", "https"))).toBe("docusign")
@@ -38,6 +42,8 @@ describe("detectProvider", () => {
   it("ignores footer / support / protect / unsubscribe links and non-URLs", () => {
     for (const u of FOOTER) expect(detectProvider(u), u).toBeNull()
     expect(detectProvider("https://na4.docusign.net/")).toBeNull()
+    expect(detectProvider("https://na4.docusign.net/signing/emails/")).toBeNull()
+    expect(detectProvider("https://na4.docusign.net/signing/emails/v1-abc/extra")).toBeNull()
     expect(detectProvider("https://docs.google.com/document/d/abc")).toBeNull()
     expect(detectProvider("mailto:dse_na4@docusign.net")).toBeNull()
     expect(detectProvider("not a url")).toBeNull()

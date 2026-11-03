@@ -45,7 +45,7 @@ const TRAIL_RE = /[.,;:!?'"»”’]+$/
 const DOCUSIGN_NOISE_HOST_RE = /^(protect\.docusign\.net|support\.docusign\.com|www\.docusign\.com|docusign\.com|go\.docusign\.com|trust\.docusign\.com|community\.docusign\.com|developers\.docusign\.com|account\.docusign\.com|account-d\.docusign\.com)$/i
 const DOCUSIGN_SIGNING_HOST_RE = /^([a-z0-9-]+\.)?docusign\.net$/i
 const DOCUSIGN_APP_HOST_RE = /^app(-d|-s)?\.docusign\.com$/i
-const DOCUSIGN_SIGNING_PATH_RE = /^\/signing\/(emailstart\.aspx|startinsession\.aspx)?(\?|$)/i
+const DOCUSIGN_SIGNING_PATH_RE = /^\/signing\/(emailstart\.aspx|startinsession\.aspx|emails\/v\d+-[0-9a-z]+)?(\?|$)/i
 const UNSUBSCRIBE_RE = /unsubscribe|optout|opt-out|preferences|privacy|terms|reportabuse|report-abuse/i
 // f8 (Aryeo white label): https://f8.f8re.com/listings/<uuid>/download-center?signature=…
 // Only the Download Center opens photos; /portal, /sites/<slug>/branded,
@@ -83,6 +83,7 @@ export function detectProvider(url) {
   if (DOCUSIGN_NOISE_HOST_RE.test(host)) return null
   if (UNSUBSCRIBE_RE.test(u.pathname)) return null
   // Recipient links: https://na4.docusign.net/Signing/EmailStart.aspx?a=…&etti=…&r=…
+  // the newer short form https://na4.docusign.net/signing/emails/v1-<hex> (seen 2026-11-03, Halleck SCO#1),
   // and the in-session form https://na4.docusign.net/Signing/?ti=…
   if (DOCUSIGN_SIGNING_HOST_RE.test(host) && DOCUSIGN_SIGNING_PATH_RE.test(u.pathname + u.search)) return "docusign"
   // Account links: https://app.docusign.com/documents/details/<envelope id>

@@ -2,6 +2,7 @@
 //
 // Two entry shapes, same flow:
 //   1. …/Signing/EmailStart.aspx?a=…&etti=…&r=…  (request *and* completed emails)
+//      or the newer …/signing/emails/v1-<hex> (same flow from there)
 //      → redirects into …/Signing/?ti=… (sometimes a "Review Documents" button first)
 //   2. app.docusign.com/documents/details/<id> (needs the persistent-profile login)
 //
