@@ -59,9 +59,10 @@ const CURRENT_PROMPT = "auto-coach-v1-2026-11-03"
 const CONCURRENCY = 3
 
 async function rewriteRow(row) {
-  const { data: drafts } = await sb.from("reply_drafts").select("id, model, prompt_version, draft_body").eq("drip_queue_id", row.id).order("created_at", { ascending: true })
+  const { data: drafts } = await sb.from("reply_drafts").select("id, model, prompt_version, draft_body, why_text").eq("drip_queue_id", row.id).order("created_at", { ascending: true })
   const latest = drafts && drafts.length ? drafts[drafts.length - 1] : null
   if ((drafts || []).some((d) => d.model === "ryan-edit")) return { skip: "edited by Ryan" }
+  if ((drafts || []).some((d) => d.why_text && !/^bulk (regenerate|rewrite)/i.test(d.why_text))) return { skip: "redrafted from Ryan's note" }
   if (MATCH && !MATCH.test(row.message || "")) return { skip: "no match" }
   if (BLANKS_ONLY && !/\[[A-Z][A-Z ]+\]/.test(`${row.subject || ""} ${row.message || ""}`)) return { skip: "no blank" }
   if (!FORCE && latest && latest.prompt_version === CURRENT_PROMPT) return { skip: "already on the new writer" }
