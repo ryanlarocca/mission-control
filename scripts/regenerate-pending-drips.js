@@ -14,6 +14,7 @@
  *   node scripts/regenerate-pending-drips.js --lead <lead_uuid>    # single lead
  *   node scripts/regenerate-pending-drips.js --dry-run             # preview only
  *   node scripts/regenerate-pending-drips.js --limit 5             # first N rows
+ *   node scripts/regenerate-pending-drips.js --blanks --force      # redo rows with a [BLANK]
  */
 
 "use strict"
@@ -38,6 +39,10 @@ const args = process.argv.slice(2)
 const DRY_RUN = args.includes("--dry-run")
 const LEAD_FILTER = (() => { const i = args.indexOf("--lead"); return i >= 0 ? args[i + 1] : null })()
 const LIMIT = (() => { const i = args.indexOf("--limit"); return i >= 0 ? parseInt(args[i + 1], 10) : null })()
+// --force: rewrite even rows already on the current writer.
+// --blanks: only rows whose text has a bracketed blank ([FIRST NAME]).
+const FORCE = args.includes("--force")
+const BLANKS_ONLY = args.includes("--blanks")
 
 // Pull the engine's exports. We require() the engine file directly — it
 // runs main() on import, but we set DRIP_REGEN_SKIP_MAIN to short-circuit.
@@ -54,7 +59,8 @@ async function rewriteRow(row) {
   const { data: drafts } = await sb.from("reply_drafts").select("id, model, prompt_version, draft_body").eq("drip_queue_id", row.id).order("created_at", { ascending: true })
   const latest = drafts && drafts.length ? drafts[drafts.length - 1] : null
   if ((drafts || []).some((d) => d.model === "ryan-edit")) return { skip: "edited by Ryan" }
-  if (latest && latest.prompt_version === CURRENT_PROMPT) return { skip: "already on the new writer" }
+  if (BLANKS_ONLY && !/\[[A-Z][A-Z ]+\]/.test(`${row.subject || ""} ${row.message || ""}`)) return { skip: "no blank" }
+  if (!FORCE && latest && latest.prompt_version === CURRENT_PROMPT) return { skip: "already on the new writer" }
   if (latest && latest.draft_body && latest.draft_body.trim() !== (row.message || "").trim()) return { skip: "text differs from its draft (hand-edited)" }
 
   const { data: lead } = await sb.from("leads").select("*").eq("id", row.lead_id).maybeSingle()

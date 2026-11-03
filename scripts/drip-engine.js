@@ -1290,6 +1290,10 @@ async function drainApprovedQueue(sb) {
 // Send + log a drip touch. Used both by drainApprovedQueue (after Ryan
 // approves) and by directSend (auto-send mode bypassing the queue).
 async function sendDripTouch({ lead, channel, message, subject, sb, queueRow }) {
+  // Never send a bracketed blank ([FIRST NAME], [OFFER PRICE]) — same
+  // pattern as lib/reply-client PLACEHOLDER_RE. The row fails with the reason.
+  const blank = `${subject || ""} ${message || ""}`.match(/\[[A-Z][A-Z ]+\]/)
+  if (blank) throw new Error(`draft still has ${blank[0]} — edit it before sending`)
   if (channel === "imessage") {
     if (!lead.caller_phone) throw new Error("no phone")
     const preferredFrom = await resolveReplyLine(sb, lead.caller_phone).catch(() => null)

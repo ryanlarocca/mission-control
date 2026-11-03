@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server"
+import { PLACEHOLDER_RE } from "@/lib/reply-client"
 import { sidecarHeaders } from "@/lib/sidecar"
 import { getLeadsClient } from "@/lib/leads"
 
@@ -23,7 +24,7 @@ export async function POST(request: NextRequest) {
   const sb = getLeadsClient()
   const { data: queueRows, error: qErr } = await sb
     .from("drip_queue")
-    .select("id, lead_id, created_at, status")
+    .select("id, lead_id, created_at, status, message, subject")
     .in("id", ids)
   if (qErr) return NextResponse.json({ error: qErr.message }, { status: 500 })
 
@@ -47,6 +48,8 @@ export async function POST(request: NextRequest) {
     if (!qr) { failed.push({ id, error: "not found" }); continue }
     if (qr.status === "approved") { alreadyApproved.push(id); continue }
     if (qr.status !== "pending") { failed.push({ id, error: `status=${qr.status}` }); continue }
+    const blank = `${qr.subject ?? ""} ${qr.message ?? ""}`.match(PLACEHOLDER_RE)
+    if (blank) { failed.push({ id, error: `fill in ${blank[0]} first` }); continue }
 
     const lead = leadById.get(qr.lead_id as string)
     if (lead?.caller_phone || lead?.email) {

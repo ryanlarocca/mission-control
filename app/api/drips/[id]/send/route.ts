@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server"
+import { PLACEHOLDER_RE } from "@/lib/reply-client"
 import { sidecarHeaders } from "@/lib/sidecar"
 import { getLeadsClient } from "@/lib/leads"
 
@@ -35,12 +36,15 @@ export async function POST(request: NextRequest, { params }: { params: { id: str
     const sb = getLeadsClient()
     const { data: row, error } = await sb
       .from("drip_queue")
-      .select("id, status, lead_id, created_at")
+      .select("id, status, lead_id, created_at, message, subject")
       .eq("id", id)
       .maybeSingle()
     if (error) return NextResponse.json({ error: error.message }, { status: 500 })
     if (!row) return NextResponse.json({ error: "not found" }, { status: 404 })
     if (row.status === "sent") return NextResponse.json({ ok: true, alreadySent: true })
+    // A bracketed blank ([FIRST NAME], [OFFER PRICE]) never goes out as-is.
+    const blank = `${row.subject ?? ""} ${row.message ?? ""}`.match(PLACEHOLDER_RE)
+    if (blank) return NextResponse.json({ error: `Fill in ${blank[0]} first — tap Edit, or Redraft.` }, { status: 422 })
     if (row.status !== "pending" && row.status !== "approved" && row.status !== "failed") {
       return NextResponse.json({ error: `cannot send row with status=${row.status}` }, { status: 409 })
     }
