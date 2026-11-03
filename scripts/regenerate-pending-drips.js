@@ -15,6 +15,7 @@
  *   node scripts/regenerate-pending-drips.js --dry-run             # preview only
  *   node scripts/regenerate-pending-drips.js --limit 5             # first N rows
  *   node scripts/regenerate-pending-drips.js --blanks --force      # redo rows with a [BLANK]
+ *   node scripts/regenerate-pending-drips.js --force --match "voicemail|sorry"   # redo matching rows
  */
 
 "use strict"
@@ -43,6 +44,8 @@ const LIMIT = (() => { const i = args.indexOf("--limit"); return i >= 0 ? parseI
 // --blanks: only rows whose text has a bracketed blank ([FIRST NAME]).
 const FORCE = args.includes("--force")
 const BLANKS_ONLY = args.includes("--blanks")
+// --match <regex>: only rows whose text matches (case-insensitive).
+const MATCH = (() => { const i = args.indexOf("--match"); return i >= 0 ? new RegExp(args[i + 1], "i") : null })()
 
 // Pull the engine's exports. We require() the engine file directly — it
 // runs main() on import, but we set DRIP_REGEN_SKIP_MAIN to short-circuit.
@@ -59,6 +62,7 @@ async function rewriteRow(row) {
   const { data: drafts } = await sb.from("reply_drafts").select("id, model, prompt_version, draft_body").eq("drip_queue_id", row.id).order("created_at", { ascending: true })
   const latest = drafts && drafts.length ? drafts[drafts.length - 1] : null
   if ((drafts || []).some((d) => d.model === "ryan-edit")) return { skip: "edited by Ryan" }
+  if (MATCH && !MATCH.test(row.message || "")) return { skip: "no match" }
   if (BLANKS_ONLY && !/\[[A-Z][A-Z ]+\]/.test(`${row.subject || ""} ${row.message || ""}`)) return { skip: "no blank" }
   if (!FORCE && latest && latest.prompt_version === CURRENT_PROMPT) return { skip: "already on the new writer" }
   if (latest && latest.draft_body && latest.draft_body.trim() !== (row.message || "").trim()) return { skip: "text differs from its draft (hand-edited)" }
