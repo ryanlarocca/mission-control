@@ -67,6 +67,12 @@ code,.mono{font-family:Menlo,Consolas,monospace;font-size:13px;word-break:break-
 .sigpreview{position:absolute;left:4px;right:4px;bottom:1px;height:40px;display:flex;align-items:flex-end;overflow:hidden;color:#1a1a59;pointer-events:none}
 .sigpreview span{font-size:28px;line-height:1;white-space:nowrap;padding-bottom:3px}
 .sigpreview img{max-height:100%;max-width:100%;display:block}
+/* self-sign forms: tab sized in page proportions (--ar = line width / room above it), flag beside it */
+.spot.fit .signtab{height:auto;aspect-ratio:var(--ar);min-height:16px;border-radius:4px}
+.spot.fit .signtab .flag{left:calc(100% + 6px);top:auto;bottom:-2px;border-radius:5px}
+.spot.fit.right .signtab .flag{left:auto;right:calc(100% + 6px)}
+.spot.fit .sigpreview{top:0;height:auto}
+.spot.fit .sigpreview span{padding-bottom:1px}
 .addline{margin-top:10px}.linebar{border-bottom:1.5px solid #333;margin:0 0 6px}
 .sheet{position:fixed;inset:0;background:rgba(0,0,0,.45);display:flex;align-items:flex-end;z-index:50}
 .sheetin{background:#fff;width:100%;max-height:92vh;overflow:auto;border-radius:18px 18px 0 0;padding:20px 18px 28px;box-shadow:0 -4px 24px rgba(0,0,0,.2)}

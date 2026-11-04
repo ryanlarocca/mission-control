@@ -72,11 +72,13 @@ export function reviewPage({ envelope, signer, token, error, spot }) {
   // Self-sign spots carry their page size; the purchase agreement is letter.
   const pw = spot?.pageW || 612, ph = spot?.pageH || 792
   const pct = spot ? { left: (spot.x / pw) * 100, top: ((ph - spot.lineY) / ph) * 100, width: (Math.min(spot.w, 249) / pw) * 100 } : null
+  // spot.room (self-sign): the tab keeps the page's proportions so it never covers the line above; its flag sits beside it.
+  const spotClass = spot?.room ? `spot fit${spot.x + Math.min(spot.w, 249) > pw * 0.62 ? " right" : ""}` : "spot"
   const tab = `<button type="button" class="signtab" id="signtab" aria-label="Sign here"><span class="flag">Sign here</span><span class="sigpreview" id="sigpreview"></span></button>`
   // The page images come from interim.pdf once anyone has signed (original + addendum pages), so count those, not the original's pages.
   const pageCount = envelope.view_page_count || envelope.page_count
   const pages = Array.from({ length: pageCount }, (_, i) =>
-    `<div class="pagewrap"><img class="page" src="/s/${token}/pages/${i + 1}.png" alt="Page ${i + 1}" loading="${i < 2 ? "eager" : "lazy"}">${pct && spot.page === i + 1 ? `<div class="spot" style="left:${pct.left.toFixed(3)}%;top:${pct.top.toFixed(3)}%;width:${pct.width.toFixed(3)}%">${tab}</div>` : ""}</div><div class="pageno">Page ${i + 1} of ${pageCount}</div>`).join("")
+    `<div class="pagewrap"><img class="page" src="/s/${token}/pages/${i + 1}.png" alt="Page ${i + 1}" loading="${i < 2 ? "eager" : "lazy"}">${pct && spot.page === i + 1 ? `<div class="${spotClass}" style="left:${pct.left.toFixed(3)}%;top:${pct.top.toFixed(3)}%;width:${pct.width.toFixed(3)}%${spot.room ? `;--ar:${(Math.min(spot.w, 249) / spot.room).toFixed(3)}` : ""}">${tab}</div>` : ""}</div><div class="pageno">Page ${i + 1} of ${pageCount}</div>`).join("")
   const fontFaces = Object.values(SIGNATURE_FONTS).map((f) => `@font-face{font-family:"${f.css}";src:url(${asset(`/fonts/${f.file}`)}) format("truetype");font-display:swap}`).join("")
   const fontCards = Object.entries(SIGNATURE_FONTS).map(([k, f]) => `<label class="fontcard"><input type="radio" name="fontpick" value="${k}" ${k === DEFAULT_FONT ? "checked" : ""}><span class="fontbody"><span class="fontprev" style="font-family:'${f.css}';font-size:${f.webSize}px" data-font="${k}">${esc(signer.name)}</span><span class="fontlabel">${f.label}</span></span></label>`).join("")
   const roleLabel = signer.role === "buyer" ? "Buyer" : "Seller"

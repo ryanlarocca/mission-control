@@ -94,8 +94,13 @@ function signersFromForm(arr) {
 /** Where this signer's "Sign here" tab sits on the page images (template signers only). */
 function signSpot(envelope, signer) {
   if (envelope.fields_json && signer.placement === "fields") {
-    const f = JSON.parse(envelope.fields_json).find((x) => x.kind === "signature")
-    return f ? { page: f.page, x: f.x, lineY: f.lineY, w: f.w, pageW: f.pageW, pageH: f.pageH } : null
+    const fields = JSON.parse(envelope.fields_json)
+    const f = fields.find((x) => x.kind === "signature")
+    if (!f) return null
+    // Other people's forms stack their lines close together: the tab may only fill the space up to the next line above.
+    const gaps = fields.filter((x) => x !== f && x.page === f.page && x.lineY > f.lineY && x.x < f.x + f.w && f.x < x.x + x.w).map((x) => x.lineY - f.lineY)
+    const room = Math.max(16, Math.min(40, (gaps.length ? Math.min(...gaps) : 44) - 4))
+    return { page: f.page, x: f.x, lineY: f.lineY, w: f.w, pageW: f.pageW, pageH: f.pageH, room }
   }
   if (!envelope.is_template || signer.placement !== "template") return null
   const t = TEMPLATE[signer.role]

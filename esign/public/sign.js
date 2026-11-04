@@ -88,7 +88,7 @@
     $('f_typed_name').value = name; $('f_method').value = png ? 'drawn' : 'typed'; $('f_font').value = pickedFont(); $('f_png').value = png || '';
     preview.innerHTML = '';
     if (png) { var img = document.createElement('img'); img.src = png; img.alt = 'your signature'; preview.appendChild(img); }
-    else { var sp = document.createElement('span'); sp.textContent = name; sp.style.fontFamily = fontOf(pickedFont()); preview.appendChild(sp); fit(sp, 28, 9, preview); }
+    else { var sp = document.createElement('span'); sp.textContent = name; sp.style.fontFamily = fontOf(pickedFont()); preview.appendChild(sp); fit(sp, Math.max(12, Math.min(28, Math.round(preview.clientHeight * 1.15))), 9, preview); }
     tab.classList.add('signed'); tab.setAttribute('aria-label', 'Your signature — tap to change'); adopted = true; closeSheet();
     hint.innerHTML = 'Signature added. Tick the box, then tap <strong>Finish</strong>. Tap your signature on the document to change it.';
     setTimeout(function () { $('finishcard').scrollIntoView({ behavior: 'smooth', block: 'center' }); }, 60);
