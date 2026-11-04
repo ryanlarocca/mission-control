@@ -53,11 +53,23 @@ const RECORDING_CALLBACK_URL =
 // A screened call is NOT recorded from answer — that would capture the
 // screen + his carrier greeting on a decline. The screen starts the
 // recording itself once he presses a key.
-function buildTwiml(callerId: string, screen: { leadId: string; callSid: string } | null = null): string {
+//
+// `leadId` names the intake row on the recording callback. Twilio's
+// recordingStatusCallback carries CallSid but no From/To, so without it the
+// recording handler can't find the row (Maryam Norton, 2026-11-04: an
+// 11-minute answered call recorded but never attached or transcribed).
+function buildTwiml(
+  callerId: string,
+  screen: { leadId: string; callSid: string } | null = null,
+  leadId: string | null = null,
+): string {
   if (!screen) {
+    const recordingCallback = twimlAttr(
+      leadId ? `${RECORDING_CALLBACK_URL}?leadId=${encodeURIComponent(leadId)}` : RECORDING_CALLBACK_URL,
+    )
     return `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-  <Dial timeout="12" action="/api/leads/voice/no-answer" method="POST" callerId="${callerId}" record="record-from-answer-dual" recordingStatusCallback="${RECORDING_CALLBACK_URL}" recordingStatusCallbackMethod="POST">
+  <Dial timeout="12" action="/api/leads/voice/no-answer" method="POST" callerId="${callerId}" record="record-from-answer-dual" recordingStatusCallback="${recordingCallback}" recordingStatusCallbackMethod="POST">
     <Number>${FORWARD_TO}</Number>
   </Dial>
 </Response>`
@@ -349,7 +361,7 @@ export async function POST(request: Request) {
   const screen = JACKIE_LINES.has(twilioNumber) && intakeLeadId && callSid
     ? { leadId: intakeLeadId, callSid }
     : null
-  return new NextResponse(buildTwiml(twilioNumber, screen), {
+  return new NextResponse(buildTwiml(twilioNumber, screen, intakeLeadId), {
     headers: { "Content-Type": "text/xml" },
   })
 }

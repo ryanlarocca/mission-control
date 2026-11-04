@@ -1,5 +1,12 @@
 import { NextRequest, NextResponse } from "next/server"
-import { getLeadsClient, mergePropertyDetails, parsePropertyDetails, isPlaceholderName } from "@/lib/leads"
+import {
+  clipHistoryText,
+  fitHistoryBudget,
+  getLeadsClient,
+  isPlaceholderName,
+  mergePropertyDetails,
+  parsePropertyDetails,
+} from "@/lib/leads"
 import { completeText, extractJsonObject, hasLlmKey, SONNET } from "@/lib/llm"
 
 // Phase 7D — cached lead summary, multi-event variant.
@@ -124,17 +131,16 @@ export async function POST(
       })
     }
 
-    // Build the conversation transcript for the prompt. Per-message limit
-    // bumped from 400 → 4000 chars (2026-05-11) — a single call transcript
-    // can run 3-8k chars, and truncating to 400 made the model hedge
-    // with phrases like "the call log ends here" because it was literally
-    // seeing the opening sentence and nothing else. 30 rows × 4000 chars
-    // ≈ 30k tokens worst case, well inside the model's context.
-    const transcript = rows
-      .filter(r => (r.message || "").trim().length > 0)
-      .slice(-30)
-      .map(r => `[${r.created_at}] ${r.lead_type || "?"} (${dirLabel(r)}): ${(r.message || "").slice(0, 4000)}`)
-      .join("\n") || "(no recorded events)"
+    // Build the conversation transcript for the prompt — whole call
+    // transcripts, newest events first within the budget. A per-message cap
+    // (400, then 4000 chars) made the model say a call "cuts off" when it
+    // was only seeing the first part of it.
+    const transcript = fitHistoryBudget(
+      rows
+        .filter(r => (r.message || "").trim().length > 0)
+        .slice(-30)
+        .map(r => `[${r.created_at}] ${r.lead_type || "?"} (${dirLabel(r)}): ${clipHistoryText(r.message || "")}`),
+    ).join("\n") || "(no recorded events)"
 
     const today = new Date().toISOString().slice(0, 10)
     const prompt = `You are summarizing a real estate lead for Ryan, a cash home buyer. The lead's contact history is below.

@@ -6,6 +6,7 @@ import {
   parseTwilioBody,
   processRecordingBackground,
   isOwnedNumber,
+  sendTelegramAlert,
 } from "@/lib/leads"
 
 // Recording handler — fires for both voicemails (<Record action="...">) and
@@ -39,6 +40,29 @@ const HANGUP_TWIML = `<?xml version="1.0" encoding="UTF-8"?>
   <Hangup />
 </Response>`
 
+// A recordingStatusCallback carries CallSid but no From/To. When the URL
+// names no row either, the call itself says who called which line.
+async function twilioCallParties(callSid: string): Promise<{ from: string; to: string } | null> {
+  const sid = process.env.TWILIO_ACCOUNT_SID
+  const token = process.env.TWILIO_AUTH_TOKEN
+  if (!sid || !token || !/^CA[0-9a-f]{32}$/i.test(callSid)) return null
+  try {
+    const res = await fetch(`https://api.twilio.com/2010-04-01/Accounts/${sid}/Calls/${callSid}.json`, {
+      headers: { Authorization: `Basic ${Buffer.from(`${sid}:${token}`).toString("base64")}` },
+      signal: AbortSignal.timeout(8000),
+    })
+    if (!res.ok) {
+      console.error(`[recording] Twilio call lookup ${callSid} → ${res.status}`)
+      return null
+    }
+    const call = (await res.json()) as { from?: string; to?: string }
+    return { from: call.from || "", to: call.to || "" }
+  } catch (e) {
+    console.error(`[recording] Twilio call lookup ${callSid} threw:`, e)
+    return null
+  }
+}
+
 function twimlResponse(): NextResponse {
   return new NextResponse(HANGUP_TWIML, {
     headers: { "Content-Type": "text/xml" },
@@ -53,14 +77,16 @@ export async function POST(request: Request) {
   let recordingStatus = ""
   let recordingDurationSec: number | null = null
   let explicitLeadId = ""
+  let callSid = ""
   // Callbacks that name their row with ?leadId=…: Jackie's leg (no-answer →
-  // <Dial><Sip>, lib/jackie.ts, also ?jackie=1) and a screened call Ryan
-  // picked up (/api/leads/voice/screen starts that recording). Status
-  // callbacks carry no From/To, so the row supplies the caller and line.
+  // <Dial><Sip>, lib/jackie.ts, also ?jackie=1), a screened call Ryan
+  // picked up (/api/leads/voice/screen starts that recording) and every
+  // inbound call he answers (/api/leads/voice). Status callbacks carry no
+  // From/To, so the row supplies the caller and line.
   const reqUrl = new URL(request.url)
   const jackie = reqUrl.searchParams.get("jackie") === "1"
   const urlLeadId = reqUrl.searchParams.get("leadId") || ""
-  const jackieLeadId = /^[0-9a-f-]{36}$/i.test(urlLeadId) ? urlLeadId : ""
+  const urlRowId = /^[0-9a-f-]{36}$/i.test(urlLeadId) ? urlLeadId : ""
   try {
     const body = await request.text()
     const params = parseTwilioBody(body)
@@ -69,6 +95,7 @@ export async function POST(request: Request) {
     twilioNumber = params.get("To") || params.get("Called") || ""
     recordingSid = params.get("RecordingSid") || ""
     recordingStatus = params.get("RecordingStatus") || ""
+    callSid = params.get("CallSid") || ""
     const dur = Number(params.get("RecordingDuration") || "")
     recordingDurationSec = Number.isFinite(dur) && dur >= 0 ? dur : null
     // Non-Twilio rescue scripts can pass LeadId to bypass the time-windowed
@@ -79,19 +106,34 @@ export async function POST(request: Request) {
     return twimlResponse()
   }
 
-  if (jackieLeadId && recordingUrl) {
-    explicitLeadId = jackieLeadId
+  if (urlRowId && recordingUrl) {
+    explicitLeadId = urlRowId
     try {
-      const { data } = await getLeadsClient().from("leads").select("caller_phone, twilio_number").eq("id", jackieLeadId).maybeSingle()
+      const { data } = await getLeadsClient().from("leads").select("caller_phone, twilio_number").eq("id", urlRowId).maybeSingle()
       callerPhone = callerPhone || (data?.caller_phone as string | null) || ""
       twilioNumber = twilioNumber || (data?.twilio_number as string | null) || ""
     } catch (e) {
-      console.error("[recording] Jackie row lookup threw:", e)
+      console.error("[recording] URL row lookup threw:", e)
+    }
+  }
+
+  if (recordingUrl && !callerPhone && callSid) {
+    const parties = await twilioCallParties(callSid)
+    if (parties) {
+      callerPhone = parties.from
+      twilioNumber = twilioNumber || parties.to
     }
   }
 
   if (!recordingUrl || !callerPhone) {
     console.warn(`[recording] Missing fields — url:${!!recordingUrl} from:${!!callerPhone}`)
+    // A real recording with no home is a lost call transcript — say so.
+    if (recordingUrl) {
+      await sendTelegramAlert(
+        `⚠️ Call recording not attached to any lead — ${recordingSid || "unknown recording"} (call ${callSid || "?"}). ` +
+          `The transcript was not made; replay it with scripts/rescue-call-recording.mjs.`,
+      )
+    }
     return twimlResponse()
   }
   // Same guard as /voice: a recording whose caller is one of our own Twilio

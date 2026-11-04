@@ -2434,6 +2434,33 @@ export interface AnalyzeCallResult {
   property_details: PropertyDetail[]
 }
 
+// Event text in an LLM history block. A whole call transcript fits — an
+// 11-minute call is ~10k chars, a 25-minute one ~24k. The old 4000 cap fed
+// the summarizer the first third of Maryam Norton's 11-04 call, so the card
+// said the call "cuts off mid-conversation" and missed how it ended. A cut
+// is marked so the model never reads it as the call ending.
+const HISTORY_EVENT_MAX_CHARS = 24_000
+// Whole block: newest events win, the oldest drop first (~20k tokens).
+const HISTORY_TOTAL_MAX_CHARS = 80_000
+
+export function clipHistoryText(text: string): string {
+  return text.length > HISTORY_EVENT_MAX_CHARS
+    ? `${text.slice(0, HISTORY_EVENT_MAX_CHARS)} […rest of this transcript not shown]`
+    : text
+}
+
+/** Keep the newest lines (oldest-first input) that fit the history budget. */
+export function fitHistoryBudget(lines: string[]): string[] {
+  const out: string[] = []
+  let total = 0
+  for (let i = lines.length - 1; i >= 0; i--) {
+    total += lines[i].length + 1
+    if (total > HISTORY_TOTAL_MAX_CHARS && out.length > 0) break
+    out.unshift(lines[i])
+  }
+  return out
+}
+
 // Build a short prose timeline of every prior event in the contact's cluster
 // (same caller_phone OR same email). Used by analyzeCallTranscript so the
 // model can extract name / property / temperature / follow-up from the FULL
@@ -2471,20 +2498,14 @@ export async function fetchClusterHistory(
       (!opts.excludeId || r.id !== opts.excludeId)
   )
   if (rows.length === 0) return null
-  // Per-message limit 4000 chars (bumped from 400 on 2026-05-11) — a full
-  // call transcript can run 3-8k chars and the older 400-char cap was
-  // truncating mid-conversation, making the analyzer treat clearly-rich
-  // calls as "just getting started." 20 rows × 4000 chars ≈ 20k tokens
-  // worst case, well inside the model's context.
-  return rows
-    .slice(-20)
-    .map((r) => {
+  // Whole transcripts, newest first within the budget (clipHistoryText).
+  return fitHistoryBudget(
+    rows.slice(-20).map((r) => {
       const dir = r.twilio_number ? "lead" : "ryan"
       const kind = r.lead_type || "?"
-      const text = (r.message || "").slice(0, 4000)
-      return `[${r.created_at}] ${kind} (${dir}): ${text}`
-    })
-    .join("\n")
+      return `[${r.created_at}] ${kind} (${dir}): ${clipHistoryText(r.message || "")}`
+    }),
+  ).join("\n")
 }
 
 export async function analyzeCallTranscript(
