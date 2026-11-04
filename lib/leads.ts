@@ -1907,11 +1907,20 @@ export async function processRecordingBackground(args: {
     // Sales Coach (2026-11-02): <Dial> recordings are dual-channel now, so
     // a live call or an outbound voicemail gets a speaker-separated
     // "Ryan: / Lead:" transcript (lib/coach/transcript). Inbound <Record>
-    // voicemails are mono and Jackie's calls are hers, not Ryan's — those
-    // keep the mixed-track path. Any dual failure falls back to it too.
+    // voicemails are mono and keep the mixed-track path. Any dual failure
+    // falls back to it too.
+    // Jackie's calls split the same way (2026-11-04, Ryan: her card showed
+    // one run-on block) as "Jackie: / Caller:". The caller is the parent
+    // leg (channel 0) and she is the <Dial><Sip> leg (channel 1). `separated`
+    // and the talk ratio stay Ryan-only — they feed the Sales Coach.
     let separated = false
     let talkRatio: number | null = null
     if (audio) {
+      if (args.jackie) {
+        const { transcribeDualChannel } = await import("@/lib/coach/transcript")
+        const dual = await transcribeDualChannel({ mp3Url: fullUrl, ryanChannel: 1, otherLabel: "Caller", selfLabel: "Jackie" })
+        if (dual) transcription = dual.labeled
+      }
       if (kind === "call" && !args.jackie) {
         const { transcribeDualChannel } = await import("@/lib/coach/transcript")
         const dual = await transcribeDualChannel({ mp3Url: fullUrl, ryanChannel: direction === "outbound" ? 0 : 1, otherLabel: "Lead" })

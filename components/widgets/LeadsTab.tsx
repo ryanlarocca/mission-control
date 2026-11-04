@@ -3952,9 +3952,43 @@ function CopyButton({ text, label = "Copy" }: { text: string; label?: string }) 
   )
 }
 
+// A call transcript with its copy button. Collapsed, it scrolls inside a
+// short box — on a phone that reads as "cut off" (Ryan 2026-11-04, Barbara
+// Farnell's Jackie call), so a long one gets a tap to open it fully.
+function TranscriptBox({ text, className }: { text: string; className: string }) {
+  const [open, setOpen] = useState(false)
+  const long = text.length > 400 || text.split("\n").length > 7
+  return (
+    <div>
+      <div className={`${className} whitespace-pre-wrap break-words ${open ? "" : "max-h-48 overflow-y-auto"}`}>
+        {text}
+      </div>
+      <div className="flex items-center justify-end gap-1 mt-1">
+        {long && (
+          <button
+            type="button"
+            onClick={() => setOpen((o) => !o)}
+            aria-expanded={open}
+            className="inline-flex items-center gap-1 text-[11px] text-zinc-400 hover:text-zinc-100 active:text-zinc-100 px-2 py-1 -my-1 rounded touch-manipulation"
+          >
+            {open ? <ChevronDown className="w-3.5 h-3.5" /> : <ChevronRight className="w-3.5 h-3.5" />}
+            <span>{open ? "Show less" : "Show full transcript"}</span>
+          </button>
+        )}
+        <CopyButton text={text} label="Copy transcript" />
+      </div>
+    </div>
+  )
+}
+
+// lib/jackie's JACKIE_TRANSCRIPT_PREFIX — the first line of the transcript
+// on a call the AI receptionist took. Those rows are stored as voicemails.
+const JACKIE_PREFIX_RE = /^\[Call answered by Jackie[^\]]*\]\n/
+
 function TimelineEvent({ ev }: { ev: Lead }) {
   const outbound = isOutbound(ev)
-  const Icon = TYPE_ICON[ev.lead_type ?? "call"] || Phone
+  const jackieCall = ev.lead_type === "voicemail" && !!ev.message && JACKIE_PREFIX_RE.test(ev.message)
+  const Icon = jackieCall ? Bot : TYPE_ICON[ev.lead_type ?? "call"] || Phone
   // Year always (Ryan 2026-10-30): imported leads carry history from past
   // years — "Feb 26" alone can't tell this year from three years ago.
   const fullTime = new Date(ev.created_at).toLocaleString([], {
@@ -3999,14 +4033,7 @@ function TimelineEvent({ ev }: { ev: Lead }) {
                 <div className="text-sm text-zinc-300 italic">{ev.message}</div>
               )}
               {ev.message && !ev.message.startsWith("📵") && (
-                <div>
-                  <div className="text-sm text-zinc-100 whitespace-pre-wrap break-words max-h-48 overflow-y-auto pr-1">
-                    {ev.message}
-                  </div>
-                  <div className="flex justify-end mt-1">
-                    <CopyButton text={ev.message} label="Copy transcript" />
-                  </div>
-                </div>
+                <TranscriptBox text={ev.message} className="text-sm text-zinc-100 pr-1" />
               )}
               {ev.recording_url && (
                 <audio
@@ -4038,7 +4065,7 @@ function TimelineEvent({ ev }: { ev: Lead }) {
       </div>
       <div className="flex-1 min-w-0">
         <div className="text-[10px] uppercase tracking-wider text-zinc-500 mb-1">
-          {(ev.lead_type ?? "event")} · {fullTime}
+          {jackieCall ? "Jackie call" : (ev.lead_type ?? "event")} · {fullTime}
         </div>
         {ev.lead_type === "sms" && ev.message && (
           <div className="text-sm text-zinc-200 bg-zinc-900 rounded px-3 py-2 whitespace-pre-wrap break-words">
@@ -4049,14 +4076,10 @@ function TimelineEvent({ ev }: { ev: Lead }) {
           <div className="space-y-2">
             {/* `message` holds the Whisper transcription for voicemail rows */}
             {ev.message && (
-              <div>
-                <div className="text-sm text-zinc-200 bg-zinc-900 rounded px-3 py-2 whitespace-pre-wrap break-words max-h-48 overflow-y-auto">
-                  {ev.message}
-                </div>
-                <div className="flex justify-end mt-1">
-                  <CopyButton text={ev.message} label="Copy transcript" />
-                </div>
-              </div>
+              <TranscriptBox
+                text={jackieCall ? ev.message.replace(JACKIE_PREFIX_RE, "") : ev.message}
+                className="text-sm text-zinc-200 bg-zinc-900 rounded px-3 py-2"
+              />
             )}
             {ev.recording_url && (
               <audio
@@ -4077,14 +4100,7 @@ function TimelineEvent({ ev }: { ev: Lead }) {
         {ev.lead_type === "call" && (ev.message || ev.recording_url) && (
           <div className="space-y-2">
             {ev.message && (
-              <div>
-                <div className="text-sm text-zinc-200 bg-zinc-900 rounded px-3 py-2 whitespace-pre-wrap break-words max-h-48 overflow-y-auto">
-                  {ev.message}
-                </div>
-                <div className="flex justify-end mt-1">
-                  <CopyButton text={ev.message} label="Copy transcript" />
-                </div>
-              </div>
+              <TranscriptBox text={ev.message} className="text-sm text-zinc-200 bg-zinc-900 rounded px-3 py-2" />
             )}
             {ev.recording_url && (
               <audio

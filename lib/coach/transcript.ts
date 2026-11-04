@@ -135,22 +135,36 @@ export interface MergedTranscript {
   swapped: boolean
 }
 
-const RYAN_TELL = /\b(this is|it'?s|i'?m) ryan\b|\bryan (with|from|at) lrg\b/i
+// A speaker whose next word starts within this long of their previous one
+// kept talking (see the talk-over pass in mergeTurns).
+const TALK_OVER_GAP_SEC = 0.8
+
+// "This is Ryan" / "Ryan with LRG" — how our side introduces itself. On a
+// Jackie call our side is Jackie, so the tell is built from the label (a
+// caller named Ryan must not flip her transcript).
+function selfTell(name: string): RegExp {
+  const n = name.replace(/[^a-z]/gi, "")
+  return new RegExp(`\\b(this is|it'?s|i'?m) ${n}\\b|\\b${n} (with|from|at) lrg\\b`, "i")
+}
 
 // Merge two per-channel segment lists into labelled turns. Adjacent
 // segments from the same speaker collapse into one turn. If the tell
 // appears only on the "other" side, the labels were backwards — swap.
+// `selfLabel` names our side: Ryan, or Jackie on a call she took (her
+// segments still travel as speaker "ryan").
 export function mergeTurns(
   ryanSegs: Segment[],
   otherSegs: Segment[],
   otherLabel: string,
+  selfLabel = "Ryan",
 ): MergedTranscript {
   let ryan = ryanSegs
   let other = otherSegs
   let swapped = false
   const ryanText = ryan.map((s) => s.text).join(" ")
   const otherText = other.map((s) => s.text).join(" ")
-  if (RYAN_TELL.test(otherText) && !RYAN_TELL.test(ryanText)) {
+  const tell = selfTell(selfLabel)
+  if (tell.test(otherText) && !tell.test(ryanText)) {
     ;[ryan, other] = [
       other.map((s) => ({ ...s, speaker: "ryan" as const })),
       ryan.map((s) => ({ ...s, speaker: "other" as const })),
@@ -171,19 +185,44 @@ export function mergeTurns(
       a.s.start - b.s.start
       || (a.s.speaker !== b.s.speaker ? (a.s.speaker === "ryan" ? -1 : 1) : a.i - b.i))
     .map((x) => x.s)
-  const turns: Segment[] = []
+  // `lastStart` = when the turn's last word began, for the talk-over pass.
+  const built: (Segment & { lastStart: number })[] = []
   for (const s of all) {
     const text = s.text.trim()
     if (!text) continue
-    const last = turns[turns.length - 1]
+    const last = built[built.length - 1]
     if (last && last.speaker === s.speaker) {
       last.text = `${last.text} ${text}`
       last.end = Math.max(last.end, s.end)
+      last.lastStart = s.start
     } else {
-      turns.push({ ...s, text })
+      built.push({ ...s, text, lastStart: s.start })
     }
   }
-  const labeled = turns.map((t) => `${t.speaker === "ryan" ? "Ryan" : otherLabel}: ${t.text}`).join("\n")
+  // Talk-over (2026-11-04, Jackie's calls): when both sides speak at once
+  // the word-by-word merge ping-pongs ("Jackie: All / Caller: he / Jackie:
+  // right, / Caller: wrote"). If a speaker's next word comes right after
+  // their last one, they never stopped — whatever the other side said in
+  // between was said over them, so it goes after the unbroken turn. A
+  // reply that landed in a real pause is left where it is.
+  for (let i = 1; i + 1 < built.length; ) {
+    const a1 = built[i - 1], b = built[i], a2 = built[i + 1]
+    if (a2.start - a1.lastStart >= TALK_OVER_GAP_SEC) { i++; continue }
+    a1.text = `${a1.text} ${a2.text}`
+    a1.end = Math.max(a1.end, a2.end)
+    a1.lastStart = a2.lastStart
+    built.splice(i + 1, 1)
+    const next = built[i + 1]
+    if (next && next.speaker === b.speaker) {
+      b.text = `${b.text} ${next.text}`
+      b.end = Math.max(b.end, next.end)
+      b.lastStart = next.lastStart
+      built.splice(i + 1, 1)
+    }
+    // Stay on `b`: its new neighbours may fold again.
+  }
+  const turns: Segment[] = built.map(({ lastStart: _lastStart, ...t }) => t)
+  const labeled = turns.map((t) => `${t.speaker === "ryan" ? selfLabel : otherLabel}: ${t.text}`).join("\n")
   const sum = (segs: Segment[]) => segs.reduce((n, s) => n + Math.max(0, s.end - s.start), 0)
   return { labeled, turns, ryanSec: Math.round(sum(ryan)), otherSec: Math.round(sum(other)), swapped }
 }
@@ -284,6 +323,8 @@ export async function transcribeDualChannel(args: {
   mp3Url: string
   ryanChannel: 0 | 1
   otherLabel: string
+  // Our side's label when it isn't Ryan — "Jackie" on a call she took.
+  selfLabel?: string
 }): Promise<MergedTranscript | null> {
   const tag = "[coach/transcript]"
   try {
@@ -303,9 +344,9 @@ export async function transcribeDualChannel(args: {
       otherCh.peak < SILENT_PEAK ? Promise.resolve(silent) : transcribeSegments(otherCh.wav, "other.wav"),
     ])
     if (ryanRaw === null || otherRaw === null) return null
-    const merged = mergeTurns(wordsToPieces(ryanRaw, "ryan"), wordsToPieces(otherRaw, "other"), args.otherLabel)
+    const merged = mergeTurns(wordsToPieces(ryanRaw, "ryan"), wordsToPieces(otherRaw, "other"), args.otherLabel, args.selfLabel)
     if (!merged.turns.length) return null
-    if (merged.swapped) console.warn(`${tag} channels were swapped by the "this is Ryan" tell (ryanChannel=${args.ryanChannel})`)
+    if (merged.swapped) console.warn(`${tag} channels were swapped by the "this is ${args.selfLabel ?? "Ryan"}" tell (ryanChannel=${args.ryanChannel})`)
     return merged
   } catch (e) {
     console.error(`${tag} threw:`, e instanceof Error ? e.message : String(e))

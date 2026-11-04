@@ -119,4 +119,43 @@ describe("mergeTurns", () => {
     const m = mergeTurns([seg("ryan", 0, 1, "  ")], [seg("other", 1, 2, "Hi")], "Lead")
     expect(m.turns).toHaveLength(1)
   })
+
+  it("keeps a turn whole when the other side talks over it", () => {
+    // Jackie says "All right, Gary." while the caller says "he wrote me a letter".
+    const m = mergeTurns(
+      [seg("ryan", 10.0, 10.2, "All"), seg("ryan", 10.3, 10.6, "right,"), seg("ryan", 10.7, 11.0, "Gary.")],
+      [seg("other", 9.0, 9.4, "Gary,"), seg("other", 10.1, 10.3, "he"), seg("other", 10.5, 10.7, "wrote"), seg("other", 10.9, 11.1, "me"), seg("other", 11.1, 11.2, "a"), seg("other", 11.2, 11.6, "letter.")],
+      "Caller", "Jackie",
+    )
+    expect(m.labeled).toBe("Caller: Gary,\nJackie: All right, Gary.\nCaller: he wrote me a letter.")
+  })
+
+  it("leaves a reply that landed in a real pause where it is", () => {
+    const m = mergeTurns(
+      [seg("ryan", 0, 0.4, "Selling?"), seg("ryan", 2.5, 3, "Great.")],
+      [seg("other", 1.2, 1.6, "Yeah.")],
+      "Lead",
+    )
+    expect(m.labeled).toBe("Ryan: Selling?\nLead: Yeah.\nRyan: Great.")
+  })
+
+  it("labels our side Jackie on a call she took", () => {
+    const m = mergeTurns(
+      [seg("ryan", 0, 2, "Hey, this is Jackie with LRG Homes.")],
+      [seg("other", 2, 4, "I got a letter.")],
+      "Caller", "Jackie",
+    )
+    expect(m.labeled).toBe("Jackie: Hey, this is Jackie with LRG Homes.\nCaller: I got a letter.")
+    expect(m.swapped).toBe(false)
+  })
+
+  it("a caller named Ryan doesn't flip a Jackie transcript", () => {
+    const m = mergeTurns(
+      [seg("ryan", 0, 2, "What's your name?")],
+      [seg("other", 2, 4, "This is Ryan.")],
+      "Caller", "Jackie",
+    )
+    expect(m.swapped).toBe(false)
+    expect(m.labeled).toBe("Jackie: What's your name?\nCaller: This is Ryan.")
+  })
 })

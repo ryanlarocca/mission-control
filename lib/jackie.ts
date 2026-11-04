@@ -291,7 +291,7 @@ export function nextBusinessDay(ymd: string): string {
  */
 export async function reviewJackieCall(transcript: string, now: Date = new Date()): Promise<JackieCallReview | null> {
   const { ymd, weekday, clock } = pacificToday(now)
-  const prompt = `This is a phone call between Jackie, the AI receptionist for LRG Homes (Ryan, a Bay Area home buyer), and someone who called one of his mailer lines (usually about a letter he mailed, sometimes calling back someone Ryan already spoke with). The transcript has no speaker labels.
+  const prompt = `This is a phone call between Jackie, the AI receptionist for LRG Homes (Ryan, a Bay Area home buyer), and someone who called one of his mailer lines (usually about a letter he mailed, sometimes calling back someone Ryan already spoke with). Lines are labelled "Jackie:" and "Caller:" when the recording could be split by speaker; otherwise it is one block with no speaker labels.
 
 It is now ${weekday} ${ymd}, ${clock} Pacific.
 
