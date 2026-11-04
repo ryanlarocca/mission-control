@@ -27,6 +27,22 @@ picking up cold) + `CHANGELOG.md` (append-only ship history).
 `briefs/*.md` — execution specs **do** live in this repo. That's the one
 docs exception.
 
+## Looking up someone's message — texts first, automatically
+
+When Ryan references a person's message, text, pitch, deal, or "what X
+sent me", check his **recent texts first**, before memory, Supabase or
+Gmail. One command, no fan-out:
+
+```
+node scripts/pile/ask.mjs recent --days 7        # who texted him lately (add --unsaved for unknown numbers)
+node scripts/pile/ask.mjs person "<name>" --since <date>   # one person; falls back to unsaved threads that mention the name
+```
+
+Go to email only when he mentions email ("my inbox", "forwarded", …).
+Say in one line what you're checking before you search so he can
+redirect early. (2026-11-03: ten steps of searching before "check my
+texts" — don't repeat it.)
+
 ## When Ryan says "wrap"
 
 "Wrap" is a defined procedure — see the canonical version in

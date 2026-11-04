@@ -8,6 +8,8 @@
 //   node scripts/pile/ask.mjs who "<name|phone|email>"            → every identifier we know for a person
 //   node scripts/pile/ask.mjs email "<words>" [--with <name|email>] [--since ...] [--limit 20]
 //   node scripts/pile/ask.mjs person "<name|phone>" [--since ...]  → texts + calls + email with one person, newest first
+//                                                                    (no saved match → unsaved threads that mention the name, newest first)
+//   node scripts/pile/ask.mjs recent [--days 7] [--unsaved] [--each 2] → who texted Ryan lately, grouped by sender, self-intros pulled out
 //   node scripts/pile/ask.mjs status
 // Add --json for machine output.
 import { ImapFlow } from "imapflow"
@@ -75,6 +77,15 @@ async function searchEmail({ words, from, since, limit }) {
   } finally { await client.logout().catch(() => {}) }
 }
 
+// "Who texted me lately" is the first place to look when Ryan references
+// someone's message (2026-11-03). An unsaved number never resolves by name, so
+// the thread's own self-introduction ("this is Alex", "Jeff with Tier One") is
+// the only handle we have for it.
+const NOISE = /^(Liked|Loved|Laughed at|Emphasized|Disliked|Questioned|Reacted|Le gustó|Reaccionó|Se rió|Enfatizó)\b|Reply STOP|StopToEnd|unsubscribe|opt ?out|checked in at|your place on the/i
+const INTRO = /\b(?:this is|it'?s|my name is|i'?m)\s+([A-Z][a-z]+(?: [A-Z][a-z]+)?)(?: (?:with|from|at|@) ([A-Z][\w&' .-]{2,40}?))?(?=[,.!\s]|$)|^(?:hey|hi|hello)[^,.]*,?\s*([A-Z][a-z]+) (?:here|with ([A-Z][\w&' .-]{2,40}?))\b/
+function intro(text) { const m = INTRO.exec(String(text || "")); if (!m) return null; const name = m[1] || m[3]; const org = m[2] || m[4]; return org ? `${name} (${org.trim()})` : name }
+const clean = (t) => String(t).replace(/\s+/g, " ")
+
 function printTexts(rows, names) { for (const r of rows) console.log(`${fmt(r.at).padEnd(22)} ${(r.group && r.from_me ? "me" : r.name || names.get(last10(r.number)) || r.number || "?").slice(0, 22).padEnd(22)} ${r.from_me ? "→" : "←"} ${r.group ? `[${r.group.label.slice(0, 40)}] ` : ""}${String(r.text).replace(/\s+/g, " ").slice(0, 110)}`) }
 // A person with two numbers in the same group chat returns that chat twice — keep one copy.
 const dedupeTexts = (rows) => { const seen = new Set(); return rows.filter((r) => { const k = `${r.at}|${r.group?.chat || ""}|${r.text}`; if (seen.has(k)) return false; seen.add(k); return true }) }
@@ -115,6 +126,23 @@ async function main() {
     console.log(`== ${q} → ${who.names.join("; ") || "no name match"} | phones ${who.phones.join(", ") || "—"} | emails ${who.emails.join(", ") || "—"}`)
     let texts = []; for (const p of who.phones) texts.push(...await sc("/pile/texts", { phone: p, since: flags.since, limit, groups: groupsParam() }))
     texts = dedupeTexts(texts)
+    if (!texts.length && /[a-z]/i.test(q) && !/\d{7}/.test(q)) {
+      // Nobody saved under that name has texted — they may be unsaved and known
+      // only from their own "this is <name>" (the Alex-the-wholesaler case).
+      const first = q.split(/\s+/)[0]
+      const word = new RegExp(`\\b${first.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "i")
+      const hits = (await sc("/pile/texts", { q: first, from_me: "0", groups: "0", limit: 300 })).filter((r) => r.text && word.test(r.text) && !who.phones.includes(last10(r.number)))
+      const by = new Map(); for (const r of hits) { const k = last10(r.number) || r.number; if (!by.has(k) || by.get(k).at < r.at) by.set(k, r) }
+      const cands = [...by.values()].sort((a, b) => (a.at < b.at ? 1 : -1)).slice(0, 8)
+      if (cands.length) {
+        console.log(`\n-- no texts from a saved "${q}"; ${cands.length} other thread(s) mention the name (newest first):`)
+        for (const c of cands) console.log(`   ${fmt(c.at).padEnd(22)} ${String(c.name || names.get(last10(c.number)) || c.number).slice(0, 22).padEnd(22)} ${intro(c.text) ? `[${intro(c.text)}] ` : ""}${clean(c.text).slice(0, 100)}`)
+        const top = last10(cands[0].number) || cands[0].number
+        texts = dedupeTexts(await sc("/pile/texts", { phone: top, since: flags.since, limit, groups: groupsParam() }))
+        who.phones.push(top)
+        console.log(`-- showing the newest of those threads (${top}); run person <number> for another`)
+      }
+    }
     const calls = []; for (const p of who.phones) calls.push(...await sc("/pile/calls", { phone: p, since: flags.since, limit }))
     const emails = who.emails.length ? await searchEmail({ from: who.emails[0], since: flags.since, limit: Math.min(limit, 20) }).catch((e) => { console.error("email:", e.message); return [] }) : []
     texts.sort((a, b) => (a.at < b.at ? 1 : -1)); calls.sort((a, b) => (a.at < b.at ? 1 : -1))
@@ -124,6 +152,32 @@ async function main() {
     console.log(`\n-- ${calls.length} calls`); printCalls(calls.slice(0, limit), names)
     console.log(`\n-- ${emails.length} emails`); printEmail(emails); return
   }
-  console.log("usage: ask.mjs texts|calls|who|email|person|status …  (see header)")
+  if (cmd === "recent") {
+    const days = Number(flags.days || 7)
+    const since = new Date(Date.now() - days * 86400e3).toISOString().slice(0, 10)
+    const rows = (await sc("/pile/texts", { since, from_me: "0", groups: "0", limit: Number(flags.limit || 2000) })).filter((r) => r.text && !NOISE.test(r.text))
+    const by = new Map()
+    for (const r of rows) { const k = last10(r.number) || r.number; const g = by.get(k) || { number: k, name: r.name || names.get(k) || null, msgs: [] }; g.msgs.push(r); by.set(k, g) }
+    let groups = [...by.values()].map((g) => { g.msgs.sort((a, b) => (a.at < b.at ? 1 : -1)); g.newest = g.msgs[0].at; return g }).sort((a, b) => (a.newest < b.newest ? 1 : -1))
+    if (flags.unsaved) groups = groups.filter((g) => !g.name)
+    for (const g of groups) {
+      g.intro = g.msgs.map((m) => intro(m.text)).find(Boolean) || null
+      if (!g.name) {
+        // Look back to the start of the thread: the self-introduction is usually the first text.
+        const thread = (await sc("/pile/texts", { phone: g.number, from_me: "0", groups: "0", limit: 500 })).filter((r) => r.text).sort((a, b) => (a.at < b.at ? -1 : 1))
+        g.intro = thread.slice(0, 5).map((m) => intro(m.text)).find(Boolean) || g.intro
+        g.first = thread[0]?.at || null
+      }
+    }
+    if (JSON_OUT) return console.log(JSON.stringify(groups))
+    console.log(`${groups.length} ${flags.unsaved ? "unsaved numbers" : "people"} texted you in the last ${days} days (inbound, private threads, tapbacks/marketing skipped)`)
+    for (const g of groups) {
+      const label = g.name || `${g.number} (unsaved${g.intro ? ` — "${g.intro}"` : ""}${g.first ? `, first text ${fmt(g.first).split(",")[0]}` : ""})`
+      console.log(`\n${label} — ${g.msgs.length} text${g.msgs.length === 1 ? "" : "s"}, last ${fmt(g.newest)}`)
+      for (const m of g.msgs.slice(0, Number(flags.each || 2))) console.log(`   ${fmt(m.at).padEnd(22)} ${clean(m.text).slice(0, 140)}`)
+    }
+    return
+  }
+  console.log("usage: ask.mjs texts|calls|who|email|person|recent|status …  (see header)")
 }
 main().catch((e) => { console.error(e.message); process.exit(1) })
