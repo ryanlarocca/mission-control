@@ -69,7 +69,9 @@ export function consentPage({ envelope, signer, token, error }) {
 export function reviewPage({ envelope, signer, token, error, spot }) {
   // spot: { page (1-based), x, lineY, w } in PDF points for template signers; null → addendum.
   // The anchor's top is the signature line itself (letter page, 612×792pt); the tab hangs above it.
-  const pct = spot ? { left: (spot.x / 612) * 100, top: ((792 - spot.lineY) / 792) * 100, width: (spot.w / 612) * 100 } : null
+  // Self-sign spots carry their page size; the purchase agreement is letter.
+  const pw = spot?.pageW || 612, ph = spot?.pageH || 792
+  const pct = spot ? { left: (spot.x / pw) * 100, top: ((ph - spot.lineY) / ph) * 100, width: (Math.min(spot.w, 249) / pw) * 100 } : null
   const tab = `<button type="button" class="signtab" id="signtab" aria-label="Sign here"><span class="flag">Sign here</span><span class="sigpreview" id="sigpreview"></span></button>`
   // The page images come from interim.pdf once anyone has signed (original + addendum pages), so count those, not the original's pages.
   const pageCount = envelope.view_page_count || envelope.page_count
@@ -204,7 +206,7 @@ export function adminDetail({ envelope, signers, events, flash, error, freshLink
   const rows = signers.map((s) => {
     const canSend = open && s.status !== "signed" && s.order_index <= tier
     const link = freshLinks[s.id]
-    return `<tr><td><strong>${esc(s.name)}</strong><div class="ev">${[s.email, s.phone].filter(Boolean).map(esc).join(" · ")}<br>${s.role} · order ${s.order_index} · by ${s.delivery === "both" ? "email + text" : s.delivery} · ${s.placement === "template" ? "on the agreement" : "on the addendum"}</div></td>
+    return `<tr><td><strong>${esc(s.name)}</strong><div class="ev">${[s.email, s.phone].filter(Boolean).map(esc).join(" · ")}<br>${s.role} · order ${s.order_index} · by ${s.delivery === "both" ? "email + text" : s.delivery} · ${s.placement === "template" ? "on the agreement" : s.placement === "fields" ? "on the form's own lines" : "on the addendum"}</div></td>
 <td><span class="pill ${s.status}">${s.status}</span><div class="ev">${s.sent_at ? `sent ${esc(fmtTsPT(s.sent_at))}${s.send_count > 1 ? ` (×${s.send_count})` : ""}<br>` : ""}${s.opened_at ? `opened ${esc(fmtTsPT(s.opened_at))} · ${esc(geoLabel(s.open_geo))} · ${esc(deviceLabel(s.open_ua))}<br>` : ""}${s.signed_at ? `signed ${esc(fmtTsPT(s.signed_at))} · ${esc(geoLabel(s.sign_geo))}` : ""}</div></td>
 <td class="actions">${canSend ? `<form method="post" action="/admin/e/${envelope.id}/resend/${s.id}" style="display:inline"><button class="btn small secondary" type="submit">Resend</button></form><form method="post" action="/admin/e/${envelope.id}/link/${s.id}" style="display:inline"><button class="btn small secondary" type="submit">Get link to text</button></form>` : ""}${link ? `<div class="ev">Fresh link (expires ${esc(fmtDatePT(link.expiresAt))}):<br><code>${esc(link.link)}</code> <button class="link" data-copy="${esc(link.link)}">copy</button></div>` : ""}</td></tr>`
   }).join("")

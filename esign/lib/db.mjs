@@ -43,7 +43,7 @@ CREATE TABLE IF NOT EXISTS signers (
   email TEXT NOT NULL,
   phone TEXT,
   delivery TEXT NOT NULL DEFAULT 'email', -- 'email' | 'text' | 'both'
-  placement TEXT NOT NULL,         -- 'template' | 'addendum'
+  placement TEXT NOT NULL,         -- 'template' | 'addendum' | 'fields' (self-sign: on the document's own lines)
   token_hash TEXT,
   token_expires_at TEXT,
   status TEXT NOT NULL,            -- 'waiting' | 'sent' | 'opened' | 'consented' | 'signed' | 'declined'
@@ -96,6 +96,16 @@ export function getDb() {
   if (!cols.includes("delivery")) db.exec("ALTER TABLE signers ADD COLUMN delivery TEXT NOT NULL DEFAULT 'email'")
   const ecols = db.prepare("PRAGMA table_info(envelopes)").all().map((c) => c.name)
   if (!ecols.includes("view_page_count")) db.exec("ALTER TABLE envelopes ADD COLUMN view_page_count INTEGER")
+  // Self-sign (2026-11-04): Ryan signing someone else's form on its own lines.
+  //   fields_json    — [{page, kind: text|date|signature, value?, x, lineY, w}] in PDF points (page 1-based)
+  //   source_path    — the form exactly as it was sent to Ryan (original.pdf = it + the typed-in fill-ins)
+  //   filing_folder  — Drive folder under Business Operations, e.g. "E-Sign/Signed by Ryan/2026-11-04 · 5122 Severance Ct · Access Acknowledgment"
+  //   doc_label      — file name stem inside that folder ("Access Acknowledgment")
+  //   drive_signed_* — the clean signed copy (no certificate) — the one that gets shared
+  for (const [col, type] of [["kind", "TEXT NOT NULL DEFAULT 'standard'"], ["fields_json", "TEXT"], ["source_path", "TEXT"], ["source_sha256", "TEXT"],
+    ["filing_folder", "TEXT"], ["doc_label", "TEXT"], ["drive_source_id", "TEXT"], ["drive_signed_id", "TEXT"], ["drive_signed_link", "TEXT"], ["drive_folder_link", "TEXT"]]) {
+    if (!ecols.includes(col)) db.exec(`ALTER TABLE envelopes ADD COLUMN ${col} ${type}`)
+  }
   return db
 }
 

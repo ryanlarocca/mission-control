@@ -6,10 +6,10 @@ import fs from "node:fs"
 import path from "node:path"
 import { env } from "./env.mjs"
 import { getDb, now, run, one, addEvent, getEnvelope, getSigners, getSigner, getEvents } from "./db.mjs"
-import { sha256, inspectPdf, renderPages, buildFinalPdf, buildInterimPdf } from "./pdf.mjs"
+import { sha256, inspectPdf, renderPages, buildFinalPdf, buildInterimPdf, checkFields, stampFillIns } from "./pdf.mjs"
 import { CONSENT_VERSION } from "./consent.mjs"
 import { fontKey } from "./fonts.mjs"
-import { sendMail, driveClient, driveDownload, driveMeta, driveResolvePath, driveUpload } from "./google.mjs"
+import { sendMail, driveClient, driveDownload, driveMeta, driveResolvePath, driveUpload, driveFolderLink } from "./google.mjs"
 import { inviteEmail, completedEmail, inviteText, completedText } from "./emails.mjs"
 import { sendText, normalizePhone } from "./sms.mjs"
 import { notify, esc } from "./notify.mjs"
@@ -123,6 +123,67 @@ export async function createEnvelope({ title, propertyAddress, agreementDate, me
   return { id, sent }
 }
 
+const SAFE = (t) => String(t).replace(/[\\/:*?"<>|]+/g, "-").replace(/\s+/g, " ").trim()
+
+/**
+ * Self-sign: Ryan signs a form someone else sent him, on the form's own lines.
+ * The fill-ins (`fields` with kind "text") are typed onto the page before the
+ * envelope exists, so what he reviews is exactly what he signs; the date and
+ * his signature go on when he signs. No invitation is sent — the caller gets
+ * the signing link back. On completion the form as received, the clean signed
+ * copy and the signed copy + certificate are filed together in
+ * Business Operations/E-Sign/Signed by Ryan/<date> · <street> · <label>/.
+ */
+export async function createSelfSign({ pdfBytes, driveFileId, docLabel, street, propertyAddress, receivedFrom, fields }) {
+  const db = getDb()
+  let bytes = pdfBytes ? Buffer.from(pdfBytes) : null
+  if (!bytes && driveFileId) {
+    const drive = await driveClient()
+    const meta = await driveMeta(drive, driveFileId)
+    if (meta.mimeType !== "application/pdf") throw new UserError("That Drive file is not a PDF")
+    bytes = await driveDownload(drive, driveFileId)
+    if (!docLabel) docLabel = meta.name.replace(/\.pdf$/i, "")
+  }
+  if (!bytes || bytes.subarray(0, 5).toString() !== "%PDF-") throw new UserError("A PDF is required")
+  docLabel = SAFE(docLabel || "Document")
+  street = street ? SAFE(street) : null
+  const checked = await checkFields(bytes, fields)
+  const prepared = await stampFillIns(bytes, checked)
+
+  const id = crypto.randomBytes(8).toString("hex")
+  const dir = envelopeDir(id)
+  fs.mkdirSync(dir, { recursive: true })
+  const sourcePath = path.join(dir, "source.pdf")
+  const originalPath = path.join(dir, "original.pdf")
+  fs.writeFileSync(sourcePath, bytes); readOnly(sourcePath)
+  fs.writeFileSync(originalPath, prepared); readOnly(originalPath)
+  const pageCount = await renderPages(originalPath, path.join(dir, "pages"))
+
+  const ts = now()
+  const day = new Intl.DateTimeFormat("en-CA", { timeZone: env.tz, year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date())
+  const filingFolder = `${env.selfSignPath}/${[day, street, docLabel].filter(Boolean).join(" · ")}`
+  const title = street ? `${street} · ${docLabel}` : docLabel
+  const signerId = crypto.randomBytes(6).toString("hex")
+  db.exec("BEGIN")
+  try {
+    db.prepare(`INSERT INTO envelopes (id, title, property_address, message, source, drive_file_id, original_sha256, original_path, page_count, view_page_count,
+      is_template, status, created_at, created_by, kind, fields_json, source_path, source_sha256, filing_folder, doc_label)
+      VALUES (?,?,?,?,?,?,?,?,?,?,0,'in_progress',?,'self-sign','self',?,?,?,?,?)`).run(
+      id, title, propertyAddress || null, receivedFrom ? `form from ${receivedFrom}` : null, driveFileId ? "drive" : "upload", driveFileId || null,
+      sha256(prepared), originalPath, pageCount, pageCount, ts, JSON.stringify(checked), sourcePath, sha256(bytes), filingFolder, docLabel)
+    db.prepare(`INSERT INTO signers (id, envelope_id, order_index, role, name, email, phone, delivery, placement, status) VALUES (?,?,1,'buyer',?,?,NULL,'email','fields','waiting')`)
+      .run(signerId, id, env.ownerName, env.senderEmail)
+    db.exec("COMMIT")
+  } catch (e) {
+    db.exec("ROLLBACK")
+    throw e
+  }
+  addEvent(id, "created", { details: { title, pages: pageCount, kind: "self", source: driveFileId ? "drive" : "upload", fields: checked.map(({ kind, value, label }) => ({ kind, value, label })), receivedFrom: receivedFrom || null } })
+  await refreshInterim(id) // shows today's date on the date lines
+  const { link, expiresAt } = await freshLink(id, signerId)
+  return { id, link, expiresAt, filingFolder }
+}
+
 /**
  * Rebuild envelopes/<id>/interim.pdf (original + every signature so far; the
  * addendum box ticked and the addendum page listed as soon as the envelope has
@@ -135,7 +196,7 @@ export async function refreshInterim(envelopeId) {
   const envelope = getEnvelope(envelopeId)
   if (!envelope || envelope.status !== "in_progress") return null
   const signers = getSigners(envelopeId)
-  if (!signers.some((s) => s.status === "signed" || s.placement === "addendum")) return null
+  if (!envelope.fields_json && !signers.some((s) => s.status === "signed" || s.placement === "addendum")) return null
   try {
     const originalBytes = fs.readFileSync(envelope.original_path)
     if (sha256(originalBytes) !== envelope.original_sha256) throw new Error("Original document fingerprint mismatch — refusing to build")
@@ -354,7 +415,16 @@ export async function deliver(envelopeId) {
   const filename = `${envelope.title.replace(/[\\/:*?"<>|]+/g, "-")} - SIGNED.pdf`
   const problems = []
 
-  if (!envelope.drive_final_id) {
+  if (envelope.kind === "self") {
+    if (!envelope.drive_final_id) {
+      try {
+        await fileSelfSign(envelope, finalBytes)
+      } catch (e) {
+        problems.push(`Drive: ${e?.message || e}`)
+        console.error("[esign] drive upload failed:", e)
+      }
+    }
+  } else if (!envelope.drive_final_id) {
     try {
       const drive = await driveClient()
       // Signed copies live in Offers/Signed/<street>/, mirroring the draft's
@@ -401,7 +471,9 @@ export async function deliver(envelopeId) {
   }
 
   const fresh = getEnvelope(envelopeId)
-  const link = fresh.drive_final_link ? `\n📁 <a href="${fresh.drive_final_link}">Open in Drive</a>` : ""
+  const link = fresh.kind === "self" && fresh.drive_folder_link
+    ? `\n📁 <a href="${fresh.drive_folder_link}">Folder in Drive</a> · <a href="${fresh.drive_signed_link}">signed copy</a>`
+    : fresh.drive_final_link ? `\n📁 <a href="${fresh.drive_final_link}">Open in Drive</a>` : ""
   if (problems.length) {
     await notify(`🔴 e-sign: <b>${esc(envelope.title)}</b> is fully signed, but delivery had problems:\n• ${problems.map(esc).join("\n• ")}\nRetry from ${env.baseUrl}/admin/e/${envelopeId}`)
   } else if (!getEvents(envelopeId).some((e) => e.kind === "completion_notified")) {
@@ -409,6 +481,51 @@ export async function deliver(envelopeId) {
     addEvent(envelopeId, "completion_notified")
   }
   return { problems }
+}
+
+/**
+ * Self-sign filing: one folder per document with the three versions. Each
+ * upload is recorded as it lands, so a retry only uploads what is missing.
+ */
+async function fileSelfSign(envelope, finalBytes) {
+  const drive = await driveClient()
+  const folderId = await driveResolvePath(drive, env.driveRootId, envelope.filing_folder)
+  if (!envelope.drive_folder_link) run("UPDATE envelopes SET drive_folder_id = ?, drive_folder_link = ? WHERE id = ?", folderId, driveFolderLink(folderId), envelope.id)
+  const dir = envelopeDir(envelope.id)
+  const label = envelope.doc_label || "Document"
+  if (!envelope.drive_source_id) {
+    const up = await driveUpload(drive, folderId, `${label} - original.pdf`, fs.readFileSync(envelope.source_path))
+    run("UPDATE envelopes SET drive_source_id = ? WHERE id = ?", up.id, envelope.id)
+  }
+  if (!envelope.drive_signed_id) {
+    const signedBytes = fs.readFileSync(path.join(dir, "signed.pdf"))
+    if (sha256(signedBytes) !== envelope.signed_sha256) throw new Error("Signed document fingerprint mismatch")
+    const up = await driveUpload(drive, folderId, `${label} - signed.pdf`, signedBytes)
+    run("UPDATE envelopes SET drive_signed_id = ?, drive_signed_link = ? WHERE id = ?", up.id, up.webViewLink, envelope.id)
+  }
+  const up = await driveUpload(drive, folderId, `${label} - signed + certificate.pdf`, finalBytes)
+  run("UPDATE envelopes SET drive_final_id = ?, drive_final_link = ? WHERE id = ?", up.id, up.webViewLink, envelope.id)
+  addEvent(envelope.id, "filed_to_drive", { details: { folder: envelope.filing_folder, folderId, fileId: up.id } })
+}
+
+/**
+ * Share the clean signed copy (never the folder, never the certificate copy)
+ * view-only with one email address. No Google notification email — Ryan
+ * sends the link himself. Returns the link to send.
+ */
+export async function shareSigned(envelopeId, email) {
+  const envelope = getEnvelope(envelopeId)
+  if (!envelope || envelope.kind !== "self") throw new UserError("Not a self-sign envelope")
+  if (!envelope.drive_signed_id) throw new UserError("The signed copy isn't in Drive yet")
+  email = String(email || "").trim().toLowerCase()
+  if (!EMAIL_RE.test(email)) throw new UserError(`"${email}" is not a valid email`)
+  const drive = await driveClient()
+  await drive.permissions.create({
+    fileId: envelope.drive_signed_id, sendNotificationEmail: false, supportsAllDrives: true,
+    requestBody: { type: "user", role: "reader", emailAddress: email },
+  })
+  addEvent(envelopeId, "shared", { details: { fileId: envelope.drive_signed_id, with: email, role: "reader" } })
+  return { link: envelope.drive_signed_link }
 }
 
 export async function voidEnvelope(envelopeId, reason) {

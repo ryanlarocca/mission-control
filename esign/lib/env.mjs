@@ -66,6 +66,8 @@ export const env = {
    *  Offers/Drafts/<street>/ (the offer bot), signed copies go to Offers/Signed/<street>/. */
   draftsPath: "Offers/Drafts",
   signedPath: "Offers/Signed",
+  /** Self-sign (forms other people send Ryan): Business Operations/E-Sign/Signed by Ryan/<date> · <street> · <label>/ */
+  selfSignPath: "E-Sign/Signed by Ryan",
   driveRootId: process.env.ESIGN_DRIVE_ROOT_ID || "1FOKTLfIP1cLW3HStneb2IWEvWSfOIzA5",
   driveSubject: process.env.ESIGN_DRIVE_SUBJECT || "ryan@lrghomes.com",
   tz: "America/Los_Angeles",

@@ -93,6 +93,10 @@ function signersFromForm(arr) {
 
 /** Where this signer's "Sign here" tab sits on the page images (template signers only). */
 function signSpot(envelope, signer) {
+  if (envelope.fields_json && signer.placement === "fields") {
+    const f = JSON.parse(envelope.fields_json).find((x) => x.kind === "signature")
+    return f ? { page: f.page, x: f.x, lineY: f.lineY, w: f.w, pageW: f.pageW, pageH: f.pageH } : null
+  }
   if (!envelope.is_template || signer.placement !== "template") return null
   const t = TEMPLATE[signer.role]
   return t ? { page: TEMPLATE.page + 1, x: t.x, lineY: t.lineY, w: t.w } : null

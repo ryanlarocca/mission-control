@@ -72,7 +72,7 @@ before(async () => {
     cwd: ROOT,
     env: {
       ...process.env, ESIGN_PORT: String(port), ESIGN_BASE_URL: base, ESIGN_DATA_DIR: dataDir,
-      ESIGN_DRY_MAIL: "1", ESIGN_QUIET: "1", ESIGN_ADMIN_PASSWORD: PASSWORD, ESIGN_API_SECRET: "e2e-api", ESIGN_COOKIE_SECRET: "e2e-cookie",
+      ESIGN_DRY_MAIL: "1", ESIGN_QUIET: "1", ESIGN_DRY_DRIVE: "1", ESIGN_ADMIN_PASSWORD: PASSWORD, ESIGN_API_SECRET: "e2e-api", ESIGN_COOKIE_SECRET: "e2e-cookie",
     },
     stdio: ["ignore", "pipe", "pipe"],
   })

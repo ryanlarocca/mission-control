@@ -19,6 +19,7 @@ export async function gmailClient() {
 }
 
 export async function driveClient() {
+  if (process.env.ESIGN_DRY_DRIVE === "1") return dryDrive()
   const auth = jwt(["https://www.googleapis.com/auth/drive"], env.driveSubject)
   await auth.authorize()
   return google.drive({ version: "v3", auth })
@@ -93,6 +94,8 @@ export async function driveResolvePath(drive, rootId, relPath, { create = true }
   return parent
 }
 
+export const driveFolderLink = (id) => `https://drive.google.com/drive/folders/${id}`
+
 export async function driveUpload(drive, folderId, name, bytes, mime = "application/pdf") {
   const { data } = await drive.files.create({
     requestBody: { name, parents: [folderId] },
@@ -115,4 +118,43 @@ export async function listRecentOffers(drive, limit = 25) {
     if (out.length >= limit) break
   }
   return out.sort((a, b) => (a.modifiedTime < b.modifiedTime ? 1 : -1)).slice(0, limit)
+}
+
+/**
+ * ESIGN_DRY_DRIVE=1 (tests): an in-memory stand-in for the few Drive calls the
+ * service makes. Files and permissions are kept on `globalThis.__dryDrive`.
+ */
+function dryDrive() {
+  const st = (globalThis.__dryDrive ??= { files: [], permissions: [], n: 0 })
+  const id = () => `dry${++st.n}`
+  const find = (fileId) => st.files.find((f) => f.id === fileId)
+  return {
+    files: {
+      async get({ fileId, alt }) {
+        const f = find(fileId)
+        if (!f) throw new Error(`dry drive: no file ${fileId}`)
+        return alt === "media" ? { data: f.bytes } : { data: { id: f.id, name: f.name, mimeType: f.mimeType, parents: [f.parent], webViewLink: f.webViewLink } }
+      },
+      async list({ q }) {
+        const parent = /'([^']+)' in parents/.exec(q)?.[1]
+        const mime = /mimeType = '([^']+)'/.exec(q)?.[1]
+        return { data: { files: st.files.filter((f) => f.parent === parent && (!mime || f.mimeType === mime)).map(({ bytes, ...f }) => f) } }
+      },
+      async create({ requestBody, media }) {
+        let bytes = null
+        if (media) { const chunks = []; for await (const c of media.body) chunks.push(Buffer.from(c)); bytes = Buffer.concat(chunks) }
+        const f = { id: id(), name: requestBody.name, mimeType: requestBody.mimeType || media?.mimeType, parent: requestBody.parents?.[0], bytes }
+        f.webViewLink = `https://drive.example/${f.id}`
+        st.files.push(f)
+        return { data: { id: f.id, name: f.name, webViewLink: f.webViewLink } }
+      },
+    },
+    permissions: {
+      async create({ fileId, requestBody, sendNotificationEmail }) {
+        if (!find(fileId)) throw new Error(`dry drive: no file ${fileId}`)
+        st.permissions.push({ fileId, ...requestBody, sendNotificationEmail })
+        return { data: { id: id() } }
+      },
+    },
+  }
 }
