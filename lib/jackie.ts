@@ -80,18 +80,25 @@ export function jackieTagsFromSipHeaders(sipHeaders: unknown): {
   }
 }
 
-// ─── The coin flip (NOO Q4 lines, Ryan approved 10-27) ──────────────────────
+// ─── Who Jackie answers (mailer lines, Ryan 2026-11-03) ────────────────────
 //
-// Ryan's cell rings 12 s first, exactly as before. Only when he doesn't pick
-// up does the flip matter, and only for first-time callers: a known number
-// (any prior lead row, a Relationships card, an iPhone call) always gets
-// voicemail and is scored as "returning". A first-time number is flipped
-// once, ever — the arm is stamped on its intake row, which also makes it a
-// known number next time. Withheld numbers can't be known, so they always
-// get the flip, with at most 3 Jackie calls a day between them.
+// Ryan's cell rings 12 s first, exactly as before. When he doesn't pick up
+// on a JACKIE_LINES number (lib/leads.ts) and the switch is on, Jackie takes
+// the call — no coin flip since 11-03 (the 10-27 → 11-03 flip rows keep
+// their arms). A caller who's been in touch before gets her returning-caller
+// note (name + property from the card) instead of the full intake. Still
+// voicemail: anyone with a Relationships card, anyone who asked off the list
+// (DNC), a number only in Ryan's iPhone history (no card to say who they
+// are), and a number Jackie already took 3 calls from today. Withheld
+// numbers share a cap of 3 Jackie calls a day.
+//
+// call_arm on the intake row: "jackie" = first-time caller she took,
+// "returning" = known number (whoever handled it; jackie_call says if she
+// did), "answered" = Ryan picked up a first-time caller.
 
 export const JACKIE_FLIP_KEY = "jackie_flip"
 export const ANONYMOUS_JACKIE_PER_DAY = 3
+export const JACKIE_PER_NUMBER_PER_DAY = 3
 
 export type CallArm = "answered" | "voicemail" | "jackie" | "returning"
 
@@ -122,66 +129,132 @@ export async function setJackieFlip(sb: SupabaseClient, on: boolean): Promise<Ja
 }
 
 export type ArmDecision = {
-  /** Scored arm; null = not part of the test (forced test number, anonymous cap). */
+  /** Scored arm; null = not scored (forced test number, withheld-number cap). */
   arm: CallArm | null
   /** Send this caller to Jackie (otherwise voicemail, or nothing if answered). */
   jackie: boolean
   reason: string
 }
 
-/** Pure: which arm a call lands in. `coin` is Math.random() in production. */
+export type CallerHistory = {
+  /** Most recent name / property on this number's lead rows; null = no prior lead row. */
+  prior: { name: string | null; property_address: string | null } | null
+  relationship: boolean
+  /** In Ryan's iPhone call log. */
+  iphone: boolean
+  dnc: boolean
+}
+
+export const NO_HISTORY: CallerHistory = { prior: null, relationship: false, iphone: false, dnc: false }
+
+/** Pure: where a call goes. */
 export function decideArm(input: {
   answered: boolean
-  known: boolean
   anonymous: boolean
   anonymousJackieToday: number
+  /** Jackie calls already taken from this number today. */
+  jackieToday: number
   forced: boolean
-  coin: number
+  history: CallerHistory
 }): ArmDecision {
   if (input.forced) return { arm: null, jackie: !input.answered, reason: "test number" }
-  if (input.known && !input.anonymous) return { arm: "returning", jackie: false, reason: "known number" }
-  if (input.answered) return { arm: "answered", jackie: false, reason: "Ryan answered" }
+  const h = input.anonymous ? NO_HISTORY : input.history
+  const known = !!h.prior || h.relationship || h.iphone
+  const arm: CallArm = known ? "returning" : input.answered ? "answered" : "jackie"
+  if (input.answered) return { arm, jackie: false, reason: "Ryan answered" }
+  if (h.relationship) return { arm, jackie: false, reason: "Relationships contact" }
+  if (h.dnc) return { arm, jackie: false, reason: "asked to come off the list" }
+  if (!h.prior && h.iphone) return { arm, jackie: false, reason: "in Ryan's iPhone history, no lead card" }
   if (input.anonymous && input.anonymousJackieToday >= ANONYMOUS_JACKIE_PER_DAY) {
     return { arm: null, jackie: false, reason: "withheld-number Jackie cap reached today" }
   }
-  return input.coin < 0.5
-    ? { arm: "jackie", jackie: true, reason: "coin flip" }
-    : { arm: "voicemail", jackie: false, reason: "coin flip" }
+  if (!input.anonymous && input.jackieToday >= JACKIE_PER_NUMBER_PER_DAY) {
+    return { arm, jackie: false, reason: `Jackie already took ${JACKIE_PER_NUMBER_PER_DAY} calls from this number today` }
+  }
+  return { arm, jackie: true, reason: known ? "returning caller" : "first-time caller" }
 }
 
 /**
- * Has this number been in touch before? Any lead row other than this call's
- * own, a Relationships card, or a call in Ryan's iPhone history. Throws on a
- * read error — the caller treats that as known (today's voicemail).
+ * What we know about this number: its other lead rows (name, property,
+ * DNC), a Relationships card, Ryan's iPhone history. Throws on a read error
+ * — the caller sends that call to voicemail.
  */
-export async function isKnownCaller(sb: SupabaseClient, phone: string, currentLeadId: string | null): Promise<boolean> {
-  let q = sb.from("leads").select("id").eq("caller_phone", phone).limit(1)
+export async function callerHistory(sb: SupabaseClient, phone: string, currentLeadId: string | null): Promise<CallerHistory> {
+  let q = sb.from("leads").select("name, property_address, is_dnc").eq("caller_phone", phone).order("created_at", { ascending: false }).limit(50)
   if (currentLeadId) q = q.neq("id", currentLeadId)
   const [leads, rels, calls] = await Promise.all([
     q,
     relationshipsByAnyPhone(sb, phone.replace(/\D/g, "").slice(-10), "id", 1),
     sb.from("phone_calls").select("id").eq("phone", phone).limit(1),
   ])
-  if (leads.error) throw new Error(`known-caller leads read: ${leads.error.message}`)
-  if (calls.error) throw new Error(`known-caller phone_calls read: ${calls.error.message}`)
-  return (leads.data?.length ?? 0) > 0 || rels.length > 0 || (calls.data?.length ?? 0) > 0
+  if (leads.error) throw new Error(`caller history leads read: ${leads.error.message}`)
+  if (calls.error) throw new Error(`caller history phone_calls read: ${calls.error.message}`)
+  const rows = (leads.data ?? []) as { name: string | null; property_address: string | null; is_dnc: boolean | null }[]
+  const firstOf = (k: "name" | "property_address") => rows.map((r) => r[k]?.trim()).find((v): v is string => !!v) ?? null
+  return {
+    prior: rows.length ? { name: firstOf("name"), property_address: firstOf("property_address") } : null,
+    relationship: rels.length > 0,
+    iphone: (calls.data?.length ?? 0) > 0,
+    dnc: rows.some((r) => r.is_dnc === true),
+  }
+}
+
+function pacificMidnightIso(): string {
+  const ymd = new Intl.DateTimeFormat("en-CA", { timeZone: "America/Los_Angeles" }).format(new Date())
+  // Pacific midnight as an instant: the offset is -7 or -8; take the earlier
+  // bound (−8) so a DST day never undercounts.
+  return new Date(`${ymd}T00:00:00-08:00`).toISOString()
 }
 
 /** Jackie calls to withheld numbers since Pacific midnight. */
 export async function anonymousJackieCallsToday(sb: SupabaseClient): Promise<number> {
-  const now = new Date()
-  const ymd = new Intl.DateTimeFormat("en-CA", { timeZone: "America/Los_Angeles" }).format(now)
-  // Pacific midnight as an instant: the offset is -7 or -8; take the earlier
-  // bound (−8) so a DST day never undercounts.
-  const since = new Date(`${ymd}T00:00:00-08:00`).toISOString()
   const { count, error } = await sb
     .from("leads")
     .select("id", { count: "exact", head: true })
     .eq("call_arm", "jackie")
     .eq("jackie_call->>anonymous", "true")
-    .gte("created_at", since)
+    .gte("created_at", pacificMidnightIso())
   if (error) throw new Error(`anonymous Jackie count: ${error.message}`)
   return count ?? 0
+}
+
+/** Jackie calls from this number since Pacific midnight. */
+export async function jackieCallsTodayFrom(sb: SupabaseClient, phone: string): Promise<number> {
+  const { count, error } = await sb
+    .from("leads")
+    .select("id", { count: "exact", head: true })
+    .eq("caller_phone", phone)
+    .not("jackie_call", "is", null)
+    .gte("created_at", pacificMidnightIso())
+  if (error) throw new Error(`Jackie per-number count: ${error.message}`)
+  return count ?? 0
+}
+
+/** "140 Johnson Ave, Los Gatos, CA 95030" → "140 Johnson Ave, Los Gatos" (how a person says it). */
+export function spokenAddress(addr: string): string {
+  return addr.replace(/,?\s*(CA|California)\b.*$/i, "").replace(/,?\s*\b\d{5}(-\d{4})?\s*$/, "").trim()
+}
+
+/**
+ * Appended to Jackie's instructions for a returning caller: what the card
+ * says, and the short version of her job. Name and property are from our
+ * own records, never from the caller's SIP headers.
+ */
+export function returningCallerNote(prior: { name?: string | null; property_address?: string | null }): string {
+  const name = prior.name?.trim() || null
+  const addr = prior.property_address?.trim() ? spokenAddress(prior.property_address.trim()) : null
+  const onFile = [
+    name ? `name ${name}` : "no name on file",
+    addr ? `property ${addr}` : "no property address on file",
+  ].join(", ")
+  return `\n\nRETURNING CALLER
+This number has been in touch with Ryan before. On file: ${onFile}.
+- Someone else could be calling from this phone, so don't greet them by name or assume who it is. Once they tell you their name, use it.
+- ${addr
+    ? "Check the property with a quick question in your own words (whether this is about the house on that street). If they say yes, you have the address; don't ask for it again. If it's a different property, get that address."
+    : "Getting the property address is still your top priority."}
+- Skip the rest of the intake (no questions about why they're selling, the condition, and so on) unless they bring it up. Ask what they'd like Ryan to know, when's a good time for him to call, and check the callback number.
+- If they say Ryan called them or they're calling him back, tell them he's tied up right now and you'll let him know they called back.`
 }
 
 // ─── After her call ──────────────────────────────────────────────────────────
@@ -215,13 +288,13 @@ export function nextBusinessDay(ymd: string): string {
  */
 export async function reviewJackieCall(transcript: string, now: Date = new Date()): Promise<JackieCallReview | null> {
   const { ymd, weekday, clock } = pacificToday(now)
-  const prompt = `This is a phone call between Jackie, the AI receptionist for LRG Homes (Ryan, a Bay Area home buyer), and someone who called about a letter. The transcript has no speaker labels.
+  const prompt = `This is a phone call between Jackie, the AI receptionist for LRG Homes (Ryan, a Bay Area home buyer), and someone who called one of his mailer lines (usually about a letter he mailed, sometimes calling back someone Ryan already spoke with). The transcript has no speaker labels.
 
 It is now ${weekday} ${ymd}, ${clock} Pacific.
 
 Answer in JSON only:
 {
-  "intake_complete": true if the caller gave a name, a property address (street number + street, a city if they said it), and either a callback time or agreed Ryan can call them; false otherwise (hung up early, refused, wrong number, wanted off the list),
+  "intake_complete": true if the caller gave a name (or confirmed one Jackie had on file), a property address (street number + street, a city if they said it; a property Jackie already had on file and the caller confirmed counts), and either a callback time or agreed Ryan can call them; false otherwise (hung up early, refused, wrong number, wanted off the list),
   "callback_when": the callback Jackie promised or the caller asked for, in a few words as said ("tomorrow around noon", "next Thursday after 3", "within one business day"), or null if none,
   "callback_date": that callback as YYYY-MM-DD in Pacific time, or null if no callback was arranged,
   "spanish": true if the caller spoke Spanish

@@ -1,6 +1,8 @@
-// Jackie coin-flip scoreboard (Ryan, 2026-10-27).
+// Jackie scoreboard (Ryan, 2026-10-27; coin flip dropped 11-03).
 //
-// One row per first call stamped with call_arm on a NOO Q4 line. The metric:
+// `tally` = every call Jackie took (new + returning callers) since she went
+// live. The arm table below it is one row per call stamped with call_arm on
+// a Jackie line (the 10-27 → 11-03 voicemail arm is the coin-flip history). The metric:
 // a caller is REAL if Ryan made contact within 7 days of that first call and
 // they aren't DNC or junk (flamers end up as one or the other). Contact =
 //   - Ryan answered that first call (arm "answered"), or
@@ -35,9 +37,22 @@ export type ArmScore = {
   jackie_avg_sec?: number | null
 }
 
+export type JackieTally = {
+  calls: number
+  first_time: number
+  returning: number
+  /** Card has a property address after her call. */
+  address: number
+  intake_complete: number
+  failed: number
+  hangups_under_15s: number
+  avg_sec: number | null
+}
+
 export type JackieScoreboard = {
   flip_on: boolean
   since: string | null
+  tally: JackieTally
   arms: ArmScore[]
 }
 
@@ -48,6 +63,7 @@ type IntakeRow = {
   call_arm: CallArm
   is_dnc: boolean | null
   is_junk: boolean | null
+  property_address: string | null
   jackie_call: Record<string, unknown> | null
 }
 
@@ -115,7 +131,7 @@ export async function buildJackieScoreboard(sb: SupabaseClient, now: number = Da
 
   const intake = await pageAll<IntakeRow>((a, b) =>
     sb.from("leads")
-      .select("id, created_at, caller_phone, call_arm, is_dnc, is_junk, jackie_call")
+      .select("id, created_at, caller_phone, call_arm, is_dnc, is_junk, property_address, jackie_call")
       .not("call_arm", "is", null)
       .order("created_at", { ascending: true })
       .order("id")
@@ -155,7 +171,22 @@ export async function buildJackieScoreboard(sb: SupabaseClient, now: number = Da
 
   const scores = new Map<CallArm, ArmScore>(ARMS.map((arm) => [arm, { arm, callers: 0, real: 0, pending: 0, real_rate: null, dnc: 0, junk: 0 }]))
   const jackieSecs: number[] = []
+  const tally: JackieTally = { calls: 0, first_time: 0, returning: 0, address: 0, intake_complete: 0, failed: 0, hangups_under_15s: 0, avg_sec: null }
+  const tallySecs: number[] = []
   for (const r of intake) {
+    if (r.jackie_call) {
+      const j = r.jackie_call
+      tally.calls += 1
+      if (r.call_arm === "returning") tally.returning += 1
+      else tally.first_time += 1
+      if (r.property_address?.trim()) tally.address += 1
+      if (j.intake_complete === true) tally.intake_complete += 1
+      if (j.failed === true) tally.failed += 1
+      if (typeof j.duration_sec === "number") {
+        tallySecs.push(j.duration_sec)
+        if (j.duration_sec < 15) tally.hangups_under_15s += 1
+      }
+    }
     const s = scores.get(r.call_arm)
     if (!s) continue
     s.callers += 1
@@ -190,5 +221,7 @@ export async function buildJackieScoreboard(sb: SupabaseClient, now: number = Da
   j.jackie_hangups_under_15s ??= 0
   j.jackie_avg_sec = jackieSecs.length ? Math.round(jackieSecs.reduce((a, b) => a + b, 0) / jackieSecs.length) : null
 
-  return { flip_on: flip.on, since: intake[0]?.created_at ?? null, arms: ARMS.map((a) => scores.get(a)!) }
+  tally.avg_sec = tallySecs.length ? Math.round(tallySecs.reduce((a, b) => a + b, 0) / tallySecs.length) : null
+
+  return { flip_on: flip.on, since: intake[0]?.created_at ?? null, tally, arms: ARMS.map((a) => scores.get(a)!) }
 }

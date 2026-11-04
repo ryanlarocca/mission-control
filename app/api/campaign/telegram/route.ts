@@ -778,7 +778,7 @@ export async function POST(request: Request) {
     return NextResponse.json({ ok: true })
   }
   // Jackie's kill switch (2026-10-27): "jackie on" / "jackie off" /
-  // "jackie status". Flips the NOO Q4 coin flip (lib/jackie.ts); off = every
+  // "jackie status". Turns Jackie on the mailer lines on/off (lib/jackie.ts); off = every
   // missed call goes to Ryan's voicemail as before.
   const jackieCmd = /^jackie\s+(on|off|status)\b/i.exec(body)
   if (jackieCmd) {
@@ -793,7 +793,7 @@ export async function POST(request: Request) {
       await tg("sendMessage", {
         chat_id: chatId,
         text: flip.on
-          ? `🤖 Jackie is ON${since}. First-time callers you miss on the two NOO Q4 lines get a coin flip: Jackie or your voicemail.`
+          ? `🤖 Jackie is ON${since}. She picks up every call you miss on the mailer lines (NOO Q4, MFM, Legacy). Relationships contacts and anyone who asked off the list still get your voicemail.`
           : `📴 Jackie is OFF${since}. Every missed call goes to your voicemail.`,
         reply_to_message_id: msg.message_id,
       })

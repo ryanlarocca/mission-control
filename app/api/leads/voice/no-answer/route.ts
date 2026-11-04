@@ -2,7 +2,7 @@ import { NextResponse } from "next/server"
 import { waitUntil } from "@vercel/functions"
 import {
   CAMPAIGN_MAP,
-  SOURCE_OVERRIDE_NUMBERS,
+  JACKIE_LINES,
   getLeadsClient,
   isOwnedNumber,
   parseTwilioBody,
@@ -11,11 +11,15 @@ import {
 import { isAnonymousCaller } from "@/lib/anonymous"
 import { PROD_BASE } from "@/lib/relationship-calls"
 import {
+  NO_HISTORY,
   anonymousJackieCallsToday,
+  callerHistory,
   decideArm,
   getJackieFlip,
-  isKnownCaller,
+  jackieCallsTodayFrom,
   jackieDialTwiml,
+  spokenAddress,
+  type CallerHistory,
   leadVoicemailTwiml,
   type ArmDecision,
 } from "@/lib/jackie"
@@ -27,10 +31,11 @@ import {
 // async recordingStatusCallback was not firing reliably, and without an
 // action Twilio would re-post here and loop).
 //
-// Jackie coin flip (NOO Q4 lines, 2026-10-27, lib/jackie.ts): while the flip
-// is on, a first-time caller Ryan didn't answer goes to Jackie or voicemail
-// 50/50, and every call on those lines gets its arm stamped for the
-// scoreboard. Any failure in the flip falls back to today's voicemail.
+// Jackie (mailer lines, lib/jackie.ts): while the switch is on, a caller
+// Ryan didn't answer goes to Jackie — a 50/50 coin flip 10-27 → 11-03, every
+// missed call since — except the voicemail cases in decideArm. Every call on
+// those lines gets its arm stamped for the scoreboard. Any failure falls back
+// to the voicemail.
 
 const HANGUP_TWIML = `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
@@ -100,10 +105,12 @@ export async function POST(request: Request) {
     }
   }
 
-  // Coin flip — NOO Q4 lines only, only while the switch is on.
+  // Jackie — mailer lines only, only while the switch is on (no coin flip
+  // since 11-03; lib/jackie.ts decideArm says who still gets voicemail).
   let decision: ArmDecision | null = null
   let anonymous = false
-  if (leadId && SOURCE_OVERRIDE_NUMBERS.has(twilioNumber)) {
+  let history: CallerHistory = NO_HISTORY
+  if (leadId && JACKIE_LINES.has(twilioNumber)) {
     try {
       const flip = await getJackieFlip(sb)
       // Test numbers (force_numbers) reach Jackie even with the flip off, so
@@ -111,15 +118,17 @@ export async function POST(request: Request) {
       const forced = (flip.force_numbers ?? []).includes(callerPhone)
       if (flip.on || forced) {
         anonymous = isAnonymousCaller(callerPhone)
-        const [known, anonToday] = await Promise.all([
-          anonymous || forced ? Promise.resolve(false) : isKnownCaller(sb, callerPhone, leadId),
+        const [hist, anonToday, numberToday] = await Promise.all([
+          anonymous || forced ? Promise.resolve(NO_HISTORY) : callerHistory(sb, callerPhone, leadId),
           anonymous && !answered ? anonymousJackieCallsToday(sb) : Promise.resolve(0),
+          anonymous || forced || answered ? Promise.resolve(0) : jackieCallsTodayFrom(sb, callerPhone),
         ])
-        decision = decideArm({ answered, known, anonymous, anonymousJackieToday: anonToday, forced, coin: Math.random() })
+        history = hist
+        decision = decideArm({ answered, anonymous, anonymousJackieToday: anonToday, jackieToday: numberToday, forced, history })
       }
     } catch (e) {
-      console.error("[no-answer] Jackie flip failed; voicemail as usual:", e)
-      await sendTelegramAlert(`⚠️ Jackie coin flip errored for ${callerPhone} — sent to voicemail as usual. ${e instanceof Error ? e.message : String(e)}`.slice(0, 600))
+      console.error("[no-answer] Jackie routing failed; voicemail as usual:", e)
+      await sendTelegramAlert(`⚠️ Jackie routing errored for ${callerPhone} — sent to voicemail as usual. ${e instanceof Error ? e.message : String(e)}`.slice(0, 600))
     }
   }
 
@@ -140,21 +149,32 @@ export async function POST(request: Request) {
       anonymous,
       forced: decision.arm === null,
       reason: decision.reason,
+      // Read by /api/voice-test/incoming for her returning-caller note.
+      ...(decision.arm === "returning" && history.prior ? { returning: history.prior } : {}),
     }
   }
   if (leadId && Object.keys(update).length > 0) {
     const id = leadId
-    waitUntil((async () => {
+    const write = (async () => {
       const { error } = await sb.from("leads").update(update).eq("id", id)
       if (error) console.error("[no-answer] Update failed:", error)
-    })())
+    })()
+    // Jackie's webhook reads jackie_call seconds from now, so that write
+    // lands before the TwiML goes back; the rest can trail.
+    if (decision?.jackie) await write
+    else waitUntil(write)
   }
 
   if (answered) return xml(HANGUP_TWIML)
 
   if (decision?.jackie && leadId) {
     const line = CAMPAIGN_MAP[twilioNumber] ?? twilioNumber
-    await sendTelegramAlert(`🤖 Jackie is taking a call on <b>${line}</b> — ${callerPhone}${decision.arm === null ? " (test number, not scored)" : ""}. Card + summary when she's done.`)
+    const prior = decision.arm === "returning" ? history.prior : null
+    const onFile = prior ? [prior.name, prior.property_address ? spokenAddress(prior.property_address) : null].filter(Boolean).join(", ") : ""
+    const who = prior
+      ? ` (returning caller${onFile ? `: ${onFile}` : ""})`
+      : decision.arm === null ? " (test number, not scored)" : ""
+    await sendTelegramAlert(`🤖 Jackie is taking a call on <b>${line}</b> — ${callerPhone}${who}. Card + summary when she's done.`)
     const q = `leadId=${encodeURIComponent(leadId)}`
     return xml(jackieDialTwiml({
       tags: { line, leadId },

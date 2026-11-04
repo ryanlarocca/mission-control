@@ -85,6 +85,18 @@ export { CARD_LINE }
 // counts for both campaigns. Both A/B lines (418-6294 = A, 418-8450 = B).
 export const SOURCE_OVERRIDE_NUMBERS = new Set(["+14084186294", "+14084188450"])
 
+// Lines where Jackie answers the calls Ryan misses (Ryan, 2026-11-03: no more
+// coin flip): every number printed on mail — NOO Q4 A/B, MFM-A/B, and the
+// Legacy DM lines ported from Google Voice. Her script assumes the caller
+// got something in the mail, so the website, outbound, office and agents
+// lines stay on voicemail. 408-337-2785 is Legacy DM but is the Jackie test
+// line (its webhook is /api/voice-test/twiml), so it isn't listed.
+export const JACKIE_LINES: ReadonlySet<string> = new Set([
+  "+14084186294", "+14084188450", // NOO Q4 2026 A / B
+  "+16504364279", "+16506803671", // MFM-A / MFM-B
+  "+14083419402", "+14083573440", "+14083573835", "+14083654925", // Legacy DM
+])
+
 // The labels those lines carry (their CAMPAIGN_MAP values). An email alias
 // whose config/email-campaigns.json source is one of these labels is an
 // override intake too (ryansvx@ = NOO-Q4-2026-A, ryansvy@ = -B), so the

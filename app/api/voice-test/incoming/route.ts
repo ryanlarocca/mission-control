@@ -16,7 +16,7 @@ import {
   pickAuditionVoice,
 } from "@/lib/voiceTest"
 import { watchCall } from "@/lib/voiceTestWatch"
-import { jackieTagsFromSipHeaders, mergeJackieCall } from "@/lib/jackie"
+import { jackieTagsFromSipHeaders, mergeJackieCall, returningCallerNote } from "@/lib/jackie"
 import { getLeadsClient } from "@/lib/leads"
 
 // OpenAI project webhook for the GPT-Live phone test line (lib/voiceTest.ts).
@@ -125,10 +125,27 @@ export async function POST(request: Request) {
   }
 
   if (event.created_at) timing.push(`OpenAI→us ${(t0 / 1000 - event.created_at).toFixed(1)}s`)
+  // Returning caller on a mailer line: the no-answer step wrote what the card
+  // says (name + property) into jackie_call before handing the call over.
+  // The lead id comes from a SIP header, but the note is our own data.
+  let returning = ""
+  if (tags.leadId && !coach) {
+    try {
+      const { data } = await getLeadsClient().from("leads").select("jackie_call").eq("id", tags.leadId).maybeSingle()
+      const prior = (data?.jackie_call as { returning?: { name?: string | null; property_address?: string | null } } | null)?.returning
+      if (prior) {
+        returning = returningCallerNote(prior)
+        timing.push("returning caller")
+      }
+    } catch (e) {
+      console.error(`[voice-test] returning-caller lookup failed: ${e instanceof Error ? e.message : e}`)
+    }
+  }
   const instructions =
     VOICE_TEST_INSTRUCTIONS +
     callerIdNote(caller) +
     callbackTimingNote() +
+    returning +
     (coach ? VOICE_TEST_COACH_NOTE : "")
   const accept = (withVoice: string) =>
     fetch(`${OPENAI_BASE}/live/sessions/${encodeURIComponent(sessionId)}/accept`, {

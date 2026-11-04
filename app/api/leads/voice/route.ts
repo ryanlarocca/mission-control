@@ -5,6 +5,7 @@ import {
   OFFICE_NUMBERS,
   OUTBOUND_TWILIO_NUMBER,
   RESET_TO_NEW_SUFFIX,
+  JACKIE_LINES,
   SOURCE_OVERRIDE_NUMBERS,
   WEBSITE_NUMBER,
   clusterHasDnc,
@@ -108,7 +109,7 @@ export async function POST(request: Request) {
   // row and used to ring itself — his carrier voicemail answered (10-27).
   // On a Jackie line, a test-number cell goes straight to Jackie instead:
   // no card, no ring, her production script (no coach mode).
-  if (callerPhone === FORWARD_TO && SOURCE_OVERRIDE_NUMBERS.has(twilioNumber)) {
+  if (callerPhone === FORWARD_TO && JACKIE_LINES.has(twilioNumber)) {
     try {
       const flip = await getJackieFlip(getLeadsClient())
       if ((flip.force_numbers ?? []).includes(callerPhone)) {
@@ -343,9 +344,9 @@ export async function POST(request: Request) {
     await sendTelegramAlert(callAlert.join("\n"))
   }
 
-  // Press-1 screen only where the Jackie test runs, and only with a row to
-  // stamp — without one the call rings exactly as before.
-  const screen = SOURCE_OVERRIDE_NUMBERS.has(twilioNumber) && intakeLeadId && callSid
+  // Press-1 screen only on Jackie's lines, and only with a row to stamp —
+  // without one the call rings exactly as before.
+  const screen = JACKIE_LINES.has(twilioNumber) && intakeLeadId && callSid
     ? { leadId: intakeLeadId, callSid }
     : null
   return new NextResponse(buildTwiml(twilioNumber, screen), {

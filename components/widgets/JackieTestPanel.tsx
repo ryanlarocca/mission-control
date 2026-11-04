@@ -3,15 +3,16 @@
 import { useEffect, useState } from "react"
 import type { JackieScoreboard, ArmScore } from "@/lib/jackieScoreboard"
 
-// Jackie coin-flip scoreboard (lib/jackieScoreboard.ts) — top of the
-// Campaign Performance "Current" view. Hidden until the test has a call or
-// the flip has been switched on.
+// Jackie scoreboard (lib/jackieScoreboard.ts) — top of the Campaign
+// Performance "Current" view: the tally of calls she took, then Real by arm
+// (the voicemail arm is the 10-27 → 11-03 coin-flip history). Hidden until
+// she has a call or has been switched on.
 
 const ARM_LABEL: Record<ArmScore["arm"], string> = {
-  jackie: "Jackie",
-  voicemail: "Your voicemail",
+  jackie: "Jackie · new callers",
+  voicemail: "Your voicemail (coin flip)",
   answered: "You answered",
-  returning: "Returning (not in test)",
+  returning: "Returning callers",
 }
 
 function pct(n: number | null): string {
@@ -43,19 +44,25 @@ export function JackieTestPanel() {
   if (!data) return null
   const total = data.arms.reduce((n, a) => n + a.callers, 0)
   if (!data.flip_on && total === 0) return null
-  const j = data.arms.find((a) => a.arm === "jackie")
+  const t = data.tally
 
   return (
     <div className="rounded border border-zinc-800 bg-zinc-950 p-3 space-y-2">
       <div className="flex items-center justify-between gap-2">
         <div className="min-w-0">
-          <h2 className="text-sm font-semibold text-zinc-100 truncate">Jackie test · NOO Q4 lines</h2>
+          <h2 className="text-sm font-semibold text-zinc-100 truncate">Jackie · mailer lines</h2>
           <p className="text-[11px] text-zinc-500">Real = you made contact within 7 days, not DNC or junk.</p>
         </div>
         <span className={`shrink-0 rounded px-2 py-0.5 text-[11px] font-medium ${data.flip_on ? "bg-violet-600/20 text-violet-300" : "bg-zinc-800 text-zinc-400"}`}>
-          {data.flip_on ? "Flip ON" : "Flip OFF"}
+          {data.flip_on ? "ON" : "OFF"}
         </span>
       </div>
+      {t.calls > 0 && (
+        <p className="text-xs text-zinc-300">
+          {t.calls} call{t.calls === 1 ? "" : "s"} taken ({t.first_time} new, {t.returning} returning) · got the address {t.address} of {t.calls} · average {clock(t.avg_sec)}
+          <span className="text-zinc-500"> · {t.hangups_under_15s} hung up in under 15 s · {t.failed} didn&apos;t connect</span>
+        </p>
+      )}
       <div className="overflow-x-auto">
         <table className="w-full text-xs">
           <thead className="text-zinc-500">
@@ -84,11 +91,6 @@ export function JackieTestPanel() {
           </tbody>
         </table>
       </div>
-      {j && j.callers > 0 && (
-        <p className="text-[11px] text-zinc-500">
-          Jackie: average call {clock(j.jackie_avg_sec)} · {j.jackie_hangups_under_15s ?? 0} hung up in under 15 s · intake complete {j.jackie_intake_complete ?? 0} of {j.callers} · {j.jackie_failed ?? 0} didn&apos;t connect
-        </p>
-      )}
     </div>
   )
 }
