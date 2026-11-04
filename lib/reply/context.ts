@@ -26,6 +26,10 @@ export interface LeadContext {
   kind: "lead"
   leadId: string
   clusterIds: string[]
+  /** Any row of the contact is DNC (they asked off the list). */
+  doNotContact?: boolean
+  /** Site address of the mailed record the contact is linked to, when matched. */
+  mailedAddress?: string | null
   name: string | null
   email: string | null
   phone: string | null
@@ -193,11 +197,13 @@ interface LeadRow {
   drip_campaign_type: string | null
   recommended_followup_date: string | null
   followup_reason: string | null
+  is_dnc: boolean | null
+  mail_record_id: string | null
 }
 export type LeadThreadRow = Pick<LeadRow, "created_at" | "lead_type" | "twilio_number" | "message">
 
 const LEAD_COLS =
-  "id, created_at, name, email, caller_phone, gmail_thread_id, source, campaign_label, property_address, property_details, status, temperature, moment, ai_summary, notes, lead_type, twilio_number, message, offer_amount, offer_verbalized_at, drip_campaign_type, recommended_followup_date, followup_reason"
+  "id, created_at, name, email, caller_phone, gmail_thread_id, source, campaign_label, property_address, property_details, status, temperature, moment, ai_summary, notes, lead_type, twilio_number, message, offer_amount, offer_verbalized_at, drip_campaign_type, recommended_followup_date, followup_reason, is_dnc, mail_record_id"
 
 /** Supabase lead rows → thread items. Exported for the context unit test.
  *  A "call" row (lead_type call, drip or not) is a recorded live conversation
@@ -251,10 +257,22 @@ export async function buildLeadContext(leadId: string, opts: { live?: boolean } 
     : lastInboundRow?.lead_type === "sms" ? "sms"
     : lastInboundRow?.lead_type ? "call" : null
 
+  // Opt-out: the mailed house the cluster is linked to — the address the
+  // "you're off my list" confirmation names (and invites a correction to).
+  const doNotContact = rows.some((r) => r.is_dnc === true)
+  let mailedAddress: string | null = null
+  const recordId = pick("mail_record_id")
+  if (recordId) {
+    const { data: rec } = await sb.from("mail_records").select("site_address, site_city").eq("id", recordId).maybeSingle()
+    if (rec?.site_address) mailedAddress = [rec.site_address, rec.site_city].filter(Boolean).join(", ")
+  }
+
   return {
     kind: "lead",
     leadId: anchor.id,
     clusterIds: rows.map((r) => r.id),
+    doNotContact,
+    mailedAddress,
     name: pick("name"),
     email: pick("email"),
     phone: anchor.caller_phone,
@@ -360,6 +378,10 @@ export function describeContact(ctx: ReplyContext): string {
     return [
       `Name: ${ctx.name || "(unknown)"}`,
       `Property: ${ctx.property_address || "(unknown)"}`,
+      ctx.mailedAddress ? `Mailed-list address on file (the house Ryan's letter went to): ${ctx.mailedAddress}` : null,
+      ctx.doNotContact
+        ? `DO-NOT-CONTACT: they asked to be taken off the list and already are. ${ctx.mailedAddress ? `Removed address: ${ctx.mailedAddress}.` : "No mailed address matched yet — ask which property so the letters stop too."}`
+        : null,
       pd ? `Property details: ${pd}` : null,
       `Lead status: ${ctx.status || "(none)"} · temperature: ${ctx.temperature || "(none)"}`,
       `Source: ${ctx.campaign_label || ctx.source || "(unknown)"}`,

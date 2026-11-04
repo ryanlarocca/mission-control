@@ -134,6 +134,13 @@ export async function sendRelationshipEmail(args: SendRelationshipEmailArgs): Pr
   if (!rel) return { ok: false, status: 404, error: "contact not found" }
   if (rel.status === "do_not_contact") return { ok: false, status: 409, error: "contact is marked do not contact" }
   if (!rel.email?.includes("@")) return { ok: false, status: 400, error: "no email address on file" }
+  try {
+    const { checkContactDnc } = await import("@/lib/dnc")
+    const dnc = await checkContactDnc(sb, { email: rel.email }, "email")
+    if (dnc.dnc) return { ok: false, status: 409, error: `Not emailing — ${dnc.why}` }
+  } catch (e) {
+    return { ok: false, status: 503, error: `DNC check failed — send blocked (${e instanceof Error ? e.message : String(e)})` }
+  }
 
   const thread = args.newThread ? null : await findLatestEmailThread(sb, rel.id)
   const mailbox = thread?.mailbox ?? freshMailbox()

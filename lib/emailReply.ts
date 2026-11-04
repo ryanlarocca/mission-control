@@ -21,7 +21,7 @@ export interface EmailReplyResult {
   logError?: string
 }
 
-export async function sendThreadedEmailReply(args: { leadId: string; text: string; draftId?: string | null }): Promise<EmailReplyResult> {
+export async function sendThreadedEmailReply(args: { leadId: string; text: string; draftId?: string | null; optOutConfirmation?: boolean }): Promise<EmailReplyResult> {
   const leadId = (args.leadId || "").trim()
   const text = (args.text || "").trim()
   const draftId = (args.draftId || "").trim()
@@ -39,8 +39,20 @@ export async function sendThreadedEmailReply(args: { leadId: string; text: strin
     return { ok: false, status: 500, error: "Lookup failed" }
   }
   if (!lead) return { ok: false, status: 404, error: "Lead not found" }
-  if (lead.is_dnc) return { ok: false, status: 409, error: "lead is DNC" }
   if (!lead.email) return { ok: false, status: 400, error: "Lead has no email address to reply to" }
+  // DNC across the contact (any row with this email or phone) + the master
+  // suppression list; the one opt-out confirmation passes once.
+  try {
+    const { checkContactDnc, optOutConfirmationAllowed } = await import("@/lib/dnc")
+    const who = { email: lead.email as string, phone: (lead.caller_phone as string | null) ?? null }
+    const dnc = await checkContactDnc(sb, who, "email")
+    if (dnc.dnc && !(args.optOutConfirmation && (await optOutConfirmationAllowed(sb, who)))) {
+      return { ok: false, status: 409, error: dnc.why || "lead is DNC" }
+    }
+  } catch (e) {
+    console.error("[email-reply] DNC check failed:", e)
+    return { ok: false, status: 503, error: "DNC check failed — send blocked" }
+  }
   const tn = String(lead.twilio_number || "")
   if (!tn.startsWith("email:")) return { ok: false, status: 400, error: `Lead is not an email lead (twilio_number=${tn || "null"})` }
   const fromAddress = tn.slice("email:".length).toLowerCase()

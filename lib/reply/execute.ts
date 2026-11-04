@@ -35,9 +35,7 @@ export async function executePlanServer(leadId: string, plan: Plan | null | unde
       return "call reminder set for tomorrow"
     }
     case "close_dead": {
-      const { error } = await sb.from("leads").update({ status: "dead" }).eq("id", leadId)
-      if (error) throw new Error(error.message)
-      return "closed"
+      return closeLeadDead(leadId)
     }
     case "junk": {
       const { error } = await sb.from("leads").update({ is_junk: true, status: "dead" }).eq("id", leadId)
@@ -47,4 +45,37 @@ export async function executePlanServer(leadId: string, plan: Plan | null | unde
     default:
       return null
   }
+}
+
+/**
+ * Close (dead). When their latest message is an explicit remove request (or
+ * the contact is already DNC), this is a DNC, not just a close — the whole
+ * cluster is flagged, the address goes on the do-not-contact list and queued
+ * outreach stops. "Not selling" closes stay mailable (Ryan's rule).
+ */
+export async function closeLeadDead(leadId: string): Promise<string> {
+  const sb = getLeadsClient()
+  const { data: lead } = await sb.from("leads").select("id, caller_phone, email").eq("id", leadId).maybeSingle()
+  if (!lead) throw new Error("lead not found")
+  const { checkContactDnc, explicitOptOutPhrase, markContactDnc } = await import("@/lib/dnc")
+  const ors = [`id.eq.${leadId}`]
+  if (lead.caller_phone) ors.push(`caller_phone.eq.${lead.caller_phone}`)
+  if (lead.email) ors.push(`email.ilike.${String(lead.email).toLowerCase()}`)
+  const { data: lastIn } = await sb
+    .from("leads")
+    .select("message")
+    .or(ors.join(","))
+    .not("twilio_number", "is", null)
+    .order("created_at", { ascending: false })
+    .limit(1)
+  const optOut = explicitOptOutPhrase((lastIn?.[0]?.message as string | null) ?? null)
+  const already = (await checkContactDnc(sb, { phone: lead.caller_phone, email: lead.email }, "all").catch(() => ({ dnc: false }))).dnc
+  if (optOut || already) {
+    const out = await markContactDnc(sb, leadId, { addedBy: "ryan" })
+    if (!out.ok) throw new Error(out.error || "DNC failed")
+    return "closed · DNC (off the list)"
+  }
+  const { error } = await sb.from("leads").update({ status: "dead" }).eq("id", leadId)
+  if (error) throw new Error(error.message)
+  return "closed"
 }

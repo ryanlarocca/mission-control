@@ -24,10 +24,15 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 })
   }
 
+  // A planner draft for an opt-out is the one confirmation allowed past DNC.
+  const { isOptOutConfirmationDraft } = await import("@/lib/dnc")
+  const { getLeadsClient } = await import("@/lib/leads")
+  const optOutConfirmation = await isOptOutConfirmationDraft(getLeadsClient(), body.draftId?.trim() || null).catch(() => false)
   const result = await sendLeadSms({
     phone: body.phone ?? "",
     message: body.message ?? "",
     source: body.source ?? null,
+    optOutConfirmation,
   })
 
   if (!result.success) {

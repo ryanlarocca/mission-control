@@ -95,7 +95,13 @@ async function postDraftMessage(args: { draftId: string; name: string; plan: Pla
 export async function postPlannerDraft(leadId: string, opts: { dryRun?: boolean } = {}): Promise<{ ok: boolean; error?: string; draftId?: string | null; preview?: string }> {
   const ctx = await buildLeadContext(leadId)
   if (!ctx) return { ok: false, error: "lead not found" }
-  let plan: Plan | null = ctx.moment
+  // A DNC'd contact whose latest message is an explicit remove request gets
+  // the opt-out confirmation plan, whatever moment the cluster carries.
+  const { explicitOptOutPhrase } = await import("@/lib/dnc")
+  const optOut = ctx.kind === "lead" && ctx.doNotContact && !!explicitOptOutPhrase(ctx.lastInbound?.text ?? null)
+  let plan: Plan | null = optOut
+    ? { moment: "hard_no_optout", temperature: ctx.temperature, next_action: "close_dead", reason: "asked to be taken off the list", source: "ai" }
+    : ctx.moment
     ? { moment: ctx.moment, temperature: ctx.temperature, next_action: defaultAction(ctx.moment), reason: ctx.followup_reason || "", source: "ai" }
     : await proposePlan(ctx)
   if (!plan) return { ok: false, error: "plan unavailable" }
@@ -159,11 +165,11 @@ export async function sendPlannerDraft(draftId: string): Promise<{ ok: boolean; 
     // The inbound email row (the thread) is the reply target.
     const { data: inbound } = await sb.from("leads").select("id").in("id", ctx.clusterIds).eq("lead_type", "email").not("twilio_number", "is", null).order("created_at", { ascending: false }).limit(1).maybeSingle<{ id: string }>()
     if (!inbound) return { ok: false, error: "no inbound email to reply to" }
-    const out = await sendThreadedEmailReply({ leadId: inbound.id, text: row.draft_body, draftId: row.id })
+    const out = await sendThreadedEmailReply({ leadId: inbound.id, text: row.draft_body, draftId: row.id, optOutConfirmation: row.plan_json?.moment === "hard_no_optout" })
     if (!out.ok) return { ok: false, error: out.error }
   } else {
     if (!ctx.phone) return { ok: false, error: "no phone" }
-    const out = await sendLeadSms({ phone: ctx.phone, message: row.draft_body, source: ctx.source ?? null })
+    const out = await sendLeadSms({ phone: ctx.phone, message: row.draft_body, source: ctx.source ?? null, optOutConfirmation: row.plan_json?.moment === "hard_no_optout" })
     if (!out.success) return { ok: false, error: out.error || "send failed" }
     const { markDraftSent } = await import("./record")
     await markDraftSent(row.id, { subject: null, body: row.draft_body })

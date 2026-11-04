@@ -63,6 +63,15 @@ export async function POST(
     if (lookupErr) return NextResponse.json({ error: lookupErr.message }, { status: 500 })
     if (!lead) return NextResponse.json({ error: "lead not found" }, { status: 404 })
 
+    // A seller who asked off the list never becomes an active Relationships card.
+    try {
+      const { checkContactDnc } = await import("@/lib/dnc")
+      const dnc = await checkContactDnc(sb, { phone: lead.caller_phone, email: lead.email }, "all")
+      if (dnc.dnc) return NextResponse.json({ error: `Not promoting — ${dnc.why} (they asked off the list)` }, { status: 409 })
+    } catch (e) {
+      return NextResponse.json({ error: `DNC check failed (${e instanceof Error ? e.message : String(e)})` }, { status: 503 })
+    }
+
     const phoneE164 = toE164(lead.caller_phone)
     if (!phoneE164) {
       return NextResponse.json(

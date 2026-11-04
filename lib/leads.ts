@@ -1430,6 +1430,8 @@ export async function sendLeadSms(input: {
   phone: string
   message: string
   source?: string | null
+  /** The one "you're off my list" reply after an opt-out — passes the DNC gate once (lib/dnc.ts). */
+  optOutConfirmation?: boolean
 }): Promise<SendLeadSmsResult> {
   const source = input.source ?? null
 
@@ -1469,25 +1471,18 @@ export async function sendLeadSms(input: {
     console.error("[sendLeadSms] Dedup check threw:", e)
   }
 
-  // DNC guard — never text a lead flagged Do-Not-Contact. Fail-safe: if the
-  // check itself errors, block rather than risk a contact.
+  // DNC guard — never text a do-not-contact person: any lead row with this
+  // phone flagged DNC, or the number on the master suppression list. The one
+  // opt-out confirmation is let through once. Fail-safe: a failed check blocks.
   try {
+    const { checkContactDnc, optOutConfirmationAllowed } = await import("@/lib/dnc")
     const sbDnc = getLeadsClient()
-    const { data: dncRows, error: dncErr } = await sbDnc
-      .from("leads")
-      .select("id")
-      .eq("caller_phone", phone)
-      .eq("is_dnc", true)
-      .limit(1)
-    if (dncErr) {
-      console.error("[sendLeadSms] DNC check failed:", dncErr)
-      return { success: false, status: 503, error: "DNC check failed — send blocked" }
-    }
-    if (dncRows && dncRows.length > 0) {
-      return { success: false, status: 409, error: "lead is DNC" }
+    const dnc = await checkContactDnc(sbDnc, { phone }, "sms")
+    if (dnc.dnc && !(input.optOutConfirmation && (await optOutConfirmationAllowed(sbDnc, { phone })))) {
+      return { success: false, status: 409, error: dnc.why || "lead is DNC" }
     }
   } catch (e) {
-    console.error("[sendLeadSms] DNC check threw:", e)
+    console.error("[sendLeadSms] DNC check failed:", e)
     return { success: false, status: 503, error: "DNC check failed — send blocked" }
   }
 
@@ -2119,6 +2114,13 @@ export async function processRecordingBackground(args: {
         await mergeJackieCall(sb, leadId, review
           ? { intake_complete: review.intake_complete, callback_when: review.callback_when, callback_date: review.callback_date, spanish: review.spanish, reviewed_at: new Date().toISOString() }
           : { review_failed: true })
+        // The caller asked Jackie to take them off the list — DNC even when
+        // the generic analyzer missed it (unlabeled two-voice transcript).
+        if (review?.opted_out && !analysis?.is_dnc) {
+          const { markContactDnc } = await import("@/lib/dnc")
+          await markContactDnc(sb, leadId, { addedBy: "ai", heardAddress: review.opt_out_address ?? null })
+          if (analysis) analysis.is_dnc = true
+        }
         if (review && !analysis?.is_dnc && (review.callback_when || review.intake_complete)) {
           const today = new Intl.DateTimeFormat("en-CA", { timeZone: "America/Los_Angeles" }).format(new Date())
           const date = review.callback_date ?? nextBusinessDay(today)
@@ -2132,7 +2134,9 @@ export async function processRecordingBackground(args: {
         if (review) {
           jackieLines = [
             review.callback_when ? `📅 Callback promised: ${review.callback_when}${review.callback_date ? ` (${review.callback_date})` : ""}` : "📅 No callback time set",
-            review.intake_complete ? "✅ Intake complete" : "⚠️ Intake incomplete — the missed-call text will still go out",
+            review.opted_out || analysis?.is_dnc
+              ? "🚫 Asked to come off the list — DNC'd, no missed-call text"
+              : review.intake_complete ? "✅ Intake complete" : "⚠️ Intake incomplete — the missed-call text will still go out",
           ]
           if (review.spanish) jackieLines.push("🇲🇽 Spanish speaker — team callback")
         }
@@ -2195,8 +2199,10 @@ export async function processRecordingBackground(args: {
     } else {
       await sendTelegramAlert(caption)
     }
-    // Reply Planner: plan + draft as a second message (non-blocking).
-    if (analysis && !analysis.is_dnc) {
+    // Reply Planner: plan + draft as a second message (non-blocking). An
+    // opt-out gets one too — the "you're off my list" confirmation (one reply
+    // after an opt-out is allowed through the DNC gate, lib/dnc.ts).
+    if (analysis) {
       const { triggerTelegramDraft } = await import("@/lib/reply/telegram")
       await triggerTelegramDraft(leadId)
     }
@@ -3049,11 +3055,9 @@ export async function applyFollowupOnlyResult(
   // Auto-DNC also honored on outbound-call analysis. The seller's opt-out is
   // valid regardless of who initiated the call — if Ryan rings them back and
   // they say "lose my number," we flag DNC here too.
-  if (result.is_dnc) {
-    update.is_dnc = true
-    update.status = "dead"
-    update.recommended_followup_date = null
-  }
+  // DNC itself is written by markContactDnc below (whole cluster + dnc_list
+  // + mailed-record address), so a DNC failure can't sink these notes.
+  if (result.is_dnc) update.recommended_followup_date = null
 
   const { error } = await sb.from("leads").update(update).eq("id", leadId)
   // Mailed-record auto-link once triage has a name / address to match on
@@ -3072,55 +3076,23 @@ export async function applyFollowupOnlyResult(
   }
   if (error) {
     console.error(`[followup-only] update failed for ${leadId}:`, error.message)
-    // Silent-failure rule: a lost analyzer write (and above all a lost DNC
-    // flag) must reach Telegram. 10-08 → 11-03 every DNC write failed here
-    // unseen.
+    // Silent-failure rule: a lost analyzer write must reach Telegram
+    // (10-08 → 11-03 these failed unseen).
     await sendTelegramAlert(
-      `⚠️ ${result.is_dnc ? "DNC flag NOT saved" : "AI notes not saved"} — lead ${leadId} (${(existing?.caller_phone as string | null) ?? "no phone"}): ${error.message}`
+      `⚠️ AI notes not saved — lead ${leadId} (${(existing?.caller_phone as string | null) ?? "no phone"}): ${error.message}`
     ).catch(() => {})
   }
 
   if (result.is_dnc) {
-    await seedAiAutoDnc(sb, leadId, {
-      name: (existing?.name as string | null) || result.name || null,
-      property_address:
-        (existing?.property_address as string | null) || result.property_address || null,
-      reason_text: result.followup_reason || null,
+    // Explicit opt-out → DNC on every row of the contact, one dnc_list row
+    // carrying the mailed record's address, outreach halted (lib/dnc.ts).
+    const { markContactDnc } = await import("@/lib/dnc")
+    const out = await markContactDnc(sb, leadId, {
+      addedBy: "ai",
+      heardAddress: (existing?.property_address as string | null) || result.property_address || null,
     })
-    // AI-driven DNC writes status=dead directly (no /api/leads PATCH), so the
-    // PATCH route's halt-outreach sweep never runs. Call it here too, or any
-    // pending/approved drips on the cluster stay live and re-surface in the
-    // Follow Ups queue for a contact we just killed.
-    try {
-      await haltOutreachForCluster(sb, {
-        id: leadId,
-        caller_phone: (existing?.caller_phone as string | null) ?? null,
-        email: (existing?.email as string | null) ?? null,
-        is_dnc: true,
-      })
-    } catch (e) {
-      console.warn(`[followup-only] halt-outreach sweep failed for ${leadId}:`, e instanceof Error ? e.message : String(e))
-    }
+    console.log(`[followup-only] auto-DNC lead ${leadId}: ${out.ok ? "saved" : out.error} — ${result.followup_reason || "no reason text"}`)
   }
-}
-
-// Shared dnc_list insert for the auto-DNC path. Mirrors the manual DNC
-// route's shape (reason="requested", added_by tagged) so a future export
-// reads cleanly regardless of who flagged it.
-async function seedAiAutoDnc(
-  sb: SupabaseClient,
-  leadId: string,
-  meta: { name: string | null; property_address: string | null; reason_text: string | null }
-): Promise<void> {
-  const { error } = await sb.from("dnc_list").insert({
-    site_address: meta.property_address,
-    owner_name: meta.name,
-    source_lead_id: leadId,
-    reason: "requested",
-    added_by: "ai",
-  })
-  if (error) console.warn(`[auto-dnc] dnc_list insert failed for ${leadId}: ${error.message}`)
-  console.log(`[auto-dnc] Lead ${leadId} flagged by AI: ${meta.reason_text || "no reason text"}`)
 }
 
 // Phase 7D — persist the unified analyzer result. Writes:
@@ -3212,11 +3184,9 @@ export async function applyAnalyzeCallResult(
   // (its WHERE clause filters is_dnc=true) and removes the row from the
   // active queue. Prompt is conservative on this flag; false positives lose
   // real leads, so we trust the model here.
-  if (result.is_dnc) {
-    update.is_dnc = true
-    update.status = "dead"
-    update.recommended_followup_date = null
-  }
+  // DNC itself is written by markContactDnc below (whole cluster + dnc_list
+  // + mailed-record address), so a DNC failure can't sink these notes.
+  if (result.is_dnc) update.recommended_followup_date = null
 
   const { error } = await sb.from("leads").update(update).eq("id", leadId)
   // Mailed-record auto-link once triage has a name / address to match on
@@ -3235,35 +3205,22 @@ export async function applyAnalyzeCallResult(
   }
   if (error) {
     console.error(`[analyze-call] update failed for ${leadId}:`, error.message)
-    // Silent-failure rule: a lost analyzer write (and above all a lost DNC
-    // flag) must reach Telegram. 10-08 → 11-03 every DNC write failed here
-    // unseen.
+    // Silent-failure rule: a lost analyzer write must reach Telegram
+    // (10-08 → 11-03 these failed unseen).
     await sendTelegramAlert(
-      `⚠️ ${result.is_dnc ? "DNC flag NOT saved" : "AI notes not saved"} — lead ${leadId} (${(existing?.caller_phone as string | null) ?? "no phone"}): ${error.message}`
+      `⚠️ AI notes not saved — lead ${leadId} (${(existing?.caller_phone as string | null) ?? "no phone"}): ${error.message}`
     ).catch(() => {})
   }
 
   if (result.is_dnc) {
-    await seedAiAutoDnc(sb, leadId, {
-      name: (existing?.name as string | null) || result.name || null,
-      property_address:
-        (existing?.property_address as string | null) || result.property_address || null,
-      reason_text: result.followup_reason || null,
+    // Explicit opt-out → DNC on every row of the contact, one dnc_list row
+    // carrying the mailed record's address, outreach halted (lib/dnc.ts).
+    const { markContactDnc } = await import("@/lib/dnc")
+    const out = await markContactDnc(sb, leadId, {
+      addedBy: "ai",
+      heardAddress: (existing?.property_address as string | null) || result.property_address || null,
     })
-    // AI-driven DNC writes status=dead directly (no /api/leads PATCH), so the
-    // PATCH route's halt-outreach sweep never runs. Call it here too, or any
-    // pending/approved drips on the cluster stay live and re-surface in the
-    // Follow Ups queue for a contact we just killed.
-    try {
-      await haltOutreachForCluster(sb, {
-        id: leadId,
-        caller_phone: (existing?.caller_phone as string | null) ?? null,
-        email: (existing?.email as string | null) ?? null,
-        is_dnc: true,
-      })
-    } catch (e) {
-      console.warn(`[analyze-call] halt-outreach sweep failed for ${leadId}:`, e instanceof Error ? e.message : String(e))
-    }
+    console.log(`[analyze-call] auto-DNC lead ${leadId}: ${out.ok ? "saved" : out.error} — ${result.followup_reason || "no reason text"}`)
   }
 
   // Option B — relationships self-heal (Sheet→Supabase migration, 2026-05-22).
@@ -3397,6 +3354,8 @@ export async function applyColdNoSignalDefault(leadId: string): Promise<void> {
 export interface EmailTriageResult {
   temperature: Temperature
   is_dead: boolean
+  /** The sender explicitly asked to be removed / not contacted (Ryan's DNC rule). */
+  is_dnc?: boolean
   summary: string
   suggestedReply: string
   // Offer detection — same rules as analyzeCallTranscript. Captures the
@@ -3461,6 +3420,7 @@ Respond in JSON only:
 {
   "temperature": "hot" | "warm" | "cold",
   "is_dead": true | false,
+  "is_dnc": true | false,
   "summary": "one sentence summary",
   "suggestedReply": "a short, natural text-message-style reply Ryan can send. Warm, direct, no fluff. 1-2 sentences max.",
   "offer_amount": number | null,
@@ -3478,6 +3438,11 @@ ${LEAD_MOMENT_RUBRIC}
 
 is_dead: true ONLY for spam / wrong number / explicit unsubscribe / hostile.
   Default false. Use this flag, not temperature, to mark a lead as dead.
+
+is_dnc: true ONLY when the sender explicitly asks to be removed or not
+  contacted again ("take me off your list", "remove me", "unsubscribe", "stop
+  sending me letters", "don't contact me again"). "Not interested" / "not
+  selling" / "already sold" alone is FALSE — a no today is a future seller.
 
 OFFER DETECTION
 - offer_amount: dollar amount Ryan stated as a purchase price to the seller
@@ -3548,6 +3513,7 @@ PROPERTY ADDRESS
     const parsed = JSON.parse(extractJsonObject(rawText)) as {
       temperature?: unknown
       is_dead?: unknown
+      is_dnc?: unknown
       summary?: unknown
       suggestedReply?: unknown
       offer_amount?: unknown
@@ -3624,6 +3590,7 @@ PROPERTY ADDRESS
     return {
       temperature,
       is_dead: parsed.is_dead === true,
+      is_dnc: parsed.is_dnc === true,
       summary,
       suggestedReply,
       offer_amount:

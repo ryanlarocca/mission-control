@@ -1276,8 +1276,9 @@ async function drainApprovedQueue(sb) {
     // sweeps pending/approved rows when a flag flips, but that sweep is
     // best-effort; this is the durable backstop so an approved drip never
     // fires to a lead who opted out after approval.
-    if (lead.is_dnc || lead.is_junk || DRIP_STOP_STATUSES.has(lead.status)) {
-      const reason = lead.is_dnc ? "lead_dnc" : lead.is_junk ? "lead_junk" : `lead_${lead.status}`
+    const contactDnc = !lead.is_dnc && (await contactIsDnc(sb, lead, q.channel === "email" ? "email" : "sms"))
+    if (lead.is_dnc || contactDnc || lead.is_junk || DRIP_STOP_STATUSES.has(lead.status)) {
+      const reason = lead.is_dnc || contactDnc ? "lead_dnc" : lead.is_junk ? "lead_junk" : `lead_${lead.status}`
       console.log(`[drip] queue ${q.id}: lead now ${reason} — skipping send`)
       await sb.from("drip_queue").update({ status: "skipped", error: `superseded:${reason}` }).eq("id", q.id)
       continue
@@ -1538,9 +1539,40 @@ async function maybeUpgradeCampaign(sb, lead) {
   return lead
 }
 
+// Do-not-contact across the whole contact, not just this row: any lead row
+// with the phone/email flagged DNC, or the phone/email on the master
+// suppression list (2026-11-03 opt-out audit — a STOP on a sibling row used
+// to leave the drip-driving row eligible). Fails safe: a lookup error = DNC.
+async function contactIsDnc(sb, lead, channel) {
+  try {
+    const ten = String(lead.caller_phone || "").replace(/\D/g, "").slice(-10)
+    const email = String(lead.email || "").trim().toLowerCase()
+    const ors = []
+    if (ten.length === 10) ors.push(`caller_phone.eq.+1${ten}`, `caller_phone.eq.${ten}`)
+    if (email.includes("@")) ors.push(`email.ilike.${email}`)
+    if (ors.length) {
+      const { data, error } = await sb.from("leads").select("id").or(ors.join(",")).eq("is_dnc", true).limit(1)
+      if (error) throw new Error(error.message)
+      if (data && data.length) return true
+    }
+    const sOrs = []
+    if (ten.length === 10) sOrs.push(`phone.eq.${ten}`)
+    if (email.includes("@")) sOrs.push(`email.eq.${email}`)
+    if (!sOrs.length) return false
+    const chans = channel === "email" ? ["email", "all"] : ["sms", "all"]
+    const { data: sup, error: supErr } = await sb.from("suppression").select("id").or(sOrs.join(",")).in("channel", chans).limit(1)
+    if (supErr) throw new Error(supErr.message)
+    return !!(sup && sup.length)
+  } catch (e) {
+    console.warn(`[drip] DNC lookup failed for ${lead.id} — treating as DNC:`, e instanceof Error ? e.message : String(e))
+    return true
+  }
+}
+
 async function processLead(sb, lead) {
   // Stop conditions baked into the SQL filter, but re-check defensively.
   if (DRIP_STOP_STATUSES.has(lead.status)) return { skipped: "stop_status" }
+  if (await contactIsDnc(sb, lead, "any")) return { skipped: "contact_dnc" }
   if (await hasPendingQueueRow(sb, lead.id)) return { skipped: "pending_queued" }
 
   lead = await maybeUpgradeCampaign(sb, lead)
@@ -1865,6 +1897,7 @@ module.exports = {
   DRIP_CAMPAIGNS,
   buildConversationHistory,
   detectHardStop,
+  contactIsDnc,
   extractResponsivenessSignals,
   generateMessage,
   buildSystemPrompt,

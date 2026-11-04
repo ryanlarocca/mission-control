@@ -39,6 +39,14 @@ export async function POST(request: NextRequest) {
   if (isOwnedNumber(to) || to === FORWARD_TO) {
     return NextResponse.json({ error: `${to} is one of our own numbers — not dialing` }, { status: 400 })
   }
+  try {
+    const { checkContactDnc } = await import("@/lib/dnc")
+    const { getLeadsClient } = await import("@/lib/leads")
+    const dnc = await checkContactDnc(getLeadsClient(), { phone: to }, "call")
+    if (dnc.dnc) return NextResponse.json({ error: `Not calling — ${dnc.why}` }, { status: 409 })
+  } catch (e) {
+    return NextResponse.json({ error: `DNC check failed — call blocked (${e instanceof Error ? e.message : String(e)})` }, { status: 503 })
+  }
 
   const sid = process.env.TWILIO_ACCOUNT_SID
   const token = process.env.TWILIO_AUTH_TOKEN

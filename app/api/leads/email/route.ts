@@ -2,6 +2,7 @@ import { NextResponse } from "next/server"
 import { waitUntil } from "@vercel/functions"
 import { gmail_v1 } from "googleapis"
 import { triggerTelegramDraft } from "@/lib/reply/telegram"
+import { explicitOptOutPhrase, markContactDnc, optOutAddressLine } from "@/lib/dnc"
 
 // Pub/Sub push ack timeout is 10s by default; Gmail history.list + message.get
 // + Sonnet triage + Supabase insert can blow past Vercel's 10s default. Bump it.
@@ -466,7 +467,7 @@ async function ingestGoogleVoice(args: {
   await sendTelegramAlert(lines.join("\n"))
   // Reply Planner: post the plan + draft as a second Telegram message,
   // without blocking the webhook (the target route keeps running).
-  if (triage && !triage.is_dead) await triggerTelegramDraft(insertedId)
+  await draftOrOptOut(sb, insertedId, messageText, triage, false)
 
   return { leadId: insertedId }
 }
@@ -790,7 +791,7 @@ async function handleAppsScript(payload: AppsScriptPayload): Promise<NextRespons
   if (spam) lines.push(...spamAlertLines(spam))
   await sendTelegramAlert(lines.join("\n"))
   // Reply Planner: plan + draft as a second message (non-blocking).
-  if (triage && !triage.is_dead && !(spam && spam.suspicious)) await triggerTelegramDraft(insertedId)
+  await draftOrOptOut(sb, insertedId, messageText, triage, !!(spam && spam.suspicious))
 
   return NextResponse.json({ ok: true, leadId: insertedId })
 }
@@ -1091,7 +1092,7 @@ async function processSingleMessage(args: {
   if (spam) lines.push(...spamAlertLines(spam))
   await sendTelegramAlert(lines.join("\n"))
   // Reply Planner: plan + draft as a second message (non-blocking).
-  if (triage && !triage.is_dead && !(spam && spam.suspicious)) await triggerTelegramDraft(insertedId)
+  await draftOrOptOut(sb, insertedId, messageText, triage, !!(spam && spam.suspicious))
 }
 
 // ─── Gmail helpers (lib/leads.ts owns the JWT client; helpers here stay
@@ -1371,4 +1372,29 @@ function formatCampaignLabel(source: string): string {
   if (source === "MFM-A") return "Campaign A"
   if (source === "MFM-B") return "Campaign B"
   return source
+}
+
+// Seller email opt-outs (2026-11-03): an explicit remove request — the AI's
+// is_dnc or the shared phrase list on the sender's own words (quoted thread
+// stripped) — is a DNC: whole contact flagged, mailed address matched onto
+// the do-not-contact list, outreach halted, and the "you're off my list"
+// confirmation drafted for Ryan's ✅. Everything else drafts as before.
+async function draftOrOptOut(
+  sb: ReturnType<typeof getLeadsClient>,
+  leadId: string,
+  text: string | null,
+  triage: { is_dead: boolean; is_dnc?: boolean; property_address?: string | null } | null,
+  suspicious: boolean
+): Promise<void> {
+  const own = String(text ?? "").split(/\n\s*On [^\n]{0,200}wrote:|\n>|\n-{2,}\s*Original Message/i)[0]
+  if (!suspicious && (triage?.is_dnc === true || explicitOptOutPhrase(own))) {
+    const out = await markContactDnc(sb, leadId, { addedBy: "ai", heardAddress: triage?.property_address ?? own })
+    const line = optOutAddressLine(out.record)
+    await sendTelegramAlert(
+      `🚫 Email opt-out — DNC'd\n${line ? `🏠 Off the mailing list: ${line}` : "⚠️ No mailed address matched — mail NOT blocked until we know the address"}`
+    )
+    await triggerTelegramDraft(leadId)
+    return
+  }
+  if (triage && !triage.is_dead && !suspicious) await triggerTelegramDraft(leadId)
 }

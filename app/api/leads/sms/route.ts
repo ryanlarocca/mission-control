@@ -24,6 +24,7 @@ import { scoreLeadSpam, spamAlertLines, spamReviewColumns, type SpamScore } from
 import { isAnonymousCaller } from "@/lib/anonymous"
 import { describeContact, isOfficeLine, logInboundTextTouch, resolveOfficeCaller } from "@/lib/office-inbound"
 import { handleInboundVendorText } from "@/lib/vendorMarketing"
+import { correctOptOutAddress, explicitOptOutPhrase, isCourtesyReply, isTwilioStopKeyword, markContactDnc, optOutAddressLine } from "@/lib/dnc"
 
 // Twilio fires this when a lead texts any of our lead-facing lines (the
 // campaign lines, the ported mailer lines, the Google Ads line, the office
@@ -44,7 +45,6 @@ export const maxDuration = 300
 const EMPTY_TWIML = `<?xml version="1.0" encoding="UTF-8"?>
 <Response></Response>`
 
-const DNC_LOOKBACK_DAYS = 90
 
 // A swallowed write failure on an inbound text is exactly the kind of silent
 // failure Ryan wants surfaced (2026-10-16: a DNC insert failed with only a
@@ -126,7 +126,9 @@ export async function POST(request: Request) {
 
   const source = getCampaignSource(to)
   const isOffice = isOfficeLine(to)
-  const isDnc = isDncMessage(bodyText)
+  // Keyword STOP or an explicit remove request ("please take me off your
+  // list for 765 N …") — Ryan's rule: only a request to stop contact is DNC.
+  const isDnc = isDncMessage(bodyText) || !!explicitOptOutPhrase(bodyText)
   // The website line gets source_type=website and NO automatic drip — a
   // texter off lrghomes.com may be an agent or a curious visitor, not a
   // seller (Ryan, 2026-10-27). MFM-A/B + outbound callback stay on direct-mail.
@@ -149,39 +151,17 @@ export async function POST(request: Request) {
     // §6 (2026-10-21): a returning texter on a NOO Q4 line was reset to New —
     // read again at the Telegram alert below.
     let resetToNew = false
+    // Set when the texter is already do-not-contact (see the non-DNC path).
+    let dncReply: { kind: "corrected" | "courtesy" | "other"; line: string | null } | null = null
     try {
       const sb = getLeadsClient()
 
       if (isDnc) {
-        // Find the most recent intake row for this number and flag it.
-        // Search broadly (twilio_number IS NOT NULL) so we hit the original
-        // intake regardless of which campaign delivered it.
-        const since = new Date(Date.now() - DNC_LOOKBACK_DAYS * 86_400_000).toISOString()
-        const { data: existing } = await sb
-          .from("leads")
-          .select("id")
-          .eq("caller_phone", from)
-          .not("twilio_number", "is", null)
-          .gte("created_at", since)
-          .order("created_at", { ascending: false })
-          .limit(1)
-        const existingId = existing?.[0]?.id ?? null
-
-        if (existingId) {
-          const { error } = await sb
-            .from("leads")
-            .update({ is_dnc: true, status: "dead" })
-            .eq("id", existingId)
-          if (error) {
-            console.error("[sms] DNC update failed:", error)
-            await alertWriteFailure("DNC flag on the existing lead", from, source, error)
-          }
-        }
-
-        // Still insert the inbound STOP row so the message shows up in the
-        // timeline (the UI groups events by caller_phone). Mark it dead +
-        // is_dnc and skip drip fields so the engine never picks it back up.
-        const { error: insertErr } = await sb.from("leads").insert({
+        // Timeline row for the opt-out itself (the UI groups events by
+        // caller_phone), then markContactDnc flags EVERY row of the contact,
+        // matches the mailed address, writes the do-not-contact entry and
+        // halts queued outreach (lib/dnc.ts).
+        const { data: optRow, error: insertErr } = await sb.from("leads").insert({
           source,
           source_type: "direct_mail",
           twilio_number: to || null,
@@ -190,15 +170,39 @@ export async function POST(request: Request) {
           message: bodyText,
           status: "dead",
           is_dnc: true,
-        })
+        }).select("id").single()
         if (insertErr) {
           console.error("[sms] DNC insert failed:", insertErr)
           await alertWriteFailure("DNC timeline insert", from, source, insertErr)
         }
+        const optId = (optRow?.id as string | undefined) ?? null
+        let addressLine: string | null = null
+        if (optId) {
+          try {
+            const { resolveCampaignId } = await import("@/lib/campaigns")
+            const campaignId = await resolveCampaignId({ source, source_type: "direct_mail", created_at: new Date() })
+            if (campaignId) await sb.from("leads").update({ campaign_id: campaignId }).eq("id", optId)
+          } catch (e) {
+            console.warn("[sms] campaign attribution failed:", e instanceof Error ? e.message : String(e))
+          }
+          const out = await markContactDnc(sb, optId, { addedBy: "system", heardAddress: bodyText })
+          if (!out.ok) await alertWriteFailure("DNC flag", from, source, out.error || "unknown")
+          addressLine = optOutAddressLine(out.record)
+        }
 
         const dncName = await lookupLeadName(sb, from)
         const dncWho = dncName ? `${dncName} — ${from}` : from
-        await sendTelegramAlert(`🚫 Lead DNC'd — <b>${source}</b> — ${dncWho}`)
+        const preview = bodyText.length > 300 ? bodyText.slice(0, 300) + "…" : bodyText
+        const esc = preview.replace(/[<>&]/g, c => c === "<" ? "&lt;" : c === ">" ? "&gt;" : "&amp;")
+        await sendTelegramAlert([
+          `🚫 Lead DNC'd — <b>${source}</b> — ${dncWho}`,
+          `"${esc}"`,
+          addressLine ? `🏠 Off the mailing list: ${addressLine}` : "⚠️ No mailed address matched — texts blocked, mail NOT blocked until we know the address",
+        ].join("\n"))
+        // Confirmation draft ("you're off my list") for Ryan's ✅ — except a
+        // bare Twilio keyword (STOP/UNSUBSCRIBE…): Twilio already replied and
+        // blocks the number.
+        if (optId && !isTwilioStopKeyword(bodyText)) await triggerTelegramDraft(optId)
 
         return new NextResponse(EMPTY_TWIML, {
           headers: { "Content-Type": "text/xml" },
@@ -347,11 +351,24 @@ export async function POST(request: Request) {
         }
       }
 
+      // Already do-not-contact (asked off the list earlier): no card, no
+      // draft, no analyzer. A new address is a correction → move the
+      // do-not-contact entry; "thanks" is silent; anything else is an FYI.
+      if (insertedRow?.id && (await clusterHasDnc(sb, { caller_phone: from }))) {
+        await sb.from("leads").update({ is_dnc: true, status: "dead", recommended_followup_date: null }).eq("id", insertedRow.id)
+        const corrected = await correctOptOutAddress(sb, insertedRow.id, bodyText).catch((e) => {
+          console.warn("[sms] opt-out address correction failed:", e instanceof Error ? e.message : String(e))
+          return null
+        })
+        dncReply = corrected ? { kind: "corrected", line: optOutAddressLine(corrected) } : isCourtesyReply(bodyText) ? { kind: "courtesy", line: null } : { kind: "other", line: null }
+        newLeadId = null
+      }
+
       // Reply Planner (2026-09-24): inbound texts had no AI at all, so the
       // card had no moment to plan from. Propose the plan over the Supabase
       // cluster (no sidecar hop — this is a Twilio webhook) and stamp
       // leads.moment. Best-effort; the alert below goes out regardless.
-      if (insertedRow?.id) {
+      if (insertedRow?.id && !dncReply) {
         try {
           const { buildLeadContext, proposePlan, stampLeadMoment } = await import("@/lib/reply")
           const ctx = await buildLeadContext(insertedRow.id, { live: false })
@@ -367,6 +384,14 @@ export async function POST(request: Request) {
 
     const preview = bodyText.length > 300 ? bodyText.slice(0, 300) + "…" : bodyText
     const escaped = preview.replace(/[<>&]/g, c => c === "<" ? "&lt;" : c === ">" ? "&gt;" : "&amp;")
+    if (dncReply) {
+      if (dncReply.kind === "corrected") {
+        await sendTelegramAlert(`📍 Do-not-contact address corrected — ${from}\n"${escaped}"\n🏠 Now off the mailing list: ${dncReply.line ?? "(address updated)"}`)
+      } else if (dncReply.kind === "other") {
+        await sendTelegramAlert(`💬 Text from a do-not-contact contact (no reply drafted) — <b>${source}</b> — ${leadName ? `<b>${leadName}</b> — ` : ""}${from}\n"${escaped}"`)
+      }
+      return new NextResponse(EMPTY_TWIML, { headers: { "Content-Type": "text/xml" } })
+    }
     // Label with the lead's name when we know it, falling back to the phone.
     // The phone stays in the alert regardless — the Telegram reply handler
     // parses it out of this text to know who to SMS back.

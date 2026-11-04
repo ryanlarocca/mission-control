@@ -264,6 +264,9 @@ export type JackieCallReview = {
   callback_when: string | null
   callback_date: string | null
   spanish: boolean
+  /** The caller asked to come off the list (2026-11-03). */
+  opted_out?: boolean
+  opt_out_address?: string | null
 }
 
 function pacificToday(now: Date): { ymd: string; weekday: string; clock: string } {
@@ -297,13 +300,15 @@ Answer in JSON only:
   "intake_complete": true if the caller gave a name (or confirmed one Jackie had on file), a property address (street number + street, a city if they said it; a property Jackie already had on file and the caller confirmed counts), and either a callback time or agreed Ryan can call them; false otherwise (hung up early, refused, wrong number, wanted off the list),
   "callback_when": the callback Jackie promised or the caller asked for, in a few words as said ("tomorrow around noon", "next Thursday after 3", "within one business day"), or null if none,
   "callback_date": that callback as YYYY-MM-DD in Pacific time, or null if no callback was arranged,
-  "spanish": true if the caller spoke Spanish
+  "spanish": true if the caller spoke Spanish,
+  "opted_out": true ONLY if the CALLER explicitly asked to be removed or not contacted again ("take me off your list", "stop sending me letters", "don't call me again", or said yes when Jackie offered to take them off the list). Jackie offering is not enough, and "not interested" / "not selling" alone is false,
+  "opt_out_address": the property address the caller wanted taken off the list, as said, or null
 }
 
 Transcript:
 ${transcript.slice(0, 20000)}`
   try {
-    const out = await completeText({ prompt, model: SONNET, maxTokens: 400, thinking: false, tag: "[jackie-review]" })
+    const out = await completeText({ prompt, model: SONNET, maxTokens: 500, thinking: false, tag: "[jackie-review]" })
     const j = JSON.parse(extractJsonObject(out.text)) as Partial<JackieCallReview>
     const date = typeof j.callback_date === "string" && /^\d{4}-\d{2}-\d{2}$/.test(j.callback_date) && j.callback_date >= ymd ? j.callback_date : null
     return {
@@ -311,6 +316,8 @@ ${transcript.slice(0, 20000)}`
       callback_when: typeof j.callback_when === "string" && j.callback_when.trim() ? j.callback_when.trim().slice(0, 120) : null,
       callback_date: date,
       spanish: j.spanish === true,
+      opted_out: j.opted_out === true,
+      opt_out_address: typeof j.opt_out_address === "string" && j.opt_out_address.trim() ? j.opt_out_address.trim().slice(0, 160) : null,
     }
   } catch (e) {
     console.error(`[jackie-review] failed: ${e instanceof Error ? e.message : e}`)

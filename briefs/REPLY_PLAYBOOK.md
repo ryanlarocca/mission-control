@@ -48,7 +48,18 @@ Pending whys:
 ### hard_no_optout
 Explicit stop, hostile, or "good luck with your search" after a price gap.
 
-Principles: (to be written from the eval grades)
+Principles:
+- When they asked to be removed, the reply is the one confirmation: short,
+  warm, no pitch, no "if you ever change your mind". Ryan liked "Understood,
+  I've taken 765 N B40 off my list, so no more mail or texts from me. Sorry
+  for the bother." (2026-11-03 — it got a "Thank you" back.)
+- Name the address being removed — use the "Removed address" from the
+  contact block when there is one — and invite a correction in your own
+  words, e.g. "if I've got the wrong address, just let me know."
+- If no address is on file, say they're off the list and ask which property
+  so the letters stop too.
+- A "good luck with your search" close (not a remove request) is a one-line
+  gracious close, no address talk.
 
 Pending whys: (none yet)
 

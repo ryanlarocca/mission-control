@@ -21,7 +21,10 @@ export async function POST(request: NextRequest) {
   } catch {
     return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 })
   }
-  const out = await sendThreadedEmailReply({ leadId: body?.leadId || "", text: body?.message || "", draftId: body?.draftId || null })
+  const { isOptOutConfirmationDraft } = await import("@/lib/dnc")
+  const { getLeadsClient } = await import("@/lib/leads")
+  const optOutConfirmation = await isOptOutConfirmationDraft(getLeadsClient(), body?.draftId || null).catch(() => false)
+  const out = await sendThreadedEmailReply({ leadId: body?.leadId || "", text: body?.message || "", draftId: body?.draftId || null, optOutConfirmation })
   if (!out.ok) return NextResponse.json({ error: out.error, ...(out.details ? { details: out.details } : {}) }, { status: out.status })
   return NextResponse.json({ ok: true, sentMessageId: out.sentMessageId, leadId: out.leadId, ...(out.logError ? { logError: out.logError } : {}) })
 }

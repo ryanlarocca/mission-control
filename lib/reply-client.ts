@@ -185,9 +185,11 @@ export async function executePlan(leadId: string, plan: Plan | null | undefined)
         return "Call reminder set for tomorrow"
       }
       case "close_dead": {
-        const r = await patch({ status: "dead" })
-        if (!r.ok) throw new Error(`status HTTP ${r.status}`)
-        return "Closed"
+        // Server decides close vs DNC (explicit remove request) — lib/reply/execute.ts.
+        const r = await post(`/api/leads/${leadId}/close`)
+        const data = await r.json().catch(() => ({}))
+        if (!r.ok) throw new Error(data.error || `close HTTP ${r.status}`)
+        return /DNC/.test(String(data.note || "")) ? "Closed · DNC" : "Closed"
       }
       case "junk": {
         const r = await patch({ is_junk: true, status: "dead" })

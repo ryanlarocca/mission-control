@@ -60,6 +60,16 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "phone and message required" }, { status: 400 })
     }
 
+    // Do-not-contact: any lead row with this number flagged DNC, or the
+    // number on the master suppression list (sms/all). Both send paths.
+    try {
+      const { checkContactDnc } = await import("@/lib/dnc")
+      const dnc = await checkContactDnc(getLeadsClient(), { phone: String(phone) }, "sms")
+      if (dnc.dnc) return NextResponse.json({ success: false, error: `Not texting — ${dnc.why}` }, { status: 409 })
+    } catch (e) {
+      return NextResponse.json({ success: false, error: `DNC check failed — send blocked (${e instanceof Error ? e.message : String(e)})` }, { status: 503 })
+    }
+
     // Any trouble reading the flag → the sidecar path, exactly as before.
     let cardLine = false
     if (typeof id === "string" && id) {

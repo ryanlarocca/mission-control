@@ -109,6 +109,16 @@ export async function startLeadCall(body: { phone?: unknown; source?: string | n
           `the real contact number is in the message body. Not dialing.`, }
   }
 
+  // Do-not-contact (any lead row with this phone, or the master list).
+  // Fail safe: a failed check blocks the dial.
+  try {
+    const { checkContactDnc } = await import("@/lib/dnc")
+    const dnc = await checkContactDnc(getLeadsClient(), { phone: leadPhone }, "call")
+    if (dnc.dnc) return { ok: false, status: 409, error: `Not calling — ${dnc.why} (they asked off the list)` }
+  } catch (e) {
+    return { ok: false, status: 503, error: `DNC check failed — call blocked (${e instanceof Error ? e.message : String(e)})` }
+  }
+
   const sid = process.env.TWILIO_ACCOUNT_SID
   const token = process.env.TWILIO_AUTH_TOKEN
   if (!sid || !token) {

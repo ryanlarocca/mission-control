@@ -70,9 +70,6 @@ export async function POST(
       .maybeSingle()
     if (error) return NextResponse.json({ error: error.message }, { status: 500 })
     if (!lead) return NextResponse.json({ error: "lead not found" }, { status: 404 })
-    if (lead.is_dnc) {
-      return NextResponse.json({ error: "lead is DNC" }, { status: 409 })
-    }
 
     // The id we're handed is the cluster's most-recent-inbound row, which
     // may not be the row that carries the email — e.g. Mike Cummings'
@@ -97,6 +94,17 @@ export async function POST(
     }
     if (!recipientEmail) {
       return NextResponse.json({ error: "lead has no email address" }, { status: 400 })
+    }
+    // Do-not-contact across the contact (phone or email) + the master list.
+    try {
+      const { checkContactDnc, isOptOutConfirmationDraft, optOutConfirmationAllowed } = await import("@/lib/dnc")
+      const who = { email: recipientEmail, phone: (lead.caller_phone as string | null) ?? null }
+      const dnc = await checkContactDnc(sb, who, "email")
+      if (dnc.dnc && !((await isOptOutConfirmationDraft(sb, draftId || null)) && (await optOutConfirmationAllowed(sb, who)))) {
+        return NextResponse.json({ error: dnc.why || "lead is DNC" }, { status: 409 })
+      }
+    } catch (e) {
+      return NextResponse.json({ error: `DNC check failed — send blocked (${e instanceof Error ? e.message : String(e)})` }, { status: 503 })
     }
 
     // Sending mailbox priority — see the header comment. A call/SMS lead
