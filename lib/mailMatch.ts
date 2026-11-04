@@ -130,6 +130,8 @@ export interface MailMatchResult {
   record: MailRecordLite | null
   method: MailMatchMethod | null
   candidates: MailRecordLite[]
+  /** Linked on street alone: the heard city disagreed with the list, so the card's city is wrong. */
+  cityCorrected?: boolean
 }
 
 const CANDIDATE_CAP = 10
@@ -171,9 +173,16 @@ export async function suggestMailRecord(
       ["site_street_norm", "site", "auto_address"],
       ["mail_line_norm", "mail", "auto_mail_address"],
     ] as const) {
-      const rows = cityFilter(await fetchBy(col, addr.street), addr.city, side)
+      const all = await fetchBy(col, addr.street)
+      const rows = cityFilter(all, addr.city, side)
       if (rows.length === 1) return { record: strip(rows)[0], method, candidates: [] }
       if (rows.length > 1) return { record: null, method: null, candidates: strip(rows).slice(0, CANDIDATE_CAP) }
+      // Transcription mishears city names (2026-11-03: "Los Gatos" → "Las
+      // Vegas"; we don't buy outside the Bay Area). Within one mailed list,
+      // a street number + name that hits exactly one house is that house.
+      if (side === "site" && input.campaignId && addr.city && all.length === 1) {
+        return { record: strip(all)[0], method, candidates: [], cityCorrected: true }
+      }
     }
   }
 
@@ -323,10 +332,34 @@ export async function autoLinkMailRecord(sb: SupabaseClient, leadId: string): Pr
       )
     }
     await linkMailRecordToCluster(sb, lead, result.record.id, result.method, null, result.record.prior_pieces ?? null)
+    if (result.cityCorrected) await correctLeadAddress(sb, lead.id, lead.property_address, result.record)
   } else if (result.candidates.length) {
     await linkMailRecordToCluster(sb, lead, null, null, result.candidates.map(c => c.id))
   }
   return result
+}
+
+/** "140 Johnson Ave, Los Gatos, CA 95030" from the mailed record. */
+export function mailRecordSiteLine(r: Pick<MailRecordLite, "site_address" | "site_city" | "site_zip">): string | null {
+  if (!r.site_address) return null
+  if (!r.site_city && !r.site_zip) return r.site_address
+  return [r.site_address, r.site_city, ["CA", r.site_zip].filter(Boolean).join(" ")].filter(Boolean).join(", ")
+}
+
+/**
+ * The card heard the wrong city: rewrite the lead's address (and the
+ * matching property chip) from the mailed record. Best-effort.
+ */
+async function correctLeadAddress(sb: SupabaseClient, leadId: string, heard: string | null, record: MailRecordLite): Promise<void> {
+  const fixed = mailRecordSiteLine(record)
+  if (!fixed || !heard) return
+  const { data } = await sb.from("leads").select("property_details").eq("id", leadId).maybeSingle()
+  const details = Array.isArray(data?.property_details) ? (data.property_details as Array<{ label?: string | null }>) : null
+  const patch: Record<string, unknown> = { property_address: fixed }
+  if (details) patch.property_details = details.map(d => (d.label === heard ? { ...d, label: fixed } : d))
+  const { error } = await sb.from("leads").update(patch).eq("id", leadId).eq("property_address", heard)
+  if (error) console.error(`[mail-match] address correction failed for ${leadId}: ${error.message}`)
+  else console.warn(`[mail-match] lead ${leadId}: heard "${heard}", mailed record ${record.record_id} says "${fixed}"`)
 }
 
 /**

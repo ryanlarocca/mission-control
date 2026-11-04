@@ -1760,6 +1760,21 @@ export async function fetchTwilioAudio(url: string): Promise<Buffer | null> {
   return null
 }
 
+// Cities on our mailed lists (2026-11-03). Passed to Whisper as vocabulary so
+// a caller's "Los Gatos" isn't heard as "Las Vegas" (Gary, NOO Q4 A).
+const WHISPER_CITY_HINTS = [
+  "San Jose", "Santa Clara", "Sunnyvale", "Palo Alto", "Milpitas", "San Mateo", "Santa Cruz", "Cupertino",
+  "Mountain View", "Campbell", "Foster City", "Los Gatos", "Los Altos", "Menlo Park", "San Carlos", "Saratoga",
+  "Belmont", "Millbrae", "Redwood City", "San Bruno", "Monte Sereno", "Los Altos Hills", "Capitola", "Fremont",
+]
+const WHISPER_PROMPT = `LRG Homes. ${WHISPER_CITY_HINTS.join(", ")}.`
+
+/** Whisper can echo its prompt back on near-silent audio: a run of our city names is that, not a caller. */
+export function echoesWhisperPrompt(text: string): boolean {
+  const t = text.toLowerCase()
+  return WHISPER_CITY_HINTS.filter(c => t.includes(c.toLowerCase())).length >= 5
+}
+
 // OpenAI Whisper transcription. Returns the text or null on failure.
 export async function transcribeAudio(
   audioBuffer: Buffer,
@@ -1775,11 +1790,13 @@ export async function transcribeAudio(
   // was how a real 23-min seller call got mislabeled "cold, no message".
   // A 4xx (bad request) won't get better on retry, so we stop on those.
   const MAX_ATTEMPTS = 3
+  let usePrompt = true
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
     try {
       const form = new FormData()
       form.append("file", new Blob([new Uint8Array(audioBuffer)], { type: "audio/mpeg" }), filename)
       form.append("model", "whisper-1")
+      if (usePrompt) form.append("prompt", WHISPER_PROMPT)
       const res = await fetch("https://api.openai.com/v1/audio/transcriptions", {
         method: "POST",
         headers: { Authorization: `Bearer ${apiKey}` },
@@ -1787,7 +1804,14 @@ export async function transcribeAudio(
       })
       if (res.ok) {
         const json = await res.json() as { text?: string }
-        return (json.text ?? "").trim() || null
+        const text = (json.text ?? "").trim()
+        if (usePrompt && echoesWhisperPrompt(text)) {
+          console.warn(`[whisper] transcript echoed the city hints; retrying without them`)
+          usePrompt = false
+          attempt -= 1 // the retry doesn't count against the failure budget
+          continue
+        }
+        return text || null
       }
       const errText = await res.text()
       const retryable = res.status === 429 || res.status >= 500

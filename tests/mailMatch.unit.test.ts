@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest"
-import { isPieceMismatch, normStreet, normSurname, parseFreeAddress, pieceMismatchLabel } from "@/lib/mailMatch"
+import type { SupabaseClient } from "@supabase/supabase-js"
+import { isPieceMismatch, mailRecordSiteLine, normStreet, normSurname, parseFreeAddress, pieceMismatchLabel, suggestMailRecord } from "@/lib/mailMatch"
 
 describe("mailMatch normalizers", () => {
   it("drops units and standardizes suffixes", () => {
@@ -44,5 +45,62 @@ describe("pieceMismatchLabel", () => {
     expect(pieceMismatchLabel("A", null)).toBeNull()
     expect(pieceMismatchLabel(undefined, undefined)).toBeNull()
     expect(pieceMismatchLabel("", "B")).toBeNull()
+  })
+})
+
+// Minimal mail_records stand-in: .from().select().eq()...limit() resolves to the rows matching every eq().
+function fakeSb(rows: Record<string, unknown>[]): SupabaseClient {
+  const from = () => {
+    const filters: [string, unknown][] = []
+    const q = {
+      select: () => q,
+      limit: () => q,
+      eq: (col: string, v: unknown) => { filters.push([col, v]); return q },
+      then: (res: (v: { data: unknown[] }) => unknown) => res({ data: rows.filter(r => filters.every(([c, v]) => r[c] === v)) }),
+    }
+    return q
+  }
+  return { from } as unknown as SupabaseClient
+}
+
+const GARY = {
+  id: "r1", campaign_id: "c1", record_id: "NOO26-17119", owner_name: "Gary & Susan Giannini",
+  site_address: "140 Johnson Ave", site_city: "Los Gatos", site_zip: "95030",
+  site_street_norm: "140 JOHNSON AVE", site_city_norm: "LOS GATOS", mail_line_norm: "1654 W CREEK DR", mail_city_norm: "SAN JOSE",
+  owner_surname_norm: "GIANNINI",
+}
+
+describe("suggestMailRecord city mishearing", () => {
+  it("links a one-house street match when the heard city is wrong (call 19: Los Gatos → Las Vegas)", async () => {
+    const r = await suggestMailRecord(fakeSb([GARY]), { campaignId: "c1", propertyAddress: "140 Johnson Avenue, Las Vegas", name: "Gary" })
+    expect(r.record?.id).toBe("r1")
+    expect(r.method).toBe("auto_address")
+    expect(r.cityCorrected).toBe(true)
+  })
+  it("doesn't flag a correction when the city matches", async () => {
+    const r = await suggestMailRecord(fakeSb([GARY]), { campaignId: "c1", propertyAddress: "140 Johnson Ave, Los Gatos", name: null })
+    expect(r.record?.id).toBe("r1")
+    expect(r.cityCorrected).toBeUndefined()
+  })
+  it("won't guess when the street is on the list twice in other cities", async () => {
+    const twin = { ...GARY, id: "r2", site_city: "San Jose", site_city_norm: "SAN JOSE" }
+    const r = await suggestMailRecord(fakeSb([GARY, twin]), { campaignId: "c1", propertyAddress: "140 Johnson Ave, Las Vegas", name: null })
+    expect(r.record).toBeNull()
+  })
+  it("needs a campaign scope to ignore the city", async () => {
+    const r = await suggestMailRecord(fakeSb([GARY]), { campaignId: null, propertyAddress: "140 Johnson Ave, Las Vegas", name: null })
+    expect(r.record).toBeNull()
+  })
+  it("formats the corrected card address", () => {
+    expect(mailRecordSiteLine(GARY)).toBe("140 Johnson Ave, Los Gatos, CA 95030")
+    expect(mailRecordSiteLine({ site_address: "1 Main St", site_city: null, site_zip: null })).toBe("1 Main St")
+  })
+})
+
+describe("echoesWhisperPrompt", () => {
+  it("flags a transcript that's just the city hints echoed back", async () => {
+    const { echoesWhisperPrompt } = await import("@/lib/leads")
+    expect(echoesWhisperPrompt("LRG Homes. San Jose, Santa Clara, Sunnyvale, Palo Alto, Milpitas.")).toBe(true)
+    expect(echoesWhisperPrompt("140 Johnson Avenue in Los Gatos. Have him call me anytime.")).toBe(false)
   })
 })
