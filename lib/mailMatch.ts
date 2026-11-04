@@ -409,3 +409,44 @@ export async function creditWebsiteFormToMailCampaign(
   if (error) throw new Error(`website campaign credit failed: ${error.message}`)
   return campaignId
 }
+
+// ─── DNC mail scrub helpers (scripts/dnc-mail-scrub.mjs, 2026-11-03) ───────
+// Append-only: the keys stored on mail_records (normStreet) are unchanged.
+// The scrub compares raw addresses on both sides through normStreetDir, so
+// "765 North Branciforte Avenue" and "765 N Branciforte Ave" agree.
+
+const DIRECTION: Record<string, string> = {
+  NORTH: "N", SOUTH: "S", EAST: "E", WEST: "W",
+  NORTHEAST: "NE", NORTHWEST: "NW", SOUTHEAST: "SE", SOUTHWEST: "SW",
+}
+export const DIRECTIONALS = new Set(["N", "S", "E", "W", "NE", "NW", "SE", "SW"])
+const SUFFIX_EXTRA: Record<string, string> = {
+  AV: "AVE", TRAIL: "TRL", EXPRESSWAY: "EXPY", SQUARE: "SQ", ALLEY: "ALY", PLAZA: "PLZ",
+  POINT: "PT", CROSSING: "XING", HEIGHTS: "HTS", MOUNT: "MT",
+}
+
+/** normStreet + directionals (NORTH → N) + a wider suffix map; parentheticals dropped. */
+export function normStreetDir(s: unknown): string {
+  const t = normStreet(String(s ?? "").replace(/\(.*?\)/g, " "))
+  return t
+    .split(" ")
+    .filter(Boolean)
+    .map(w => DIRECTION[w] ?? SUFFIX_EXTRA[w] ?? w)
+    .join(" ")
+}
+
+const NAME_NOISE = new Set([
+  "AND", "MR", "MRS", "MS", "MISS", "DR",
+  "INC", "LLC", "LP", "LTD", "CO", "CORP", "CORPORATION", "COMPANY", "ESTATE", "DECEASED",
+])
+
+/** Owner-name tokens with trust words, suffixes, initials and entity noise stripped. */
+export function ownerNameTokens(s: unknown): string[] {
+  const out = new Set<string>()
+  for (const t of normName(s).split(" ")) {
+    if (t.length < 2 || /\d/.test(t) || t.includes("#")) continue
+    if (TRUST_WORDS.has(t) || NAME_SUFFIX.has(t) || NAME_NOISE.has(t)) continue
+    out.add(t)
+  }
+  return Array.from(out)
+}

@@ -35,6 +35,7 @@ const COLUMNS = [
 ] as const
 
 interface SuppressionRow {
+  id: string
   parcel_number: string | null
   name: string | null
   site_address: string | null
@@ -67,30 +68,57 @@ export async function GET(request: NextRequest) {
   try {
     const sb = getLeadsClient()
 
-    const { data, error } = await sb
-      .from("suppression")
-      .select(
-        "parcel_number, name, site_address, site_city, site_state, site_zip, mail_address, mail_city, mail_state, mail_zip, county, reason, source, created_at"
-      )
-      .in("channel", ["mail", "all"])
-      .order("created_at", { ascending: false })
-      .returns<SuppressionRow[]>()
-    if (error) {
-      return NextResponse.json({ error: error.message }, { status: 500 })
+    // Page past PostgREST's 1000-row default cap — a truncated DNC export
+    // would silently let opted-out owners back onto a mailing.
+    const PAGE = 1000
+    const data: SuppressionRow[] = []
+    for (let from = 0; ; from += PAGE) {
+      const { data: page, error } = await sb
+        .from("suppression")
+        .select(
+          "id, parcel_number, name, site_address, site_city, site_state, site_zip, mail_address, mail_city, mail_state, mail_zip, county, reason, source, created_at"
+        )
+        .in("channel", ["mail", "all"])
+        .order("created_at", { ascending: false })
+        .order("id", { ascending: true })
+        .range(from, from + PAGE - 1)
+        .returns<SuppressionRow[]>()
+      if (error) {
+        return NextResponse.json({ error: error.message }, { status: 500 })
+      }
+      data.push(...(page ?? []))
+      if ((page ?? []).length < PAGE) break
     }
 
     // A person can appear via several sources (lead_dnc row + dnc_list row).
     // Collapse rows that share a name+site_address so the vendor CSV stays
-    // one-line-per-owner; rows with neither key always pass through.
-    const seen = new Set<string>()
+    // one-line-per-owner; rows with neither key always pass through. When
+    // duplicates differ, the richest row wins (parcel, then mailing address,
+    // then city/zip) — the newest-first order used to keep a bare row and
+    // drop the enriched one. Ties keep the newest. Output stays newest-first
+    // by each key's first appearance.
+    const richness = (r: SuppressionRow) =>
+      (r.parcel_number ? 8 : 0) +
+      (r.mail_address ? 4 : 0) +
+      (r.site_city ? 1 : 0) +
+      (r.site_zip ? 1 : 0) +
+      (r.mail_city ? 1 : 0) +
+      (r.county ? 1 : 0)
+    const bestByKey = new Map<string, number>() // key → index in rows
     const rows: SuppressionRow[] = []
-    for (const r of data ?? []) {
-      const key = `${(r.name ?? "").toLowerCase()}|${(r.site_address ?? "").toLowerCase()}`
-      if (key !== "|") {
-        if (seen.has(key)) continue
-        seen.add(key)
+    for (const r of data) {
+      const key = `${(r.name ?? "").trim().toLowerCase()}|${(r.site_address ?? "").trim().toLowerCase()}`
+      if (key === "|") {
+        rows.push(r)
+        continue
       }
-      rows.push(r)
+      const at = bestByKey.get(key)
+      if (at === undefined) {
+        bestByKey.set(key, rows.length)
+        rows.push(r)
+      } else if (richness(r) > richness(rows[at])) {
+        rows[at] = r
+      }
     }
 
     if (format === "json") {

@@ -178,7 +178,8 @@ export async function fuzzyMailRecordForOptOut(
   if (!/^\d+[A-Z]?$/.test(num)) return null
   let i = 1
   const dir = ["N", "S", "E", "W"].includes(words[i] ?? "") ? words[i++] : null
-  const firstLetter = (words[i] ?? "").charAt(0)
+  const heardName = words[i] ?? ""
+  const firstLetter = heardName.charAt(0)
   if (!firstLetter) return null
   const { data } = await sb
     .from("mail_records")
@@ -191,11 +192,30 @@ export async function fuzzyMailRecordForOptOut(
     let j = 1
     const rDir = ["N", "S", "E", "W"].includes(w[j] ?? "") ? w[j++] : null
     if (dir && rDir !== dir) return false
-    return (w[j] ?? "").charAt(0) === firstLetter
+    return streetNamesAgree(heardName, w[j] ?? "")
   })
   if (rows.length !== 1) return null
   const { site_street_norm: _s, ...rec } = rows[0]
   return rec
+}
+
+// Same rule as scripts/dnc-mail-scrub.mjs: a garbled / abbreviated street
+// ("B40") matches on its first letter; a real word ("SWEETS") must look like
+// the record's street (shared 3-letter prefix or ≤2 edits) — first letter
+// alone linked 489 Sweets Dr → 489 Sioux Ln in the 11-03 test.
+function streetNamesAgree(heard: string, rec: string): boolean {
+  if (!heard || !rec || heard.charAt(0) !== rec.charAt(0)) return false
+  if (!/^[A-Z]{3,}$/.test(heard)) return true
+  if (rec.startsWith(heard) || heard.startsWith(rec)) return true
+  let k = 0
+  while (k < heard.length && k < rec.length && heard[k] === rec[k]) k++
+  if (k >= 3) return true
+  const d: number[][] = Array.from({ length: heard.length + 1 }, (_, x) => [x, ...Array(rec.length).fill(0)])
+  for (let y = 1; y <= rec.length; y++) d[0][y] = y
+  for (let x = 1; x <= heard.length; x++)
+    for (let y = 1; y <= rec.length; y++)
+      d[x][y] = Math.min(d[x - 1][y] + 1, d[x][y - 1] + 1, d[x - 1][y - 1] + (heard[x - 1] === rec[y - 1] ? 0 : 1))
+  return d[heard.length][rec.length] <= 2
 }
 
 export interface OptOutRecord {
