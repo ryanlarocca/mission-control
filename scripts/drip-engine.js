@@ -512,31 +512,44 @@ async function extractResponsivenessSignals(lead, sb) {
 
 // ─── junk filter (Part 8) ───────────────────────────────────────────────────
 
+// Explicit remove requests only (Ryan's DNC rule, 2026-10-28 / 11-03):
+// "not interested" / "not selling" / "wrong number" are NOT DNC — a no today
+// is a future seller. Bare "don't call" is out too: historic voicemails say
+// "…if it's verifiable then call me. Otherwise don't call" (Craig, 331
+// Waverley) and "if you're not interested, I'll tear up your flyer" (Nancy
+// Collins) — both warm, both wrongly DNC'd every hour 11-01 → 11-03.
+// Patterns only run against the SELLER's lines, never Ryan's.
 const HARD_STOP_PATTERNS = [
+  /^\s*(?:stop|unsubscribe|stop all|end|quit|cancel)\s*[.!]*\s*$/i,
   /\btake me off\b/i,
-  /\btake (?:my (?:name|number) )?off (?:your|the) list\b/i,
-  /\bstop texting\b/i,
-  /\bstop messaging\b/i,
-  /\bstop emailing\b/i,
-  /\bstop calling\b/i,
-  /\bstop calling me\b/i,
-  /\bdo not call\b/i,
-  /\bdon'?t call\b/i,
-  /\bdon'?t contact\b/i,
-  /\bquit calling\b/i,
+  /\btake (?:my (?:name|number|address|house|property) )?off (?:of )?(?:your|the) (?:mailing |call |contact )?list\b/i,
   /\bremove me\b/i,
-  /\bnot interested\b/i,
-  /\bwrong number\b/i,
-  /\bfuck off\b/i,
-  /\bleave me alone\b/i,
+  /\bremove (?:my (?:name|number|address|house|property)) from\b/i,
+  /\bstop (?:texting|messaging|emailing|calling|contacting|sending|mailing)\b/i,
+  /\bquit (?:calling|texting|sending)\b/i,
+  /\b(?:do not|don['’]?t|never) (?:ever )?(?:call|text|contact|mail|email|message) (?:me|us|this number) (?:again|anymore|ever)\b/i,
+  /\b(?:do not|don['’]?t) contact me\b/i,
   /\bunsubscribe\b/i,
+  /\bleave me alone\b/i,
+  /\bfuck off\b/i,
   /\bcease (?:and desist|contact)\b/i,
 ]
 
+// history lines look like "[ts] lead: …", "[ts] lead(imsg): …", "[ts] ryan: …"
 function detectHardStop(history) {
-  for (const re of HARD_STOP_PATTERNS) {
-    const m = re.exec(history)
-    if (m) return m[0]
+  // Split on entry starts, not newlines — a message can span lines.
+  const sellerLines = history
+    .split(/\n(?=\[)/)
+    .filter((l) => /^\[[^\]]*\] lead(?:\([a-z]+\))?: /.test(l))
+    .map((l) => l.replace(/^\[[^\]]*\] lead(?:\([a-z]+\))?: /, ""))
+  for (const line of sellerLines) {
+    // The bare-keyword pattern is anchored, so test each physical line too.
+    for (const part of [line, ...line.split("\n")]) {
+      for (const re of HARD_STOP_PATTERNS) {
+        const m = re.exec(part)
+        if (m) return m[0]
+      }
+    }
   }
   return null
 }
@@ -1643,15 +1656,21 @@ async function processLead(sb, lead) {
     // outreach channel) and bumps the lifecycle to "dead". The auto-DNC also
     // tries to drop a row on dnc_list so the lead's address is suppressed for
     // future mailings; we pull whatever address fields are populated.
-    await sb.from("leads").update({ status: "dead", is_dnc: true }).eq("id", lead.id)
-    const { error: dncErr } = await sb.from("dnc_list").insert({
-      site_address: lead.property_address || null,
-      owner_name: lead.name || null,
-      source_lead_id: lead.id,
-      reason: "hostile",
-      added_by: "system",
-    })
-    if (dncErr) console.warn(`[drip] dnc_list insert failed:`, dncErr.message)
+    const { error: flagErr } = await sb.from("leads").update({ status: "dead", is_dnc: true }).eq("id", lead.id)
+    if (flagErr) console.error(`[drip] DNC flag failed for ${lead.id}:`, flagErr.message)
+    // One dnc_list row per lead — 11-01 → 11-03 a failing flag re-ran this
+    // every hour and stacked 159 duplicate rows.
+    const { data: existingDnc } = await sb.from("dnc_list").select("id").eq("source_lead_id", lead.id).limit(1)
+    if (!existingDnc || existingDnc.length === 0) {
+      const { error: dncErr } = await sb.from("dnc_list").insert({
+        site_address: lead.property_address || null,
+        owner_name: lead.name || null,
+        source_lead_id: lead.id,
+        reason: "requested",
+        added_by: "system",
+      })
+      if (dncErr) console.warn(`[drip] dnc_list insert failed:`, dncErr.message)
+    }
     return { skipped: "hard_stop" }
   }
   const softReasons = detectSoftSignals(lead, history)
@@ -1845,6 +1864,7 @@ module.exports = {
   loadPlaybook,
   DRIP_CAMPAIGNS,
   buildConversationHistory,
+  detectHardStop,
   extractResponsivenessSignals,
   generateMessage,
   buildSystemPrompt,

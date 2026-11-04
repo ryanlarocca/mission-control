@@ -3070,7 +3070,15 @@ export async function applyFollowupOnlyResult(
       console.warn("[mail-match] auto-link failed:", e instanceof Error ? e.message : String(e))
     }
   }
-  if (error) console.error(`[followup-only] update failed for ${leadId}:`, error.message)
+  if (error) {
+    console.error(`[followup-only] update failed for ${leadId}:`, error.message)
+    // Silent-failure rule: a lost analyzer write (and above all a lost DNC
+    // flag) must reach Telegram. 10-08 → 11-03 every DNC write failed here
+    // unseen.
+    await sendTelegramAlert(
+      `⚠️ ${result.is_dnc ? "DNC flag NOT saved" : "AI notes not saved"} — lead ${leadId} (${(existing?.caller_phone as string | null) ?? "no phone"}): ${error.message}`
+    ).catch(() => {})
+  }
 
   if (result.is_dnc) {
     await seedAiAutoDnc(sb, leadId, {
@@ -3225,7 +3233,15 @@ export async function applyAnalyzeCallResult(
       console.warn("[mail-match] auto-link failed:", e instanceof Error ? e.message : String(e))
     }
   }
-  if (error) console.error(`[analyze-call] update failed for ${leadId}:`, error.message)
+  if (error) {
+    console.error(`[analyze-call] update failed for ${leadId}:`, error.message)
+    // Silent-failure rule: a lost analyzer write (and above all a lost DNC
+    // flag) must reach Telegram. 10-08 → 11-03 every DNC write failed here
+    // unseen.
+    await sendTelegramAlert(
+      `⚠️ ${result.is_dnc ? "DNC flag NOT saved" : "AI notes not saved"} — lead ${leadId} (${(existing?.caller_phone as string | null) ?? "no phone"}): ${error.message}`
+    ).catch(() => {})
+  }
 
   if (result.is_dnc) {
     await seedAiAutoDnc(sb, leadId, {
