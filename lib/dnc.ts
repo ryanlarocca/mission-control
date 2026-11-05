@@ -264,7 +264,7 @@ async function campaignScope(sb: SupabaseClient, campaignId: string | null): Pro
 /** Link the cluster to the mailed record the opt-out is about (exact match first, then the loose one). */
 export async function matchOptOutAddress(sb: SupabaseClient, lead: LeadIdentity, heard: string | null): Promise<OptOutRecord | null> {
   if (!lead.mail_record_id) {
-    try { await autoLinkMailRecord(sb, lead.id) } catch (e) {
+    try { await autoLinkMailRecord(sb, lead.id, { alert: false }) } catch (e) {
       console.warn("[dnc] mail auto-link failed:", e instanceof Error ? e.message : String(e))
     }
     const { data: again } = await sb.from("leads").select("mail_record_id").eq("id", lead.id).maybeSingle()

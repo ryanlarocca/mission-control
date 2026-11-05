@@ -120,7 +120,7 @@ interface Lead {
   // Direct-mail tracking (2026-10-08): the mailed piece this responder
   // answered. Auto-matched at intake; "manual" after Ryan picks one.
   mail_record_id?: string | null
-  mail_match_method?: string | null   // "auto_address" | "auto_mail_address" | "auto_surname" | "manual" | null
+  mail_match_method?: string | null   // "auto_address" | "auto_mail_address" | "auto_surname" | "auto_soundalike" | "manual" | null
   mail_match_candidates?: string[] | null
 }
 
@@ -3953,8 +3953,8 @@ function CopyButton({ text, label = "Copy" }: { text: string; label?: string }) 
 }
 
 // A call transcript with its copy button. Collapsed, it scrolls inside a
-// short box — on a phone that reads as "cut off" (Ryan 2026-11-04, Barbara
-// Farnell's Jackie call), so a long one gets a tap to open it fully.
+// short box — on a phone that reads as "cut off" (Ryan 2026-11-04, a
+// Jackie call), so a long one gets a tap to open it fully.
 function TranscriptBox({ text, className }: { text: string; className: string }) {
   const [open, setOpen] = useState(false)
   const long = text.length > 400 || text.split("\n").length > 7

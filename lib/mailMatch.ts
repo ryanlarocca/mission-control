@@ -91,7 +91,7 @@ export function parseFreeAddress(addr: unknown): { street: string; city: string;
   return { street: st, city, zip, hasNumber: /^\d+\s+\S/.test(st) }
 }
 
-export type MailMatchMethod = "auto_address" | "auto_mail_address" | "auto_surname" | "manual"
+export type MailMatchMethod = "auto_address" | "auto_mail_address" | "auto_surname" | "auto_soundalike" | "manual"
 
 export const MAIL_RECORD_LITE_COLUMNS =
   "id, campaign_id, record_id, owner_name, site_address, site_city, site_zip, mail_address, mail_city, mail_zip, county, arm, batch, is_seed, piece, tenure_bucket, imp_tercile, any_signal, estate_language, family_transfer, out_of_state, multi_parcel_personal, prior_pieces"
@@ -132,9 +132,13 @@ export interface MailMatchResult {
   candidates: MailRecordLite[]
   /** Linked on street alone: the heard city disagreed with the list, so the card's city is wrong. */
   cityCorrected?: boolean
+  /** Linked by sound (see soundAlikeMatch): the card's street — and maybe the surname — was misheard. */
+  soundCorrected?: boolean
 }
 
 const CANDIDATE_CAP = 10
+// Sound-alike near-misses offered on the card and in the Telegram alert.
+const SOUND_CANDIDATE_CAP = 5
 
 function cityFilter(rows: MatchRow[], city: string, side: "site" | "mail" | "either"): MatchRow[] {
   if (!city) return rows
@@ -149,6 +153,144 @@ function cityFilter(rows: MatchRow[], city: string, side: "site" | "mail" | "eit
 
 function strip(rows: MatchRow[]): MailRecordLite[] {
   return rows.map(({ site_city_norm: _s, mail_city_norm: _m, ...rest }) => rest)
+}
+
+// ── Sound-alike matching (2026-11-04) ──────────────────────────────────────
+// Transcription mishears street names and surnames: a Jackie call heard
+// "Bieber Dr" as "Viber Drive" and the owner's surname with an F for its V,
+// matched nothing, and the card kept an address that doesn't exist.
+// Every caller on a mailer line is answering a letter, so the mailed list is
+// the lookup: same house number on that list, then the street that sounds
+// like what was heard, with the owner's name as the second witness.
+
+// Consonant classes that speech-to-text swaps (B/V/F/P, D/T, …). Vowels, H,
+// W and Y carry no class.
+const SOUND_CLASS: Record<string, string> = {
+  B: "B", P: "B", F: "B", V: "B",
+  C: "K", K: "K", Q: "K", G: "K", J: "K", X: "K",
+  S: "S", Z: "S", D: "T", T: "T", M: "N", N: "N", L: "L", R: "R",
+}
+
+/** Consonant skeleton by sound class: BIEBER and VIBER are both "BBR". */
+export function soundKey(word: unknown): string {
+  let out = ""
+  let prev = ""
+  for (const ch of normText(word).replace(/[^A-Z]/g, "")) {
+    const c = SOUND_CLASS[ch] ?? ""
+    if (c && c !== prev) out += c
+    prev = c
+  }
+  return out
+}
+
+// Edits between two words; two swapped letters ("Beiber") count as one.
+function editDistance(a: string, b: string): number {
+  const d: number[][] = Array.from({ length: a.length + 1 }, (_, x) => [x, ...Array(b.length).fill(0)])
+  for (let y = 1; y <= b.length; y++) d[0][y] = y
+  for (let x = 1; x <= a.length; x++)
+    for (let y = 1; y <= b.length; y++) {
+      d[x][y] = Math.min(d[x - 1][y] + 1, d[x][y - 1] + 1, d[x - 1][y - 1] + (a[x - 1] === b[y - 1] ? 0 : 1))
+      if (x > 1 && y > 1 && a[x - 1] === b[y - 2] && a[x - 2] === b[y - 1]) d[x][y] = Math.min(d[x][y], d[x - 2][y - 2] + 1)
+    }
+  return d[a.length][b.length]
+}
+
+/** How alike two words are: `spelling` by letters, `sound` also counting the consonant skeleton. Both 0–1. */
+export function soundAlike(a: unknown, b: unknown): { spelling: number; sound: number } {
+  const x = normText(a).replace(/\s+/g, "")
+  const y = normText(b).replace(/\s+/g, "")
+  if (!x || !y) return { spelling: 0, sound: 0 }
+  if (x === y) return { spelling: 1, sound: 1 }
+  // "24TH" vs "25TH" are different streets however close they look.
+  if (/\d/.test(x) || /\d/.test(y)) return { spelling: 0, sound: 0 }
+  const spelling = 1 - editDistance(x, y) / Math.max(x.length, y.length)
+  const kx = soundKey(x)
+  const ky = soundKey(y)
+  const key = kx.length >= 2 && ky.length >= 2 ? 1 - editDistance(kx, ky) / Math.max(kx.length, ky.length) : 0
+  return { spelling, sound: Math.max(spelling, key * 0.9) }
+}
+
+const STREET_SUFFIXES = new Set([...Object.values(SUFFIX), "WAY", "TRL", "EXPY", "SQ", "ALY", "PLZ", "XING", "LOOP", "ROW", "WALK"])
+const LEADING_DIR = new Set(["N", "S", "E", "W", "NORTH", "SOUTH", "EAST", "WEST"])
+
+/** "314 N CREEK DR" → { num: "314", name: "CREEK" }; multi-word names are joined. */
+export function streetParts(streetNorm: string): { num: string; name: string } {
+  const w = streetNorm.split(" ").filter(Boolean)
+  const num = /^\d+[A-Z]?$/.test(w[0] ?? "") ? w.shift()! : ""
+  if (w.length > 1 && LEADING_DIR.has(w[0])) w.shift()
+  if (w.length > 1 && STREET_SUFFIXES.has(w[w.length - 1])) w.pop()
+  return { num, name: w.join("") }
+}
+
+/** Best sound-alike between a heard name's words and the owner-name tokens. 0–1. */
+function nameSupport(heardName: string | null, ownerName: string | null): number {
+  const heard = normName(heardName).split(" ").filter(t => t.length >= 3)
+  const owner = ownerNameTokens(ownerName)
+  let best = 0
+  for (const h of heard) for (const o of owner) best = Math.max(best, soundAlike(h, o).sound)
+  return best
+}
+
+export interface SoundAlikeRow {
+  site_street_norm: string | null
+  site_city_norm: string | null
+  owner_name: string | null
+}
+
+/**
+ * Among the list's records at the heard house number, the one the caller
+ * meant — or none. A wrong correction is worse than an unmatched card, so a
+ * record qualifies only with two witnesses: the street sounds alike AND the
+ * owner's name does, or the street is nearly the same spelling in the same
+ * city. Exactly one qualifier wins; otherwise the near ones come back as
+ * candidates for the card picker (closest first).
+ */
+export function soundAlikeMatch<T extends SoundAlikeRow>(
+  heard: { street: string; city: string; name: string | null },
+  rows: T[]
+): { winner: T | null; near: T[] } {
+  const h = streetParts(heard.street)
+  if (!h.num || !h.name) return { winner: null, near: [] }
+  const scored = rows
+    .map(r => {
+      const p = streetParts(r.site_street_norm ?? "")
+      if (p.num !== h.num || !p.name) return null
+      const st = soundAlike(h.name, p.name)
+      const name = nameSupport(heard.name, r.owner_name)
+      const cityOk = !heard.city || !r.site_city_norm || r.site_city_norm === heard.city
+      const qualified = (st.sound >= 0.6 && name >= 0.75) || (st.spelling >= 0.75 && cityOk)
+      const near = st.sound >= 0.5 || name >= 0.75
+      return { r, qualified, near, score: st.sound + name * 0.5 + (cityOk ? 0.1 : 0) }
+    })
+    .filter((x): x is NonNullable<typeof x> => !!x && x.near)
+    .sort((a, b) => b.score - a.score)
+  const qualified = scored.filter(x => x.qualified)
+  return { winner: qualified.length === 1 ? qualified[0].r : null, near: scored.map(x => x.r) }
+}
+
+/**
+ * The surname as the list spells it, when the heard one only sounds like
+ * it: ("Carol Fardell", "Carol Vardell & The … Trust") → "Carol
+ * Vardell". Null when the surname already matches or nothing sounds alike —
+ * a relative calling for the owner keeps their own name.
+ */
+export function soundAlikeName(heardName: string | null, ownerName: string | null): string | null {
+  const words = String(heardName ?? "").trim().split(/\s+/).filter(Boolean)
+  if (words.length < 2) return null
+  const surname = normText(words[words.length - 1])
+  if (surname.length < 3) return null
+  const first = normText(words[0])
+  const owner = ownerNameTokens(ownerName)
+  if (owner.includes(surname)) return null
+  let best: { token: string; sim: number } | null = null
+  for (const o of owner) {
+    if (o === first) continue
+    const sim = soundAlike(surname, o).sound
+    if (sim >= 0.75 && (!best || sim > best.sim)) best = { token: o, sim }
+  }
+  if (!best) return null
+  const proper = best.token.charAt(0) + best.token.slice(1).toLowerCase()
+  return [...words.slice(0, -1), proper].join(" ")
 }
 
 /**
@@ -186,13 +328,34 @@ export async function suggestMailRecord(
     }
   }
 
+  // Nothing at that exact street: same house number on this list, then the
+  // street that sounds like what was heard (soundAlikeMatch).
+  let near: MatchRow[] = []
+  const num = streetParts(addr.street).num
+  if (addr.hasNumber && input.campaignId && num) {
+    const { data } = await sb
+      .from("mail_records")
+      .select(`${cols}, site_street_norm`)
+      .eq("campaign_id", input.campaignId)
+      .like("site_street_norm", `${num} %`)
+      .limit(200)
+    const rows = (data ?? []) as unknown as (MatchRow & { site_street_norm: string | null })[]
+    const m = soundAlikeMatch({ street: addr.street, city: addr.city, name: input.name }, rows)
+    const lite = (r: MatchRow & { site_street_norm: string | null }): MatchRow => {
+      const { site_street_norm: _n, ...rest } = r
+      return rest
+    }
+    if (m.winner) return { record: strip([lite(m.winner)])[0], method: "auto_soundalike", candidates: [], soundCorrected: true }
+    near = m.near.map(lite)
+  }
+
   const surname = normSurname(input.name)
   if (surname && surname.length >= 3) {
     const rows = cityFilter(await fetchBy("owner_surname_norm", surname), addr.city, "either")
     if (rows.length === 1 && addr.city) return { record: strip(rows)[0], method: "auto_surname", candidates: [] }
     if (rows.length >= 1) return { record: null, method: null, candidates: strip(rows).slice(0, CANDIDATE_CAP) }
   }
-  return { record: null, method: null, candidates: [] }
+  return { record: null, method: null, candidates: strip(near).slice(0, SOUND_CANDIDATE_CAP) }
 }
 
 export interface ClusterIdentityLite {
@@ -282,10 +445,16 @@ export function pieceMismatchLabel(campaignPiece: string | null | undefined, rec
  * kept as-is (the line/alias decides attribution; the record is the
  * cross-check) and a `[mail-match] piece mismatch` warning is logged.
  */
-export async function autoLinkMailRecord(sb: SupabaseClient, leadId: string): Promise<MailMatchResult | null> {
+export async function autoLinkMailRecord(
+  sb: SupabaseClient,
+  leadId: string,
+  // `alert: false` — the opt-out path runs its own looser match right after
+  // and must not announce a miss it is about to resolve.
+  opts: { alert?: boolean } = {}
+): Promise<MailMatchResult | null> {
   const { data: lead } = await sb
     .from("leads")
-    .select("id, caller_phone, email, gmail_thread_id, name, property_address, campaign_id, mail_record_id, mail_match_method")
+    .select("id, caller_phone, email, gmail_thread_id, name, property_address, campaign_id, mail_record_id, mail_match_method, mail_match_candidates, source, source_type")
     .eq("id", leadId)
     .maybeSingle()
   if (!lead) return null
@@ -319,8 +488,9 @@ export async function autoLinkMailRecord(sb: SupabaseClient, leadId: string): Pr
       .maybeSingle()
     campaign = (c as CampaignScopeLite | null) ?? null
   }
+  const scope = mailSearchCampaignId(campaign, lead.campaign_id ?? null)
   const result = await suggestMailRecord(sb, {
-    campaignId: mailSearchCampaignId(campaign, lead.campaign_id ?? null),
+    campaignId: scope,
     propertyAddress: lead.property_address,
     name: lead.name,
   })
@@ -332,11 +502,60 @@ export async function autoLinkMailRecord(sb: SupabaseClient, leadId: string): Pr
       )
     }
     await linkMailRecordToCluster(sb, lead, result.record.id, result.method, null, result.record.prior_pieces ?? null)
-    if (result.cityCorrected) await correctLeadAddress(sb, lead.id, lead.property_address, result.record)
-  } else if (result.candidates.length) {
-    await linkMailRecordToCluster(sb, lead, null, null, result.candidates.map(c => c.id))
+    if (result.cityCorrected || result.soundCorrected) await correctLeadFromRecord(sb, lead, ors, result.record, !!result.soundCorrected)
+  } else {
+    // A mailer caller gave an address the list can't place — Ryan clears it
+    // up from Telegram (2026-11-04). Once per contact: the candidates column
+    // doubles as the "already told him" mark ([] when nothing came close).
+    const unplaced = lead.source_type === "direct_mail" && !!lead.campaign_id && parseFreeAddress(lead.property_address).hasNumber
+    let told = lead.mail_match_candidates != null
+    if (unplaced && !told && ors.length) {
+      const { data: sib } = await sb.from("leads").select("id").or(ors.join(",")).not("mail_match_candidates", "is", null).limit(1)
+      told = !!sib?.length
+    }
+    let tell = unplaced && !told && opts.alert !== false
+    // Mailers from before the lists were imported have nothing to match against.
+    if (tell) {
+      const { data: any } = await sb.from("mail_records").select("id").eq("campaign_id", scope).limit(1)
+      tell = !!any?.length
+    }
+    if (result.candidates.length) {
+      await linkMailRecordToCluster(sb, lead, null, null, result.candidates.map(c => c.id))
+    } else if (tell) {
+      const q = sb.from("leads").update({ mail_match_candidates: [] })
+      await (ors.length ? q.or(`id.eq.${lead.id},${ors.join(",")}`) : q.eq("id", lead.id))
+    }
+    if (tell) await alertUnplacedAddress(lead, result.candidates)
   }
   return result
+}
+
+/** Telegram: a mailer caller's address isn't on the list as heard. Best-effort. */
+async function alertUnplacedAddress(
+  lead: { name: string | null; caller_phone: string | null; email: string | null; property_address: string | null; source: string | null },
+  candidates: MailRecordLite[]
+): Promise<void> {
+  try {
+    const { sendTelegramAlert } = await import("./leads")
+    const esc = (v: unknown) => String(v ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+    const who = [lead.name, lead.caller_phone ?? lead.email].filter(Boolean).join(" — ") || "Unknown caller"
+    const lines = [
+      `📬 Couldn't place this address on the mailing list${lead.source ? ` — <b>${esc(lead.source)}</b>` : ""}`,
+      `<b>${esc(who)}</b>`,
+      `Heard: "${esc(lead.property_address)}"`,
+      "",
+    ]
+    if (candidates.length) {
+      lines.push("Closest on the list:")
+      for (const c of candidates) lines.push(`• ${esc(mailRecordSiteLine(c) ?? "?")} — ${esc(c.owner_name ?? "owner unknown")}`)
+      lines.push("", "Pick the right one with “Link mailed record” on the card.")
+    } else {
+      lines.push("Nothing close at that house number. Search for it with “Link mailed record” on the card.")
+    }
+    await sendTelegramAlert(lines.join("\n"))
+  } catch (e) {
+    console.warn("[mail-match] unplaced-address alert failed:", e instanceof Error ? e.message : String(e))
+  }
 }
 
 /** "140 Johnson Ave, Los Gatos, CA 95030" from the mailed record. */
@@ -347,19 +566,43 @@ export function mailRecordSiteLine(r: Pick<MailRecordLite, "site_address" | "sit
 }
 
 /**
- * The card heard the wrong city: rewrite the lead's address (and the
- * matching property chip) from the mailed record. Best-effort.
+ * The card heard it wrong: rewrite the lead's address (and the matching
+ * property chip) from the mailed record. On a sound-alike match the street
+ * itself was misheard, so the chip's notes keep what was heard, and a
+ * surname that only sounds like the owner's is respelled on every row of
+ * the contact that carries it. Best-effort.
  */
-async function correctLeadAddress(sb: SupabaseClient, leadId: string, heard: string | null, record: MailRecordLite): Promise<void> {
+async function correctLeadFromRecord(
+  sb: SupabaseClient,
+  lead: { id: string; name: string | null; property_address: string | null },
+  clusterOrs: string[],
+  record: MailRecordLite,
+  sound: boolean
+): Promise<void> {
+  const heard = lead.property_address
   const fixed = mailRecordSiteLine(record)
   if (!fixed || !heard) return
-  const { data } = await sb.from("leads").select("property_details").eq("id", leadId).maybeSingle()
-  const details = Array.isArray(data?.property_details) ? (data.property_details as Array<{ label?: string | null }>) : null
+  const fixedName = sound ? soundAlikeName(lead.name, record.owner_name) : null
+  const note = sound
+    ? `Heard as "${[fixedName ? lead.name : null, heard].filter(Boolean).join(", ")}"; corrected from the mailing list.`
+    : null
+  const { data } = await sb.from("leads").select("property_details").eq("id", lead.id).maybeSingle()
+  const details = Array.isArray(data?.property_details) ? (data.property_details as Array<{ label?: string | null; notes?: string | null }>) : null
   const patch: Record<string, unknown> = { property_address: fixed }
-  if (details) patch.property_details = details.map(d => (d.label === heard ? { ...d, label: fixed } : d))
-  const { error } = await sb.from("leads").update(patch).eq("id", leadId).eq("property_address", heard)
-  if (error) console.error(`[mail-match] address correction failed for ${leadId}: ${error.message}`)
-  else console.warn(`[mail-match] lead ${leadId}: heard "${heard}", mailed record ${record.record_id} says "${fixed}"`)
+  if (details?.some(d => d.label === heard)) {
+    patch.property_details = details.map(d =>
+      d.label === heard ? { ...d, label: fixed, notes: note ? [d.notes, note].filter(Boolean).join(" ") : d.notes } : d)
+  } else if (note) {
+    patch.property_details = [...(details ?? []), { label: fixed, notes: note }]
+  }
+  if (fixedName) patch.name = fixedName
+  const { error } = await sb.from("leads").update(patch).eq("id", lead.id).eq("property_address", heard)
+  if (error) { console.error(`[mail-match] correction failed for ${lead.id}: ${error.message}`); return }
+  console.warn(`[mail-match] lead ${lead.id}: heard "${heard}", mailed record ${record.record_id} says "${fixed}"${fixedName ? `; name "${lead.name}" → "${fixedName}"` : ""}`)
+  if (fixedName && lead.name && clusterOrs.length) {
+    const { error: nameErr } = await sb.from("leads").update({ name: fixedName }).or(clusterOrs.join(",")).eq("name", lead.name)
+    if (nameErr) console.error(`[mail-match] name correction failed for ${lead.id}: ${nameErr.message}`)
+  }
 }
 
 /**

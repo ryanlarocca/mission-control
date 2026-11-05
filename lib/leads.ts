@@ -739,7 +739,7 @@ export interface Lead {
   use_personal_cell?: boolean | null
   // Direct-mail tracking (2026-10-08): the mailed record this lead answered.
   // Written cluster-wide (every row sharing the phone/email), like is_dnc.
-  // method: auto_address | auto_mail_address | auto_surname | manual.
+  // method: auto_address | auto_mail_address | auto_surname | auto_soundalike | manual.
   // candidates: ids when auto-match found several records and attached none.
   mail_record_id?: string | null
   mail_match_method?: string | null
