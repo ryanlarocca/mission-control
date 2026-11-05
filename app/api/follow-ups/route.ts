@@ -11,6 +11,7 @@ import {
   type NextTouchChannel,
 } from "@/lib/next-touch"
 import { fetchHistoryPreviews, type ContactHistory } from "@/lib/lead-history"
+import { pacificDate } from "@/lib/pacificDate"
 
 // Merged Follow Ups worklist. One row per contact who has any scheduled
 // touch — a follow-up call, a drip, or both — resolved through the shared
@@ -18,9 +19,11 @@ import { fetchHistoryPreviews, type ContactHistory } from "@/lib/lead-history"
 // pill can never disagree.
 //
 // Returns:
-//   rows        — every contact with a next touch (primary + optional
-//                 secondary). Sorted soonest-first; the client re-buckets
-//                 into Overdue / Today / This week / Upcoming.
+//   rows        — contacts with something to do NOW (2026-11-05, Ryan: the
+//                 list is only what's due — overdue, today, a draft ready to
+//                 send — plus anyone who replied and hasn't heard back).
+//                 Upcoming work stays on the lead card. Autopilot people
+//                 (scripts/autopilot.js) never appear until they reply.
 //   failed      — drip_queue rows the engine couldn't send (collapsed UI)
 //   recentSent  — drips sent in the last 7 days (collapsed audit log)
 //
@@ -109,6 +112,9 @@ interface ContactRow {
   history: ContactHistory
   primary: NextTouch
   secondary: NextTouch | null
+  // They wrote / left a voicemail / missed-called in the last week and Ryan
+  // hasn't reached out since — the card goes in the Replied section on top.
+  replied: { at: string; kind: string; text: string | null } | null
 }
 
 interface DripCard {
@@ -184,10 +190,76 @@ function pickDripLead(stamped: CandidateLead[]): CandidateLead | null {
   return best?.lead ?? null
 }
 
+type Sb = ReturnType<typeof getLeadsClient>
+
+// Every phone / email with a dead, DNC or junk row anywhere — the worklist's
+// "dead on any row = dead everywhere" rule (Ryan 2026-05-22). The candidate
+// query only sees rows with a drip stamp or follow-up date, so a dead row
+// without either (a seller who told Ryan on a call he'd sold a year ago) was
+// invisible and the drip kept drafting.
+async function fetchDeadKeys(sb: Sb): Promise<{ phones: Set<string>; emails: Set<string> }> {
+  const phones = new Set<string>()
+  const emails = new Set<string>()
+  for (let from = 0; from < 20000; from += 1000) {
+    const { data, error } = await sb
+      .from("leads")
+      .select("caller_phone, email")
+      .or("status.eq.dead,is_dnc.eq.true,is_junk.eq.true")
+      .order("id")
+      .range(from, from + 999)
+    if (error) throw new Error(`dead-key query failed: ${error.message}`)
+    for (const r of (data ?? []) as { caller_phone: string | null; email: string | null }[]) {
+      if (r.caller_phone && !isAnonymousCaller(r.caller_phone)) phones.add(r.caller_phone)
+      if (r.email) emails.add(r.email.toLowerCase())
+    }
+    if (!data || data.length < 1000) break
+  }
+  return { phones, emails }
+}
+
+const REPLY_WINDOW_DAYS = 7
+interface ReplyHit { at: string; kind: string; text: string | null }
+
+// Newest unanswered reply per phone / email in the last week: an inbound
+// text, voicemail, email or missed call with no manual outreach from Ryan
+// after it (drip sends don't count as answering).
+async function fetchUnansweredReplies(sb: Sb): Promise<Map<string, ReplyHit>> {
+  const since = new Date(Date.now() - REPLY_WINDOW_DAYS * DAY_MS).toISOString()
+  const { data, error } = await sb
+    .from("leads")
+    .select("caller_phone, email, created_at, lead_type, twilio_number, message, ai_summary")
+    .gte("created_at", since)
+    .order("created_at", { ascending: true })
+    .limit(1000)
+  if (error) throw new Error(`reply query failed: ${error.message}`)
+  const out = new Map<string, ReplyHit>()
+  for (const r of (data ?? []) as { caller_phone: string | null; email: string | null; created_at: string; lead_type: string | null; twilio_number: string | null; message: string | null; ai_summary: string | null }[]) {
+    const keys = [
+      r.caller_phone && !isAnonymousCaller(r.caller_phone) ? `p:${r.caller_phone}` : null,
+      r.email ? `e:${r.email.toLowerCase()}` : null,
+    ].filter(Boolean) as string[]
+    const t = r.lead_type ?? ""
+    if (t.startsWith("drip_") || t.includes("form")) continue
+    const inbound = !!r.twilio_number
+    if (!inbound) {
+      // Ryan reached out (call / text / email) — answered.
+      for (const k of keys) out.delete(k)
+      continue
+    }
+    const missedCall = t === "call" && (r.message ?? "").startsWith("📵")
+    if (!(t === "sms" || t === "voicemail" || t === "email" || missedCall)) continue
+    const text = (r.message ?? r.ai_summary ?? "").replace(/\s+/g, " ").trim().slice(0, 240) || null
+    const kind = missedCall ? "missed call" : t === "sms" ? "text" : t
+    for (const k of keys) out.set(k, { at: r.created_at, kind, text })
+  }
+  return out
+}
+
 export async function GET(_request: NextRequest) {
   try {
     const sb = getLeadsClient()
     const now = new Date()
+    const todayPacific = pacificDate(now)
     const sentCutoff = hoursAgo(SENT_HISTORY_DAYS * 24)
     const failedCutoff = hoursAgo(FAILED_HISTORY_DAYS * 24)
 
@@ -223,9 +295,15 @@ export async function GET(_request: NextRequest) {
     }
     // Promoted contacts belong to the Relationships cadence, not this
     // worklist — drop them by phone/email match, not status (2026-09-09).
-    const relKeys = await fetchRelationshipContactKeys(sb)
+    const [relKeys, deadKeys, replies] = await Promise.all([
+      fetchRelationshipContactKeys(sb),
+      fetchDeadKeys(sb),
+      fetchUnansweredReplies(sb),
+    ])
+    const isDeadContact = (l: { caller_phone: string | null; email: string | null }) =>
+      (!!l.caller_phone && deadKeys.phones.has(l.caller_phone)) || (!!l.email && deadKeys.emails.has(l.email.toLowerCase()))
     const candidates = ((candRows ?? []) as unknown as CandidateLead[]).filter(
-      (l) => !isRelationshipContact(relKeys, l)
+      (l) => !isRelationshipContact(relKeys, l) && !isDeadContact(l)
     )
     const candIds = new Set(candidates.map((l) => l.id))
 
@@ -236,17 +314,23 @@ export async function GET(_request: NextRequest) {
       for (const e of (extras ?? []) as unknown as CandidateLead[]) {
         // Same Relationships guard as the candidate set — a queued drip on a
         // promoted contact must not smuggle them back into the worklist.
-        if (!isRelationshipContact(relKeys, e)) candidates.push(e)
+        if (!isRelationshipContact(relKeys, e) && !isDeadContact(e)) candidates.push(e)
       }
     }
 
     // 3. Name fallback maps — a follow-up/drip row often has name=null while
     //    a sibling row on the same phone/email carries the real name.
-    const { data: nameRows } = await sb
-      .from("leads")
-      .select("caller_phone, email, name")
-      .not("name", "is", null)
-      .limit(5000)
+    const candPhones = Array.from(new Set(candidates.map((l) => l.caller_phone).filter((p): p is string => !!p && !isAnonymousCaller(p))))
+    const nameRows: { caller_phone: string | null; email: string | null; name: string | null }[] = []
+    for (let i = 0; i < candPhones.length; i += 200) {
+      const { data } = await sb
+        .from("leads")
+        .select("caller_phone, email, name")
+        .not("name", "is", null)
+        .in("caller_phone", candPhones.slice(i, i + 200))
+        .limit(1000)
+      nameRows.push(...((data ?? []) as typeof nameRows))
+    }
     const nameByPhone = new Map<string, string>()
     const nameByEmail = new Map<string, string>()
     for (const r of (nameRows ?? []) as { caller_phone: string | null; email: string | null; name: string | null }[]) {
@@ -315,6 +399,9 @@ export async function GET(_request: NextRequest) {
       // is that marking any single row dead/junk/DNC removes the whole 6-7
       // row cluster from all communication.
       if (leads.some((l) => l.is_dnc || l.is_junk || (l.status ?? "").toLowerCase() === "dead")) return
+      // Autopilot people run themselves and stay off the list until they
+      // reply — the reply hands them back with a follow-up date (2026-11-05).
+      if (leads.some((l) => l.drip_campaign_type === "autopilot")) return
       const byRecent = [...leads].sort((a, b) => b.created_at.localeCompare(a.created_at))
       const rep = byRecent[0]
 
@@ -383,6 +470,22 @@ export async function GET(_request: NextRequest) {
       const summary = resolveNextTouch(input)
       if (!summary.primary) return
 
+      const replyKeys = [
+        leads.find((l) => l.caller_phone && !isAnonymousCaller(l.caller_phone))?.caller_phone,
+        leads.find((l) => l.email)?.email?.toLowerCase(),
+      ]
+      const replied =
+        (replyKeys[0] ? replies.get(`p:${replyKeys[0]}`) : undefined) ??
+        (replyKeys[1] ? replies.get(`e:${replyKeys[1]}`) : undefined) ??
+        null
+      // Due now = a draft waiting, a call due today or earlier (Pacific day),
+      // or a drip forecast due by the end of today.
+      const p = summary.primary
+      const dueNow = p.kind === "drip"
+        ? p.isQueued || pacificDate(new Date(p.due)) <= todayPacific
+        : p.due <= todayPacific
+      if (!dueNow && !replied) return
+
       const phone =
         leads.find((l) => l.caller_phone && !isAnonymousCaller(l.caller_phone))?.caller_phone ?? null
       const email = leads.find((l) => l.email)?.email ?? null
@@ -429,6 +532,7 @@ export async function GET(_request: NextRequest) {
         history: { items: [], total: 0 },
         primary: summary.primary,
         secondary: summary.secondary,
+        replied,
       })
     })
 

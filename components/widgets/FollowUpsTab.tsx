@@ -55,6 +55,9 @@ interface ContactRow {
   history?: ContactHistory
   primary: NextTouch
   secondary: NextTouch | null
+  // They texted / left a voicemail / missed-called this week and Ryan hasn't
+  // reached out since — the card sits in the Replied section on top.
+  replied?: { at: string; kind: string; text: string | null } | null
 }
 
 interface DripCard {
@@ -273,8 +276,10 @@ export function FollowUpsTab() {
   // /api/coach/script then answers the tap from the cached copy.
   const prefetchedScripts = useRef<Set<string>>(new Set())
   const prefetchScripts = useCallback((rows: ContactRow[]) => {
+    // Only calls due today or overdue — scripts for calls months out cost an
+    // Opus run each and went stale before the call (audit 2026-11-05).
     const phones = rows
-      .filter(r => r.phone && (r.primary.kind === "call" || r.secondary?.kind === "call"))
+      .filter(r => r.phone && r.primary.kind === "call" && classifyUrgency(r.primary) !== "soon" && classifyUrgency(r.primary) !== "future")
       .map(r => r.phone as string)
       .filter(p => !prefetchedScripts.current.has(p))
       .slice(0, 8)
@@ -314,10 +319,13 @@ export function FollowUpsTab() {
     }
   }, [])
 
+  // 30s refresh only while the tab is on screen; coming back refreshes at once.
   useEffect(() => {
     void fetchData()
-    const id = setInterval(() => void fetchData(true), 30000)
-    return () => clearInterval(id)
+    const id = setInterval(() => { if (document.visibilityState === "visible") void fetchData(true) }, 30000)
+    function onVisible() { if (document.visibilityState === "visible") void fetchData(true) }
+    document.addEventListener("visibilitychange", onVisible)
+    return () => { clearInterval(id); document.removeEventListener("visibilitychange", onVisible) }
   }, [fetchData])
 
   // The lead-card popup is an iframe; when Ryan flips a flag inside it the
@@ -374,7 +382,7 @@ export function FollowUpsTab() {
         // put. We deliberately do NOT refetch here — the old code fired a
         // silent refetch that immediately cleared this very banner, producing
         // the "blink with no explanation".
-        setErr((body as { error?: string })?.error || "Contact had activity since this was drafted — pick Regenerate / Send anyway / Skip.")
+        setErr((body as { error?: string })?.error || "Contact had activity since this was drafted — Send anyway or Skip.")
         setData(prev => prev ? {
           ...prev,
           rows: prev.rows.map(r => {
@@ -902,16 +910,23 @@ export function FollowUpsTab() {
     // from where he was looking. Ready-to-send is also the highest-value
     // pile (one click each), so it always renders first.
     const ready: ContactRow[] = []
+    // Replied (2026-11-05): someone wrote back and hasn't heard from Ryan —
+    // the most valuable cards, so they render first whatever their dates say.
+    const replied: ContactRow[] = []
     for (const r of data?.rows ?? []) {
-      if (r.primary.kind === "drip" && r.primary.isQueued) ready.push(r)
+      if (r.replied) replied.push(r)
+      else if (r.primary.kind === "drip" && r.primary.isQueued) ready.push(r)
       else out[classifyUrgency(r.primary, now)].push(r)
     }
+    replied.sort((a, b) => (b.replied?.at ?? "").localeCompare(a.replied?.at ?? ""))
+    // The server only sends what's due now. A card that's later than today is
+    // one Ryan just called (pinned until End call) — it stays under Today
+    // where he was working rather than vanishing.
     return {
+      replied,
       ready: sortWorklist(ready),
       overdue: sortWorklist(out.overdue),
-      today: sortWorklist(out.today),
-      soon: sortWorklist(out.soon),
-      future: sortWorklist(out.future),
+      today: sortWorklist([...out.today, ...out.soon, ...out.future]),
     }
   }, [data])
 
@@ -926,7 +941,7 @@ export function FollowUpsTab() {
     return <div className="text-sm text-red-300 py-12">{err ?? "Failed to load follow-ups."}</div>
   }
 
-  const dueCount = buckets.ready.length + buckets.overdue.length + buckets.today.length
+  const dueCount = buckets.replied.length + buckets.ready.length + buckets.overdue.length + buckets.today.length
   const cardProps = {
     actingOn, editing, intervalOpenFor, onCall,
     onEndCall: endCall,
@@ -977,8 +992,6 @@ export function FollowUpsTab() {
           <span className="text-zinc-300">
             {dueCount === 0 ? "Nothing due" : `${dueCount} due now`}
             {data.failed.length > 0 && <span className="text-red-400"> · {data.failed.length} failed</span>}
-            {(buckets.soon.length + buckets.future.length) > 0 &&
-              <span className="text-zinc-500"> · {buckets.soon.length + buckets.future.length} upcoming</span>}
           </span>
         </div>
         <button
@@ -1006,11 +1019,28 @@ export function FollowUpsTab() {
 
       {isEmpty && (
         <div className="text-sm text-zinc-500 py-12 text-center">
-          🎉 All caught up — no calls or drips scheduled.
+          🎉 All caught up — nothing due today.
         </div>
       )}
 
       {/* Today's work — always expanded. */}
+      {buckets.replied.length > 0 && (
+        <section>
+          <SectionHeader label="Replied" count={buckets.replied.length} tone="ready" />
+          <div className="space-y-2">
+            {buckets.replied.map(row => (
+              <div key={row.clusterKey} className="space-y-1">
+                <div className="text-xs text-emerald-300/90 pl-1 truncate">
+                  {row.replied?.kind === "missed call" ? "Called you" : row.replied?.kind === "voicemail" ? "Left a voicemail" : row.replied?.kind === "email" ? "Emailed" : "Texted"}
+                  {" · "}{new Date(row.replied!.at).toLocaleString([], { month: "short", day: "numeric", year: "numeric", hour: "numeric", minute: "2-digit" })}
+                  {row.replied?.text && row.replied.kind !== "missed call" ? <span className="text-zinc-400"> — “{row.replied.text}”</span> : null}
+                </div>
+                <ContactCard row={row} {...cardProps} />
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
       {buckets.ready.length > 0 && (
         <section>
           <SectionHeader label="Ready to send" count={buckets.ready.length} tone="ready" />
@@ -1036,26 +1066,10 @@ export function FollowUpsTab() {
         </section>
       )}
       {dueCount === 0 && !isEmpty && (
-        <div className="text-sm text-zinc-500 py-6 text-center">Nothing due today — upcoming work is below.</div>
+        <div className="text-sm text-zinc-500 py-6 text-center">Nothing due today. Upcoming calls live on each lead card.</div>
       )}
 
       {/* Everything else — collapsed by default. */}
-      <Collapsible
-        id="soon" label="This week" count={buckets.soon.length}
-        open={!!openSections.soon} onToggle={() => setOpenSections(s => ({ ...s, soon: !s.soon }))}
-      >
-        <div className="space-y-2">
-          {buckets.soon.map(row => <ContactCard key={row.clusterKey} row={row} {...cardProps} />)}
-        </div>
-      </Collapsible>
-      <Collapsible
-        id="future" label="Upcoming" count={buckets.future.length}
-        open={!!openSections.future} onToggle={() => setOpenSections(s => ({ ...s, future: !s.future }))}
-      >
-        <div className="space-y-2">
-          {buckets.future.map(row => <ContactCard key={row.clusterKey} row={row} {...cardProps} />)}
-        </div>
-      </Collapsible>
       {data.failed.length > 0 && (
         <Collapsible
           id="failed" label="Failed" count={data.failed.length} tone="failed"
@@ -1615,14 +1629,6 @@ function ContactCard({ row, ...h }: { row: ContactRow } & CardHandlers) {
             onPick={(choice) => h.onChangeStatus(row, choice)}
             onNurture={() => h.onLongTermNurture(row)}
           />
-          <button
-            onClick={() => h.onLongTermNurture(row)}
-            disabled={acting}
-            title="Park this lead — switch to the slow long-term-nurture cadence"
-            className="inline-flex items-center gap-1 px-2 py-1 rounded border border-indigo-900/60 text-indigo-300/90 hover:text-indigo-100 hover:bg-indigo-950/50 transition-colors disabled:opacity-60 shrink-0"
-          >
-            <CalendarClock className="w-3.5 h-3.5" /> Long-term nurture
-          </button>
         </div>
       </div>
 
@@ -1642,7 +1648,6 @@ function ContactCard({ row, ...h }: { row: ContactRow } & CardHandlers) {
           intervalOpen={h.intervalOpenFor === row.clusterKey}
           onCall={() => h.onPlaceCall(row)}
           onScript={() => setScriptOpen(v => !v)}
-          onSnooze={(d) => h.onSnoozeContact(row, d)}
           onDone={() => h.onDoneCall(row)}
           onPickInterval={(opt) => h.onPickInterval(row, opt)}
           onEmail={() => h.onEmail(row)}
@@ -1659,12 +1664,10 @@ function ContactCard({ row, ...h }: { row: ContactRow } & CardHandlers) {
           onOpenLead={() => h.onOpenLead(row)}
           onCall={() => h.onPlaceCall(row)}
           onSend={(opts) => dripTouch.queueId && h.onSendDrip(row, dripTouch.queueId, opts)}
-          onRegenerate={() => dripTouch.queueId && h.onRegenerateDrip(row, dripTouch.queueId)}
           onRedraft={(why) => dripTouch.queueId && h.onRedraftDrip(row, dripTouch.queueId, why)}
           onCoach={(args) => dripTouch.queueId ? h.onCoachDrip(row, dripTouch.queueId, args) : Promise.resolve(false)}
           coachRead={dripTouch.queueId ? h.dripCoachRead[dripTouch.queueId] ?? null : null}
           onSkip={() => dripTouch.queueId && h.onQueueAction(row, dripTouch.queueId, "skip")}
-          onSnooze={(d) => h.onSnoozeContact(row, d)}
           onStartEdit={() => dripTouch.queueId && h.onStartEdit(dripTouch.queueId, dripTouch)}
           onChangeEdit={(f, v) => dripTouch.queueId && h.onChangeEdit(dripTouch.queueId, f, v)}
           onCancelEdit={() => dripTouch.queueId && h.onCancelEdit(dripTouch.queueId)}
@@ -1707,7 +1710,7 @@ function ChannelIcon({ channel }: { channel: string }) {
 // ---- call block ----------------------------------------------------------
 
 function CallBlock({
-  row, touch, acting, intervalOpen, onCall, onScript, onSnooze, onDone, onPickInterval, onEmail, onText,
+  row, touch, acting, intervalOpen, onCall, onScript, onDone, onPickInterval, onEmail, onText,
 }: {
   row: ContactRow
   touch: NextTouch
@@ -1715,7 +1718,6 @@ function CallBlock({
   intervalOpen: boolean
   onCall: () => void
   onScript: () => void
-  onSnooze: (days: number) => void
   onDone: () => void
   onPickInterval: (opt: { key: string; label: string; days?: number; months?: number }) => void
   onEmail: () => void
@@ -1786,23 +1788,6 @@ function CallBlock({
             <MessageSquare className="w-3.5 h-3.5" /> Text
           </button>
         )}
-        {/* Inline segmented control — no popup, so it can't be clipped by
-            the card's overflow-hidden or hidden behind the next card. */}
-        <div className="inline-flex items-center rounded border border-zinc-800 bg-zinc-900 overflow-hidden" title="Snooze — defers this contact's call and drip">
-          <span className="px-2 py-1.5 min-h-[34px] inline-flex items-center text-[10px] uppercase tracking-wide text-zinc-500 border-r border-zinc-800">
-            <Clock className="w-3 h-3 mr-1" />Snooze
-          </span>
-          {[1, 3, 7].map((d, i) => (
-            <button
-              key={d}
-              onClick={() => onSnooze(d)}
-              disabled={acting}
-              className={`px-2 py-1.5 min-h-[34px] text-xs font-medium text-zinc-300 hover:bg-zinc-800 hover:text-zinc-100 transition-colors disabled:opacity-60 ${i > 0 ? "border-l border-zinc-800" : ""}`}
-            >
-              {d}d
-            </button>
-          ))}
-        </div>
         <button
           onClick={onDone}
           disabled={acting}
@@ -1841,7 +1826,7 @@ function CallBlock({
 
 function DripBlock({
   row, touch, acting, hasCallAbove, editDraft,
-  onOpenLead, onCall, onSend, onRegenerate, onRedraft, onCoach, coachRead, onSkip, onSnooze,
+  onOpenLead, onCall, onSend, onRedraft, onCoach, coachRead, onSkip,
   onStartEdit, onChangeEdit, onCancelEdit, onSaveEdit,
   onPrepare, onSkipForecast,
 }: {
@@ -1853,12 +1838,10 @@ function DripBlock({
   onOpenLead: () => void
   onCall: () => void
   onSend: (opts?: { force?: boolean }) => void
-  onRegenerate: () => void
   onRedraft: (why?: string) => void
   onCoach: (args: CoachArgs) => Promise<boolean>
   coachRead: string | null
   onSkip: () => void
-  onSnooze: (days: 1 | 3 | 7) => void
   onStartEdit: () => void
   onChangeEdit: (field: "message" | "subject", value: string) => void
   onCancelEdit: () => void
@@ -1888,7 +1871,7 @@ function DripBlock({
         {stale && (
           <>
             <span className="text-zinc-600">·</span>
-            <span className="inline-flex items-center gap-1 text-amber-400" title="A non-drip event landed on this cluster after this draft was written — Send will be auto-skipped. Use Regenerate to draft a fresh message, or Send anyway to override.">
+            <span className="inline-flex items-center gap-1 text-amber-400" title="A non-drip event landed on this cluster after this draft was written — Send will be auto-skipped. Send anyway to override, or Skip.">
               <AlertTriangle className="w-3 h-3" /> stale
             </span>
           </>
@@ -1974,21 +1957,6 @@ function DripBlock({
             >
               <Pencil className="w-3.5 h-3.5" /> Edit
             </button>
-            <div className="inline-flex items-center rounded border border-zinc-800 bg-zinc-900 overflow-hidden" title="Snooze — defers this contact's call and drip">
-              <span className="px-2 py-1.5 min-h-[34px] inline-flex items-center text-[10px] uppercase tracking-wide text-zinc-500 border-r border-zinc-800">
-                <Clock className="w-3 h-3 mr-1" />Snooze
-              </span>
-              {([1, 3, 7] as const).map((d, i) => (
-                <button
-                  key={d}
-                  onClick={() => onSnooze(d)}
-                  disabled={acting}
-                  className={`px-2 py-1.5 min-h-[34px] text-xs font-medium text-zinc-300 hover:bg-zinc-800 hover:text-zinc-100 transition-colors disabled:opacity-60 ${i > 0 ? "border-l border-zinc-800" : ""}`}
-                >
-                  {d}d
-                </button>
-              ))}
-            </div>
             <button
               onClick={onSkip}
               disabled={acting}
@@ -1996,17 +1964,6 @@ function DripBlock({
             >
               <X className="w-3.5 h-3.5" /> Skip
             </button>
-            {stale && (
-              <button
-                onClick={onRegenerate}
-                disabled={acting}
-                title="Skip this stale draft and ask the engine for a fresh one with the latest context."
-                className="inline-flex items-center gap-1.5 px-2.5 py-1.5 min-h-[34px] rounded bg-sky-900/40 border border-sky-900/60 text-sky-200 hover:bg-sky-900/60 text-xs font-medium transition-colors disabled:opacity-60"
-              >
-                {acting ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <RefreshCw className="w-3.5 h-3.5" />}
-                Regenerate
-              </button>
-            )}
             <button
               onClick={() => onSend(stale ? { force: true } : undefined)}
               disabled={acting}

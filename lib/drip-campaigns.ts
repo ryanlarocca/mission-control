@@ -32,134 +32,23 @@ export interface DripCampaign {
   touches: DripTouch[]
 }
 
-// Google Ads form: touch 0 already fires from /api/submit-lead (confirm
-// email + SMS to lead), engine starts at touch 1.
-const GOOGLE_ADS_FORM_TOUCHES: DripTouch[] = [
-  { touchNumber: 1,  delayHours: 30,   channel: "imessage" },
-  { touchNumber: 2,  delayHours: 48,   channel: "email" },
-  { touchNumber: 3,  delayHours: 72,   channel: "imessage" },
-  { touchNumber: 4,  delayHours: 168,  channel: "email" },
-  { touchNumber: 5,  delayHours: 336,  channel: "imessage" },
-  { touchNumber: 6,  delayHours: 720,  channel: "email" },
-  { touchNumber: 7,  delayHours: 1440, channel: "imessage" },
-  { touchNumber: 8,  delayHours: 2160, channel: "email" },
-  { touchNumber: 9,  delayHours: 2160, channel: "imessage" },
-  { touchNumber: 10, delayHours: 2160, channel: "email" },
-  { touchNumber: 11, delayHours: 2160, channel: "imessage" },
-  { touchNumber: 12, delayHours: 2160, channel: "email" },
-  { touchNumber: 13, delayHours: 2160, channel: "imessage" },
-]
+// Cadences live in lib/drip-cadences.json — the one copy the drip engine
+// (scripts/drip-engine.js, plain node) reads too. Edit timings there.
+//
+//   google_ads_form       touch 0 fires from /api/submit-lead; 30h → 48h →
+//                         72h → 7d → 14d → 30d → 60d → every 90d, alternating
+//                         iMessage / email
+//   google_ads_email_only same timing, all email (upgrades on a phone)
+//   direct_mail_call      15-min missed-call text (touch 0, engine-only) then
+//                         48h → 72h → 7d → 14d → 30d → 60d → every 90d
+//   direct_mail_sms       google_ads_form timing, all iMessage, 48h entry
+//   direct_mail_email     google_ads_form timing, all email, 48h entry
+//   long_term_nurture     60 / 120 / 180 / 240 / 365 / 540 days, email first
+//   website_followup(_email) day 1 / 3 / 7 / 14 after the last call, then
+//                         the engine hands off to long_term_nurture
+import cadences from "./drip-cadences.json"
 
-// Email-only mirror — same timing, all email. Engine upgrades to
-// google_ads_form when caller_phone arrives.
-const GOOGLE_ADS_EMAIL_ONLY_TOUCHES: DripTouch[] = GOOGLE_ADS_FORM_TOUCHES.map(
-  (t) => ({ ...t, channel: "email" })
-)
-
-// Direct mail missed-call / voicemail: touch 0 is the 15-min "I see I
-// missed your call" follow-up handled inside the engine. Voicemail leads
-// skip touch 0 (entry delay 48h handles the gap).
-const DIRECT_MAIL_CALL_TOUCHES: DripTouch[] = [
-  { touchNumber: 0,  delayHours: 0.25, channel: "imessage" }, // missed-call only — handled in engine
-  { touchNumber: 1,  delayHours: 48,   channel: "imessage" },
-  { touchNumber: 2,  delayHours: 72,   channel: "imessage" },
-  { touchNumber: 3,  delayHours: 168,  channel: "imessage" },
-  { touchNumber: 4,  delayHours: 336,  channel: "imessage" },
-  { touchNumber: 5,  delayHours: 720,  channel: "imessage" },
-  { touchNumber: 6,  delayHours: 1440, channel: "imessage" },
-  { touchNumber: 7,  delayHours: 2160, channel: "imessage" },
-  { touchNumber: 8,  delayHours: 2160, channel: "imessage" },
-  { touchNumber: 9,  delayHours: 2160, channel: "imessage" },
-  { touchNumber: 10, delayHours: 2160, channel: "imessage" },
-  { touchNumber: 11, delayHours: 2160, channel: "imessage" },
-  { touchNumber: 12, delayHours: 2160, channel: "imessage" },
-  { touchNumber: 13, delayHours: 2160, channel: "imessage" },
-]
-
-// Direct mail inbound SMS — same as call but starts at touch 1 (no
-// missed-call touch 0).
-const DIRECT_MAIL_SMS_TOUCHES: DripTouch[] = DIRECT_MAIL_CALL_TOUCHES.filter(
-  (t) => t.touchNumber > 0
-)
-
-// Direct mail inbound email — same timing as google_ads_email_only,
-// upgrades to mixed channels (alternating per touch parity) when phone
-// found. Same touch numbers — no restart on upgrade.
-const DIRECT_MAIL_EMAIL_TOUCHES: DripTouch[] = GOOGLE_ADS_EMAIL_ONLY_TOUCHES
-
-// Long-term nurture — for leads who say "not now, maybe in 1-2 years".
-// Stops the aggressive direct_mail_call cadence; soft check-ins every
-// ~60d in year 1, then half-yearly in year 2. Total: 60 / 120 / 180 /
-// 240 / 365 / 540 days from apply time. Channel alternates email →
-// iMessage starting with email so the first touch (60d out) is the
-// least intrusive. delayHours are INTERVALS between touches, not
-// cumulative-from-start: 1440h = 60d, 3000h = 125d, 4200h = 175d.
-// Applied via POST /api/leads/[id]/long-term-nurture (also stamps a
-// 6-month follow-up callback on the lead).
-const LONG_TERM_NURTURE_TOUCHES: DripTouch[] = [
-  { touchNumber: 1, delayHours: 1440, channel: "email" },     // 60d
-  { touchNumber: 2, delayHours: 1440, channel: "imessage" },  // +60d → 120d
-  { touchNumber: 3, delayHours: 1440, channel: "email" },     // +60d → 180d
-  { touchNumber: 4, delayHours: 1440, channel: "imessage" },  // +60d → 240d
-  { touchNumber: 5, delayHours: 3000, channel: "email" },     // +125d → 365d (anniversary)
-  { touchNumber: 6, delayHours: 4200, channel: "imessage" },  // +175d → 540d
-]
-
-// Website follow-up (2026-11-02, call-first website leads — lib/websiteLead):
-// starts only after three call attempts went unanswered. Four touches over
-// two weeks (day 1 / 3 / 7 / 14 after the last call), mapped onto the
-// engine's unresponsive angles (opening → terms → one question → close the
-// loop). The engine then hands the lead to long_term_nurture. Texts for
-// leads who ticked "texts OK"; the _email variant for those who didn't.
-const WEBSITE_FOLLOWUP_TOUCHES: DripTouch[] = [
-  { touchNumber: 1, delayHours: 24,  channel: "imessage" },
-  { touchNumber: 2, delayHours: 48,  channel: "imessage" },
-  { touchNumber: 3, delayHours: 96,  channel: "imessage" },
-  { touchNumber: 4, delayHours: 168, channel: "imessage" },
-]
-
-export const DRIP_CAMPAIGNS: Record<DripCampaignType, DripCampaign> = {
-  google_ads_form: {
-    type: "google_ads_form",
-    entryDelayHours: 0,
-    touches: GOOGLE_ADS_FORM_TOUCHES,
-  },
-  google_ads_email_only: {
-    type: "google_ads_email_only",
-    entryDelayHours: 0,
-    touches: GOOGLE_ADS_EMAIL_ONLY_TOUCHES,
-  },
-  direct_mail_call: {
-    type: "direct_mail_call",
-    entryDelayHours: 0,
-    touches: DIRECT_MAIL_CALL_TOUCHES,
-  },
-  direct_mail_sms: {
-    type: "direct_mail_sms",
-    entryDelayHours: 48,
-    touches: DIRECT_MAIL_SMS_TOUCHES,
-  },
-  direct_mail_email: {
-    type: "direct_mail_email",
-    entryDelayHours: 48,
-    touches: DIRECT_MAIL_EMAIL_TOUCHES,
-  },
-  long_term_nurture: {
-    type: "long_term_nurture",
-    entryDelayHours: 0,
-    touches: LONG_TERM_NURTURE_TOUCHES,
-  },
-  website_followup: {
-    type: "website_followup",
-    entryDelayHours: 0,
-    touches: WEBSITE_FOLLOWUP_TOUCHES,
-  },
-  website_followup_email: {
-    type: "website_followup_email",
-    entryDelayHours: 0,
-    touches: WEBSITE_FOLLOWUP_TOUCHES.map((t) => ({ ...t, channel: "email" as const })),
-  },
-}
+export const DRIP_CAMPAIGNS = cadences.campaigns as unknown as Record<DripCampaignType, DripCampaign>
 
 export function getCampaign(type: string | null | undefined): DripCampaign | null {
   if (!type) return null

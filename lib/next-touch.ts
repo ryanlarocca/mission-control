@@ -42,6 +42,17 @@ export function isOwedReason(reason: string | null | undefined): boolean {
   return typeof reason === "string" && reason.startsWith(OWED_PREFIX)
 }
 
+// Follow-up dates the SYSTEM stamps without anyone deciding them — the cold
+// no-signal default (a call with no message → "check back in 6 months") and
+// the Long-term nurture button's 6-month reminder. They don't hold the drip;
+// only a date the AI read out of a real conversation, or Ryan set, does.
+// Mirrored in scripts/drip-engine.js AUTO_DEFAULT_FOLLOWUP.
+export const AUTO_DEFAULT_FOLLOWUP = /^(Called but left no message|Long-term nurture — re-engage)/
+
+export function isAutoDefaultFollowup(reason: string | null | undefined): boolean {
+  return typeof reason === "string" && AUTO_DEFAULT_FOLLOWUP.test(reason)
+}
+
 export function stripOwedPrefix(reason: string): string {
   return isOwedReason(reason) ? reason.slice(OWED_PREFIX.length) : reason
 }
@@ -306,9 +317,16 @@ function resolveCallTouch(input: NextTouchInput): NextTouch | null {
 // `secondary`.
 export function resolveNextTouch(input: NextTouchInput): NextTouchSummary {
   const candidates: NextTouch[] = []
-  const drip = resolveDripTouch(input)
-  if (drip) candidates.push(drip)
   const call = resolveCallTouch(input)
+  // Ryan 2026-11-05: a follow-up date (set by the AI from the conversation,
+  // or by Ryan — not a system default, see AUTO_DEFAULT_FOLLOWUP) is the only clock — the drip engine holds every drip until
+  // it passes and drops any waiting draft (scripts/drip-engine.js
+  // getClusterUpcomingFollowup / sweepWaitingDrafts). Mirror that here so
+  // the card never shows a drip the engine won't send.
+  const today = new Intl.DateTimeFormat("en-CA", { timeZone: "America/Los_Angeles" }).format(input.now ?? new Date())
+  const heldByCall = !!call && call.due >= today && !isAutoDefaultFollowup(input.followupReason)
+  const drip = heldByCall ? null : resolveDripTouch(input)
+  if (drip) candidates.push(drip)
   if (call) candidates.push(call)
 
   if (candidates.length === 0) return { primary: null, secondary: null }

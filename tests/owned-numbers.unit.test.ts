@@ -10,8 +10,10 @@ import { isOwnedNumber, OWNED_NUMBERS, CAMPAIGN_MAP, AGENTS_LINE_NUMBER, FORWARD
 describe("OWNED_NUMBERS", () => {
   it("covers every lead-facing line plus the agents line and Ryan's cell", () => {
     // CAMPAIGN_MAP + the agents line = the lines on the Twilio account;
-    // FORWARD_TO is Ryan's cell (2026-10-12 consolidation).
-    expect(OWNED_NUMBERS.size).toBe(Object.keys(CAMPAIGN_MAP).length + 2)
+    // FORWARD_TO is Ryan's cell (2026-10-12 consolidation); +1 for his old
+    // personal Google Voice line (2026-11-05).
+    expect(OWNED_NUMBERS.size).toBe(Object.keys(CAMPAIGN_MAP).length + 3)
+    expect(OWNED_NUMBERS.has("+16506918079")).toBe(true)
     expect(OWNED_NUMBERS.has(AGENTS_LINE_NUMBER)).toBe(true)
     expect(OWNED_NUMBERS.has(FORWARD_TO)).toBe(true)
     for (const n of Array.from(OFFICE_NUMBERS)) expect(OWNED_NUMBERS.has(n)).toBe(true)

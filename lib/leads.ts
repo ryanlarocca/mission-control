@@ -246,10 +246,15 @@ export const FORWARD_TO = "+14085006293"
 // now calls isOwnedNumber() (tests/owned-numbers.unit.test.ts pins that the
 // old membership is still covered).
 export const AGENTS_LINE_NUMBER = "+16509104007"
+// Ryan's own non-Twilio numbers. 650-691-8079 is his old personal Google
+// Voice line — his April 2026 test calls to the mailer lines from it became a
+// 9-row "lead" (removed 2026-11-05).
+const RYAN_PERSONAL_NUMBERS: readonly string[] = ["+16506918079"]
 const OWNED_NUMBER_LIST: readonly string[] = [
   ...Object.keys(CAMPAIGN_MAP),
   AGENTS_LINE_NUMBER,
   FORWARD_TO,
+  ...RYAN_PERSONAL_NUMBERS,
 ]
 export const OWNED_NUMBERS: ReadonlySet<string> = new Set(OWNED_NUMBER_LIST)
 // Compared on the last 10 digits so unformatted variants ("6506703914",
@@ -1234,16 +1239,18 @@ export async function registerManualTouch(
   // did so when the engine queued it.
   const { data: dripRows, error: drErr } = await sb
     .from("leads")
-    .select("id, drip_touch_number")
+    .select("id, drip_touch_number, drip_campaign_type")
     .in("id", clusterIds)
     .not("drip_campaign_type", "is", null)
   if (drErr) console.warn(`[manual-touch] drip-row lookup failed:`, drErr.message)
 
   let clockReset = 0
   let advanced = 0
-  for (const r of (dripRows ?? []) as { id: string; drip_touch_number: number | null }[]) {
+  for (const r of (dripRows ?? []) as { id: string; drip_touch_number: number | null; drip_campaign_type: string | null }[]) {
     const update: Record<string, unknown> = { last_drip_sent_at: touchAt }
-    if (!queuedLeadIds.has(r.id)) {
+    // Autopilot (scripts/autopilot.js): Ryan's own touch restarts its clock
+    // but doesn't use up one of the 8 fixed texts.
+    if (!queuedLeadIds.has(r.id) && r.drip_campaign_type !== "autopilot") {
       update.drip_touch_number = (r.drip_touch_number ?? 0) + 1
       advanced++
     }
@@ -3575,10 +3582,15 @@ export async function applyColdNoSignalDefault(leadId: string): Promise<void> {
   const sb = getLeadsClient()
   const { data: existing } = await sb
     .from("leads")
-    .select("temperature, recommended_followup_date, ai_summary")
+    .select("temperature, recommended_followup_date, ai_summary, notes")
     .eq("id", leadId)
     .maybeSingle()
   if (!existing) return
+  // Ryan's own notes beat the stock "left no message" line (2026-11-05: a
+  // May re-run stamped 39 people "no message" whose notes said he'd talked
+  // price with them).
+  const { ryanNotes } = await import("@/lib/lead-notes")
+  const mine = ryanNotes(existing.notes)?.split("\n")[0]?.trim() || null
 
   const update: Record<string, unknown> = {}
   if (!existing.temperature) update.temperature = "cold"
@@ -3589,8 +3601,9 @@ export async function applyColdNoSignalDefault(leadId: string): Promise<void> {
     update.followup_generated_at = new Date().toISOString()
   }
   if (!existing.ai_summary) {
-    update.ai_summary =
-      "Caller reached voicemail but didn't leave a message — no details to go on yet. Kept on the nurture drip with a 6-month check-in."
+    update.ai_summary = mine
+      ? `From your notes: ${mine.slice(0, 300)}`
+      : "Caller reached voicemail but didn't leave a message — no details to go on yet. Kept on the nurture drip with a 6-month check-in."
     update.ai_summary_generated_at = new Date().toISOString()
   }
   if (Object.keys(update).length === 0) return

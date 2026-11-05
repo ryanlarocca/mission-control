@@ -9,9 +9,9 @@
  * conversation, generate content via Haiku, and either auto-send (if
  * DRIP_AUTO_SEND=true) or queue + Telegram approval gate.
  *
- * The campaign cadence definitions are duplicated from lib/drip-campaigns.ts —
- * keep both files in sync. The engine has to live in plain CJS because the
- * launchd job runs `node scripts/drip-engine.js` with no TS toolchain.
+ * Campaign cadences live in lib/drip-cadences.json (shared with
+ * lib/drip-campaigns.ts). The engine stays plain CJS because the launchd job
+ * runs `node scripts/drip-engine.js` with no TS toolchain.
  *
  * Usage:
  *   node scripts/drip-engine.js                # full pass
@@ -27,6 +27,7 @@ const { google } = require("googleapis")
 const { createClient } = require("@supabase/supabase-js")
 const { Anthropic } = require("@anthropic-ai/sdk")
 const { buildEmailMime } = require("./email-mime.js")
+const { runAutopilot } = require("./autopilot.js")
 
 // ─── env loader (matches scripts/run-migration.mjs) ─────────────────────────
 
@@ -66,114 +67,13 @@ const AUTO_SEND = (process.env.DRIP_AUTO_SEND || "false").toLowerCase() === "tru
 const SIDECAR_URL = process.env.SIDECAR_URL || "http://localhost:5799"
 const APPLE_EPOCH_OFFSET_MS = 978307200000
 
-// ─── campaign cadence (mirrors lib/drip-campaigns.ts) ───────────────────────
-
-const GOOGLE_ADS_FORM_TOUCHES = [
-  { touchNumber: 1,  delayHours: 30,   channel: "imessage" },
-  { touchNumber: 2,  delayHours: 48,   channel: "email" },
-  { touchNumber: 3,  delayHours: 72,   channel: "imessage" },
-  { touchNumber: 4,  delayHours: 168,  channel: "email" },
-  { touchNumber: 5,  delayHours: 336,  channel: "imessage" },
-  { touchNumber: 6,  delayHours: 720,  channel: "email" },
-  { touchNumber: 7,  delayHours: 1440, channel: "imessage" },
-  { touchNumber: 8,  delayHours: 2160, channel: "email" },
-  { touchNumber: 9,  delayHours: 2160, channel: "imessage" },
-  { touchNumber: 10, delayHours: 2160, channel: "email" },
-  { touchNumber: 11, delayHours: 2160, channel: "imessage" },
-  { touchNumber: 12, delayHours: 2160, channel: "email" },
-  { touchNumber: 13, delayHours: 2160, channel: "imessage" },
-]
-const ALL_EMAIL = (touches) => touches.map((t) => ({ ...t, channel: "email" }))
-const ALL_IMESSAGE = (touches) => touches.map((t) => ({ ...t, channel: "imessage" }))
-
-// Mirror lib/drip-campaigns.ts exactly — these were diverging (engine used
-// the GOOGLE_ADS_FORM_TOUCHES cadence, lib used a slower one). The UI
-// forecasts off lib, so the engine has to use the same numbers or the
-// forecast lies. Schedule is 48h → 72h → 168h → 336h → 720h → 1440h →
-// 2160h (every 90d after touch #7).
-const DIRECT_MAIL_CALL_TOUCHES = [
-  { touchNumber: 0,  delayHours: 0.25, channel: "imessage" }, // missed-call only
-  { touchNumber: 1,  delayHours: 48,   channel: "imessage" },
-  { touchNumber: 2,  delayHours: 72,   channel: "imessage" },
-  { touchNumber: 3,  delayHours: 168,  channel: "imessage" },
-  { touchNumber: 4,  delayHours: 336,  channel: "imessage" },
-  { touchNumber: 5,  delayHours: 720,  channel: "imessage" },
-  { touchNumber: 6,  delayHours: 1440, channel: "imessage" },
-  { touchNumber: 7,  delayHours: 2160, channel: "imessage" },
-  { touchNumber: 8,  delayHours: 2160, channel: "imessage" },
-  { touchNumber: 9,  delayHours: 2160, channel: "imessage" },
-  { touchNumber: 10, delayHours: 2160, channel: "imessage" },
-  { touchNumber: 11, delayHours: 2160, channel: "imessage" },
-  { touchNumber: 12, delayHours: 2160, channel: "imessage" },
-  { touchNumber: 13, delayHours: 2160, channel: "imessage" },
-]
-
-// Long-term nurture — must match lib/drip-campaigns.ts exactly. Soft
-// cadence for "not now, maybe in 1-2 years" leads. Cumulative timing:
-// 60 / 120 / 180 / 240 / 365 / 540 days from apply time.
-const LONG_TERM_NURTURE_TOUCHES = [
-  { touchNumber: 1, delayHours: 1440, channel: "email" },     // 60d
-  { touchNumber: 2, delayHours: 1440, channel: "imessage" },  // +60d → 120d
-  { touchNumber: 3, delayHours: 1440, channel: "email" },     // +60d → 180d
-  { touchNumber: 4, delayHours: 1440, channel: "imessage" },  // +60d → 240d
-  { touchNumber: 5, delayHours: 3000, channel: "email" },     // +125d → 365d
-  { touchNumber: 6, delayHours: 4200, channel: "imessage" },  // +175d → 540d
-]
-
-// Website follow-up — must match lib/drip-campaigns.ts exactly. Starts only
-// after the website call ladder (lib/websiteLead.ts) ran 3 unanswered calls.
-// Day 1 / 3 / 7 / 14 after the last call; hands off to long_term_nurture
-// when the touches run out (processLead).
-const WEBSITE_FOLLOWUP_TOUCHES = [
-  { touchNumber: 1, delayHours: 24,  channel: "imessage" },
-  { touchNumber: 2, delayHours: 48,  channel: "imessage" },
-  { touchNumber: 3, delayHours: 96,  channel: "imessage" },
-  { touchNumber: 4, delayHours: 168, channel: "imessage" },
-]
+// ─── campaign cadence ───────────────────────────────────────────────────────
+//
+// One copy, shared with lib/drip-campaigns.ts (2026-11-05). The two used to
+// be hand-mirrored and drifted (direct_mail_sms ran one schedule here and
+// forecast another on the card).
+const DRIP_CAMPAIGNS = require("../lib/drip-cadences.json").campaigns
 const WEBSITE_FOLLOWUP_TYPES = new Set(["website_followup", "website_followup_email"])
-
-const DRIP_CAMPAIGNS = {
-  google_ads_form: {
-    type: "google_ads_form",
-    entryDelayHours: 0,
-    touches: GOOGLE_ADS_FORM_TOUCHES,
-  },
-  google_ads_email_only: {
-    type: "google_ads_email_only",
-    entryDelayHours: 0,
-    touches: ALL_EMAIL(GOOGLE_ADS_FORM_TOUCHES),
-  },
-  direct_mail_call: {
-    type: "direct_mail_call",
-    entryDelayHours: 0,
-    touches: DIRECT_MAIL_CALL_TOUCHES,
-  },
-  direct_mail_sms: {
-    type: "direct_mail_sms",
-    entryDelayHours: 48,
-    touches: ALL_IMESSAGE(GOOGLE_ADS_FORM_TOUCHES),
-  },
-  direct_mail_email: {
-    type: "direct_mail_email",
-    entryDelayHours: 48,
-    touches: ALL_EMAIL(GOOGLE_ADS_FORM_TOUCHES),
-  },
-  long_term_nurture: {
-    type: "long_term_nurture",
-    entryDelayHours: 0,
-    touches: LONG_TERM_NURTURE_TOUCHES,
-  },
-  website_followup: {
-    type: "website_followup",
-    entryDelayHours: 0,
-    touches: WEBSITE_FOLLOWUP_TOUCHES,
-  },
-  website_followup_email: {
-    type: "website_followup_email",
-    entryDelayHours: 0,
-    touches: ALL_EMAIL(WEBSITE_FOLLOWUP_TOUCHES),
-  },
-}
 
 // Phase 7C: lifecycle-only stop list. Dead = terminal. Active was removed
 // 2026-10-24 (Ryan): status moves automatically now and must not pause or
@@ -1236,6 +1136,153 @@ async function sendDripEmail({ lead, body, subject }) {
 // status is visible in Mission Control → /leads instead. Drip outcomes are
 // still logged to stdout (captured by launchd) for debugging.
 
+// Two exceptions Ryan approved 2026-11-05: autopilot FYIs (a pilot person
+// said they sold / aren't interested) and the daily self-check, which only
+// speaks up when it finds slop it can't fix by itself.
+async function telegram(text) {
+  const token = process.env.CAMPAIGN_BOT_TOKEN || process.env.TELEGRAM_BOT_TOKEN
+  const chat = process.env.TELEGRAM_CHAT_ID
+  if (!token || !chat || DRY_RUN) return
+  await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ chat_id: chat, text }),
+  }).catch((e) => console.warn("[drip] telegram failed:", e.message))
+}
+
+// ─── cluster helpers ────────────────────────────────────────────────────────
+
+const CLUSTER_COLS = "id, created_at, lead_type, twilio_number, status, is_dnc, is_junk, recommended_followup_date, followup_reason, drip_campaign_type, caller_phone, email"
+
+async function fetchCluster(sb, lead) {
+  let q = sb.from("leads").select(CLUSTER_COLS).order("created_at", { ascending: true }).limit(500)
+  if (lead.caller_phone && lead.caller_phone !== "Anonymous") q = q.eq("caller_phone", lead.caller_phone)
+  else if (lead.email) q = q.eq("email", lead.email)
+  else q = q.eq("id", lead.id)
+  const { data, error } = await q
+  if (error) throw new Error(`cluster read failed: ${error.message}`)
+  return data || []
+}
+
+// Ryan 2026-05-22 + 2026-11-05: dead / DNC / junk on ANY row of a person
+// takes the whole person out of outreach — not just the row the engine picked.
+function clusterIsDead(rows) {
+  return rows.some((r) => r.is_dnc || r.is_junk || DRIP_STOP_STATUSES.has(String(r.status || "").toLowerCase()))
+}
+
+function isReplyRow(row) {
+  if (isOutboundRow(row)) return false
+  const k = classifyInbound(row.lead_type)
+  return k === "call" || k === "sms" || k === "email"
+}
+
+// ─── waiting-draft sweep (2026-11-05) ───────────────────────────────────────
+//
+// A drafted drip waits for Ryan's tap. Drafts used to wait forever — the
+// oldest was 174 days old, 32 of 55 belonged to dead people, and a reply
+// didn't clear the canned text sitting on the card. Each pass now drops a
+// waiting draft when:
+//   cluster_dead        the person is dead / DNC / junk on any row
+//   superseded_by_reply they wrote or called back after it was drafted
+//   held_for_followup   a follow-up date is set (that date is the clock)
+//   expired_7d          nobody sent it within a week
+// The clock restarts from now for the last three, so the next touch is a full
+// interval out instead of instantly due.
+const DRAFT_MAX_AGE_MS = 7 * 86400000
+async function sweepWaitingDrafts(sb) {
+  const { data: drafts, error } = await sb
+    .from("drip_queue")
+    .select("id, lead_id, status, created_at")
+    .in("status", ["pending", "approved"])
+    .order("created_at", { ascending: true })
+    .limit(500)
+  if (error) { console.error("[drip] draft sweep query failed:", error.message); return {} }
+  const today = new Intl.DateTimeFormat("en-CA", { timeZone: "America/Los_Angeles" }).format(new Date())
+  const counts = {}
+  for (const d of drafts || []) {
+    const { data: lead } = await sb.from("leads").select("id, caller_phone, email").eq("id", d.lead_id).maybeSingle()
+    if (!lead) continue
+    let rows
+    try { rows = await fetchCluster(sb, lead) } catch (e) { console.warn(`[drip] ${e.message}`); continue }
+    let reason = null
+    if (clusterIsDead(rows)) reason = "cluster_dead"
+    else if (rows.some((r) => isReplyRow(r) && r.created_at > d.created_at)) reason = "superseded_by_reply"
+    else if (d.status === "pending" && rows.some((r) => r.recommended_followup_date && r.recommended_followup_date >= today && !AUTO_DEFAULT_FOLLOWUP.test(r.followup_reason || ""))) reason = "held_for_followup"
+    else if (d.status === "pending" && Date.now() - new Date(d.created_at).getTime() > DRAFT_MAX_AGE_MS) reason = "expired_7d"
+    if (!reason) continue
+    counts[reason] = (counts[reason] || 0) + 1
+    if (DRY_RUN) { console.log(`[drip] DRY-RUN would drop draft ${d.id} (${reason})`); continue }
+    await sb.from("drip_queue").update({ status: "skipped", error: reason }).eq("id", d.id)
+    if (reason !== "cluster_dead") {
+      await sb.from("leads").update({ last_drip_sent_at: new Date().toISOString() }).eq("id", d.lead_id)
+    }
+  }
+  if (Object.keys(counts).length) console.log("[drip] waiting drafts dropped:", counts)
+  return counts
+}
+
+// ─── daily self-check (2026-11-05) ──────────────────────────────────────────
+//
+// Once per Pacific day. Fixes the slop it can on its own and Telegrams Ryan
+// only about what it can't:
+//   fixed   dead people still carrying a drip stamp or a future follow-up date
+//   alert   a lead row on one of our own numbers or a Personal relationship
+//           (should never happen now that intake skips them), autopilot errors
+const SELFCHECK_STAMP = path.join(require("node:os").homedir(), ".lrg-followups-selfcheck")
+async function dailySelfCheck(sb, autopilotStats) {
+  const today = new Intl.DateTimeFormat("en-CA", { timeZone: "America/Los_Angeles" }).format(new Date())
+  try { if (fs.readFileSync(SELFCHECK_STAMP, "utf8").trim() === today) return } catch (_) {}
+  const problems = []
+  let fixed = 0
+
+  // Dead people still on a drip / holding a follow-up date.
+  const { data: dead } = await sb.from("leads").select("caller_phone, email").or("status.eq.dead,is_dnc.eq.true,is_junk.eq.true").limit(5000)
+  const deadPhones = new Set((dead || []).map((r) => r.caller_phone).filter((p) => p && p !== "Anonymous"))
+  const { data: live } = await sb
+    .from("leads")
+    .select("id, caller_phone")
+    .or(`drip_campaign_type.not.is.null,recommended_followup_date.gte.${today}`)
+    .limit(5000)
+  // Same rule as the 11-05 cleanup: only when nothing happened after the dead
+  // mark. Someone who was marked dead and then came back is Ryan's call.
+  const candidates = (live || []).filter((r) => r.caller_phone && deadPhones.has(r.caller_phone))
+  const deadLive = []
+  const verdict = new Map()
+  for (const r of candidates) {
+    if (!verdict.has(r.caller_phone)) {
+      const { data: rows } = await sb.from("leads").select("created_at, lead_type, status, status_set_at, is_dnc, is_junk").eq("caller_phone", r.caller_phone)
+      const deadRows = (rows || []).filter((x) => x.is_dnc || x.is_junk || String(x.status || "").toLowerCase() === "dead")
+      const deadAt = Math.max(...deadRows.map((x) => new Date(x.status_set_at || x.created_at).getTime()))
+      const after = (rows || []).some((x) => new Date(x.created_at).getTime() > deadAt && !String(x.lead_type || "").startsWith("drip_"))
+      verdict.set(r.caller_phone, !after)
+    }
+    if (verdict.get(r.caller_phone)) deadLive.push(r)
+  }
+  if (deadLive.length && !DRY_RUN) {
+    const { error } = await sb.from("leads")
+      .update({ drip_campaign_type: null, recommended_followup_date: null, followup_reason: null })
+      .in("id", deadLive.map((r) => r.id))
+    if (error) problems.push(`couldn't clear ${deadLive.length} dead row(s): ${error.message}`)
+    else fixed += deadLive.length
+  }
+
+  // Lead rows on numbers that should never be leads.
+  // Ryan's old personal Google Voice line (mirrors lib/leads.ts RYAN_PERSONAL_NUMBERS) + extras.
+  const own = ["+16506918079", ...(process.env.NEVER_A_LEAD_NUMBERS || "").split(",").map((s) => s.trim()).filter(Boolean)]
+  const { data: personal } = await sb.from("relationships").select("phone, name").eq("category", "Personal").not("phone", "is", null).limit(2000)
+  const never = new Map([...own.map((p) => [p, "our own number"]), ...(personal || []).map((r) => [r.phone, `${r.name} (Personal)`])])
+  const since = new Date(Date.now() - 2 * 86400000).toISOString()
+  const { data: fresh } = await sb.from("leads").select("caller_phone").gte("created_at", since).not("caller_phone", "is", null).limit(2000)
+  const bad = [...new Set((fresh || []).map((r) => r.caller_phone).filter((p) => never.has(p)))]
+  if (bad.length) problems.push(`lead rows created for numbers that aren't leads: ${bad.map((p) => never.get(p)).join(", ")}`)
+
+  if (autopilotStats && autopilotStats.error) problems.push(`autopilot hit ${autopilotStats.error} error(s) — see /tmp/lrg-drip-engine-err.log`)
+
+  console.log(`[selfcheck] fixed ${fixed} dead row(s); ${problems.length} problem(s)`)
+  if (problems.length) await telegram(`Follow Ups self-check found something it couldn't fix:\n• ${problems.join("\n• ")}`)
+  if (!DRY_RUN) fs.writeFileSync(SELFCHECK_STAMP, today)
+}
+
 // ─── main passes ────────────────────────────────────────────────────────────
 
 async function drainApprovedQueue(sb) {
@@ -1354,6 +1401,8 @@ async function fetchEligibleLeads(sb) {
     .from("leads")
     .select("*")
     .not("drip_campaign_type", "is", null)
+    // Autopilot people run on their own fixed-text pass (scripts/autopilot.js).
+    .neq("drip_campaign_type", "autopilot")
     .not("status", "in", `(${[...DRIP_STOP_STATUSES].join(",")})`)
     // Phase 7C flag gates. `eq("is_dnc", false)` also includes NULL rows in
     // PostgREST (NULL ≠ false → filtered out), so the migration's DEFAULT
@@ -1445,26 +1494,23 @@ function dedupeByCluster(leads) {
   return winners
 }
 
-// Near-term recommended_followup_date across the lead's cluster.
-// Returns YYYY-MM-DD or null. Used to hold drips when Ryan has a call
-// scheduled in the next ~2 weeks — firing a drip text right before is
-// awkward. The date may live on any cluster sibling, so we query by
-// cluster key not by lead id. Window is intentionally tight: LTN and
-// cold-no-signal leads both auto-stamp ~180d-out dates that aren't real
-// scheduled calls — wider window would suppress those drips forever.
-const UPCOMING_FOLLOWUP_WINDOW_DAYS = 14
+// Future recommended_followup_date anywhere in the lead's cluster.
+// Returns YYYY-MM-DD or null. Ryan 2026-11-05: once the AI (or Ryan) has set
+// a follow-up date, that date is the only clock — no drip fires before it.
+// (Was a 14-day window: a call that ended in "check back in 6 months" still
+// got a drip text 3 days later, and a seller who said "shelf it till
+// January" had a nurture text due Nov 29.) The date may live on any cluster sibling.
+// System-stamped dates (cold no-signal default, Long-term nurture button)
+// don't hold — mirrors lib/next-touch.ts AUTO_DEFAULT_FOLLOWUP.
+const AUTO_DEFAULT_FOLLOWUP = /^(Called but left no message|Long-term nurture — re-engage)/
 async function getClusterUpcomingFollowup(sb, lead) {
-  const today = new Date().toISOString().slice(0, 10)
-  const windowEnd = new Date(Date.now() + UPCOMING_FOLLOWUP_WINDOW_DAYS * 86400000)
-    .toISOString()
-    .slice(0, 10)
+  const today = new Intl.DateTimeFormat("en-CA", { timeZone: "America/Los_Angeles" }).format(new Date())
   let q = sb
     .from("leads")
-    .select("recommended_followup_date")
+    .select("recommended_followup_date, followup_reason")
     .gte("recommended_followup_date", today)
-    .lte("recommended_followup_date", windowEnd)
     .order("recommended_followup_date", { ascending: true })
-    .limit(1)
+    .limit(20)
   if (lead.caller_phone && lead.caller_phone !== "Anonymous") {
     q = q.eq("caller_phone", lead.caller_phone)
   } else if (lead.gmail_thread_id) {
@@ -1472,9 +1518,7 @@ async function getClusterUpcomingFollowup(sb, lead) {
   } else if (lead.email) {
     q = q.eq("email", lead.email)
   } else {
-    return lead.recommended_followup_date
-      && lead.recommended_followup_date >= today
-      && lead.recommended_followup_date <= windowEnd
+    return lead.recommended_followup_date && lead.recommended_followup_date >= today && !AUTO_DEFAULT_FOLLOWUP.test(lead.followup_reason || "")
       ? lead.recommended_followup_date
       : null
   }
@@ -1483,7 +1527,8 @@ async function getClusterUpcomingFollowup(sb, lead) {
     console.warn(`[drip] follow-up lookup failed for ${lead.id}:`, error.message)
     return null
   }
-  return data?.[0]?.recommended_followup_date ?? null
+  const real = (data || []).find((r) => !AUTO_DEFAULT_FOLLOWUP.test(r.followup_reason || ""))
+  return real?.recommended_followup_date ?? null
 }
 
 // An appointment today or later, on any row of the person (2026-11-05).
@@ -1600,6 +1645,7 @@ async function contactIsDnc(sb, lead, channel) {
 async function processLead(sb, lead) {
   // Stop conditions baked into the SQL filter, but re-check defensively.
   if (DRIP_STOP_STATUSES.has(lead.status)) return { skipped: "stop_status" }
+  if (clusterIsDead(await fetchCluster(sb, lead))) return { skipped: "cluster_dead" }
   if (await contactIsDnc(sb, lead, "any")) return { skipped: "contact_dnc" }
   if (await hasPendingQueueRow(sb, lead.id)) return { skipped: "pending_queued" }
 
@@ -1679,7 +1725,7 @@ async function processLead(sb, lead) {
   const responsiveness = await extractResponsivenessSignals(lead, sb)
   const ENGAGED_MIN_DELAY_MS = 14 * 24 * 3600 * 1000
   const effectiveHoldMs = (
-    lead.drip_campaign !== "long_term_nurture" &&
+    lead.drip_campaign_type !== "long_term_nurture" &&
     (responsiveness.state === "engaged" || responsiveness.state === "gone_quiet")
   )
     ? Math.max(entryHoldMs, ENGAGED_MIN_DELAY_MS)
@@ -1875,6 +1921,7 @@ async function main() {
 
   const sb = getSupabase()
 
+  if (!LEAD_FILTER_ID) await sweepWaitingDrafts(sb)
   if (!DRY_RUN) {
     await drainApprovedQueue(sb)
   }
@@ -1912,6 +1959,28 @@ async function main() {
     console.log(`[drip] skip reasons:`, skipReasons)
   }
 
+  if (!LEAD_FILTER_ID) {
+    let autopilotStats = null
+    try {
+      autopilotStats = await runAutopilot(sb, {
+        live: (process.env.AUTOPILOT_LIVE || "").trim().toLowerCase() === "true",
+        dryRun: DRY_RUN,
+        sendSms,
+        resolveReplyLine,
+        fetchIMessageHistory,
+        contactIsDnc,
+        anthropic: getAnthropic(),
+        model: DRIP_MODEL,
+        telegram,
+        appleEpochMs: APPLE_EPOCH_OFFSET_MS,
+      })
+    } catch (e) {
+      console.error("[autopilot] pass failed:", e.message)
+      autopilotStats = { error: 1 }
+    }
+    try { await dailySelfCheck(sb, autopilotStats) } catch (e) { console.error("[selfcheck] failed:", e.message) }
+  }
+
   // Single-lead runs emit a machine-readable outcome line so the sidecar's
   // /drip-trigger-lead endpoint can relay what happened back to the UI.
   if (LEAD_FILTER_ID) {
@@ -1942,6 +2011,13 @@ module.exports = {
   touchBriefFor,
   writeTouchWithOpus,
   sendSms,
+  sweepWaitingDrafts,
+  dailySelfCheck,
+  resolveReplyLine,
+  fetchIMessageHistory,
+  getAnthropic,
+  DRIP_MODEL,
+  APPLE_EPOCH_OFFSET_MS,
 }
 
 // Skip the hourly main() when imported by a helper script — set by

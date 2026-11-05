@@ -142,6 +142,27 @@ export async function POST(request: Request) {
     })
   }
 
+  // A Personal contact (Ryan's girlfriend, family, friends) calling one of the
+  // lines is never a lead — ring Ryan, log nothing (2026-11-05: a personal
+  // contact had become a 6-row mailer "lead"). One indexed lookup; any error
+  // falls through to the normal path.
+  if (callerPhone && !isAnonymousCaller(callerPhone)) {
+    try {
+      const { data: personal } = await getLeadsClient()
+        .from("relationships")
+        .select("id")
+        .eq("category", "Personal")
+        .eq("phone", callerPhone)
+        .limit(1)
+      if (personal && personal.length > 0) {
+        console.warn(`[voice] call from a Personal contact ${callerPhone} -> ${twilioNumber}; dialing without logging a lead`)
+        return new NextResponse(buildTwiml(twilioNumber), { headers: { "Content-Type": "text/xml" } })
+      }
+    } catch (e) {
+      console.error("[voice] personal-contact check failed:", e)
+    }
+  }
+
   // Office lines (the business card): Relationships → Leads → new
   // Relationships contact. A caller who resolves to a contact never gets a
   // lead row; the call is recorded/transcribed onto their card instead.

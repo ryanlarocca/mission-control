@@ -2725,7 +2725,19 @@ function LeadCard(p: LeadCardProps) {
             onPick={(record) => void commitMailRecord(record)}
           />
 
-          <NextTouchPill summary={nextTouch} />
+          {intakeRow?.drip_campaign_type === "autopilot" ? (
+            // Autopilot (2026-11-05): fixed check-in texts that send on
+            // their own (scripts/autopilot.js) — the drip forecast doesn't
+            // apply, and the person stays off Follow Ups until they reply.
+            <div className="rounded border border-sky-900/50 bg-sky-950/20 px-3 py-1.5 text-xs text-sky-200 inline-flex items-center gap-1.5 max-w-full">
+              <Clock className="w-3 h-3 shrink-0" />
+              <span className="font-medium">Autopilot</span>
+              <span className="opacity-50">·</span>
+              <span>{intakeRow.drip_touch_number ?? 0} of 8 check-in texts sent · stays off Follow Ups until they reply</span>
+            </div>
+          ) : (
+            <NextTouchPill summary={nextTouch} />
+          )}
 
           <OfferRow
             offerAmount={group.offerAmount}
