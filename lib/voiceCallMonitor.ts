@@ -31,6 +31,13 @@ export type MonitorState = {
   quietStageAt: number
   wrapSent: boolean
   done: boolean
+  /**
+   * Seconds into the call at which she handed work to the backend model
+   * (session.delegation.created). Her script says never to — a hand-off is
+   * the suspected cause of her "just one sec" stalls (2026-11-05). Optional:
+   * state handed over by a watcher built before this field existed.
+   */
+  delegations?: number[]
 }
 
 export const WRAP_AT_MS = 10 * 60_000
@@ -183,6 +190,12 @@ export class CallMonitor {
       }
       case "session.input_audio.append": {
         if (typeof msg.audio === "string" && pcm16Rms(msg.audio) > LOUD_RMS) s.lastLoudInputAt = now
+        break
+      }
+      case "session.delegation.created": {
+        const at = Math.round((now - s.t0) / 100) / 10
+        s.delegations = [...(s.delegations ?? []), at]
+        this.note(now, "handed off to the backend model")
         break
       }
     }

@@ -133,6 +133,8 @@ export interface MergedTranscript {
   // True when the "this is Ryan" tell showed up on the other channel and
   // the sides were swapped — logged so a wrong `ryanChannel` is visible.
   swapped: boolean
+  // How long the caller waited on our side (Jackie's calls, measureReplies).
+  replies?: ReplyTiming
 }
 
 // A speaker whose next word starts within this long of their previous one
@@ -225,6 +227,108 @@ export function mergeTurns(
   const labeled = turns.map((t) => `${t.speaker === "ryan" ? selfLabel : otherLabel}: ${t.text}`).join("\n")
   const sum = (segs: Segment[]) => segs.reduce((n, s) => n + Math.max(0, s.end - s.start), 0)
   return { labeled, turns, ryanSec: Math.round(sum(ryan)), otherSec: Math.round(sum(other)), swapped }
+}
+
+// ── Reply timing (2026-11-05) ─────────────────────────────────────────────
+// Ryan: "there's like an awkward pause of like 5 seconds" before Jackie
+// answers. Measured from the recording itself — each side's own channel —
+// so it's what the caller heard, not what the model reports. Same method
+// as the hand measurement of her first five calls (50 ms frames, speech =
+// RMS over 350, a pause ≥ 0.45 s ends a stretch of speech).
+
+export interface ReplyTiming {
+  /** Times she answered after the caller stopped. */
+  replies: number
+  /** Typical wait before her answer, seconds. */
+  median_s: number | null
+  /** Longest wait: before an answer, or the caller left in silence until they spoke again. */
+  slowest_s: number | null
+  /** When in the call the longest wait began, seconds from the start of the recording. */
+  slowest_at_s: number | null
+  /** Waits of 3 s or more. */
+  over_3s: number
+  /** Pickup → her first word, seconds. */
+  greeting_s: number | null
+}
+
+const SPEECH_RMS = 350
+const FRAME_S = 0.05
+const PAUSE_ENDS_SPEECH_S = 0.45
+const MIN_SPEECH_S = 0.12
+// The caller paused, nobody answered, and they started again. Under this,
+// it's usually just them catching a breath mid-story.
+const LEFT_HANGING_S = 3
+
+/** Stretches of speech on a mono 16-bit WAV, [start, end] in seconds. */
+export function speechSegments(wav: Buffer): Array<[number, number]> {
+  const info = parseWavHeader(wav)
+  if (!info || info.channels !== 1 || info.bitsPerSample !== 16) return []
+  const frame = Math.max(1, Math.round(info.sampleRate * FRAME_S))
+  const samples = Math.floor(info.dataLength / 2)
+  const out: Array<[number, number]> = []
+  let start = -1
+  let last = 0
+  let quiet = 0
+  for (let i = 0; i + frame <= samples; i += frame) {
+    let sum = 0
+    for (let k = 0; k < frame; k++) {
+      const v = wav.readInt16LE(info.dataOffset + (i + k) * 2)
+      sum += v * v
+    }
+    const t = i / info.sampleRate
+    if (Math.sqrt(sum / frame) > SPEECH_RMS) {
+      if (start < 0) start = t
+      quiet = 0
+      last = t + FRAME_S
+    } else if (start >= 0) {
+      quiet += FRAME_S
+      if (quiet >= PAUSE_ENDS_SPEECH_S) {
+        if (last - start >= MIN_SPEECH_S) out.push([start, last])
+        start = -1
+      }
+    }
+  }
+  if (start >= 0 && last - start >= MIN_SPEECH_S) out.push([start, last])
+  return out
+}
+
+/** How long the caller waited on `self` (Jackie) — from the two segment lists. */
+export function replyTimingFromSegments(self: Array<[number, number]>, caller: Array<[number, number]>): ReplyTiming {
+  const r1 = (n: number) => Math.round(n * 10) / 10
+  const gaps: number[] = []
+  let slowest: { s: number; at: number } | null = null
+  let over3 = 0
+  const wait = (s: number, at: number) => {
+    if (s >= 3) over3++
+    if (!slowest || s > slowest.s) slowest = { s, at }
+  }
+  for (const [, end] of caller) {
+    if (self.some(([a, b]) => a <= end && end <= b)) continue // she was already talking
+    const nextSelf = self.find(([a]) => a >= end)?.[0] ?? null
+    const nextCaller = caller.find(([a]) => a > end)?.[0] ?? null
+    if (nextSelf !== null && (nextCaller === null || nextSelf <= nextCaller)) {
+      gaps.push(nextSelf - end)
+      wait(nextSelf - end, end)
+    } else if (nextCaller !== null && nextCaller - end >= LEFT_HANGING_S) {
+      wait(nextCaller - end, end) // she never answered; the caller had to fill the silence
+    }
+  }
+  const sorted = [...gaps].sort((a, b) => a - b)
+  const median = sorted.length ? sorted[Math.floor((sorted.length - 1) / 2)] : null
+  const worst = slowest as { s: number; at: number } | null
+  return {
+    replies: gaps.length,
+    median_s: median === null ? null : r1(median),
+    slowest_s: worst ? r1(worst.s) : null,
+    slowest_at_s: worst ? r1(worst.at) : null,
+    over_3s: over3,
+    greeting_s: self.length ? r1(self[0][0]) : null,
+  }
+}
+
+/** Reply timing from the two mono channel WAVs. */
+export function replyTiming(selfWav: Buffer, callerWav: Buffer): ReplyTiming {
+  return replyTimingFromSegments(speechSegments(selfWav), speechSegments(callerWav))
 }
 
 // Whisper's 25 MB upload cap. Twilio WAV is 8 kHz 16-bit mono per channel
@@ -402,6 +506,8 @@ export async function transcribeDualChannel(args: {
   otherLabel: string
   // Our side's label when it isn't Ryan — "Jackie" on a call she took.
   selfLabel?: string
+  // Also measure how long the caller waited on our side (ReplyTiming).
+  measureReplies?: boolean
 }): Promise<MergedTranscript | null> {
   const tag = "[coach/transcript]"
   try {
@@ -420,6 +526,13 @@ export async function transcribeDualChannel(args: {
     const merged = mergeTurns(wordsToPieces(ryanRaw, "ryan"), wordsToPieces(otherRaw, "other"), args.otherLabel, args.selfLabel)
     if (!merged.turns.length) return null
     if (merged.swapped) console.warn(`${tag} channels were swapped by the "this is ${args.selfLabel ?? "Ryan"}" tell (ryanChannel=${args.ryanChannel})`)
+    if (args.measureReplies) {
+      try {
+        merged.replies = merged.swapped ? replyTiming(otherCh.wav, ryanCh.wav) : replyTiming(ryanCh.wav, otherCh.wav)
+      } catch (e) {
+        console.warn(`${tag} reply timing failed: ${e instanceof Error ? e.message : String(e)}`)
+      }
+    }
     return merged
   } catch (e) {
     console.error(`${tag} threw:`, e instanceof Error ? e.message : String(e))

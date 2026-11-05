@@ -1615,8 +1615,11 @@ async function processLead(sb, lead) {
   // the intake (lib/jackie.ts reviewJackieCall → jackie_call.intake_complete;
   // Ryan 2026-10-25: missed-call text only if she didn't finish). Until the
   // review lands, intake_complete is undefined → not missed yet; the next
-  // pass decides.
-  const jackieIncomplete = !!lead.jackie_call && lead.jackie_call.intake_complete === false
+  // pass decides. An owner who talked with her and said they aren't selling
+  // (jackie_call.not_selling, 2026-11-05) wasn't missed either.
+  const jackieIncomplete = !!lead.jackie_call
+    && lead.jackie_call.intake_complete === false
+    && lead.jackie_call.not_selling !== true
   let isMissedCall = campaign.type === "direct_mail_call"
     && lead.drip_touch_number == null
     && (!lead.recording_url || jackieIncomplete)

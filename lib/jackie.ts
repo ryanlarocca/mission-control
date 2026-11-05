@@ -267,6 +267,23 @@ export type JackieCallReview = {
   /** The caller asked to come off the list (2026-11-03). */
   opted_out?: boolean
   opt_out_address?: string | null
+  /**
+   * An owner who talked with her and isn't selling (2026-11-05, a caller: "Why
+   * would I sell it?"). Not a missed call — no "sorry I missed you" text.
+   */
+  not_selling?: boolean
+  /** How she handled the caller — read by jackieCheckLine. */
+  check?: JackieCheck
+}
+
+/** The per-call grade (2026-11-05). Null = didn't apply on this call. */
+export type JackieCheck = {
+  answered_first_question: boolean | null
+  asked_selling_too_early: boolean
+  pushed_after_no: boolean
+  offered_removal_unprompted: boolean
+  /** Times she said she'd pass something along to Ryan (counted, not judged). */
+  pass_along: number | null
 }
 
 function pacificToday(now: Date): { ymd: string; weekday: string; clock: string } {
@@ -302,14 +319,19 @@ Answer in JSON only:
   "callback_date": that callback as YYYY-MM-DD in Pacific time, or null if no callback was arranged,
   "spanish": true if the caller spoke Spanish,
   "opted_out": true ONLY if the CALLER explicitly asked to be removed or not contacted again ("take me off your list", "stop sending me letters", "don't call me again", or said yes when Jackie offered to take them off the list). Jackie offering is not enough, and "not interested" / "not selling" alone is false,
-  "opt_out_address": the property address the caller wanted taken off the list, as said, or null
+  "opt_out_address": the property address the caller wanted taken off the list, as said, or null,
+  "not_selling": true if the caller talked with Jackie and made clear they aren't selling or aren't interested ("why would I sell it?", "it's staying in the family", "not interested"), and didn't ask for a callback. False if they're open to selling, curious what it's worth, asked Ryan to call, or the call was too short to tell,
+  "answered_first_question": only if the caller's first words to Jackie were a question to her (e.g. "did you send me this letter?"): true if she answered it directly before moving on, false if she went past it. null if the caller opened with anything other than a question (a statement like "I'm thinking about selling" is not a question),
+  "asked_selling_too_early": true if Jackie asked why they're selling, what's changed, or whether they're thinking of selling before the caller had said anything suggesting they might sell,
+  "pushed_after_no": true if, after the caller said they weren't selling, Jackie kept pushing: asked about selling again, asked for their address or name more than once, or made a second offer after they declined. Her ONE low-pressure offer right after they say they're not selling ("want me to have Ryan give you a call with a number?") is expected and is not pushing,
+  "offered_removal_unprompted": true if Jackie offered to take them off the mailing list when the caller hadn't complained about the letters or asked to stop them
 }
 
 Transcript:
 ${transcript.slice(0, 20000)}`
   try {
     const out = await completeText({ prompt, model: SONNET, maxTokens: 500, thinking: false, tag: "[jackie-review]" })
-    const j = JSON.parse(extractJsonObject(out.text)) as Partial<JackieCallReview>
+    const j = JSON.parse(extractJsonObject(out.text)) as Partial<JackieCallReview> & Record<string, unknown>
     const date = typeof j.callback_date === "string" && /^\d{4}-\d{2}-\d{2}$/.test(j.callback_date) && j.callback_date >= ymd ? j.callback_date : null
     return {
       intake_complete: j.intake_complete === true,
@@ -318,11 +340,54 @@ ${transcript.slice(0, 20000)}`
       spanish: j.spanish === true,
       opted_out: j.opted_out === true,
       opt_out_address: typeof j.opt_out_address === "string" && j.opt_out_address.trim() ? j.opt_out_address.trim().slice(0, 160) : null,
+      not_selling: j.not_selling === true,
+      check: {
+        answered_first_question: typeof j.answered_first_question === "boolean" ? j.answered_first_question : null,
+        asked_selling_too_early: j.asked_selling_too_early === true,
+        pushed_after_no: j.pushed_after_no === true,
+        offered_removal_unprompted: j.offered_removal_unprompted === true,
+        pass_along: countPassAlong(transcript),
+      },
     }
   } catch (e) {
     console.error(`[jackie-review] failed: ${e instanceof Error ? e.message : e}`)
     return null
   }
+}
+
+/**
+ * Times Jackie said she'd pass something along ("I'll pass that along",
+ * "pass along your information"). Only her own lines, so null when the
+ * transcript couldn't be split by speaker.
+ */
+export function countPassAlong(transcript: string): number | null {
+  const lines = transcript.split("\n").filter(l => l.startsWith("Jackie:"))
+  if (!lines.length) return null
+  return lines.reduce((n, l) => n + (l.match(/\bpass\b[^.?!]{0,30}?\balong\b/gi)?.length ?? 0), 0)
+}
+
+/** Reply timing from the recording (lib/coach/transcript ReplyTiming), as stored on jackie_call.timing. */
+type TimingLite = { slowest_s: number | null; slowest_at_s: number | null }
+
+const PASS_ALONG_FLAG = 3
+const SLOW_REPLY_FLAG_S = 3
+
+/**
+ * The Telegram "🔎 Check" line: only what went wrong on this call, or null
+ * when nothing did — a quiet card on a clean call.
+ */
+export function jackieCheckLine(check: JackieCheck | null | undefined, timing: TimingLite | null | undefined): string | null {
+  const issues: string[] = []
+  if (check?.answered_first_question === false) issues.push("didn't answer their first question")
+  if (check?.asked_selling_too_early) issues.push("asked about selling too early")
+  if (check?.pushed_after_no) issues.push("kept asking after they said no")
+  if (check?.offered_removal_unprompted) issues.push("offered removal unprompted")
+  if ((check?.pass_along ?? 0) >= PASS_ALONG_FLAG) issues.push(`"pass along" ×${check!.pass_along}`)
+  if (timing?.slowest_s != null && timing.slowest_s >= SLOW_REPLY_FLAG_S) {
+    const at = timing.slowest_at_s
+    issues.push(`${timing.slowest_s.toFixed(1)} s pause${at == null ? "" : ` at ${Math.floor(at / 60)}:${String(Math.floor(at % 60)).padStart(2, "0")}`}`)
+  }
+  return issues.length ? `🔎 Check: ${issues.join(" · ")}` : null
 }
 
 /** Marks the transcript so drafts and the card know nobody left a voicemail. */

@@ -1954,11 +1954,16 @@ export async function processRecordingBackground(args: {
     // and the talk ratio stay Ryan-only — they feed the Sales Coach.
     let separated = false
     let talkRatio: number | null = null
+    // How long callers waited on Jackie, from the recording (2026-11-05).
+    let jackieTiming: import("@/lib/coach/transcript").ReplyTiming | null = null
     if (audio) {
       if (args.jackie) {
         const { transcribeDualChannel } = await import("@/lib/coach/transcript")
-        const dual = await transcribeDualChannel({ mp3Url: fullUrl, ryanChannel: 1, otherLabel: "Caller", selfLabel: "Jackie" })
-        if (dual) transcription = dual.labeled
+        const dual = await transcribeDualChannel({ mp3Url: fullUrl, ryanChannel: 1, otherLabel: "Caller", selfLabel: "Jackie", measureReplies: true })
+        if (dual) {
+          transcription = dual.labeled
+          jackieTiming = dual.replies ?? null
+        }
       }
       if (kind === "call" && !args.jackie) {
         const { transcribeDualChannel } = await import("@/lib/coach/transcript")
@@ -2166,17 +2171,23 @@ export async function processRecordingBackground(args: {
     // Jackie: did she finish the intake, and what callback did she promise?
     // The promise is Ryan's to keep, so it becomes an Owed follow-up on the
     // date she gave (default: next business day). An incomplete intake is
-    // what lets the drip engine still send the missed-call text.
+    // what lets the drip engine still send the missed-call text — unless
+    // the caller talked with her and isn't selling (not_selling, 11-05).
+    // Every call is also graded (check + timing) and the card says what
+    // went wrong, if anything (jackieCheckLine).
     let jackieLines: string[] = []
     if (args.jackie && leadId && transcription) {
       try {
-        const { mergeJackieCall, nextBusinessDay, reviewJackieCall } = await import("@/lib/jackie")
+        const { jackieCheckLine, mergeJackieCall, nextBusinessDay, reviewJackieCall } = await import("@/lib/jackie")
         const { OWED_PREFIX } = await import("@/lib/next-touch")
         const review = await reviewJackieCall(transcription)
         const sb = getLeadsClient()
-        await mergeJackieCall(sb, leadId, review
-          ? { intake_complete: review.intake_complete, callback_when: review.callback_when, callback_date: review.callback_date, spanish: review.spanish, reviewed_at: new Date().toISOString() }
-          : { review_failed: true })
+        await mergeJackieCall(sb, leadId, {
+          ...(review
+            ? { intake_complete: review.intake_complete, callback_when: review.callback_when, callback_date: review.callback_date, spanish: review.spanish, not_selling: review.not_selling ?? false, check: review.check ?? null, reviewed_at: new Date().toISOString() }
+            : { review_failed: true }),
+          ...(jackieTiming ? { timing: jackieTiming } : {}),
+        })
         // The caller asked Jackie to take them off the list — DNC even when
         // the generic analyzer missed it (unlabeled two-voice transcript).
         if (review?.opted_out && !analysis?.is_dnc) {
@@ -2199,10 +2210,14 @@ export async function processRecordingBackground(args: {
             review.callback_when ? `📅 Callback promised: ${review.callback_when}${review.callback_date ? ` (${review.callback_date})` : ""}` : "📅 No callback time set",
             review.opted_out || analysis?.is_dnc
               ? "🚫 Asked to come off the list — DNC'd, no missed-call text"
-              : review.intake_complete ? "✅ Intake complete" : "⚠️ Intake incomplete — the missed-call text will still go out",
+              : review.intake_complete ? "✅ Intake complete"
+              : review.not_selling ? "👋 Talked with Jackie, not selling — no missed-call text"
+              : "⚠️ Intake incomplete — the missed-call text will still go out",
           ]
           if (review.spanish) jackieLines.push("🇲🇽 Spanish speaker — team callback")
         }
+        const check = jackieCheckLine(review?.check, jackieTiming)
+        if (check) jackieLines.push(check)
       } catch (e) {
         console.error(`[jackie] post-call review threw for ${leadId}:`, e)
       }
