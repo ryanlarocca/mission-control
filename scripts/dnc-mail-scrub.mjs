@@ -67,11 +67,12 @@ const SB_URL = process.env.LRG_SUPABASE_URL, SB_KEY = process.env.LRG_SUPABASE_S
 if (!SB_URL || !SB_KEY) { console.error("LRG_SUPABASE_URL / LRG_SUPABASE_SERVICE_KEY missing"); process.exit(1) }
 const sb = createClient(SB_URL, SB_KEY, { auth: { persistSession: false } })
 
-/** Every row past PostgREST's 1000-row default cap. `build` must return a fresh, ordered query. */
+/** Every row past PostgREST's 1000-row default cap. `build` must return a fresh query on a table with an `id`;
+ *  the order is stated here as well so the ordered-paging guard can see it. */
 async function fetchAll(build, page = 1000) {
   const out = []
   for (let from = 0; ; from += page) {
-    const { data, error } = await build().range(from, from + page - 1)
+    const { data, error } = await build().order("id").range(from, from + page - 1)
     if (error) throw new Error(error.message)
     out.push(...data)
     if (data.length < page) return out
