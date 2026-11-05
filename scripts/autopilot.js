@@ -165,13 +165,16 @@ function renderTouch(lead, touch, when = new Date()) {
     case 1: {
       const hi = n ? `Hi ${n}, this is Ryan LaRocca.` : "Hi, this is Ryan LaRocca."
       if (f.historic || f.hasAddress) {
-        const intro = f.historic
-          ? `You reached out to me a while back about ${s}${usePrice ? ` and mentioned ${f.price}` : ""}.`
-          : `You called me in the spring about my letter on ${s}.`
+        const intro = `You reached out to me a while back about ${s}${usePrice ? ` and mentioned ${f.price}` : ""}.`
         const ask = usePrice ? "Do you still own it, and is that still your number?" : "Do you still own it, and are you open to selling?"
         text = `${hi} ${intro} ${ask} ${OPT}`
       } else {
-        text = `${hi} You called me back in the spring after one of my letters. Do you still own the property, and are you open to selling? ${OPT}`
+        // "in the spring" only when that's true — first contact Mar–Jun and
+        // under 9 months ago; otherwise "a while back".
+        const first = new Date(lead.created_at)
+        const m = pacificParts(first).m
+        const spring = m >= 3 && m <= 6 && when.getTime() - first.getTime() < 270 * DAY
+        text = `${hi} You called me ${spring ? "back in the spring" : "a while back"} after one of my letters. Do you still own the property, and are you open to selling? ${OPT}`
       }
       break
     }
@@ -432,8 +435,9 @@ if (require.main === module) {
       const lead = data && data[0]
       if (!lead) return console.log("not on autopilot")
       let at = new Date(lead.last_drip_sent_at || lead.autopilot_since || Date.now())
+      const hold = lead.autopilot_hold_until ? new Date(lead.autopilot_hold_until).getTime() : 0
       for (let t = (lead.drip_touch_number ?? 0) + 1; t <= LAST_TOUCH; t++) {
-        at = new Date(at.getTime() + SCHEDULE_DAYS[t] * DAY)
+        at = new Date(Math.max(at.getTime() + SCHEDULE_DAYS[t] * DAY, t === (lead.drip_touch_number ?? 0) + 1 ? hold : 0))
         const r = renderTouch(lead, t, at)
         console.log(`#${t} ~${fmt(at)}${r.seasonal ? ` (${r.seasonal})` : ""}\n  ${r.text}\n`)
       }
