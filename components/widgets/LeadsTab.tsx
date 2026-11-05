@@ -1446,28 +1446,22 @@ export function LeadsTab() {
     }
   }
 
-  // Long-term nurture: for leads who said "not now, maybe in a year or two".
-  // Skips the cluster's pending drips, switches them onto the slow
-  // long_term_nurture campaign (first email touch at 60d), and stamps a
-  // 6-month follow-up reminder. See app/api/leads/[id]/long-term-nurture.
-  async function longTermNurtureGroup(group: LeadGroup) {
-    const who = group.name || group.contactPhone || group.email || "this lead"
-    if (!confirm(`Move ${who} to long-term nurture? Stops the current cadence, switches to slow check-ins (~60d / 120d / 180d / 240d / 365d / 540d, alternating email + iMessage), and sets a 6-month follow-up reminder.`)) return
+  // Autopilot (2026-11-05, replaces Long-term nurture): the 8 fixed
+  // check-in texts in scripts/autopilot.js — off Follow Ups until they reply.
+  async function autopilotGroup(group: LeadGroup, action: "on" | "off") {
     try {
-      const res = await fetch(`/api/leads/${group.mostRecentId}/long-term-nurture`, {
+      const res = await fetch(`/api/leads/${group.mostRecentId}/autopilot`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: "{}",
+        body: JSON.stringify({ action }),
       })
       const data = await res.json().catch(() => ({}))
       if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`)
-      // Embed-mode → notify the Drips tab parent so it refetches and the
-      // queue rows we just skipped drop out of view immediately.
       notifyLeadChangedToParent(group.mostRecentId, ["drip_campaign_type", "recommended_followup_date"])
       void fetchLeads(true)
     } catch (e) {
-      console.error("long-term-nurture failed:", e)
-      alert(`Long-term nurture failed: ${e instanceof Error ? e.message : String(e)}`)
+      console.error("autopilot failed:", e)
+      alert(`Autopilot failed: ${e instanceof Error ? e.message : String(e)}`)
     }
   }
 
@@ -2000,7 +1994,7 @@ export function LeadsTab() {
               selected={selectedIds.has(group.mostRecentId)}
               onToggleSelect={() => toggleSelect(group.mostRecentId)}
               onApplyDrip={() => applyDripToGroup(group)}
-              onLongTermNurture={() => longTermNurtureGroup(group)}
+              onAutopilot={(action) => autopilotGroup(group, action)}
               onMarkBadNumber={() => patchFlagOnGroup(group, { is_bad_number: !group.isBadNumber })}
               onMarkJunk={() => {
                 // 2026-05-11 — flipping junk ON also moves the lead to
@@ -2082,7 +2076,7 @@ interface LeadCardProps {
   selected: boolean
   onToggleSelect: () => void
   onApplyDrip: () => void
-  onLongTermNurture: () => void
+  onAutopilot: (action: "on" | "off") => void
   onMarkBadNumber: () => void
   onMarkJunk: () => void
   onFlagDnc: () => void
@@ -2729,11 +2723,17 @@ function LeadCard(p: LeadCardProps) {
             // Autopilot (2026-11-05): fixed check-in texts that send on
             // their own (scripts/autopilot.js) — the drip forecast doesn't
             // apply, and the person stays off Follow Ups until they reply.
-            <div className="rounded border border-sky-900/50 bg-sky-950/20 px-3 py-1.5 text-xs text-sky-200 inline-flex items-center gap-1.5 max-w-full">
+            <div className="rounded border border-sky-900/50 bg-sky-950/20 px-3 py-1.5 text-xs text-sky-200 inline-flex flex-wrap items-center gap-1.5 max-w-full">
               <Clock className="w-3 h-3 shrink-0" />
               <span className="font-medium">Autopilot</span>
               <span className="opacity-50">·</span>
               <span>{intakeRow.drip_touch_number ?? 0} of 8 check-in texts sent · stays off Follow Ups until they reply</span>
+              <button
+                onClick={() => p.onAutopilot("off")}
+                className="ml-1 underline decoration-sky-700 underline-offset-2 text-sky-300 hover:text-sky-100 shrink-0"
+              >
+                Take off
+              </button>
             </div>
           ) : (
             <NextTouchPill summary={nextTouch} />
@@ -3049,14 +3049,14 @@ function LeadCard(p: LeadCardProps) {
                     Apply Drip
                   </button>
                 )}
-                {(group.contactPhone || group.email) && !group.events.some(e => e.drip_campaign_type === "long_term_nurture") && (
+                {group.contactPhone && !group.isDnc && !group.isJunk && !group.events.some(e => e.drip_campaign_type === "autopilot") && (
                   <button
-                    onClick={p.onLongTermNurture}
-                    className="inline-flex items-center gap-1.5 px-3 py-1.5 min-h-[36px] rounded bg-indigo-900/40 border border-indigo-900 text-indigo-200 hover:bg-indigo-900/60 text-xs font-medium transition-colors"
-                    title="Move to slow long-term nurture (60/120/180/240/365/540 days, alternating email + iMessage) + 6-month follow-up reminder"
+                    onClick={() => p.onAutopilot("on")}
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 min-h-[36px] rounded bg-sky-900/40 border border-sky-900 text-sky-200 hover:bg-sky-900/60 text-xs font-medium transition-colors"
+                    title="Fixed check-in texts (now, +30 days, then every 90) — off Follow Ups until they reply"
                   >
                     <Hourglass className="w-3.5 h-3.5" />
-                    Long-Term Nurture
+                    Autopilot
                   </button>
                 )}
                 {group.contactPhone && (

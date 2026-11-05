@@ -240,6 +240,12 @@ export function FollowUpsTab() {
   const [loading, setLoading] = useState(false)
   const [err, setErr] = useState<string | null>(null)
   const [toast, setToast] = useState<string | null>(null)
+  const [undoBar, setUndoBar] = useState<{ text: string; run: () => Promise<void> } | null>(null)
+  useEffect(() => {
+    if (!undoBar) return
+    const t = window.setTimeout(() => setUndoBar(null), 12000)
+    return () => window.clearTimeout(t)
+  }, [undoBar])
   // Card-level busy flag, keyed by clusterKey (or drip-queue id for the
   // collapsed Failed section).
   const [actingOn, setActingOn] = useState<string | null>(null)
@@ -759,25 +765,32 @@ export function FollowUpsTab() {
     }
   }
 
-  // Park a lead on the slow long-term-nurture campaign — switches the
-  // cadence to ~60/120/180/240/365/540-day check-ins + a 6-month follow-up,
-  // dropping the contact off the active worklist.
-  async function longTermNurture(row: ContactRow) {
-    if (!confirm(
-      `Move ${row.name || "this lead"} to long-term nurture? Switches to slow check-ins ` +
-      `(~60d / 120d / 180d …) plus a 6-month follow-up, and drops them off your active list.`
-    )) return
+  // Park a lead on autopilot (2026-11-05, replaces Long-term nurture): the
+  // 8 fixed check-in texts in scripts/autopilot.js. The card leaves the list
+  // at once; an Undo bar restores the reminder + drip it had.
+  async function autopilot(row: ContactRow) {
     setActingOn(row.clusterKey)
     dropRow(row.clusterKey)
     try {
-      const res = await fetch(`/api/leads/${row.leadId}/long-term-nurture`, {
+      const res = await fetch(`/api/leads/${row.leadId}/autopilot`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: "{}",
+        body: JSON.stringify({ action: "on" }),
       })
       const body = await res.json().catch(() => ({}))
       if (!res.ok) throw new Error(body?.error || `HTTP ${res.status}`)
-      showToast("Moved to long-term nurture")
+      const who = row.name || row.phone || "This lead"
+      setUndoBar({
+        text: `${who} is on autopilot — first text goes out the next weekday afternoon.`,
+        run: async () => {
+          await fetch(`/api/leads/${row.leadId}/autopilot`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ action: "undo", undo: body.undo }),
+          })
+          void fetchData(true)
+        },
+      })
       void fetchData(true)
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e))
@@ -976,7 +989,7 @@ export function FollowUpsTab() {
     onPickInterval: applyInterval,
     onEmail: (row: ContactRow) => setComposeFor({ row, channel: "email" }),
     onText: (row: ContactRow) => setComposeFor({ row, channel: "text" }),
-    onLongTermNurture: longTermNurture,
+    onAutopilot: autopilot,
     onChangeStatus: changeStatus,
     onSaveNotes: saveNotes,
   }
@@ -1014,6 +1027,17 @@ export function FollowUpsTab() {
       {toast && (
         <div className="px-3 py-2 rounded-md bg-emerald-900/30 border border-emerald-900/50 text-xs text-emerald-200">
           {toast}
+        </div>
+      )}
+      {undoBar && (
+        <div className="px-3 py-2 rounded-md bg-sky-950/40 border border-sky-900/60 text-xs text-sky-200 flex items-center gap-2">
+          <span className="flex-1">{undoBar.text}</span>
+          <button
+            onClick={() => { const u = undoBar; setUndoBar(null); void u.run() }}
+            className="px-2 py-1 rounded border border-sky-800 text-sky-100 hover:bg-sky-900/50 shrink-0"
+          >
+            Undo
+          </button>
         </div>
       )}
 
@@ -1181,7 +1205,7 @@ interface CardHandlers {
   onPickInterval: (row: ContactRow, opt: { key: string; label: string; days?: number; months?: number }) => void
   onEmail: (row: ContactRow) => void
   onText: (row: ContactRow) => void
-  onLongTermNurture: (row: ContactRow) => void
+  onAutopilot: (row: ContactRow) => void
   onChangeStatus: (row: ContactRow, choice: { status?: string; flag?: "is_junk" | "is_dnc" }) => void
   onSaveNotes: (row: ContactRow, notes: string) => void
 }
@@ -1208,16 +1232,10 @@ function StatusMenu({
   status,
   disabled,
   onPick,
-  onNurture,
 }: {
   status: string
   disabled: boolean
   onPick: (choice: { status?: string; flag?: "is_junk" | "is_dnc" }) => void
-  // Park on the slow long_term_nurture drip campaign. Lives in this menu
-  // because "Nurture" above is just a lifecycle label — Ryan opened the
-  // dropdown looking for the slow cadence and concluded it didn't exist
-  // (2026-08-27). Distinct from the lifecycle relabel.
-  onNurture: () => void
 }) {
   const [open, setOpen] = useState(false)
   const ref = useRef<HTMLDivElement | null>(null)
@@ -1268,15 +1286,6 @@ function StatusMenu({
               {o.key === status && <Check className="w-3 h-3 ml-auto text-emerald-400" />}
             </button>
           ))}
-          <div className="my-1 border-t border-zinc-800" />
-          <button
-            type="button"
-            onClick={() => { setOpen(false); onNurture() }}
-            title="Switch to the slow long-term-nurture drip (~60/120/180/240/365/540d) + 6-month follow-up"
-            className="w-full flex items-center gap-2 px-3 py-1.5 hover:bg-zinc-800 text-left text-indigo-300/90"
-          >
-            <CalendarClock className="w-3 h-3" /> Long-term nurture (slow drip)
-          </button>
           <div className="my-1 border-t border-zinc-800" />
           <button
             type="button"
@@ -1627,8 +1636,17 @@ function ContactCard({ row, ...h }: { row: ContactRow } & CardHandlers) {
             status={row.status}
             disabled={acting}
             onPick={(choice) => h.onChangeStatus(row, choice)}
-            onNurture={() => h.onLongTermNurture(row)}
           />
+          {row.phone && (
+            <button
+              onClick={() => h.onAutopilot(row)}
+              disabled={acting}
+              title="Fixed check-in texts (now, +30 days, then every 90) — off this list until they reply"
+              className="inline-flex items-center gap-1 px-2 py-1 rounded border border-sky-900/60 text-sky-300/90 hover:text-sky-100 hover:bg-sky-950/50 transition-colors disabled:opacity-60 shrink-0"
+            >
+              <Bot className="w-3.5 h-3.5" /> Autopilot
+            </button>
+          )}
         </div>
       </div>
 
