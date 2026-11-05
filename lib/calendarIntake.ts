@@ -28,6 +28,12 @@ export interface ExtractedEvent {
   description: string | null
   /** set when the date/time can't be pinned down — the question to ask Ryan */
   question: string | null
+  /** false when the message isn't a calendar request at all (a question, a
+   *  command for something else). Only consulted on the free-text path, where
+   *  any message the bot doesn't recognise is tried as an event. */
+  isEvent?: boolean
+  /** who Ryan is meeting, as named — used to find their lead card */
+  person?: string | null
 }
 
 function pacificNow(): { iso: string; human: string; offset: string } {
@@ -52,6 +58,8 @@ Rules:
 - start/end: RFC3339 with the ${offset} offset, e.g. 2026-09-17T18:00:00${offset}. No end time given → start + 1 hour. If only a date is known and no time at all → allDay true with start/end as YYYY-MM-DD (end = the same day).
 - location: street address if visible, else venue/city. null if none.
 - description: any useful context (host, link, who invited him, what it's about). null if nothing.
+- isEvent: true when the message asks to put something on the calendar OR simply describes a dated appointment, meeting, showing, call or event ("add an appointment with Dana at 12 Oak St tomorrow at 5", "lunch with Sam Friday noon"). false when it is something else: a question, a command for another feature, a comment, a name with no date. When false, set every other field to null and allDay false.
+- person: the person or people Ryan is meeting, as named ("Dana", "Dana and her son"), else null.
 - question: null when you are confident. Set it ONLY when the date or time is genuinely ambiguous (no date anywhere, two candidate times, the slot would be in the past) — one short question for Ryan. When question is set, still fill your best guess for the other fields.
 Never invent a date or time that is not supported by the message or image.`
 }
@@ -70,8 +78,10 @@ const EVENT_TOOL: Anthropic.Tool = {
       location: { type: ["string", "null"] },
       description: { type: ["string", "null"] },
       question: { type: ["string", "null"] },
+      isEvent: { type: "boolean" },
+      person: { type: ["string", "null"] },
     },
-    required: ["summary", "start", "end", "allDay", "location", "description", "question"],
+    required: ["summary", "start", "end", "allDay", "location", "description", "question", "isEvent", "person"],
     additionalProperties: false,
   },
 }
@@ -111,6 +121,8 @@ export async function extractEvent(args: {
         location: str("location"),
         description: str("description"),
         question: str("question"),
+        isEvent: raw.isEvent !== false,
+        person: str("person"),
       },
     }
   } catch (e) {
@@ -121,20 +133,23 @@ export async function extractEvent(args: {
 export interface CreatedEvent {
   success: boolean
   error?: string
+  /** Google Calendar event id — what Undo deletes. */
+  id?: string
   htmlLink?: string
   summary?: string
   when?: string
 }
 
-/** Human "Thu, Sep 17, 6:00 PM – 9:00 PM" from the RFC3339 pair. */
+/** Human "Thu, Sep 17, 2026, 6:00 PM – 9:00 PM" from the RFC3339 pair. The
+ *  year is always shown (Ryan's rule for dates). */
 export function formatWhen(ev: { start: string; end: string; allDay: boolean }): string {
   if (ev.allDay) {
     const d = new Date(`${ev.start}T12:00:00`)
-    return `${d.toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" })} (all day)`
+    return `${d.toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric", year: "numeric" })} (all day)`
   }
   const s = new Date(ev.start), e = new Date(ev.end)
   const opts: Intl.DateTimeFormatOptions = { timeZone: "America/Los_Angeles" }
-  const day = s.toLocaleDateString("en-US", { ...opts, weekday: "short", month: "short", day: "numeric" })
+  const day = s.toLocaleDateString("en-US", { ...opts, weekday: "short", month: "short", day: "numeric", year: "numeric" })
   const t = (d: Date) => d.toLocaleTimeString("en-US", { ...opts, hour: "numeric", minute: "2-digit" })
   return `${day}, ${t(s)} – ${t(e)}`
 }
@@ -154,14 +169,34 @@ export async function createCalendarEvent(ev: ExtractedEvent): Promise<CreatedEv
       }),
       signal: AbortSignal.timeout(25_000),
     })
-    const data = (await res.json().catch(() => ({}))) as { success?: boolean; error?: string; htmlLink?: string; summary?: string }
+    const data = (await res.json().catch(() => ({}))) as { success?: boolean; error?: string; id?: string; htmlLink?: string; summary?: string }
     if (!res.ok || !data.success) return { success: false, error: data.error || `sidecar ${res.status}` }
     return {
       success: true,
+      id: data.id,
       htmlLink: data.htmlLink,
       summary: data.summary ?? ev.summary,
       when: formatWhen({ start: ev.start, end: ev.end, allDay: ev.allDay }),
     }
+  } catch (e) {
+    return { success: false, error: `sidecar unreachable: ${e instanceof Error ? e.message : String(e)}` }
+  }
+}
+
+/** Remove an event this bot created (the Undo button). The sidecar wraps
+ *  `gog calendar delete`. */
+export async function deleteCalendarEvent(eventId: string): Promise<{ success: boolean; error?: string }> {
+  if (!/^[A-Za-z0-9_-]{5,128}$/.test(eventId)) return { success: false, error: "bad event id" }
+  try {
+    const res = await fetch(`${SIDECAR_URL}/calendar/delete`, {
+      method: "POST",
+      headers: sidecarHeaders(),
+      body: JSON.stringify({ id: eventId }),
+      signal: AbortSignal.timeout(25_000),
+    })
+    const data = (await res.json().catch(() => ({}))) as { success?: boolean; error?: string }
+    if (!res.ok || !data.success) return { success: false, error: data.error || `sidecar ${res.status}` }
+    return { success: true }
   } catch (e) {
     return { success: false, error: `sidecar unreachable: ${e instanceof Error ? e.message : String(e)}` }
   }

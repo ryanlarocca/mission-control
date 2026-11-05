@@ -1486,6 +1486,34 @@ async function getClusterUpcomingFollowup(sb, lead) {
   return data?.[0]?.recommended_followup_date ?? null
 }
 
+// An appointment today or later, on any row of the person (2026-11-05).
+// A "just checking in" text the day before Ryan sits down with a seller is
+// worse than awkward. appointment_at is a date at noon UTC.
+async function getClusterUpcomingAppointment(sb, lead) {
+  const today = new Intl.DateTimeFormat("en-CA", { timeZone: "America/Los_Angeles" }).format(new Date())
+  let q = sb
+    .from("leads")
+    .select("appointment_at")
+    .gte("appointment_at", `${today}T00:00:00Z`)
+    .order("appointment_at", { ascending: true })
+    .limit(1)
+  if (lead.caller_phone && lead.caller_phone !== "Anonymous") {
+    q = q.eq("caller_phone", lead.caller_phone)
+  } else if (lead.gmail_thread_id) {
+    q = q.eq("gmail_thread_id", lead.gmail_thread_id)
+  } else if (lead.email) {
+    q = q.eq("email", lead.email)
+  } else {
+    return lead.appointment_at && lead.appointment_at.slice(0, 10) >= today ? lead.appointment_at.slice(0, 10) : null
+  }
+  const { data, error } = await q
+  if (error) {
+    console.warn(`[drip] appointment lookup failed for ${lead.id}:`, error.message)
+    return null
+  }
+  return data?.[0]?.appointment_at ? String(data[0].appointment_at).slice(0, 10) : null
+}
+
 // Has this lead got a queued (pending) drip already? If yes we don't queue
 // another touch — the previous one is awaiting Ryan's approval.
 async function hasPendingQueueRow(sb, leadId) {
@@ -1664,6 +1692,13 @@ async function processLead(sb, lead) {
   const upcomingFollowup = MANUAL_NOW ? null : await getClusterUpcomingFollowup(sb, lead)
   if (upcomingFollowup) {
     return { skipped: `upcoming_call_followup:${upcomingFollowup}` }
+  }
+
+  // HOLD while an appointment with this person is still ahead (same manual
+  // override as above).
+  const upcomingAppointment = MANUAL_NOW ? null : await getClusterUpcomingAppointment(sb, lead)
+  if (upcomingAppointment) {
+    return { skipped: `upcoming_appointment:${upcomingAppointment}` }
   }
 
   // HOLD if there's been activity in the conversation since last touch.

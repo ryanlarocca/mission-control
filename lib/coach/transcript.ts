@@ -16,7 +16,7 @@
 // and `mergeTurns` double-checks with the "this is Ryan" tell.
 //
 // Returns null whenever the dual path can't be trusted (mono recording,
-// a channel too big for Whisper, a Whisper failure) so callers fall back
+// a Whisper failure) so callers fall back
 // to the existing mixed-track transcription.
 
 import { fetchTwilioAudio } from "@/lib/leads"
@@ -228,8 +228,67 @@ export function mergeTurns(
 }
 
 // Whisper's 25 MB upload cap. Twilio WAV is 8 kHz 16-bit mono per channel
-// (16 KB/s) so one channel fits up to ~26 minutes.
+// (16 KB/s) so one channel fits up to ~26 minutes. A longer call goes up in
+// chunks (chunkMonoWav) — until 2026-11-05 it fell back to the mixed track,
+// so Ryan's longest seller calls were the ones the coach read unlabelled.
 const WHISPER_MAX_BYTES = 24_500_000
+// Target chunk size: ~15 minutes of one channel.
+const CHUNK_TARGET_BYTES = 14_400_000
+
+export interface WavChunk {
+  wav: Buffer
+  // Where this chunk starts in the full recording, in seconds.
+  offsetSec: number
+}
+
+/** Cut a mono 16-bit WAV into pieces of about `targetBytes`, each a valid
+ *  WAV. Cuts land on the quietest quarter-second within 8 seconds of the
+ *  even split, so a word is not sliced in half. A WAV already under the
+ *  target comes back as one chunk. */
+export function chunkMonoWav(wav: Buffer, targetBytes: number = CHUNK_TARGET_BYTES): WavChunk[] | null {
+  const info = parseWavHeader(wav)
+  if (!info || info.channels !== 1) return null
+  const bytesPerSec = info.sampleRate * 2
+  const total = info.dataLength - (info.dataLength % 2)
+  const count = Math.max(1, Math.ceil(total / targetBytes))
+  if (count === 1) return [{ wav, offsetSec: 0 }]
+  const even = Math.floor(total / count)
+  const win = Math.floor(bytesPerSec / 4) & ~1
+  const search = bytesPerSec * 8
+  const cuts: number[] = [0]
+  for (let i = 1; i < count; i++) {
+    const ideal = (even * i) & ~1
+    const from = Math.max(cuts[cuts.length - 1] + win, ideal - search)
+    const to = Math.min(total - win, ideal + search)
+    let best = ideal
+    let bestEnergy = Infinity
+    for (let pos = from & ~1; pos + win <= to; pos += win) {
+      let energy = 0
+      for (let j = pos; j < pos + win; j += 2) energy += Math.abs(wav.readInt16LE(info.dataOffset + j))
+      if (energy < bestEnergy) { bestEnergy = energy; best = pos + (win >> 1 & ~1) }
+    }
+    cuts.push(best)
+  }
+  cuts.push(total)
+  const out: WavChunk[] = []
+  for (let i = 0; i < count; i++) {
+    const data = wav.subarray(info.dataOffset + cuts[i], info.dataOffset + cuts[i + 1])
+    out.push({ wav: Buffer.concat([wavHeader(data.length, info.sampleRate), data]), offsetSec: cuts[i] / bytesPerSec })
+  }
+  return out
+}
+
+/** Whisper results from consecutive chunks → one result on the full
+ *  recording's clock. */
+export function joinChunkResults(parts: { raw: WhisperVerbose; offsetSec: number }[]): WhisperVerbose {
+  const segments: WhisperSegment[] = []
+  const words: WhisperWord[] = []
+  for (const { raw, offsetSec } of parts) {
+    for (const s of raw.segments) segments.push({ ...s, start: (Number(s.start) || 0) + offsetSec, end: (Number(s.end) || 0) + offsetSec })
+    for (const w of raw.words) words.push({ ...w, start: (Number(w.start) || 0) + offsetSec, end: (Number(w.end) || 0) + offsetSec })
+  }
+  return { segments, words }
+}
 // Below this peak amplitude a channel is treated as silent (see SplitChannel).
 const SILENT_PEAK = 250
 
@@ -269,6 +328,24 @@ async function transcribeSegments(wav: Buffer, filename: string): Promise<Whispe
     if (attempt < MAX_ATTEMPTS) await new Promise((r) => setTimeout(r, 1500 * attempt))
   }
   return null
+}
+
+// One channel → Whisper, in chunks when it is over the upload cap. Chunks
+// run in parallel; one failed chunk fails the channel (the caller falls
+// back to the mixed track rather than ship a transcript with a hole in it).
+async function transcribeChannel(wav: Buffer, name: string): Promise<WhisperVerbose | null> {
+  if (wav.length <= WHISPER_MAX_BYTES) return transcribeSegments(wav, `${name}.wav`)
+  const chunks = chunkMonoWav(wav)
+  if (!chunks) return null
+  console.log(`[coach/transcript] ${name} channel is ${Math.round(wav.length / 1e6)} MB — transcribing in ${chunks.length} chunks`)
+  const raws = await Promise.all(chunks.map((c, i) => transcribeSegments(c.wav, `${name}-${i + 1}.wav`)))
+  const parts: { raw: WhisperVerbose; offsetSec: number }[] = []
+  for (let i = 0; i < raws.length; i++) {
+    const raw = raws[i]
+    if (!raw) return null
+    parts.push({ raw, offsetSec: chunks[i].offsetSec })
+  }
+  return joinChunkResults(parts)
 }
 
 // Word-level pieces for the merge, one channel at a time.
@@ -317,8 +394,8 @@ export function dualWavUrl(mp3Url: string): string {
 }
 
 /** Speaker-separated transcript of a dual-channel Twilio recording, or null
- *  when the recording is mono / too long / Whisper failed — the caller then
- *  uses the mixed-track path. */
+ *  when the recording is mono or Whisper failed — the caller then uses the
+ *  mixed-track path. */
 export async function transcribeDualChannel(args: {
   mp3Url: string
   ryanChannel: 0 | 1
@@ -334,14 +411,10 @@ export async function transcribeDualChannel(args: {
     if (!split) { console.log(`${tag} recording is not 2-channel — mixed-track fallback`); return null }
     const ryanCh = split[args.ryanChannel]
     const otherCh = split[args.ryanChannel === 0 ? 1 : 0]
-    if (ryanCh.wav.length > WHISPER_MAX_BYTES || otherCh.wav.length > WHISPER_MAX_BYTES) {
-      console.warn(`${tag} a channel exceeds Whisper's upload cap — mixed-track fallback`)
-      return null
-    }
     const silent: WhisperVerbose = { segments: [], words: [] }
     const [ryanRaw, otherRaw] = await Promise.all([
-      ryanCh.peak < SILENT_PEAK ? Promise.resolve(silent) : transcribeSegments(ryanCh.wav, "ryan.wav"),
-      otherCh.peak < SILENT_PEAK ? Promise.resolve(silent) : transcribeSegments(otherCh.wav, "other.wav"),
+      ryanCh.peak < SILENT_PEAK ? Promise.resolve(silent) : transcribeChannel(ryanCh.wav, "ryan"),
+      otherCh.peak < SILENT_PEAK ? Promise.resolve(silent) : transcribeChannel(otherCh.wav, "other"),
     ])
     if (ryanRaw === null || otherRaw === null) return null
     const merged = mergeTurns(wordsToPieces(ryanRaw, "ryan"), wordsToPieces(otherRaw, "other"), args.otherLabel, args.selfLabel)

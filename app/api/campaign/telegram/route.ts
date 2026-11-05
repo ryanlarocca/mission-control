@@ -42,7 +42,8 @@ import {
   type ImageMediaType,
   type Tier,
 } from "@/lib/contactIntake"
-import { CALENDAR_INTENT_RE, createCalendarEvent, extractEvent } from "@/lib/calendarIntake"
+import { CALENDAR_INTENT_RE, createCalendarEvent, deleteCalendarEvent, extractEvent, formatWhen } from "@/lib/calendarIntake"
+import { APPT_UNDO_PREFIX, CAL_UNDO_PREFIX, findLeadForEvent, getClusterAppointment, pacificDayOf, setClusterAppointment, undoAppointment } from "@/lib/appointments"
 import { INBOX_CB_PREFIX, advanceSetup, answerInboxQuestion, bindReplyPrompt, cardForReplyPrompt, draftDealReply, findInboxByTgMessage, handleInboxCallback, handleInboxCommand, looksLikeQuestion, recordInboxReply, takeOpenReplyPrompt } from "@/lib/inboxAgent"
 import { CYCLE_DISAGREE_PREFIX } from "@/lib/marketCycle/card"
 import { checkpointById, storeRyanNote } from "@/lib/marketCycle/data"
@@ -224,10 +225,20 @@ async function addContactAndReport(chatId: number, replyTo: number | undefined, 
   })
 }
 
+const HELP_TEXT = "Reply to a specific alert to act on it (tap-and-reply). Buttons on alerts work too. Send a screenshot of a contact card with a caption (e.g. \"add as personal, tier A\") to add them to Relationships. To put something on the calendar, just say it: \"appointment with Ana at 123 Main St tomorrow 2pm\" (or send an invite screenshot captioned \"add to calendar\"). Reply to a call alert with \"name: Dave Chen, agent, tier B\" to name a new contact."
+
 /** Text or photo(+caption) → Google Calendar event (2026-08-21, replaces the
  * Thadius calendar-events skill). Creates immediately when unambiguous;
- * asks one question otherwise. */
-async function handleCalendar(chatId: number, msg: TgMessage, text: string): Promise<void> {
+ * asks one question otherwise.
+ *
+ * `fallback` (2026-11-05): the message matched no command and carries no
+ * calendar keyword — "Add an appointment with Dana at 12 Oak St tomorrow at
+ * 5 PM" used to get the help text. It is read as an event anyway; the help
+ * text goes out only when the reader says it isn't one.
+ *
+ * When the event names a lead (first name + address), it also becomes the
+ * Appointment on that lead's card (lib/appointments). */
+async function handleCalendar(chatId: number, msg: TgMessage, text: string, opts?: { fallback?: boolean }): Promise<void> {
   let image: { base64: string; mediaType: ImageMediaType } | undefined
   const fileId = msg.photo?.length ? msg.photo[msg.photo.length - 1].file_id : msg.document?.file_id
   if (fileId) {
@@ -240,7 +251,11 @@ async function handleCalendar(chatId: number, msg: TgMessage, text: string): Pro
   }
   const { event, error } = await extractEvent({ text, image })
   if (!event) {
-    await tg("sendMessage", { chat_id: chatId, text: `⚠️ Couldn't read an event — ${error}`, reply_to_message_id: msg.message_id })
+    await tg("sendMessage", { chat_id: chatId, text: opts?.fallback ? HELP_TEXT : `⚠️ Couldn't read an event — ${error}`, reply_to_message_id: msg.message_id })
+    return
+  }
+  if (opts?.fallback && event.isEvent === false) {
+    await tg("sendMessage", { chat_id: chatId, text: HELP_TEXT, reply_to_message_id: msg.message_id })
     return
   }
   if (event.question || !event.summary || !event.start || !event.end) {
@@ -251,14 +266,56 @@ async function handleCalendar(chatId: number, msg: TgMessage, text: string): Pro
     })
     return
   }
+  // A named lead → the same event is their Appointment milestone. If their
+  // card already holds this day's appointment with a calendar event (booked
+  // from the call), say so instead of adding a second event.
+  const sb = getLeadsClient()
+  let found: { leadId: string; name: string } | null = null
+  try {
+    found = await findLeadForEvent(sb, { person: event.person ?? null, location: event.location, summary: event.summary })
+  } catch (e) {
+    console.error("[campaign-tg] lead lookup threw:", e instanceof Error ? e.message : String(e))
+  }
+  const day = event.allDay ? event.start : pacificDayOf(event.start)
+  if (found && day) {
+    const cur = await getClusterAppointment(sb, found.leadId)
+    if (cur?.date === day && cur.details?.event_id) {
+      const d = cur.details
+      await tg("sendMessage", {
+        chat_id: chatId,
+        text: `📅 Already booked — ${found.name}: ${d.end && /T\d{2}:/.test(d.start) ? formatWhen({ start: d.start, end: d.end, allDay: false }) : day}${d.location ? `\n📍 ${d.location}` : ""}\nIt's on the lead card and your calendar, so I didn't add it twice.${d.html_link ? `\n${d.html_link}` : ""}`,
+        reply_to_message_id: msg.message_id,
+        disable_web_page_preview: true,
+        reply_markup: { inline_keyboard: [[{ text: "↩️ Undo", callback_data: `${APPT_UNDO_PREFIX}${found.leadId}` }]] },
+      })
+      return
+    }
+  }
   const out = await createCalendarEvent(event)
+  let linked: { leadId: string; name: string } | null = null
+  if (out.success) {
+    try {
+      if (found && day) {
+        const set = await setClusterAppointment(sb, found.leadId, {
+          date: day,
+          details: { start: event.start, end: event.end, location: event.location, with: event.person ?? null, event_id: out.id ?? null, html_link: out.htmlLink ?? null, source: "telegram", set_at: new Date().toISOString() },
+        })
+        if (set.ok) linked = found
+        else console.error("[campaign-tg] appointment link failed:", set.error)
+      }
+    } catch (e) {
+      console.error("[campaign-tg] appointment link threw:", e instanceof Error ? e.message : String(e))
+    }
+  }
+  const undo = linked ? `${APPT_UNDO_PREFIX}${linked.leadId}` : out.id ? `${CAL_UNDO_PREFIX}${out.id}` : null
   await tg("sendMessage", {
     chat_id: chatId,
     text: out.success
-      ? `📅 ${out.summary} — ${out.when}${event.location ? `\n📍 ${event.location}` : ""}${out.htmlLink ? `\n${out.htmlLink}` : ""}`
+      ? `📅 ${out.summary} — ${out.when}${event.location ? `\n📍 ${event.location}` : ""}${linked ? `\n👤 Also set as the appointment on ${linked.name}'s lead card.` : ""}${out.htmlLink ? `\n${out.htmlLink}` : ""}`
       : `⚠️ Not added — ${out.error}`,
     reply_to_message_id: msg.message_id,
     disable_web_page_preview: true,
+    ...(out.success && undo && undo.length <= 64 ? { reply_markup: { inline_keyboard: [[{ text: "↩️ Undo", callback_data: undo }]] } } : {}),
   })
 }
 
@@ -421,6 +478,28 @@ export async function POST(request: Request) {
       await tg("editMessageReplyMarkup", { chat_id: chatId, message_id: cb.message?.message_id, reply_markup: { inline_keyboard: [] } })
       if (yes) waitUntil(runMini(chatId, "reboot", cb.message?.message_id))
       else await tg("sendMessage", { chat_id: chatId, text: "❌ Reboot cancelled — nothing happened.", reply_to_message_id: cb.message?.message_id })
+      return NextResponse.json({ ok: true })
+    }
+    // Appointment / calendar ↩️ Undo (2026-11-05, lib/appointments): takes
+    // the appointment off the lead card and deletes the calendar event; a
+    // calendar-only event (no lead named) is just deleted.
+    if ((cb.data.startsWith(APPT_UNDO_PREFIX) || cb.data.startsWith(CAL_UNDO_PREFIX)) && typeof chatId === "number") {
+      const forLead = cb.data.startsWith(APPT_UNDO_PREFIX)
+      const id = cb.data.slice((forLead ? APPT_UNDO_PREFIX : CAL_UNDO_PREFIX).length)
+      const cardId = cb.message?.message_id
+      await tg("answerCallbackQuery", { callback_query_id: cb.id, text: "Undoing…" })
+      waitUntil((async () => {
+        let out: { ok: boolean; label: string }
+        if (forLead) {
+          out = /^[0-9a-f-]{36}$/.test(id) ? await undoAppointment(getLeadsClient(), id) : { ok: false, label: "bad button" }
+        } else {
+          const del = await deleteCalendarEvent(id)
+          out = del.success ? { ok: true, label: "removed from your calendar" } : { ok: false, label: `couldn't remove the calendar event (${del.error})` }
+        }
+        if (out.ok) await tg("editMessageReplyMarkup", { chat_id: chatId, message_id: cardId, reply_markup: { inline_keyboard: [] } })
+        const label = out.label.charAt(0).toUpperCase() + out.label.slice(1)
+        await tg("sendMessage", { chat_id: chatId, text: out.ok ? `↩️ ${label}.` : `⚠️ ${label}.`, reply_to_message_id: cardId, disable_web_page_preview: true })
+      })().catch((e) => console.error("[campaign-tg] appointment undo failed:", e instanceof Error ? e.message : String(e))))
       return NextResponse.json({ ok: true })
     }
     // Daily lead-status summary (2026-10-24): ↩️ Undo puts one automatic
@@ -1011,11 +1090,20 @@ export async function POST(request: Request) {
   }
 
   if (!msg.reply_to_message) {
-    await tg("sendMessage", {
-      chat_id: chatId,
-      text: "Reply to a specific alert to act on it (tap-and-reply). Buttons on alerts work too. Send a screenshot of a contact card with a caption (e.g. \"add as personal, tier A\") to add them to Relationships. Say \"cal: showing at 123 Main St tomorrow 2pm with Ana\" (or send an invite screenshot captioned \"add to calendar\") to create a calendar event. Reply to a call alert with \"name: Dave Chen, agent, tier B\" to name a new contact.",
-      reply_to_message_id: msg.message_id,
-    })
+    // Nothing above claimed it. Before the help text, read it as a calendar
+    // event (2026-11-05: "Add an appointment with … tomorrow Friday at 5 PM"
+    // has no calendar keyword and got the help text). Two-word messages
+    // skip the model.
+    if (body.split(/\s+/).length >= 3) {
+      waitUntil(
+        handleCalendar(chatId, msg, body, { fallback: true }).catch(async (e) => {
+          console.error("[campaign-tg] fallback calendar failed:", e instanceof Error ? e.message : String(e))
+          await tg("sendMessage", { chat_id: chatId, text: HELP_TEXT, reply_to_message_id: msg.message_id })
+        })
+      )
+      return NextResponse.json({ ok: true })
+    }
+    await tg("sendMessage", { chat_id: chatId, text: HELP_TEXT, reply_to_message_id: msg.message_id })
     return NextResponse.json({ ok: true })
   }
 

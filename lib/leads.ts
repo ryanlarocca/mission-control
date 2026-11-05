@@ -9,6 +9,7 @@ import { completeText, extractJsonObject, hasLlmKey, SONNET } from "./llm"
 import { autoLinkMailRecord } from "./mailMatch"
 import { OWED_PREFIX } from "./next-touch"
 import { pacificDate, pacificDatePlusDays } from "@/lib/pacificDate"
+import { parseAnalyzedAppointment, type AnalyzedAppointment } from "@/lib/appointmentTime"
 
 export const CAMPAIGN_MAP: Record<string, string> = {
   "+16504364279": "MFM-A",
@@ -2012,6 +2013,19 @@ export async function processRecordingBackground(args: {
     // recommendation (date + reason). The status portion of that result
     // is dropped via applyFollowupOnlyResult — Ryan made the call and
     // already knows where the lead stands.
+    // A real two-way conversation (not a voicemail, not Jackie): the
+    // analyzer is shown the card's property details and returns the updated
+    // set, and what it establishes (meeting set, number given) is handed to
+    // the Sales Coach as fact.
+    const liveCall = kind === "call" && !args.jackie && (args.recordingDurationSec ?? 0) >= 120
+    const liveCardDetails = async (): Promise<PropertyDetail[] | null> => {
+      if (!liveCall || !leadId) return null
+      const sb = getLeadsClient()
+      const { data } = await sb.from("leads").select("id, caller_phone, email, property_details").eq("id", leadId).maybeSingle()
+      if (!data) return null
+      return (await cardPropertyDetails(sb, data as { id: string; caller_phone: string | null; email: string | null; property_details: unknown })).details
+    }
+    let callAnalysis: AnalyzeCallResult | null = null
     let outboundSummary: string | null = null
     if (direction === "outbound" && transcription && leadId) {
       outboundSummary = await summarizeOutboundCall(transcription)
@@ -2037,9 +2051,10 @@ export async function processRecordingBackground(args: {
           callerPhone,
           excludeId: leadId,
         })
-        const followup = await analyzeCallTranscript(transcription, { clusterHistory })
+        const followup = await analyzeCallTranscript(transcription, { clusterHistory, cardDetails: await liveCardDetails() })
         if (followup) {
-          await applyFollowupOnlyResult(leadId, followup)
+          callAnalysis = followup
+          await applyFollowupOnlyResult(leadId, followup, { liveCall })
           if (followup.recommended_followup_date) {
             console.log(`[followup-only] Lead ${leadId} → ${followup.recommended_followup_date}: ${followup.followup_reason}`)
           }
@@ -2071,9 +2086,10 @@ export async function processRecordingBackground(args: {
             callerPhone,
             excludeId: leadId,
           })
-          analysis = await analyzeCallTranscript(transcription, { clusterHistory })
+          analysis = await analyzeCallTranscript(transcription, { clusterHistory, cardDetails: await liveCardDetails() })
           if (analysis) {
-            await applyAnalyzeCallResult(leadId, analysis)
+            callAnalysis = analysis
+            await applyAnalyzeCallResult(leadId, analysis, { liveCall })
             console.log(`[analyze-call] Lead ${leadId} → ${analysis.temperature}: ${analysis.summary.slice(0, 100)}`)
           }
         } catch (e) {
@@ -2205,10 +2221,11 @@ export async function processRecordingBackground(args: {
     // answered — gets a score + critique on Telegram and coach_rating on
     // the row. Short calls and Jackie's are skipped inside. Never throws.
     if (kind === "call" && !args.jackie && transcription && leadId) {
-      const { rateLeadCall } = await import("@/lib/coach/rate")
+      const { callFacts, rateLeadCall } = await import("@/lib/coach/rate")
       await rateLeadCall({
         leadId, callerPhone, direction, transcript: transcription, separated, talkRatio,
         durationSec: args.recordingDurationSec ?? null,
+        facts: callFacts(callAnalysis),
       })
     }
 
@@ -2271,7 +2288,7 @@ export async function processInboundTextBackground(leadId: string, callerPhone: 
     const clusterHistory = await fetchClusterHistory(sb, { callerPhone, excludeId: leadId })
     const analysis = await analyzeCallTranscript(body, { clusterHistory, channel: "text" })
     if (analysis) {
-      await applyAnalyzeCallResult(leadId, analysis)
+      await applyAnalyzeCallResult(leadId, analysis, { channel: "text" })
       console.log(`[analyze-text] Lead ${leadId} → ${analysis.temperature}: ${analysis.summary.slice(0, 100)}`)
     } else {
       console.error(`[analyze-text] Lead ${leadId} → analyzer returned nothing`)
@@ -2306,15 +2323,15 @@ export async function summarizeOutboundCall(
   // clipped it.
   const prompt = `You are summarizing a phone call between Ryan (a real estate investor) and a lead. Based on the transcript below, write the notes Ryan will read before his next call with this person. No labels, no markdown, no bullets, no quotes — plain prose.
 
-Length scales with the call: a voicemail or a quick "call me back" is one or two sentences; a real conversation is one paragraph (up to ~6 sentences). Never pad a short call.
+Length scales with the call: a voicemail or a quick "call me back" is one or two sentences; a real conversation is one paragraph (up to ~6 sentences); a long one (15 minutes or more of real talk) may run to two paragraphs so nothing that matters to the deal is dropped. Never pad a short call.
 
-Always capture, when present: who Ryan spoke with, what the property is, anything the seller said about price, condition, tenants/rents, timeline or motivation, any number Ryan offered and how the seller responded, and the agreed next step. Property specifics — bed/bath count, multi-unit mix (e.g. duplex: 1x 3bd/2ba + 1x 2bd/1ba), per-unit or total monthly rents, vacancy status — go in explicitly. They're load-bearing details for Ryan; don't drop them to save words. Anchor on how the call ENDED (agreed / declined / undecided), not on how friendly the middle was.
+Always capture, when present: who Ryan spoke with, what the property is, anything the seller said about price, condition, tenants/rents, timeline or motivation, any number Ryan offered and how the seller responded, and the agreed next step. Also, when they came up: who lives in the house and on what terms (family or tenant, paying or not, any lease, whether they are expected to leave willingly); what is owed on it (mortgage, liens) and any other debts the seller wants to clear; who else has a say in the decision; and anything either side promised to do. If a meeting was set, give the day, time, place and who will be there. Property specifics — bed/bath count, multi-unit mix (e.g. duplex: 1x 3bd/2ba + 1x 2bd/1ba), per-unit or total monthly rents, vacancy status — go in explicitly. They're load-bearing details for Ryan; don't drop them to save words. Anchor on how the call ENDED (agreed / declined / undecided), not on how friendly the middle was.
 
 TRANSCRIPT:
 "${transcription}"`
 
   try {
-    const out = await completeText({ model: SONNET, prompt, maxTokens: 700, thinking: false, tag: "[summarize]" })
+    const out = await completeText({ model: SONNET, prompt, maxTokens: 1200, thinking: false, tag: "[summarize]" })
     const content = out.text
     if (!content) return null
     // Strip surrounding quote marks if the model wrapped its response.
@@ -2416,14 +2433,31 @@ function normPropLabel(label: string | null): string {
 //   • Existing properties the AI didn't mention this round are KEPT untouched —
 //     a 20-second "call me back" voicemail must not wipe Steve's second property.
 // This mirrors the fill-if-empty hands-off rule used for name/property_address.
+//
+// 2026-11-05 — two additions:
+//   • Labels that open with the same house number are the same property
+//     ("261 Mapel Drive" heard on a call vs "261 Maple Dr" on the card, or
+//     "265 (seller's other house)"). Without this a seller's card grew three
+//     entries for one house, one per spelling.
+//   • `preferIncoming`: for a long live conversation the analyzer is shown
+//     the card's current details and returns the updated set, so its values
+//     replace the card's on a matched property (labels stay the card's).
+//     Everything else keeps the fill-only rule.
+function leadingHouseNumber(label: string | null): string | null {
+  const m = /^\s*(\d{1,6})\b/.exec(label || "")
+  return m ? m[1] : null
+}
+
 export function mergePropertyDetails(
   existing: unknown,
-  incoming: unknown
+  incoming: unknown,
+  opts?: { preferIncoming?: boolean }
 ): PropertyDetail[] {
   const base = parsePropertyDetails(existing)
   const fresh = parsePropertyDetails(incoming)
   for (const inc of fresh) {
     const incKey = normPropLabel(inc.label)
+    const incNum = leadingHouseNumber(inc.label)
     const match =
       incKey.length >= 4
         ? base.find((b) => {
@@ -2432,7 +2466,7 @@ export function mergePropertyDetails(
               bKey.length >= 4 &&
               (bKey === incKey || bKey.includes(incKey) || incKey.includes(bKey))
             )
-          })
+          }) ?? (incNum ? base.find((b) => leadingHouseNumber(b.label) === incNum) : undefined)
         : // Unlabeled incoming property: only auto-merge when there's exactly
           // one existing property to merge into, otherwise we'd risk folding a
           // genuinely-new second property into the wrong one. Else append.
@@ -2441,13 +2475,85 @@ export function mergePropertyDetails(
           : undefined
     if (match) {
       for (const f of PROPERTY_DETAIL_FIELDS) {
-        if (!match[f] && inc[f]) match[f] = inc[f]
+        if (!inc[f]) continue
+        if (!match[f] || (opts?.preferIncoming && f !== "label")) match[f] = inc[f]
       }
     } else {
       base.push(inc)
     }
   }
   return base
+}
+
+// What the card shows for a person's properties, and the row it reads them
+// from — the same rule as the Leads tab (groupLeads): the newest inbound
+// row's details when it has any, else the newest row that has some.
+// The analyzer's persisters merge into THIS set and write the result back to
+// that row too. Before 2026-11-05 they merged into the fresh row alone, so
+// everything a seller said on a call Ryan placed sat on the outbound call
+// row while the card kept showing what her last text had produced.
+export async function cardPropertyDetails(
+  sb: SupabaseClient,
+  row: { id: string; caller_phone?: string | null; email?: string | null; property_details?: unknown }
+): Promise<{ details: PropertyDetail[]; anchorId: string | null }> {
+  const own = parsePropertyDetails(row.property_details)
+  let q = sb.from("leads").select("id, created_at, twilio_number, lead_type, property_details").order("created_at", { ascending: false }).limit(80)
+  if (row.caller_phone && !isAnonymousCaller(row.caller_phone)) q = q.eq("caller_phone", row.caller_phone)
+  else if (row.email) q = q.eq("email", row.email)
+  else return { details: own, anchorId: null }
+  const { data, error } = await q
+  if (error || !data?.length) return { details: own, anchorId: null }
+  const rows = data as Array<{ id: string; twilio_number: string | null; lead_type: string | null; property_details: unknown }>
+  const anchor = rows.find((r) => !!r.twilio_number || r.lead_type === "form") ?? rows[0]
+  const anchorDetails = parsePropertyDetails(anchor.property_details)
+  const details = anchorDetails.length
+    ? anchorDetails
+    : rows.map((r) => parsePropertyDetails(r.property_details)).find((d) => d.length > 0) ?? own
+  return { details, anchorId: anchor.id }
+}
+
+// The card's summary is cached against the newest row's created_at. A
+// transcript lands minutes after its row is created, so a card opened in
+// between keeps a "waiting on the call" paragraph forever. Clearing the
+// stamp on every row of the person makes the next open regenerate it.
+// Inbound analysis has done this since 2026-05-11; calls Ryan places did
+// not until 2026-11-05.
+async function invalidateClusterSummary(
+  sb: SupabaseClient,
+  leadId: string,
+  who: { caller_phone?: string | null; email?: string | null } | null | undefined
+): Promise<void> {
+  try {
+    let invQ = sb.from("leads").update({ ai_summary_generated_at: null })
+    if (who?.caller_phone) invQ = invQ.eq("caller_phone", who.caller_phone)
+    else if (who?.email) invQ = invQ.eq("email", who.email)
+    else return
+    const { error: invErr } = await invQ
+    if (invErr) console.error(`[analyze-call] cluster cache invalidate failed for ${leadId}:`, invErr.message)
+  } catch (e) {
+    console.error(`[analyze-call] cluster cache invalidate threw for ${leadId}:`, e)
+  }
+}
+
+// When the analyzer names an address for a row that has none, the card's
+// own spelling of that house wins over the transcript's ("261 Mapel Drive"
+// heard vs "261 Maple Dr" from the mailing list). Same house number only —
+// a different number is a different property and is kept as heard.
+async function knownClusterAddress(
+  sb: SupabaseClient,
+  row: { id: string; caller_phone?: string | null; email?: string | null },
+  heard: string
+): Promise<string> {
+  const num = leadingHouseNumber(heard)
+  if (!num) return heard
+  let q = sb.from("leads").select("property_address").neq("id", row.id).not("property_address", "is", null).order("created_at", { ascending: false }).limit(20)
+  if (row.caller_phone && !isAnonymousCaller(row.caller_phone)) q = q.eq("caller_phone", row.caller_phone)
+  else if (row.email) q = q.eq("email", row.email)
+  else return heard
+  const { data, error } = await q
+  if (error) return heard
+  const known = (data ?? []).map((r) => ((r.property_address as string | null) ?? "").trim()).find((a) => a && leadingHouseNumber(a) === num)
+  return known || heard
 }
 
 export interface AnalyzeCallResult {
@@ -2479,6 +2585,10 @@ export interface AnalyzeCallResult {
   // existing property_details (see mergePropertyDetails) so facts accumulate
   // across calls. [] when nothing property-specific was discussed.
   property_details: PropertyDetail[]
+  // An in-person meeting both sides agreed to, with a day and a time
+  // (2026-11-05). The persisters book it: calendar event, Appointment
+  // milestone on the card, Telegram card with Undo (lib/appointments).
+  appointment?: AnalyzedAppointment | null
 }
 
 // Event text in an LLM history block. A whole call transcript fits — an
@@ -2561,13 +2671,31 @@ export async function analyzeCallTranscript(
   // calls so name / address / follow-up / offer land on the card and the
   // mailed record links — a texter often gives the address on text 2 or 3,
   // which is why the cluster history (prior texts) rides along.
-  context?: { clusterHistory?: string | null; channel?: "call" | "text" }
+  // cardDetails (2026-11-05): what the card already holds for the person's
+  // properties. Passed for a long live conversation so the model returns
+  // the UPDATED set (see mergePropertyDetails preferIncoming).
+  context?: { clusterHistory?: string | null; channel?: "call" | "text"; cardDetails?: PropertyDetail[] | null }
 ): Promise<AnalyzeCallResult | null> {
   if (!hasLlmKey()) {
     console.warn("[analyze-call] ANTHROPIC_API_KEY not set; skipping")
     return null
   }
   const today = pacificDate()
+  const weekday = new Intl.DateTimeFormat("en-US", { timeZone: "America/Los_Angeles", weekday: "long" }).format(new Date())
+  const cardDetails = context?.cardDetails?.length ? context.cardDetails : null
+  const cardDetailsBlock = cardDetails
+    ? `
+
+    THE CARD ALREADY HOLDS THESE PROPERTY DETAILS (from earlier calls, texts
+    and Ryan's own edits):
+    ${JSON.stringify(cardDetails)}
+    Return the full UPDATED set. Reuse the card's label for a property it
+    already has — never add a second entry for the same house under another
+    spelling (a transcript's spelling of a street is less reliable than the
+    card's). Keep every fact on the card that this conversation did not
+    contradict, add what it revealed, and where it corrects something, write
+    the corrected version.`
+    : ""
   const history = context?.clusterHistory?.trim() || null
   // The history block is optional context, the fresh transcript is the
   // primary signal. We instruct the model accordingly so a brief follow-up
@@ -2584,7 +2712,7 @@ export async function analyzeCallTranscript(
     : "FRESH TRANSCRIPT (this is the current call):"
   const prompt = `${intro}
 
-TODAY IS ${today}. All recommended_followup_date values must be on or after today.${historyBlock ? "\n\nExtract NAME, PROPERTY_ADDRESS and EMAIL from the full conversation (prior + fresh). Other fields (temperature, summary, follow-up) should reflect the FRESH transcript primarily, using prior context for continuity.\n" : ""}
+TODAY IS ${today} (${weekday}), Pacific time. All recommended_followup_date values must be on or after today.${historyBlock ? "\n\nExtract NAME, PROPERTY_ADDRESS and EMAIL from the full conversation (prior + fresh). Other fields (temperature, summary, follow-up) should reflect the FRESH transcript primarily, using prior context for continuity.\n" : ""}
 
 Produce a JSON object with these fields:
 
@@ -2671,7 +2799,11 @@ ${TEMPERATURE_RUBRIC}
       • rents: per-unit or total monthly rent ("\$2,800 + \$2,100/mo",
           "grossing ~\$8k/mo").
       • occupancy: who's in it ("both occupied, month-to-month", "1 unit vacant",
-          "owner-occupied", "problem tenant downstairs").
+          "owner-occupied", "problem tenant downstairs"). When the seller
+          talked about the people living there, say who they are and how they
+          are related to the seller, whether they pay, any lease (signed or
+          not), and whether they are expected to leave willingly — this
+          decides how Ryan can buy the house.
       • square_footage: e.g. "~2,400 sqft".
       • lot_size: e.g. "6,000 sqft lot", "0.25 acre".
       • year_built: e.g. "1978".
@@ -2680,7 +2812,28 @@ ${TEMPERATURE_RUBRIC}
 
     Return an empty array [] when no property specifics were discussed (a pure
     voicemail greeting, a wrong number, an opt-out). Don't fabricate a property
-    just to fill the field.
+    just to fill the field.${cardDetailsBlock}
+
+- appointment: an IN-PERSON meeting, walkthrough or property visit that Ryan
+    and the seller BOTH agreed to in this conversation, with a specific day
+    AND a specific time. null otherwise. Object fields:
+      • date: "YYYY-MM-DD", resolved against TODAY ("tomorrow", "Friday",
+          "the 12th").
+      • time: "HH:MM", 24-hour, Pacific. Transcripts garble a.m./p.m. ("5
+          a.m. 5 p.m.") — use the one both sides settled on.
+      • location: where they will meet, as stated — a street address when one
+          was given ("265 Oak Dr"), else null.
+      • with: who Ryan is meeting, by name ("Dana and her son Lee"), else null.
+      • about: one short line on what the meeting is for.
+    It still counts when the seller said they would text to confirm, as long
+    as a day and a time were agreed.
+    Set null when: no meeting came up; one side floated it and the other did
+    not agree; the day or the time is still open ("sometime next week", "I'll
+    let you know"); or it is a PHONE callback ("call me tomorrow at 9") —
+    that belongs in the follow-up fields, not here.
+    When appointment is set, recommended_followup_date is the appointment
+    date and followup_reason starts with "Appointment:" and gives the day,
+    time, place and who (this overrides the follow-up rules below).
 
 - recommended_followup_date: ISO date YYYY-MM-DD ≥ today. Reason the follow-up
     timing from what was actually said — EVERY genuine seller lead gets a date.
@@ -2804,6 +2957,7 @@ Respond with ONLY the JSON object — no markdown fences, no explanation.
   "is_dnc": true | false,
   "offer_amount": number | null,
   "offer_verbalized": true | false,
+  "appointment": { "date": "YYYY-MM-DD", "time": "HH:MM", "location": "..." | null, "with": "..." | null, "about": "..." | null } | null,
   "property_details": [
     {
       "label": "..." | null,
@@ -2885,13 +3039,23 @@ ${historyBlock}${freshLabel}
         : null
     const guarded = validateFollowupAgainstReason(rawDate, rawReason)
     const owed = clampOwedFollowup(guarded.date, guarded.reason, today)
-    const { date: followupDate, reason: followupReason } = clampOfferRequestedFollowup(
+    const clamped = clampOfferRequestedFollowup(
       isLeadMoment(parsed.moment) ? parsed.moment : null,
       parsed.offer_verbalized === true,
       owed.date,
       owed.reason,
       today
     )
+    // An agreed meeting is the follow-up: its date stands, whatever the
+    // owed-deliverable and offer clamps would have made of the wording.
+    const rawAppt = parseAnalyzedAppointment(parsed.appointment)
+    const appointment = rawAppt && rawAppt.date >= today ? rawAppt : null
+    const followupDate = appointment ? appointment.date : clamped.date
+    const followupReason = appointment
+      ? (rawReason && /^appointment:/i.test(rawReason)
+          ? rawReason
+          : `Appointment: ${[appointment.with ? `meet ${appointment.with}` : "meeting", appointment.location ? `at ${appointment.location}` : null, `on ${appointment.date} at ${appointment.time}`].filter(Boolean).join(" ")}.`)
+      : clamped.reason
     return {
       temperature,
       moment: isLeadMoment(parsed.moment) ? parsed.moment : null,
@@ -2917,6 +3081,7 @@ ${historyBlock}${freshLabel}
           : null,
       offer_verbalized: parsed.offer_verbalized === true,
       property_details: parsePropertyDetails(parsed.property_details),
+      appointment,
     }
   } catch (e) {
     // The recording pipeline alerts Telegram when this returns null on a
@@ -3076,7 +3241,10 @@ export function clampOfferRequestedFollowup(
 // while the lead card still shows the correct name from the older row.
 export async function applyFollowupOnlyResult(
   leadId: string,
-  result: AnalyzeCallResult
+  result: AnalyzeCallResult,
+  // liveCall: the analyzer was shown the card's property details and returned
+  // the updated set (a real conversation, not a voicemail).
+  opts?: { liveCall?: boolean }
 ): Promise<void> {
   const sb = getLeadsClient()
   // Respect the AI's null — if no timeline was extracted from the transcript,
@@ -3102,14 +3270,17 @@ export async function applyFollowupOnlyResult(
     update.name = (await knownClusterName(sb, { id: leadId, caller_phone: existing?.caller_phone, email: existing?.email })) ?? result.name
   }
   if (result.property_address && !existing?.property_address) {
-    update.property_address = result.property_address
+    update.property_address = await knownClusterAddress(sb, { id: leadId, caller_phone: existing?.caller_phone, email: existing?.email }, result.property_address)
   }
   if (result.email && !existing?.email) update.email = result.email
 
   // Property details — same sticky merge as the inbound path. Ryan's own
   // outbound calls are where a lot of spec-gathering actually happens, so this
   // path must accumulate property facts too (factual, like name/address).
-  const mergedDetails = mergePropertyDetails(existing?.property_details, result.property_details)
+  // The merge starts from what the CARD shows and is written back to the row
+  // the card reads (cardPropertyDetails) — an outbound row is never that row.
+  const card = await cardPropertyDetails(sb, { id: leadId, caller_phone: existing?.caller_phone, email: existing?.email, property_details: existing?.property_details })
+  const mergedDetails = mergePropertyDetails(card.details, result.property_details, { preferIncoming: opts?.liveCall === true })
   if (mergedDetails.length > 0) update.property_details = mergedDetails
 
   // Offer detection — same hands-off rule as applyAnalyzeCallResult.
@@ -3130,6 +3301,10 @@ export async function applyFollowupOnlyResult(
   if (result.is_dnc) update.recommended_followup_date = null
 
   const { error } = await sb.from("leads").update(update).eq("id", leadId)
+  if (!error && mergedDetails.length > 0 && card.anchorId && card.anchorId !== leadId) {
+    const { error: anchorErr } = await sb.from("leads").update({ property_details: mergedDetails }).eq("id", card.anchorId)
+    if (anchorErr) console.error(`[analyze-call] card property details write failed for ${card.anchorId}:`, anchorErr.message)
+  }
   // Mailed-record auto-link once triage has a name / address to match on
   // (direct-mail tracking, 2026-10-08). Best-effort, never fails the write.
   // Runs whenever the analysis carried a name or address (2026-10-21), not
@@ -3163,6 +3338,15 @@ export async function applyFollowupOnlyResult(
     })
     console.log(`[followup-only] auto-DNC lead ${leadId}: ${out.ok ? "saved" : out.error} — ${result.followup_reason || "no reason text"}`)
   }
+
+  // A meeting agreed on the call → calendar, card milestone, Telegram card.
+  if (result.appointment && !result.is_dnc) {
+    const { bookAppointmentFromAnalysis } = await import("@/lib/appointments")
+    await bookAppointmentFromAnalysis(leadId, result.appointment, "call")
+  }
+
+  // The card's summary predates this transcript — make the next open rebuild it.
+  await invalidateClusterSummary(sb, leadId, existing)
 }
 
 // Phase 7D — persist the unified analyzer result. Writes:
@@ -3182,7 +3366,8 @@ export async function applyFollowupOnlyResult(
 // wheels banner doesn't linger after re-analyze.
 export async function applyAnalyzeCallResult(
   leadId: string,
-  result: AnalyzeCallResult
+  result: AnalyzeCallResult,
+  opts?: { liveCall?: boolean; channel?: "call" | "text" }
 ): Promise<void> {
   const sb = getLeadsClient()
 
@@ -3219,7 +3404,7 @@ export async function applyAnalyzeCallResult(
     update.name = (await knownClusterName(sb, { id: leadId, caller_phone: existing?.caller_phone, email: existing?.email })) ?? result.name
   }
   if (result.property_address && !existing?.property_address) {
-    update.property_address = result.property_address
+    update.property_address = await knownClusterAddress(sb, { id: leadId, caller_phone: existing?.caller_phone, email: existing?.email }, result.property_address)
   }
   // Email the caller stated aloud — fill only when the row has none, so a
   // hand-corrected address is never clobbered. This is what makes the
@@ -3231,7 +3416,11 @@ export async function applyAnalyzeCallResult(
   // property the AI didn't mention this pass. Only write when the merge
   // actually produced something, so a property-less call doesn't clobber a
   // row that already has details (e.g. Ryan hand-entered them).
-  const mergedDetails = mergePropertyDetails(existing?.property_details, result.property_details)
+  // The merge starts from what the CARD shows (cardPropertyDetails), so a
+  // fresh inbound row — which becomes the row the card reads — carries the
+  // whole set forward instead of only what this one message mentioned.
+  const card = await cardPropertyDetails(sb, { id: leadId, caller_phone: existing?.caller_phone, email: existing?.email, property_details: existing?.property_details })
+  const mergedDetails = mergePropertyDetails(card.details, result.property_details, { preferIncoming: opts?.liveCall === true })
   if (mergedDetails.length > 0) update.property_details = mergedDetails
 
   // Offer detection — hands-off rule. Only write the amount + timestamp
@@ -3261,6 +3450,10 @@ export async function applyAnalyzeCallResult(
   if (result.is_dnc) update.recommended_followup_date = null
 
   const { error } = await sb.from("leads").update(update).eq("id", leadId)
+  if (!error && mergedDetails.length > 0 && card.anchorId && card.anchorId !== leadId) {
+    const { error: anchorErr } = await sb.from("leads").update({ property_details: mergedDetails }).eq("id", card.anchorId)
+    if (anchorErr) console.error(`[analyze-call] card property details write failed for ${card.anchorId}:`, anchorErr.message)
+  }
   // Mailed-record auto-link once triage has a name / address to match on
   // (direct-mail tracking, 2026-10-08). Best-effort, never fails the write.
   // Runs whenever the analysis carried a name or address (2026-10-21), not
@@ -3333,6 +3526,13 @@ export async function applyAnalyzeCallResult(
     console.error(`[analyze-call] relationship self-heal threw for ${leadId}:`, e)
   }
 
+  // A meeting agreed in the conversation → calendar, card milestone,
+  // Telegram card (lib/appointments). Skips itself when already booked.
+  if (result.appointment && !result.is_dnc) {
+    const { bookAppointmentFromAnalysis } = await import("@/lib/appointments")
+    await bookAppointmentFromAnalysis(leadId, result.appointment, opts?.channel === "text" ? "text" : "call")
+  }
+
   // 2026-05-11 Fix 1 — cluster-wide cache invalidation. The summary endpoint
   // builds its paragraph from the FULL conversation cluster while this
   // analyzer only sees the fresh recording. If a card was expanded BEFORE
@@ -3345,27 +3545,8 @@ export async function applyAnalyzeCallResult(
   // miss cache and regenerate against the full transcript.
   //
   // Done as the LAST step so it can't race against the analysis write
-  // above. Scoped by caller_phone when present, else by email, so call /
-  // SMS clusters and email-only clusters both invalidate correctly.
-  try {
-    let invQ = sb.from("leads").update({ ai_summary_generated_at: null })
-    let scoped = false
-    if (existing?.caller_phone) {
-      invQ = invQ.eq("caller_phone", existing.caller_phone)
-      scoped = true
-    } else if (existing?.email) {
-      invQ = invQ.eq("email", existing.email)
-      scoped = true
-    }
-    if (scoped) {
-      const { error: invErr } = await invQ
-      if (invErr) {
-        console.error(`[analyze-call] cluster cache invalidate failed for ${leadId}:`, invErr.message)
-      }
-    }
-  } catch (e) {
-    console.error(`[analyze-call] cluster cache invalidate threw for ${leadId}:`, e)
-  }
+  // above.
+  await invalidateClusterSummary(sb, leadId, existing)
 }
 
 // Cold no-signal default. Used when an inbound call produced no transcript

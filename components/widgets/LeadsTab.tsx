@@ -99,6 +99,8 @@ interface Lead {
   // Funnel milestones (2026-10-24), written cluster-wide by
   // POST /api/leads/[id]/milestone. became_lead_at = first time Active.
   appointment_at?: string | null
+  // Time, place and calendar link of the appointment (lib/appointments).
+  appointment_details?: { start: string; location: string | null; with: string | null } | null
   pending_at?: string | null
   deal_closed_at?: string | null
   deal_value?: number | null
@@ -199,6 +201,7 @@ interface LeadGroup {
   offerAmount: number | null
   offerVerbalizedAt: string | null
   appointmentAt: string | null
+  appointmentDetails: { start: string; location: string | null; with: string | null } | null
   pendingAt: string | null
   closedAt: string | null
   dealValue: number | null
@@ -491,6 +494,7 @@ function groupLeads(leads: Lead[]): LeadGroup[] {
       offerAmount: newestFirst.find(r => typeof r.offer_amount === "number" && r.offer_amount > 0)?.offer_amount ?? null,
       offerVerbalizedAt: newestFirst.find(r => r.offer_verbalized_at)?.offer_verbalized_at ?? null,
       appointmentAt: newestFirst.find(r => r.appointment_at)?.appointment_at ?? null,
+      appointmentDetails: newestFirst.find(r => r.appointment_details)?.appointment_details ?? null,
       pendingAt: newestFirst.find(r => r.pending_at)?.pending_at ?? null,
       closedAt: newestFirst.find(r => r.deal_closed_at)?.deal_closed_at ?? null,
       dealValue: newestFirst.find(r => typeof r.deal_value === "number" && r.deal_value > 0)?.deal_value ?? null,
@@ -3443,6 +3447,16 @@ function MilestoneRow({ group, onSave }: { group: LeadGroup; onSave: (m: Milesto
   const current: Record<Milestone, string | null> = { appointment: group.appointmentAt, pending: group.pendingAt, closed: group.closedAt }
   const label: Record<Milestone, string> = { appointment: "📅 Appointment", pending: "📝 Pending", closed: "🏁 Closed" }
   const fmt = (iso: string) => new Date(iso).toLocaleDateString([], { month: "short", day: "numeric", year: "numeric", timeZone: "UTC" })
+  // "· 5:00 PM · 265 Main St" when the appointment came with a time and a
+  // place (a call, a Telegram message) and still belongs to this date.
+  const apptExtra = (() => {
+    const d = group.appointmentDetails
+    if (!d?.start || !group.appointmentAt || d.start.slice(0, 10) !== group.appointmentAt.slice(0, 10)) return ""
+    const parts: string[] = []
+    if (/T\d{2}:\d{2}/.test(d.start)) parts.push(new Date(d.start).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", timeZone: "America/Los_Angeles" }))
+    if (d.location) parts.push(d.location.split(",")[0])
+    return parts.length ? ` · ${parts.join(" · ")}` : ""
+  })()
   const money = (n: number) => (n >= 1_000_000 ? `$${(n / 1_000_000).toFixed(2)}M` : `$${Math.round(n / 1000)}K`)
   function parsePrice(input: string): number | null | "bad" {
     const t = input.trim()
@@ -3500,7 +3514,7 @@ function MilestoneRow({ group, onSave }: { group: LeadGroup; onSave: (m: Milesto
               : "rounded border border-zinc-800 bg-zinc-950 px-3 py-1 text-[11px] text-zinc-500 hover:border-sky-900/60 hover:text-sky-300 transition-colors"}
             title={at ? `Edit ${m}` : `Mark ${m}`}
           >
-            {label[m]}{at ? ` · ${fmt(at)}` : ""}{m === "closed" && at && group.dealValue ? ` · ${money(group.dealValue)}` : ""}
+            {label[m]}{at ? ` · ${fmt(at)}` : ""}{m === "appointment" && at ? apptExtra : ""}{m === "closed" && at && group.dealValue ? ` · ${money(group.dealValue)}` : ""}
           </button>
         )
       })}

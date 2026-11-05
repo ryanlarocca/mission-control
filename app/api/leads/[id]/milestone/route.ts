@@ -52,6 +52,12 @@ export async function POST(request: NextRequest, { params }: { params: { id: str
     }
     const { error: upErr } = await sb.from("leads").update(update).in("id", ids)
     if (upErr) return NextResponse.json({ error: upErr.message }, { status: 500 })
+    // A hand-set or cleared appointment drops the time/place/calendar link
+    // of the one it replaces (lib/appointments) unless the day is unchanged.
+    if (milestone === "appointment" && !rows.some((r) => date !== null && (r.appointment_at ?? "").slice(0, 10) === date)) {
+      const { error: dErr } = await sb.from("leads").update({ appointment_details: null }).in("id", ids)
+      if (dErr) console.error(`[milestone] appointment_details clear failed (${params.id}): ${dErr.message}`)
+    }
 
     if (date) {
       await stampBecameLead(sb, rows)
