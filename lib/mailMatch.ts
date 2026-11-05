@@ -530,13 +530,21 @@ export async function autoLinkMailRecord(
   return result
 }
 
-/** Telegram: a mailer caller's address isn't on the list as heard. Best-effort. */
+/**
+ * Telegram: a mailer caller's address isn't on the list as heard.
+ * Best-effort. Posts straight to the lead-alert bot (same token + chat as
+ * lib/leads sendTelegramAlert) instead of importing lib/leads: the Leads
+ * tab imports this file, and even a dynamic import of lib/leads drags
+ * googleapis into the browser bundle and fails the build.
+ */
 async function alertUnplacedAddress(
   lead: { name: string | null; caller_phone: string | null; email: string | null; property_address: string | null; source: string | null },
   candidates: MailRecordLite[]
 ): Promise<void> {
   try {
-    const { sendTelegramAlert } = await import("./leads")
+    const token = process.env.CAMPAIGN_BOT_TOKEN || process.env.TELEGRAM_BOT_TOKEN
+    const chatId = process.env.TELEGRAM_CHAT_ID
+    if (!token || !chatId) { console.warn("[mail-match] unplaced-address alert skipped: no Telegram bot token / chat id"); return }
     const esc = (v: unknown) => String(v ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
     const who = [lead.name, lead.caller_phone ?? lead.email].filter(Boolean).join(" — ") || "Unknown caller"
     const lines = [
@@ -552,7 +560,12 @@ async function alertUnplacedAddress(
     } else {
       lines.push("Nothing close at that house number. Search for it with “Link mailed record” on the card.")
     }
-    await sendTelegramAlert(lines.join("\n"))
+    const res = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ chat_id: chatId, text: lines.join("\n"), parse_mode: "HTML" }),
+    })
+    if (!res.ok) console.error(`[mail-match] unplaced-address alert failed ${res.status}: ${(await res.text()).slice(0, 200)}`)
   } catch (e) {
     console.warn("[mail-match] unplaced-address alert failed:", e instanceof Error ? e.message : String(e))
   }
