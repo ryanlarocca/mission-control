@@ -258,7 +258,7 @@ function isInbound(row) {
 async function clusterRows(sb, lead) {
   const { data, error } = await sb
     .from("leads")
-    .select("id, created_at, lead_type, twilio_number, message, ai_summary, status, is_dnc, is_junk, recommended_followup_date, name, caller_phone")
+    .select("id, created_at, lead_type, twilio_number, message, ai_summary, notes, status, is_dnc, is_junk, recommended_followup_date, name, caller_phone")
     .eq("caller_phone", lead.caller_phone)
     .order("created_at", { ascending: true })
   if (error) throw new Error(error.message)
@@ -285,7 +285,7 @@ async function stopAutopilot(sb, lead, patch = {}) {
 }
 
 /**
- * deps: { live, dryRun, sendSms, resolveReplyLine, fetchIMessageHistory,
+ * deps: { live, dryRun, sendSms, messageStatus, resolveReplyLine, fetchIMessageHistory,
  *         contactIsDnc, anthropic, model, telegram, appleEpochMs }
  */
 async function runAutopilot(sb, deps) {
@@ -307,6 +307,25 @@ async function runAutopilot(sb, deps) {
       if (rows.some((r) => r.is_dnc || r.is_junk || String(r.status || "").toLowerCase() === "dead")) {
         if (live) await stopAutopilot(sb, lead)
         bump("stopped_dead"); continue
+      }
+
+      // 1b. Last text didn't land on a phone (landline / unreachable):
+      // 30003 unreachable, 30005 unknown number, 30006 landline. Stop and flag
+      // the number so nothing keeps texting it.
+      if (deps.messageStatus) {
+        const lastSent = [...rows].reverse().find((r) => r.lead_type === "drip_imessage" && /\[autopilot #\d.*· (SM\w+)\]/.test(r.notes || ""))
+        const sid = lastSent && (lastSent.notes.match(/· (SM\w+)\]/) || [])[1]
+        if (sid && Date.now() - new Date(lastSent.created_at).getTime() < 7 * DAY) {
+          const st = await deps.messageStatus(sid)
+          if (st && st.status === "undelivered" && [30003, 30005, 30006].includes(Number(st.errorCode))) {
+            console.log(`[autopilot] ${label}: text undelivered (${st.errorCode}) — stopping, number flagged`)
+            if (live) {
+              await stopAutopilot(sb, lead, { is_bad_number: true })
+              await deps.telegram(`Autopilot FYI: ${lead.name || lead.caller_phone}${lead.property_address ? ` (${lead.property_address})` : ""} — the text didn't deliver (${st.errorCode === 30006 ? "landline" : "unreachable number"}). Taken off autopilot.`)
+            }
+            bump("undeliverable"); continue
+          }
+        }
       }
 
       // 2. A reply since autopilot_since?
@@ -395,7 +414,7 @@ async function runAutopilot(sb, deps) {
         status: lead.status,
         name: lead.name,
         property_address: lead.property_address,
-        notes: `[autopilot #${nd.touch}${r.seasonal ? ` · ${r.seasonal}` : ""}]`,
+        notes: `[autopilot #${nd.touch}${r.seasonal ? ` · ${r.seasonal}` : ""}${res.sid ? ` · ${res.sid}` : ""}]`,
       })
       console.log(`[autopilot] SENT #${nd.touch} → ${label} from ${res.from}`)
       sent++

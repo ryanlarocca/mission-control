@@ -2211,6 +2211,19 @@ export async function processRecordingBackground(args: {
             followup_generated_at: new Date().toISOString(),
           }).eq("id", leadId)
           if (error) console.error(`[jackie] follow-up write failed for ${leadId}: ${error.message}`)
+        } else if (review && !analysis?.is_dnc && !review.intake_complete && !review.not_selling) {
+          // Hung up on Jackie before saying why (Ryan 2026-11-05: a mailer
+          // caller asking for him by name is a hand-raiser — call back the
+          // next business day, not the analyzer's "vague, 6-month" date).
+          // The missed-call text still goes out; the engine exempts it from
+          // the follow-up hold.
+          const today = new Intl.DateTimeFormat("en-CA", { timeZone: "America/Los_Angeles" }).format(new Date())
+          const { error } = await sb.from("leads").update({
+            recommended_followup_date: nextBusinessDay(today),
+            followup_reason: "Called about your letter and got off the phone with Jackie before saying why — call them back.",
+            followup_generated_at: new Date().toISOString(),
+          }).eq("id", leadId)
+          if (error) console.error(`[jackie] hang-up follow-up write failed for ${leadId}: ${error.message}`)
         }
         if (review) {
           jackieLines = [

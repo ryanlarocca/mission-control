@@ -1000,6 +1000,19 @@ function normalizeE164(raw) {
   return null
 }
 
+// Delivery status of a sent text (Twilio Messages/<sid>). Null on any error.
+async function messageStatus(sid) {
+  if (!sid) return null
+  try {
+    const sidAcct = process.env.TWILIO_ACCOUNT_SID
+    const auth = Buffer.from(`${sidAcct}:${process.env.TWILIO_AUTH_TOKEN}`).toString("base64")
+    const res = await fetch(`https://api.twilio.com/2010-04-01/Accounts/${sidAcct}/Messages/${sid}.json`, { headers: { Authorization: `Basic ${auth}` } })
+    if (!res.ok) return null
+    const j = await res.json()
+    return { status: j.status, errorCode: j.error_code || null }
+  } catch (_) { return null }
+}
+
 async function sendSms(phone, message, preferredFrom) {
   const sid = process.env.TWILIO_ACCOUNT_SID
   const token = process.env.TWILIO_AUTH_TOKEN
@@ -1738,7 +1751,9 @@ async function processLead(sb, lead) {
   // text right before the call is awkward. The follow-up date may live on
   // any cluster sibling, not necessarily this row. A manual Prepare click
   // overrides this: Ryan is the one with the follow-up scheduled.
-  const upcomingFollowup = MANUAL_NOW ? null : await getClusterUpcomingFollowup(sb, lead)
+  // The 15-minute missed-call text (touch 0) is never held — it answers the
+  // call they just made; the follow-up date governs everything after it.
+  const upcomingFollowup = MANUAL_NOW || (isMissedCall && nextTouch.touchNumber === 0) ? null : await getClusterUpcomingFollowup(sb, lead)
   if (upcomingFollowup) {
     return { skipped: `upcoming_call_followup:${upcomingFollowup}` }
   }
@@ -1966,6 +1981,7 @@ async function main() {
         live: (process.env.AUTOPILOT_LIVE || "").trim().toLowerCase() === "true",
         dryRun: DRY_RUN,
         sendSms,
+        messageStatus,
         resolveReplyLine,
         fetchIMessageHistory,
         contactIsDnc,
