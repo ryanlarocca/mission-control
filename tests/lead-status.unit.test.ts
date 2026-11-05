@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest"
 import { clusterFacts, decideQuietMove, decideStageMove, statusAnchor, type ClusterRow } from "@/lib/leadStatus"
-import { buildDigest } from "@/lib/leadStatusDigest"
+import { buildDigest, latestPerPerson } from "@/lib/leadStatusDigest"
+import { pacificDate, pacificDatePlusDays } from "@/lib/pacificDate"
 
 const DAY = 86_400_000
 const NOW = Date.parse("2026-10-24T16:00:00Z")
@@ -120,5 +121,33 @@ describe("buildDigest", () => {
     const d = buildDigest(evs)!
     expect(d.buttons).toHaveLength(20)
     expect(d.text).toContain("and 5 more")
+  })
+})
+
+describe("latestPerPerson", () => {
+  it("lists a person once — their newest move — even across two rows", () => {
+    const key: Record<string, string | null> = { call: "+15550001111", text: "+15550001111", other: "+15550002222", lonely: null }
+    const shown = latestPerPerson(
+      [
+        { id: "e1", lead_id: "call" },
+        { id: "e2", lead_id: "other" },
+        { id: "e3", lead_id: "text" },
+        { id: "e4", lead_id: "lonely" },
+      ],
+      (id) => key[id]
+    )
+    expect(Array.from(shown).sort()).toEqual(["e2", "e3", "e4"])
+  })
+})
+
+describe("pacificDate", () => {
+  it("6pm Pacific is still today, not UTC's tomorrow", () => {
+    const at = new Date("2026-11-05T02:03:16Z") // Nov 4, 6:03pm PST
+    expect(pacificDate(at)).toBe("2026-11-04")
+    expect(pacificDatePlusDays(1, at)).toBe("2026-11-05")
+  })
+  it("crosses month ends and DST", () => {
+    expect(pacificDatePlusDays(1, new Date("2026-03-01T07:30:00Z"))).toBe("2026-03-01") // Feb 28 11:30pm PST
+    expect(pacificDatePlusDays(180, new Date("2026-11-05T18:00:00Z"))).toBe("2027-05-04")
   })
 })

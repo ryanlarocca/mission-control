@@ -233,6 +233,21 @@ describe("a response on a NOO Q4 line/alias comes back as New", () => {
     expect(d).toEqual({ status: "new", isJunk: undefined, reset: false })
   })
 
+  it("a second message on the same letter keeps the status they already have", () => {
+    const label = CAMPAIGN_MAP[LINE_A]
+    expect(isSourceOverrideLabel(label)).toBe(true)
+    const d = resolveIntakeStatus({ override: true, hasPriorRow: true, inheritedStatus: "active", priorSource: label, clusterDnc: false })
+    expect(d).toEqual({ status: "active", isJunk: undefined, reset: false })
+    // Answered letter A, now writes the letter-B alias — still the same mailing.
+    const e = resolveIntakeStatus({ override: true, hasPriorRow: true, inheritedStatus: "nurture", priorSource: CAMPAIGN_MAP[LINE_B], clusterDnc: false })
+    expect(e.status).toBe("nurture")
+  })
+
+  it("history from an older campaign still resets to New", () => {
+    const d = resolveIntakeStatus({ override: true, hasPriorRow: true, inheritedStatus: "dead", priorSource: "MFM-A", clusterDnc: false })
+    expect(d).toEqual({ status: "new", isJunk: false, reset: true })
+  })
+
   it("a returning caller whose cluster is already New gets no suffix", () => {
     const d = resolveIntakeStatus({ override: true, hasPriorRow: true, inheritedStatus: "new", clusterDnc: false })
     expect(d).toEqual({ status: "new", isJunk: false, reset: false })

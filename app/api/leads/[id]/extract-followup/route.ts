@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server"
 import { getLeadsClient, clampOwedFollowup } from "@/lib/leads"
 import { completeText, extractJsonObject, hasLlmKey, SONNET } from "@/lib/llm"
 import { ryanNotes } from "@/lib/lead-notes"
+import { pacificDate } from "@/lib/pacificDate"
 
 export async function POST(
   request: NextRequest,
@@ -24,7 +25,7 @@ export async function POST(
 
   if (!notes) return NextResponse.json({ cleared: true })
 
-  const today = new Date().toISOString().slice(0, 10)
+  const today = pacificDate()
   const prompt = `Today is ${today}. A real estate agent wrote the following notes about a lead:
 
 "${notes}"

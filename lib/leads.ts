@@ -8,6 +8,7 @@ import { LEAD_MOMENT_RUBRIC, isLeadMoment } from "@/lib/reply/moments"
 import { completeText, extractJsonObject, hasLlmKey, SONNET } from "./llm"
 import { autoLinkMailRecord } from "./mailMatch"
 import { OWED_PREFIX } from "./next-touch"
+import { pacificDate, pacificDatePlusDays } from "@/lib/pacificDate"
 
 export const CAMPAIGN_MAP: Record<string, string> = {
   "+16504364279": "MFM-A",
@@ -117,6 +118,11 @@ export function isSourceOverrideLabel(source: string | null | undefined): boolea
 // new letter is a new lead. Scope is ONLY override intakes; legacy lines keep
 // today's inheritance. DNC wins: a cluster with any is_dnc row keeps today's
 // behaviour entirely. Drip-stamp inheritance is untouched by this decision.
+// The reset is for history from BEFORE the letter: once the person has
+// already answered a NOO Q4 line/alias, their next call / text / email keeps
+// the status they have (2026-11-05: a seller's follow-up texts on the same
+// letter dropped her back to New, and the daily digest moved her to Active
+// twice).
 export const RESET_TO_NEW_SUFFIX = " (returning caller, reset to New)"
 
 export interface IntakeStatusInput {
@@ -126,6 +132,8 @@ export interface IntakeStatusInput {
   hasPriorRow: boolean
   /** What the cluster's latest inbound row would hand the new row. */
   inheritedStatus: LeadStatus
+  /** That row's source label — an override label means they already answered this letter. */
+  priorSource?: string | null
   /** Any row in the cluster has is_dnc = true (see clusterHasDnc). */
   clusterDnc: boolean
 }
@@ -140,7 +148,7 @@ export interface IntakeStatusDecision {
 
 /** Pure: what status / is_junk the new intake row gets. */
 export function resolveIntakeStatus(input: IntakeStatusInput): IntakeStatusDecision {
-  if (!input.override || !input.hasPriorRow || input.clusterDnc) {
+  if (!input.override || !input.hasPriorRow || input.clusterDnc || isSourceOverrideLabel(input.priorSource)) {
     return { status: input.inheritedStatus, isJunk: undefined, reset: false }
   }
   return { status: "new", isJunk: false, reset: input.inheritedStatus !== "new" }
@@ -167,6 +175,36 @@ export async function clusterHasDnc(
     return false
   }
   return !!data?.length
+}
+
+/**
+ * The name this person already carries on another of their rows (newest
+ * first), or null. A blank row takes this before a model's guess: the model
+ * re-reads the whole conversation, so it brings back a mishearing the mailing
+ * list already corrected — a seller's follow-up texts came in as the misheard
+ * surname after her call row had been respelled (2026-11-05).
+ */
+export async function knownClusterName(
+  sb: SupabaseClient,
+  row: { id: string; caller_phone?: string | null; email?: string | null }
+): Promise<string | null> {
+  const ors: string[] = []
+  if (row.caller_phone && !isAnonymousCaller(row.caller_phone)) ors.push(`caller_phone.eq.${row.caller_phone}`)
+  if (row.email) ors.push(`email.eq.${row.email.toLowerCase()}`)
+  if (!ors.length) return null
+  const { data, error } = await sb
+    .from("leads")
+    .select("name")
+    .or(ors.join(","))
+    .neq("id", row.id)
+    .not("name", "is", null)
+    .order("created_at", { ascending: false })
+    .limit(20)
+  if (error) {
+    console.warn("[leads] cluster name lookup failed:", error.message)
+    return null
+  }
+  return (data ?? []).map((r) => (r.name as string | null)?.trim() || "").find((n) => n && !isPlaceholderName(n)) || null
 }
 
 // Inbound calls/SMS to this number are almost always a lead returning Ryan's
@@ -2529,7 +2567,7 @@ export async function analyzeCallTranscript(
     console.warn("[analyze-call] ANTHROPIC_API_KEY not set; skipping")
     return null
   }
-  const today = new Date().toISOString().slice(0, 10)
+  const today = pacificDate()
   const history = context?.clusterHistory?.trim() || null
   // The history block is optional context, the fresh transcript is the
   // primary signal. We instruct the model accordingly so a brief follow-up
@@ -3060,7 +3098,9 @@ export async function applyFollowupOnlyResult(
     followup_reason: followupReason,
     followup_generated_at: new Date().toISOString(),
   }
-  if (result.name && isPlaceholderName(existing?.name)) update.name = result.name
+  if (result.name && isPlaceholderName(existing?.name)) {
+    update.name = (await knownClusterName(sb, { id: leadId, caller_phone: existing?.caller_phone, email: existing?.email })) ?? result.name
+  }
   if (result.property_address && !existing?.property_address) {
     update.property_address = result.property_address
   }
@@ -3175,7 +3215,9 @@ export async function applyAnalyzeCallResult(
     suggested_status: null,
     suggested_status_reason: null,
   }
-  if (result.name && isPlaceholderName(existing?.name)) update.name = result.name
+  if (result.name && isPlaceholderName(existing?.name)) {
+    update.name = (await knownClusterName(sb, { id: leadId, caller_phone: existing?.caller_phone, email: existing?.email })) ?? result.name
+  }
   if (result.property_address && !existing?.property_address) {
     update.property_address = result.property_address
   }
@@ -3345,9 +3387,7 @@ export async function applyColdNoSignalDefault(leadId: string): Promise<void> {
   const update: Record<string, unknown> = {}
   if (!existing.temperature) update.temperature = "cold"
   if (!existing.recommended_followup_date) {
-    const d = new Date()
-    d.setDate(d.getDate() + 180)
-    update.recommended_followup_date = d.toISOString().slice(0, 10)
+    update.recommended_followup_date = pacificDatePlusDays(180)
     update.followup_reason =
       "Called but left no message — cold, routine 6-month nurture check-in."
     update.followup_generated_at = new Date().toISOString()
@@ -3438,7 +3478,7 @@ export async function triageEmailLead(
         `Subject: ${subject.slice(0, 80)}. The card has the message; summary / temperature / address were not extracted.`
     ).catch(() => {})
 
-  const today = new Date().toISOString().slice(0, 10)
+  const today = pacificDate()
   const prompt = `You are triaging an email response to a real estate direct mail campaign. The sender received a mailer about selling their home.
 
 TODAY IS ${today}.

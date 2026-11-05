@@ -4,10 +4,12 @@ import {
   fitHistoryBudget,
   getLeadsClient,
   isPlaceholderName,
+  knownClusterName,
   mergePropertyDetails,
   parsePropertyDetails,
 } from "@/lib/leads"
 import { completeText, extractJsonObject, hasLlmKey, SONNET } from "@/lib/llm"
+import { pacificDate } from "@/lib/pacificDate"
 
 // Phase 7D — cached lead summary, multi-event variant.
 //
@@ -142,7 +144,7 @@ export async function POST(
         .map(r => `[${r.created_at}] ${r.lead_type || "?"} (${dirLabel(r)}): ${clipHistoryText(r.message || "")}`),
     ).join("\n") || "(no recorded events)"
 
-    const today = new Date().toISOString().slice(0, 10)
+    const today = pacificDate()
     const prompt = `You are summarizing a real estate lead for Ryan, a cash home buyer. The lead's contact history is below.
 
 TODAY IS ${today}.
@@ -304,7 +306,9 @@ ${transcript}`
     // workflow fluid: opening a card auto-backfills identity without needing
     // to call anyone back to "trigger" extraction. (temperature is NOT
     // written here — see the file header.)
-    if (extractedName && isPlaceholderName(anchor.name)) update.name = extractedName
+    if (extractedName && isPlaceholderName(anchor.name)) {
+      update.name = (await knownClusterName(sb, anchor)) ?? extractedName
+    }
     if (extractedAddress && !anchor.property_address) {
       update.property_address = extractedAddress
     }

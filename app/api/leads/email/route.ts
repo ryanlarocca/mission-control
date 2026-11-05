@@ -89,16 +89,17 @@ async function lookupEmailCluster(args: {
   phone: string | null
   threadId: string | null
   senderEmail: string
-}): Promise<{ status: LeadStatus; dripCampaignType: string | null } | null> {
+}): Promise<{ status: LeadStatus; dripCampaignType: string | null; source: string | null } | null> {
   const { sb, phone, threadId, senderEmail } = args
-  const shape = (row: { status: string | null; drip_campaign_type: string | null }) => ({
+  const shape = (row: { status: string | null; drip_campaign_type: string | null; source: string | null }) => ({
     status: (row.status as LeadStatus | undefined) ?? "new",
     dripCampaignType: row.drip_campaign_type ?? null,
+    source: row.source ?? null,
   })
   if (phone) {
     const { data } = await sb
       .from("leads")
-      .select("status, drip_campaign_type")
+      .select("status, drip_campaign_type, source")
       .eq("caller_phone", phone)
       // Inbound rows only (twilio_number IS NOT NULL) — matching the
       // voice/sms intake lookups. Without this, the most recent row for the
@@ -113,7 +114,7 @@ async function lookupEmailCluster(args: {
   if (threadId) {
     const { data } = await sb
       .from("leads")
-      .select("status, drip_campaign_type")
+      .select("status, drip_campaign_type, source")
       .eq("gmail_thread_id", threadId)
       .order("created_at", { ascending: false })
       .limit(1)
@@ -121,7 +122,7 @@ async function lookupEmailCluster(args: {
   }
   const { data } = await sb
     .from("leads")
-    .select("status, drip_campaign_type")
+    .select("status, drip_campaign_type, source")
     .eq("lead_type", "email")
     .eq("email", senderEmail)
     .order("created_at", { ascending: false })
@@ -649,6 +650,7 @@ async function handleAppsScript(payload: AppsScriptPayload): Promise<NextRespons
     override: overrideAlias,
     hasPriorRow: !!cluster,
     inheritedStatus,
+    priorSource: cluster?.source ?? null,
     clusterDnc: overrideAlias && cluster ? await clusterHasDnc(sb, { caller_phone: phone, email: senderEmail }) : false,
   })
 
@@ -950,6 +952,7 @@ async function processSingleMessage(args: {
     override: overrideAlias,
     hasPriorRow: !!cluster,
     inheritedStatus,
+    priorSource: cluster?.source ?? null,
     clusterDnc: overrideAlias && cluster
       ? await clusterHasDnc(sb, { caller_phone: phone, email: senderEmail, gmail_thread_id: message.threadId || null })
       : false,

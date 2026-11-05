@@ -8,6 +8,7 @@
 
 import { completeText, extractJsonObject, SONNET, hasLlmKey } from "@/lib/llm"
 import { getLeadsClient } from "@/lib/leads"
+import { pacificDate } from "@/lib/pacificDate"
 
 export interface CoachFacts {
   offer_amount: number | null
@@ -80,7 +81,7 @@ export async function landCoachFacts(draftId: string, sentBody: string): Promise
     // error here and the send carries on.
     const { data: d, error } = await sb.from("reply_drafts").select("id, mode, gist, lead_id, relationship_id").eq("id", draftId).maybeSingle<CoachDraftRow>()
     if (error || !d || d.mode !== "coach" || !(d.gist || "").trim()) return
-    const today = new Date().toISOString().slice(0, 10)
+    const today = pacificDate()
 
     if (d.lead_id) {
       const { data: anchor } = await sb.from("leads").select("id, name, property_address, caller_phone, email").eq("id", d.lead_id).maybeSingle<{ id: string; name: string | null; property_address: string | null; caller_phone: string | null; email: string | null }>()

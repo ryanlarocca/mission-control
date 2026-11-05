@@ -5,6 +5,7 @@
 import { NextRequest } from "next/server"
 import { getLeadsClient } from "@/lib/leads"
 import type { Plan } from "./plan"
+import { pacificDatePlusDays } from "@/lib/pacificDate"
 
 export async function executePlanServer(leadId: string, plan: Plan | null | undefined): Promise<string | null> {
   if (!leadId || !plan) return null
@@ -29,8 +30,7 @@ export async function executePlanServer(leadId: string, plan: Plan | null | unde
       return "drip running"
     }
     case "schedule_call": {
-      const d = new Date(); d.setDate(d.getDate() + 1)
-      const { error } = await sb.from("leads").update({ recommended_followup_date: d.toISOString().slice(0, 10), followup_reason: "Call them (Reply Planner)" }).eq("id", leadId)
+      const { error } = await sb.from("leads").update({ recommended_followup_date: pacificDatePlusDays(1), followup_reason: "Call them (Reply Planner)" }).eq("id", leadId)
       if (error) throw new Error(error.message)
       return "call reminder set for tomorrow"
     }

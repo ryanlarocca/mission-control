@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server"
 import { ryanNotes } from "@/lib/lead-notes"
 import { getLeadsClient, haltOutreachForCluster } from "@/lib/leads"
 import { isValidCategory, RELATIONSHIP_CATEGORIES } from "@/lib/crms"
+import { pacificDate } from "@/lib/pacificDate"
 
 // Promote a lead into the Relationships (Book of Business) Supabase table.
 // Used when a caller turns out to be a referral source rather than a seller
@@ -132,7 +133,7 @@ export async function POST(
     const addresses = Array.from(new Set(cluster.map((r) => clean(r.property_address)).filter(Boolean)))
       .sort((a, b) => b.length - a.length)
     const firstSeen = cluster[0]?.created_at
-    const today = new Date().toISOString().slice(0, 10)
+    const today = pacificDate()
 
     const parts: string[] = [`Promoted from Leads ${today}${firstSeen ? ` · lead since ${fmtDay(firstSeen)}` : ""}`]
     if (addresses.length) parts[0] += `\nProperty: ${addresses[0]}`

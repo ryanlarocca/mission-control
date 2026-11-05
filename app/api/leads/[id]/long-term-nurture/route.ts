@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server"
 import { getLeadsClient, haltOutreachForCluster, dedupeClusterStamps } from "@/lib/leads"
+import { pacificDatePlusDays } from "@/lib/pacificDate"
 
 // "Move to long-term nurture" — the right move for a lead who explicitly
 // said "not now, maybe in a year or two" (Kiko Ohata 2026-05-17 was the
@@ -89,8 +90,7 @@ export async function POST(
 
     // 2 + 3b. Stamp the campaign + the 6-month follow-up on this row.
     const now = new Date()
-    const followupDate = new Date(now.getTime() + SIX_MONTHS_DAYS * 86400 * 1000)
-      .toISOString().slice(0, 10)
+    const followupDate = pacificDatePlusDays(SIX_MONTHS_DAYS, now)
     const { error: updErr } = await sb
       .from("leads")
       .update({

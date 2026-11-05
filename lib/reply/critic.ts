@@ -9,6 +9,7 @@
 import { completeText, extractJsonObject, SONNET } from "@/lib/llm"
 import { describeContact, formatThread, type ReplyContext } from "./context"
 import type { Plan } from "./plan"
+import { pacificDate } from "@/lib/pacificDate"
 
 export interface CriticVerdict {
   ok: boolean
@@ -30,7 +31,7 @@ export async function critique(args: {
 }): Promise<{ verdict: CriticVerdict; subject: string | null; body: string }> {
   const { ctx, plan, principles, subject, body } = args
   const gist = args.gist?.trim() || null
-  const today = new Date().toISOString().slice(0, 10)
+  const today = pacificDate()
   const prompt = `TODAY IS ${today}. You are checking a reply before it is shown to Ryan (a cash home buyer in the Bay Area). Answer the questions honestly; most drafts should pass.
 
 THE PLAN this reply must serve:

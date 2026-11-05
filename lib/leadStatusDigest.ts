@@ -1,5 +1,6 @@
 import type { SupabaseClient } from "@supabase/supabase-js"
 import { leadAlertBotToken } from "@/lib/leads"
+import { isAnonymousCaller } from "@/lib/anonymous"
 
 // Once-a-day Telegram summary of automatic status moves (Ryan 2026-10-24:
 // "I don't want to get infinite alerts"). At most one message a day, none on
@@ -35,6 +36,17 @@ export function buildDigest(events: DigestEvent[]): { text: string; buttons: { t
   return { text, buttons }
 }
 
+/** Pure: one move per person — the newest. A person with two rows (a call,
+ *  then a text) could be moved twice in a day and was listed twice (a seller's
+ *  call and her follow-up text, 2026-11-05). `events` must be oldest first;
+ *  `personKey` maps a lead id to the person's phone / email (null = that row
+ *  alone). Returns the ids of the events to show. */
+export function latestPerPerson(events: { id: string; lead_id: string }[], personKey: (leadId: string) => string | null): Set<string> {
+  const byPerson = new Map<string, string>()
+  for (const e of events) byPerson.set(personKey(e.lead_id) ?? `id:${e.lead_id}`, e.id)
+  return new Set(byPerson.values())
+}
+
 /** Collect undigested applied auto moves, send one message, mark them. */
 export async function sendStatusDigest(sb: SupabaseClient): Promise<{ sent: boolean; count: number }> {
   const { data: evs, error } = await sb
@@ -53,7 +65,12 @@ export async function sendStatusDigest(sb: SupabaseClient): Promise<{ sent: bool
   const ids = Array.from(new Set(evs.map((e) => e.lead_id as string)))
   const { data: rows } = await sb.from("leads").select("id, name, caller_phone, email").in("id", ids)
   const byId = new Map((rows ?? []).map((r) => [r.id as string, r]))
-  const events: DigestEvent[] = evs.map((e) => {
+  const latest = latestPerPerson(evs as { id: string; lead_id: string }[], (id) => {
+    const r = byId.get(id)
+    const phone = r?.caller_phone as string | null
+    return (phone && !isAnonymousCaller(phone) ? phone : null) || ((r?.email as string | null) ?? "").toLowerCase() || null
+  })
+  const events: DigestEvent[] = evs.filter((e) => latest.has(e.id as string)).map((e) => {
     const r = byId.get(e.lead_id as string)
     const who = (r?.name as string | null)?.trim() || (r?.caller_phone as string | null) || (r?.email as string | null) || "lead"
     return { id: e.id as string, to_status: e.to_status as string, rule: e.rule as string | null, reason: e.reason as string | null, who }
@@ -75,6 +92,7 @@ export async function sendStatusDigest(sb: SupabaseClient): Promise<{ sent: bool
     }),
   })
   if (!res.ok) throw new Error(`Telegram ${res.status}: ${(await res.text()).slice(0, 200)}`)
-  await sb.from("lead_status_events").update({ digested_at: new Date().toISOString() }).in("id", events.map((e) => e.id))
+  // Every collected move is marked — the ones folded into a person's line too.
+  await sb.from("lead_status_events").update({ digested_at: new Date().toISOString() }).in("id", evs.map((e) => e.id as string))
   return { sent: true, count: events.length }
 }

@@ -21,6 +21,7 @@ import { proposePlan, stampLeadMoment, type Plan } from "./plan"
 import { VOICE_SYSTEM, channelRules } from "./voice"
 import type { DraftArgs, DraftChannel } from "./draft"
 import { relationshipGuidance, intentForMoment, normalizeCategory } from "./relationship"
+import { pacificDate } from "@/lib/pacificDate"
 
 export const COACH_PROMPT_VERSION = "coach-v1-2026-10-15"
 export const AUTO_PROMPT_VERSION = "auto-coach-v1-2026-11-03"
@@ -226,7 +227,7 @@ export async function coachDraft(args: CoachArgs): Promise<CoachResult | null> {
     excludeReply: args.excludeExemplarReply ?? null,
   })
   const exemplarText = formatExemplars(exemplars)
-  const today = new Date().toISOString().slice(0, 10)
+  const today = pacificDate()
   const prompt = buildCoachPrompt({
     ctx, plan, channel, gist, turns, principles, exemplarText, today,
     notes: args.notes ?? null, touchBrief: auto ? args.touchBrief ?? null : null,

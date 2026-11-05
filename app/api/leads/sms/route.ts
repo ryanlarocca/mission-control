@@ -253,6 +253,7 @@ export async function POST(request: Request) {
         override: overrideSource,
         hasPriorRow: !!existingRow,
         inheritedStatus,
+        priorSource: existingRow?.source ?? null,
         clusterDnc: overrideSource && existingRow ? await clusterHasDnc(sb, { caller_phone: from }) : false,
       })
       resetToNew = intake.reset

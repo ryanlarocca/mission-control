@@ -10,6 +10,7 @@ import {
   isLeadMoment, isRelationshipMoment,
 } from "./moments"
 import { describeContact, formatThread, type ReplyContext, type LeadContext } from "./context"
+import { pacificDate } from "@/lib/pacificDate"
 
 export interface Plan {
   moment: string
@@ -26,7 +27,7 @@ export const PLAN_PROMPT_VERSION = "plan-v1-2026-09-24"
 
 export async function proposePlan(ctx: ReplyContext): Promise<Plan | null> {
   if (!hasLlmKey()) return null
-  const today = new Date().toISOString().slice(0, 10)
+  const today = pacificDate()
   const prompt = ctx.kind === "lead"
     ? `You are planning Ryan's next move with a seller lead. Ryan is a cash home buyer in the Bay Area. Read the whole conversation, then decide the plan. Do NOT write the reply.
 
