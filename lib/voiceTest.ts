@@ -261,11 +261,10 @@ export const VOICE_TEST_COACH_NOTE = `\n\nCOACH MODE (TEST LINE ONLY)\nThis call
 // Opener: a startup developer message (VOICE_TEST_GREETING) plus, right after
 // accept, the exact line appended over a sideband (route: sendOpener) —
 // OpenAI's documented sequence; the startup message alone left Jackie silent.
-// 11-06: "Hey, this is Jackie with LRG Homes, how can I help you?" read like
-// a phone menu and two callers asked "person or robot?" on that first line —
-// now a short front-desk pickup, said casually.
-export const VOICE_TEST_OPENER = "LRG Homes, this is Jackie."
-export const VOICE_TEST_GREETING = `Greet the caller now in English. Say: "${VOICE_TEST_OPENER}" Say it the way a front-desk receptionist picks up a phone she answers all day: relaxed, warm, a normal speaking pace, not announced or read. Then stop and listen.`
+// 11-06: a short "LRG Homes, this is Jackie." pickup tested worse (Ryan:
+// "even worse") — back to the original line; the artificial tone is the voice.
+export const VOICE_TEST_OPENER = "Hey, this is Jackie with LRG Homes, how can I help you?"
+export const VOICE_TEST_GREETING = `Greet the caller now in English. Say: "${VOICE_TEST_OPENER}" Then pause and listen.`
 
 // Telegram heads-up when anyone other than Ryan reaches the test line (there
 // is no caller lock — an old-letter caller could land here).
