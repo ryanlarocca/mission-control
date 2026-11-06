@@ -2036,9 +2036,11 @@ module.exports = {
   APPLE_EPOCH_OFFSET_MS,
 }
 
-// Skip the hourly main() when imported by a helper script — set by
-// scripts/regenerate-pending-drips.js before the require().
-if (!process.env.DRIP_REGEN_SKIP_MAIN) {
+// Run the hourly main() only when launched directly (launchd / CLI). A helper
+// that require()s this file for sendSms / resolveReplyLine must never start a
+// pass — 2026-11-06 one did, and an autopilot text went out an hour early.
+// DRIP_REGEN_SKIP_MAIN is the older opt-out (scripts/regenerate-pending-drips.js).
+if (require.main === module && !process.env.DRIP_REGEN_SKIP_MAIN) {
   main().catch((e) => {
     console.error("[drip] fatal:", e)
     process.exit(1)
