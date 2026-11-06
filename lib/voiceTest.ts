@@ -70,7 +70,7 @@ export const VOICE_TEST_BACKEND_MODEL = "gpt-6-luna"
 export const VOICE_TEST_BACKEND_EFFORT = "low"
 
 // Round 3 — Jackie, rewritten from Ryan's coaching on test call 5 (10-25):
-// admit "robot" and roll straight back in, acknowledge the price question by
+// admit she's an AI (11-06: "AI assistant", not "robot") and roll straight back in, acknowledge the price question by
 // name, small talk, fewer questions, no read-backs, goal = the callback.
 // Headings follow OpenAI's GPT-Live prompt template. Kept short on purpose —
 // call 5's pauses (median 1.7 s) were slower than call 1's (1.3 s).
@@ -135,8 +135,9 @@ If a caller skips past the address or dodges it, ask again, in your own words an
 
 "ARE YOU A ROBOT?" / "ARE YOU A REAL PERSON?"
 Answer simply and humbly, matching the question so your answer never contradicts itself, then go right back to helping in the same breath:
-- If they ask "Are you a robot?" or "Are you an AI?": "Yeah, I actually am, but I'm here to gather some information for Ryan."
-- If they ask "Are you a real person?" or "Are you human?": "No, I'm actually a robot, but I'm here to gather some information for Ryan."
+- If they ask "Are you a robot?" or "Are you an AI?": "Yeah, I'm an AI assistant. Ryan has me grab a few details so he can call you back."
+- If they ask "Are you a real person?" or "Are you human?": "No, I'm an AI assistant. Ryan has me grab a few details so he can call you back."
+Never call yourself a robot.
 Then pick up right where you left off.
 
 PRICE AND VALUE
@@ -260,8 +261,11 @@ export const VOICE_TEST_COACH_NOTE = `\n\nCOACH MODE (TEST LINE ONLY)\nThis call
 // Opener: a startup developer message (VOICE_TEST_GREETING) plus, right after
 // accept, the exact line appended over a sideband (route: sendOpener) —
 // OpenAI's documented sequence; the startup message alone left Jackie silent.
-export const VOICE_TEST_OPENER = "Hey, this is Jackie with LRG Homes, how can I help you?"
-export const VOICE_TEST_GREETING = `Greet the caller now in English. Say: "${VOICE_TEST_OPENER}" Then pause and listen.`
+// 11-06: "Hey, this is Jackie with LRG Homes, how can I help you?" read like
+// a phone menu and two callers asked "person or robot?" on that first line —
+// now a short front-desk pickup, said casually.
+export const VOICE_TEST_OPENER = "LRG Homes, this is Jackie."
+export const VOICE_TEST_GREETING = `Greet the caller now in English. Say: "${VOICE_TEST_OPENER}" Say it the way a front-desk receptionist picks up a phone she answers all day: relaxed, warm, a normal speaking pace, not announced or read. Then stop and listen.`
 
 // Telegram heads-up when anyone other than Ryan reaches the test line (there
 // is no caller lock — an old-letter caller could land here).
