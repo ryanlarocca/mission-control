@@ -158,7 +158,8 @@ function facts(rows) {
   // One callback often lands as two rows a minute apart (the call + its
   // voicemail transcript) — anything within 30 minutes is one try.
   const attemptsSince = rows.slice(lastInboundIdx + 1)
-    .filter((r) => isRyanOut(r) && /^(call|sms|imessage|email)$/.test(r.lead_type || ""))
+    // Imports / enrolments write empty outbound rows — not attempts.
+    .filter((r) => isRyanOut(r) && /^(call|sms|imessage|email)$/.test(r.lead_type || "") && String(r.message || "").trim())
     .filter((r, i, arr) => i === 0 || new Date(r.created_at).getTime() - new Date(arr[i - 1].created_at).getTime() > 30 * 60000)
   const lastRyanOut = [...rows].reverse().find((r) => isRyanOut(r))
   const dated = rows.filter((r) => r.recommended_followup_date).sort((a, b) => a.recommended_followup_date.localeCompare(b.recommended_followup_date))[0]
@@ -188,7 +189,7 @@ Pick exactly one state. Highest rule that fits wins:
 7. "ryan_today" — their newest message asks Ryan for something (a number / an offer, a call, an answer) or they clearly want to talk now.
 8. "quiet_until" — they said not interested / not selling / not now, with no date, without asking to be removed. Ryan may have closed politely ("no problem, you have my number") and they may have acknowledged (👍, "thanks") — that is still quiet_until.
 9. "chase" — NO real conversation has EVER happened in this thread: only Ryan's calls that hit voicemail, their hang-ups or empty voicemails, Jackie answering, auto-texts with no reply, phone tag. Ryan is still trying to reach them for the first time. If they ever actually talked, this is never the answer.
-10. "none" — nothing in the thread calls for a change from the standing verdict.
+10. "none" — nothing in the thread calls for a change from the standing verdict. Only valid when a standing verdict is given; with none, pick the state that fits.
 
 A REAL conversation means Ryan and the person actually exchanged words: a live call where both talk (not Ryan reaching a voicemail greeting, not a hang-up with Jackie), or the person replied to Ryan by text with substance.
 
@@ -236,7 +237,12 @@ function decide(llm, f, today) {
   let date = null
   let reason = llm.reason
   if (f.isDnc) { state = "dnc"; reason = reason || "On the do-not-contact list." }
-  else if (f.appointment) { state = "appointment"; date = pacificDay(new Date(f.appointment)); reason = `Appointment ${fmtDay(date)}.` }
+  else if (f.appointment) {
+    state = "appointment"
+    date = pacificDay(new Date(f.appointment))
+    // appointment_at's clock time isn't reliable; the model's line carries the time.
+    reason = `Appointment ${fmtDay(date)}${llm.reason ? ` — ${llm.reason}` : ""}`
+  }
   else if (llm.owed && !["dead", "none"].includes(state)) {
     // Something Ryan promised comes before any timeline they discussed.
     state = "ryan_owes"
@@ -245,9 +251,12 @@ function decide(llm, f, today) {
     reason = `You owe them: ${owed}${llm.state === "call_on" && llm.date ? ` — then ${fmtDay(llm.date)}` : ""}`
   }
 
+  // A meeting that was set for a day already gone isn't a plan — it's history.
+  if (state === "appointment" && !date && !(llm.date && llm.date >= today)) state = "chase"
+
   switch (state) {
     case "appointment":
-      if (!date) date = llm.date && llm.date >= today ? llm.date : today
+      if (!date) date = llm.date
       break
     case "call_on":
       date = llm.date && llm.date > today ? llm.date : today
@@ -269,10 +278,18 @@ function decide(llm, f, today) {
     }
     case "chase": {
       const n = f.attempts.length
-      if (n === 0) { date = today; reason = reason || "They reached out and you haven't called back yet." }
-      else if (n > CHASE_LADDER_DAYS.length) { date = null; reason = `${n} tries with no real conversation — parked on autopilot.` }
-      else {
-        const last = pacificDay(new Date(f.attempts[n - 1].created_at))
+      const last = n ? pacificDay(new Date(f.attempts[n - 1].created_at)) : null
+      // Nothing from either side in over two weeks: the chase went cold.
+      const lastTouch = [last, f.lastInbound ? pacificDay(new Date(f.lastInbound.created_at)) : null].filter(Boolean).sort().pop() || today
+      const stale = dayPlus(lastTouch, CHASE_LADDER_DAYS[CHASE_LADDER_DAYS.length - 1]) < today
+      if (n === 0 && !stale) { date = today; reason = reason || "They reached out and you haven't called back yet." }
+      else if (n > CHASE_LADDER_DAYS.length || stale) {
+        // Ladder exhausted, or the chase went cold weeks ago — autopilot's job now.
+        date = null
+        reason = n
+          ? `${n} tr${n === 1 ? "y" : "ies"} with no real conversation${stale ? `, nothing since ${fmtDay(lastTouch)}` : ""} — parked on autopilot.`
+          : `Never a real conversation; nothing from either side since ${fmtDay(lastTouch)} — parked on autopilot.`
+      } else {
         date = dayPlus(last, CHASE_LADDER_DAYS[n - 1])
         if (date < today) date = today
         reason = `${reason} (try ${n + 1}: ${CHASE_LADDER_DAYS[n - 1]} day${CHASE_LADDER_DAYS[n - 1] > 1 ? "s" : ""} after the last one)`
@@ -282,7 +299,7 @@ function decide(llm, f, today) {
     default:
       date = null
   }
-  return { state, date, reason: reason.slice(0, 200), enrolAutopilot: state === "chase" && f.attempts.length > CHASE_LADDER_DAYS.length }
+  return { state, date, reason: reason.slice(0, 200), enrolAutopilot: state === "chase" && date === null }
 }
 
 // ─── writes ─────────────────────────────────────────────────────────────────
