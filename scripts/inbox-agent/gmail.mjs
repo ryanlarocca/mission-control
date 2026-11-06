@@ -150,11 +150,23 @@ export async function addLabel(gmail, messageId, labelName) {
 export async function sentSince(gmail, days = SENT_LOOKBACK_DAYS) {
   const ids = await listMessageIds(gmail, `in:sent newer_than:${days}d`, 300)
   const messages = []
+  let failed = 0
   for (const id of ids) {
-    const { data } = await gmail.users.messages.get({ userId: "me", id, format: "metadata", metadataHeaders: ["To", "Cc"] })
+    // One unreadable sent message (2026-11-06 04:11: Gmail "Precondition check
+    // failed" on a single get) must not fail the whole pass — skip it; the next
+    // pass reads it again. Most of them failing is a real outage → throw.
+    let data
+    try {
+      ;({ data } = await gmail.users.messages.get({ userId: "me", id, format: "metadata", metadataHeaders: ["To", "Cc"] }))
+    } catch (e) {
+      failed++
+      warn(`sent message ${id} unreadable, skipped this pass:`, e?.response?.data?.error?.message || e.message)
+      continue
+    }
     const headers = data.payload?.headers || []
     messages.push({ threadId: data.threadId, internalDate: data.internalDate ? new Date(Number(data.internalDate)).toISOString() : null, to: header(headers, "To"), cc: header(headers, "Cc") })
   }
+  if (failed && failed * 2 > ids.length) throw new Error(`Gmail refused ${failed} of ${ids.length} sent messages`)
   return foldSent(messages, { self: MAILBOX })
 }
 

@@ -32,6 +32,9 @@ const PUBLIC_PATHS = [
   // Twilio StatusCallback for Card # texts from /api/crms/send (which stays
   // auth-gated): alerts Telegram on failed/undelivered, nothing else.
   "/api/crms/sms-status",
+  // Supabase pg_cron polls this every minute (no cookie): reads the Mac mini's
+  // heartbeat row and alerts Telegram once per state change, nothing else.
+  "/api/mini/watch",
   // Google Cloud Pub/Sub pushes Gmail-watch notifications here without
   // a session cookie. Auth on this path is enforced by Pub/Sub itself
   // (subscription origin) — see scripts/setup-gmail-watch.js.

@@ -480,6 +480,17 @@ export async function POST(request: Request) {
       else await tg("sendMessage", { chat_id: chatId, text: "❌ Reboot cancelled — nothing happened.", reply_to_message_id: cb.message?.message_id })
       return NextResponse.json({ ok: true })
     }
+    // Self-heal ask (2026-11-06): the mini's watchdog sends this button when new
+    // chats can't start but a chat is mid-task. "Not now" changes nothing — the
+    // watchdog still restarts on its own once the running chats finish.
+    if ((cb.data === "mini:restart:yes" || cb.data === "mini:restart:no") && typeof chatId === "number") {
+      const yes = cb.data.endsWith(":yes")
+      await tg("answerCallbackQuery", { callback_query_id: cb.id, text: yes ? "Restarting…" : "OK" })
+      await tg("editMessageReplyMarkup", { chat_id: chatId, message_id: cb.message?.message_id, reply_markup: { inline_keyboard: [] } })
+      if (yes) waitUntil(runMini(chatId, "restart", cb.message?.message_id))
+      else await tg("sendMessage", { chat_id: chatId, text: "👍 Leaving it. I'll restart it myself as soon as the running chats finish.", reply_to_message_id: cb.message?.message_id })
+      return NextResponse.json({ ok: true })
+    }
     // Appointment / calendar ↩️ Undo (2026-11-05, lib/appointments): takes
     // the appointment off the lead card and deletes the calendar event; a
     // calendar-only event (no lead named) is just deleted.
