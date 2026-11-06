@@ -332,6 +332,11 @@ async function runAutopilot(sb, deps) {
       const since = new Date(lead.autopilot_since || lead.created_at).getTime()
       const replies = rows.filter((r) => isInbound(r) && new Date(r.created_at).getTime() > since)
       if (replies.length) {
+        // The judge (scripts/judge.js, 2026-11-06) rules on replies from the
+        // whole thread: it either holds them here (quiet / waiting on them,
+        // moving autopilot_since past the reply) or takes them off autopilot.
+        // Until it has, don't text them and don't second-guess it.
+        if ((process.env.JUDGE_LIVE || "").trim().toLowerCase() === "true") { bump("reply_for_judge"); continue }
         const last = replies[replies.length - 1]
         // Let the voicemail / call transcription land before judging it.
         if (Date.now() - new Date(last.created_at).getTime() < 20 * 60000) { bump("reply_settling"); continue }

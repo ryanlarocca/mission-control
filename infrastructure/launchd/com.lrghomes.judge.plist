@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  The judge (scripts/judge.js) — every 15 minutes, rules on anyone whose
+  thread has been quiet for 20 minutes since something new happened. Most
+  passes find nobody and spend nothing. Writes only when JUDGE_LIVE=true in
+  .env.local.
+
+  Install (Mac mini):
+    cp infrastructure/launchd/com.lrghomes.judge.plist ~/Library/LaunchAgents/
+    launchctl load ~/Library/LaunchAgents/com.lrghomes.judge.plist
+
+  Tail logs:
+    tail -f /tmp/lrg-judge.log /tmp/lrg-judge-err.log
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.lrghomes.judge</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/opt/homebrew/bin/node</string>
+    <string>scripts/judge.js</string>
+  </array>
+  <key>WorkingDirectory</key>
+  <string>/Users/ryanlarocca/Projects/PROJECTS/mission-control</string>
+  <key>StartInterval</key>
+  <integer>900</integer>
+  <key>StandardOutPath</key>
+  <string>/tmp/lrg-judge.log</string>
+  <key>StandardErrorPath</key>
+  <string>/tmp/lrg-judge-err.log</string>
+  <key>RunAtLoad</key>
+  <true/>
+</dict>
+</plist>

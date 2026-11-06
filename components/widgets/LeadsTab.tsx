@@ -78,6 +78,8 @@ interface Lead {
   drip_campaign_type?: string | null
   drip_touch_number?: number | null
   last_drip_sent_at?: string | null
+  // Autopilot hold (scripts/judge.js): quiet until this date, then the check-ins resume.
+  autopilot_hold_until?: string | null
   // Phase 7C
   is_dnc?: boolean | null
   is_junk?: boolean | null
@@ -2727,7 +2729,14 @@ function LeadCard(p: LeadCardProps) {
               <Clock className="w-3 h-3 shrink-0" />
               <span className="font-medium">Autopilot</span>
               <span className="opacity-50">·</span>
-              <span>{intakeRow.drip_touch_number ?? 0} of 8 check-in texts sent · stays off Follow Ups until they reply</span>
+              {intakeRow.autopilot_hold_until && new Date(intakeRow.autopilot_hold_until).getTime() > Date.now() ? (
+                <span>
+                  quiet until {new Date(intakeRow.autopilot_hold_until).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric", timeZone: "America/Los_Angeles" })}
+                  {" · "}{intakeRow.drip_touch_number ?? 0} of 8 check-in texts sent · stays off Follow Ups until they reply
+                </span>
+              ) : (
+                <span>{intakeRow.drip_touch_number ?? 0} of 8 check-in texts sent · stays off Follow Ups until they reply</span>
+              )}
               <button
                 onClick={() => p.onAutopilot("off")}
                 className="ml-1 underline decoration-sky-700 underline-offset-2 text-sky-300 hover:text-sky-100 shrink-0"

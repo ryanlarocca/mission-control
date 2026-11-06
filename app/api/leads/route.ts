@@ -368,6 +368,20 @@ export async function PATCH(request: NextRequest) {
       } catch (supersedeErr) {
         console.warn(`[leads:PATCH] followup supersession failed for ${id}:`, supersedeErr instanceof Error ? supersedeErr.message : String(supersedeErr))
       }
+      // A date Ryan sets by hand is a verdict (scripts/judge.js): the judge
+      // leaves it alone until the person does something new.
+      if (data.caller_phone && /^\+\d{8,}$/.test(String(data.caller_phone))) {
+        const { error: vErr } = await sb.from("lead_verdicts").upsert({
+          phone: data.caller_phone,
+          state: "ryan",
+          due_date: update.recommended_followup_date,
+          reason: typeof update.followup_reason === "string" ? update.followup_reason : "Set by Ryan",
+          through_at: new Date().toISOString(),
+          judged_at: new Date().toISOString(),
+          source: "ryan",
+        })
+        if (vErr) console.warn(`[leads:PATCH] verdict record failed for ${id}:`, vErr.message)
+      }
     }
 
     // Manual-touch cadence reset — restart the drip clock + skip queued
