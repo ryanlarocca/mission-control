@@ -85,9 +85,9 @@ export function jackieTagsFromSipHeaders(sipHeaders: unknown): {
 // Ryan's cell rings 12 s first, exactly as before. When he doesn't pick up
 // on a JACKIE_LINES number (lib/leads.ts) and the switch is on, Jackie takes
 // the call — no coin flip since 11-03 (the 10-27 → 11-03 flip rows keep
-// their arms). A caller who's been in touch before gets her returning-caller
-// note (name + property from the card) instead of the full intake. Still
-// voicemail: anyone with a Relationships card, anyone who asked off the list
+// their arms). Since 11-06 a caller who's been in touch before goes to
+// Ryan's voicemail, not Jackie (her returning-caller note is kept for when
+// she can see the card's appointments). Also voicemail: anyone with a Relationships card, anyone who asked off the list
 // (DNC), a number only in Ryan's iPhone history (no card to say who they
 // are), and a number Jackie already took 3 calls from today. Withheld
 // numbers share a cap of 3 Jackie calls a day.
@@ -165,6 +165,10 @@ export function decideArm(input: {
   if (h.relationship) return { arm, jackie: false, reason: "Relationships contact" }
   if (h.dnc) return { arm, jackie: false, reason: "asked to come off the list" }
   if (!h.prior && h.iphone) return { arm, jackie: false, reason: "in Ryan's iPhone history, no lead card" }
+  // Ryan 2026-11-06: returning callers go to his voicemail "for now". Jackie
+  // can't see the card's appointments or his last contact, so a caller
+  // confirming tonight's meeting (Barbara) got "I'll pass that along".
+  if (known) return { arm, jackie: false, reason: "returning caller → Ryan's voicemail" }
   if (input.anonymous && input.anonymousJackieToday >= ANONYMOUS_JACKIE_PER_DAY) {
     return { arm: null, jackie: false, reason: "withheld-number Jackie cap reached today" }
   }

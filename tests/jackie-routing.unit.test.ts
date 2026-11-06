@@ -2,8 +2,8 @@ import { describe, expect, it } from "vitest"
 import { NO_HISTORY, decideArm, returningCallerNote, spokenAddress, type CallerHistory } from "@/lib/jackie"
 import { JACKIE_LINES } from "@/lib/leads"
 
-// Ryan 2026-11-03: no coin flip — Jackie takes every missed call on the
-// mailer lines, returning callers included, with the voicemail exceptions.
+// Ryan 2026-11-03: no coin flip — Jackie takes every missed first-time call on
+// the mailer lines; since 11-06 returning callers go to Ryan's voicemail.
 const base = { answered: false, anonymous: false, anonymousJackieToday: 0, jackieToday: 0, forced: false, history: NO_HISTORY }
 const gary: CallerHistory = { prior: { name: "Gary", property_address: "140 Johnson Ave, Los Gatos, CA 95030" }, relationship: false, iphone: true, dnc: false }
 
@@ -11,8 +11,9 @@ describe("decideArm", () => {
   it("first-time missed caller → Jackie, every time (no coin)", () => {
     expect(decideArm(base)).toEqual({ arm: "jackie", jackie: true, reason: "first-time caller" })
   })
-  it("returning missed caller → Jackie with the returning arm", () => {
-    expect(decideArm({ ...base, history: gary })).toMatchObject({ arm: "returning", jackie: true, reason: "returning caller" })
+  it("returning missed caller → Ryan's voicemail (11-06), returning arm", () => {
+    expect(decideArm({ ...base, history: gary })).toMatchObject({ arm: "returning", jackie: false, reason: "returning caller → Ryan's voicemail" })
+    expect(decideArm({ ...base, history: { ...gary, iphone: false } })).toMatchObject({ arm: "returning", jackie: false })
   })
   it("Ryan answered → nobody else", () => {
     expect(decideArm({ ...base, answered: true })).toMatchObject({ arm: "answered", jackie: false })
@@ -28,8 +29,8 @@ describe("decideArm", () => {
     expect(decideArm({ ...base, history: { ...NO_HISTORY, iphone: true } })).toMatchObject({ arm: "returning", jackie: false })
   })
   it("3 Jackie calls from this number today → voicemail", () => {
-    expect(decideArm({ ...base, history: gary, jackieToday: 2 }).jackie).toBe(true)
-    expect(decideArm({ ...base, history: gary, jackieToday: 3 }).jackie).toBe(false)
+    expect(decideArm({ ...base, jackieToday: 2 }).jackie).toBe(true)
+    expect(decideArm({ ...base, jackieToday: 3 }).jackie).toBe(false)
   })
   it("withheld numbers: no history, shared daily cap", () => {
     expect(decideArm({ ...base, anonymous: true, history: gary })).toMatchObject({ arm: "jackie", jackie: true })
