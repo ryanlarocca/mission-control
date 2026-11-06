@@ -523,8 +523,9 @@ if (require.main === module) {
       for (const r of data || []) if (/^\+\d{8,}$/.test(r.caller_phone || "")) seen.add(r.caller_phone)
       console.log(`${seen.size} people with activity in the last ${days} days`)
       const tally = {}
+      const write = args.includes("--apply") // one-time catch-up: rule on everyone and write it
       for (const p of seen) {
-        try { const r = await judgePhone(sb, deps, p, { write: false }); show(r); tally[r.skipped ? `skipped_${r.skipped}` : r.verdict.state] = (tally[r.skipped ? `skipped_${r.skipped}` : r.verdict.state] || 0) + 1 }
+        try { const r = await judgePhone(sb, deps, p, { write }); show(r); tally[r.skipped ? `skipped_${r.skipped}` : r.verdict.state] = (tally[r.skipped ? `skipped_${r.skipped}` : r.verdict.state] || 0) + 1 }
         catch (e) { console.log(`\n## ${p} — error: ${e.message}`) }
       }
       console.log("\n", JSON.stringify(tally))
