@@ -6,6 +6,7 @@ import {
   WEBSITE_NUMBER,
   getLeadsClient,
   normalizeE164,
+  sendTelegramAlert,
   sendTwilioSms,
 } from "@/lib/leads"
 import { autoLinkMailRecord, creditWebsiteFormToMailCampaign } from "@/lib/mailMatch"
@@ -22,6 +23,7 @@ import {
   syncLadder,
   type FormRow,
 } from "@/lib/websiteLead"
+import { screenVendorPitch, vendorPitchAlert, vendorPitchColumns } from "@/lib/vendorPitch"
 
 // lrghomes.com contact form → Mission Control (Ryan, 2026-11-02 — website
 // leads are call-first; lib/websiteLead.ts has the whole flow). The site's
@@ -159,6 +161,22 @@ async function afterIntake(a: IntakeArgs): Promise<void> {
 async function runIntake(a: IntakeArgs): Promise<void> {
   const { form, fullName, email, address, about, note, smsConsent, phone, isSeller, returning, now } = a
   const sb = getLeadsClient()
+
+  // Vendor pitch (lib/vendorPitch, 2026-11-06): a first-time sender selling
+  // LRG Homes a service gets nothing — no text, email or call reminders — and
+  // Ryan one quiet line. Someone already on the list is never screened.
+  if (!returning) {
+    const pitch = await screenVendorPitch({ channel: "form", message: note, name: fullName, topic: ABOUT_LABELS[about] })
+    if (pitch) {
+      const { error } = await sb.from("leads").update({ ...vendorPitchColumns(pitch), website_ladder: null }).eq("id", form.id)
+      if (error) console.error("[website-form] vendor-pitch close failed:", error.message)
+      await sendTelegramAlert(
+        vendorPitchAlert({ where: "website form", who: `${esc(fullName)} · ${phone}`, pitch, message: note, esc }) +
+          (error ? `\n⚠️ Couldn't close the card (${esc(error.message)}) — it may show in Leads.` : "")
+      )
+      return
+    }
+  }
 
   // Mailed-record match — same matcher as callers (address → mailing
   // address → surname). Never blocks the alert.

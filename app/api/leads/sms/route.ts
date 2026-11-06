@@ -23,7 +23,8 @@ import {
 import { scoreLeadSpam, spamAlertLines, spamReviewColumns, type SpamScore } from "@/lib/lead-spam"
 import { isAnonymousCaller } from "@/lib/anonymous"
 import { describeContact, isOfficeLine, logInboundTextTouch, resolveOfficeCaller } from "@/lib/office-inbound"
-import { handleInboundVendorText } from "@/lib/vendorMarketing"
+import { escapeTelegramHtml, handleInboundVendorText } from "@/lib/vendorMarketing"
+import { isKnownVendorPitch, screenVendorPitch, vendorPitchAlert, vendorPitchColumns, type VendorPitch } from "@/lib/vendorPitch"
 import { correctOptOutAddress, explicitOptOutPhrase, isCourtesyReply, isTwilioStopKeyword, markContactDnc, optOutAddressLine } from "@/lib/dnc"
 
 // Twilio fires this when a lead texts any of our lead-facing lines (the
@@ -241,6 +242,17 @@ export async function POST(request: Request) {
 
       const isJunkAddr = isMobileHome(bodyText)
 
+      // Vendor pitch on the website line (lib/vendorPitch, 2026-11-06): a
+      // first-time texter selling LRG Homes a service is closed on arrival —
+      // no planner draft, no analyzer, one quiet 🧹 line. A later text from a
+      // number already closed that way gets the same quiet line.
+      let pitch: VendorPitch | null = null
+      let knownPitch = false
+      if (isWebsite) {
+        if (!existingRow) pitch = await screenVendorPitch({ channel: "text", message: bodyText })
+        else knownPitch = await isKnownVendorPitch(sb, from)
+      }
+
       // A text to a SOURCE_OVERRIDE_NUMBERS line (NOO Q4 2026) is a response to
       // that mailer even from a known caller — the new row takes the line's
       // label; the drip stamp still inherits from the cluster. Status: a
@@ -302,6 +314,9 @@ export async function POST(request: Request) {
         if (spam.suspicious) Object.assign(insertRow, spamReviewColumns(spam))
       }
 
+      if (pitch) Object.assign(insertRow, vendorPitchColumns(pitch))
+      else if (knownPitch) Object.assign(insertRow, { status: "dead", is_junk: true })
+
       const { data: insertedRow, error } = await sb
         .from("leads")
         .insert(insertRow)
@@ -312,6 +327,11 @@ export async function POST(request: Request) {
         await alertWriteFailure("lead insert", from, source, error)
       }
       newLeadId = insertedRow?.id ?? null
+
+      if (pitch || knownPitch) {
+        await sendTelegramAlert(vendorPitchAlert({ where: "website line", who: from, pitch, message: bodyText, esc: escapeTelegramHtml }))
+        return new NextResponse(EMPTY_TWIML, { headers: { "Content-Type": "text/xml" } })
+      }
 
       // Re-engagement carried the cluster's drip stamp onto this new event
       // row. Sweep the cluster so exactly ONE row drives the drip engine —
