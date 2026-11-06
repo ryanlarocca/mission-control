@@ -14,15 +14,16 @@
  *   1. stop / remove me                         → DNC
  *   2. sold / wrong person / not a seller       → dead
  *   3. an appointment got set                   → that date
- *   4. the newest REAL conversation's instruction ("call me in January")
+ *   4. Ryan promised to send / do something     → Ryan, today
+ *   5. the newest REAL conversation's instruction ("call me in January")
  *      beats everything before it; later hang-ups / voicemails / Jackie
  *      logs don't move it
- *   5. Ryan asked them something, no answer yet → wait 3 days, then re-judge
- *   6. they want a number / a call / an answer  → Ryan, today
- *   7. not interested, politely closed          → quiet a year, on autopilot
- *   8. no real connection yet                   → call again next day, then
+ *   6. Ryan asked them something, no answer yet → wait 3 days, then re-judge
+ *   7. they want a number / a call / an answer  → Ryan, today
+ *   8. not interested, politely closed          → quiet a year, on autopilot
+ *   9. no real conversation EVER               → call again next day, then
  *      day 3, 7, 14 after each attempt, then autopilot
- *   9. nothing new                              → leave the last verdict alone
+ *  10. nothing new                              → leave the last verdict alone
  *
  * The judge is the only thing meant to own the date / reason / autopilot
  * state. The old per-event writers still run but get overruled 20 minutes
@@ -46,7 +47,7 @@ const CHASE_LADDER_DAYS = [1, 3, 7, 14] // after attempt 1, 2, 3, 4 — then aut
 const LOOKBACK_DAYS = 3                 // sweep: who had activity recently
 const MODEL = "claude-sonnet-5"
 const APPLE_EPOCH_OFFSET_MS = 978307200000
-const STATES = ["dnc", "dead", "appointment", "call_on", "waiting_on_them", "ryan_today", "quiet_until", "chase", "none"]
+const STATES = ["dnc", "dead", "appointment", "ryan_owes", "call_on", "waiting_on_them", "ryan_today", "quiet_until", "chase", "none"]
 
 // ─── dates (Pacific days, like lib/pacificDate) ─────────────────────────────
 
@@ -107,7 +108,9 @@ function labelFor(r) {
 function renderRow(r) {
   const body = String(r.message || "").trim()
   const summary = String(r.ai_summary || r.ai_notes || "").trim()
-  let content = body.length > 2500 ? body.slice(0, 2500) + " …[cut]" : body
+  // Long call: keep the opening and the END — the end is where "call me in
+  // January" / "I'll text you" live.
+  let content = body.length > 6000 ? body.slice(0, 2500) + "\n  …[middle cut]…\n  " + body.slice(-3500) : body
   if (!content) content = summary ? `(no transcript; summary: ${summary.slice(0, 500)})` : "(nothing captured)"
   else if (summary && body.length > 600) content += `\n  summary: ${summary.slice(0, 400)}`
   const dur = r.call_duration_sec ? ` · ${Math.round(r.call_duration_sec)}s` : ""
@@ -179,19 +182,22 @@ Pick exactly one state. Highest rule that fits wins:
 1. "dnc" — they asked to be removed, to stop contact, or were hostile about being contacted.
 2. "dead" — they sold it, don't own it, wrong number / wrong person, or it isn't a seller at all (a vendor or agent pitching Ryan).
 3. "appointment" — a specific meeting, walkthrough or visit was agreed. date = that day.
-4. "call_on" — in the newest REAL conversation, they or Ryan set a time to reconnect ("call me in January", "after the holidays", "end of March", "give me a couple of weeks"). date = that day (a month alone → the 15th; "after X" → about a week after X; "a couple of weeks" → 14 days). This stands even if later there were hang-ups, voicemails, Jackie logs or auto-texts — those don't move it.
-5. "waiting_on_them" — the last substantive message is a QUESTION FROM RYAN they have not answered yet (e.g. they texted "No", Ryan asked "not the owner anymore, or not for sale?").
-6. "ryan_today" — their newest message asks Ryan for something (a number / an offer, a call, an answer) or they clearly want to talk now.
-7. "quiet_until" — they said not interested / not selling / not now, with no date, without asking to be removed. Ryan may have closed politely ("no problem, you have my number") and they may have acknowledged (👍, "thanks") — that is still quiet_until.
-8. "chase" — no real conversation has happened yet: only Ryan's calls that hit voicemail, their hang-ups or empty voicemails, Jackie answering, auto-texts with no reply, phone tag. Ryan is still trying to reach them.
-9. "none" — nothing in the thread calls for a change from the standing verdict.
+4. "ryan_owes" — in the newest real conversation Ryan promised to send or do something specific (a number / an offer, a text with his info, a document, a call back "later today") and there's no sign he did it yet. Ryan's turn, now.
+5. "call_on" — in the newest REAL conversation, they or Ryan set a time to reconnect ("call me in January", "after the holidays", "end of March", "give me a couple of weeks"). date = that day (a month alone → the 15th; "after X" → about a week after X; "a couple of weeks" → 14 days). This stands even if later there were hang-ups, voicemails, Jackie logs or auto-texts — those don't move it. If a real conversation happened and nothing was promised or scheduled, this is still the state: pick a sensible date from what was said (a week for an open thread; "nothing moves for two months" → two months).
+6. "waiting_on_them" — the last substantive message is a QUESTION FROM RYAN they have not answered yet (e.g. they texted "No", Ryan asked "not the owner anymore, or not for sale?").
+7. "ryan_today" — their newest message asks Ryan for something (a number / an offer, a call, an answer) or they clearly want to talk now.
+8. "quiet_until" — they said not interested / not selling / not now, with no date, without asking to be removed. Ryan may have closed politely ("no problem, you have my number") and they may have acknowledged (👍, "thanks") — that is still quiet_until.
+9. "chase" — NO real conversation has EVER happened in this thread: only Ryan's calls that hit voicemail, their hang-ups or empty voicemails, Jackie answering, auto-texts with no reply, phone tag. Ryan is still trying to reach them for the first time. If they ever actually talked, this is never the answer.
+10. "none" — nothing in the thread calls for a change from the standing verdict.
 
 A REAL conversation means Ryan and the person actually exchanged words: a live call where both talk (not Ryan reaching a voicemail greeting, not a hang-up with Jackie), or the person replied to Ryan by text with substance.
 
 Today is ${today}. If a standing verdict or a date Ryan set by hand is given and nothing from THEM is newer than it, answer "none".
 
+Separately from the state: does Ryan OWE them something from the newest real conversation — anything he said he'd send or do ("I'll shoot you a text", "I'll send you my info", "let me get you a number", "I'll call you back this afternoon") with no later message from Ryan showing he did it? Look at how the conversation ENDED; a promise at the end of a call counts even if a longer timeline was discussed earlier. If so, put it in "owed" in a few words, written TO Ryan ("text her your name and number…"); otherwise null.
+
 Respond with ONLY JSON:
-{"state": "<one of the states>", "date": "YYYY-MM-DD" or null, "reason": "<one plain sentence for Ryan's screen, under 140 characters, naming the fact — e.g. Bill said call in January ahead of his end-of-March sale>", "connected": true|false}`
+{"state": "<one of the states>", "date": "YYYY-MM-DD" or null, "owed": "<what Ryan promised, e.g. text her his name/number with Vine Street on it for her attorney>" or null, "reason": "<one plain sentence for Ryan's screen, under 140 characters, naming the fact — e.g. Bill said call in January ahead of his end-of-March sale>", "connected": true|false}`
 }
 
 async function askModel(anthropic, ctx) {
@@ -203,16 +209,24 @@ async function askModel(anthropic, ctx) {
     "THREAD (oldest first):",
     ctx.thread,
   ].filter((x) => x !== null).join("\n")
-  const res = await anthropic.messages.create({
-    model: MODEL,
-    max_tokens: 300,
-    system: systemPrompt(ctx.today),
-    messages: [{ role: "user", content: user }],
-  })
-  const out = (res.content || []).map((b) => b.text || "").join("")
-  const json = JSON.parse(out.slice(out.indexOf("{"), out.lastIndexOf("}") + 1))
-  if (!STATES.includes(json.state)) throw new Error(`bad state ${json.state}`)
-  return { state: json.state, date: /^\d{4}-\d{2}-\d{2}$/.test(json.date || "") ? json.date : null, reason: String(json.reason || "").slice(0, 160), connected: !!json.connected, usage: res.usage }
+  let lastErr = null
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const res = await anthropic.messages.create({
+      model: MODEL,
+      max_tokens: 4000, // the model thinks first; the JSON itself is ~100 tokens
+      system: systemPrompt(ctx.today),
+      messages: [{ role: "user", content: user }],
+    })
+    const out = (res.content || []).map((b) => b.text || "").join("")
+    try {
+      const json = JSON.parse(out.slice(out.indexOf("{"), out.lastIndexOf("}") + 1))
+      if (!STATES.includes(json.state)) throw new Error(`bad state ${json.state}`)
+      return { state: json.state, date: /^\d{4}-\d{2}-\d{2}$/.test(json.date || "") ? json.date : null, owed: typeof json.owed === "string" && json.owed.trim() ? json.owed.trim().slice(0, 120) : null, reason: String(json.reason || "").slice(0, 160), connected: !!json.connected, usage: res.usage }
+    } catch (e) {
+      lastErr = new Error(`${e.message} — stop=${res.stop_reason} blocks=${(res.content || []).map((b) => b.type).join(",") || "none"} said: ${out.slice(0, 200).replace(/\s+/g, " ")}`)
+    }
+  }
+  throw lastErr
 }
 
 // ─── the verdict (state → one date + what to write) ────────────────────────
@@ -223,6 +237,13 @@ function decide(llm, f, today) {
   let reason = llm.reason
   if (f.isDnc) { state = "dnc"; reason = reason || "On the do-not-contact list." }
   else if (f.appointment) { state = "appointment"; date = pacificDay(new Date(f.appointment)); reason = `Appointment ${fmtDay(date)}.` }
+  else if (llm.owed && !["dead", "none"].includes(state)) {
+    // Something Ryan promised comes before any timeline they discussed.
+    state = "ryan_owes"
+    // The card talks to Ryan — "text her your number", not "his".
+    const owed = llm.owed.replace(/\bRyan's\b/g, "your").replace(/\bRyan\b/g, "you").replace(/\bhis\b/g, "your").replace(/\bhim\b/g, "you")
+    reason = `You owe them: ${owed}${llm.state === "call_on" && llm.date ? ` — then ${fmtDay(llm.date)}` : ""}`
+  }
 
   switch (state) {
     case "appointment":
@@ -232,6 +253,7 @@ function decide(llm, f, today) {
       date = llm.date && llm.date > today ? llm.date : today
       break
     case "ryan_today":
+    case "ryan_owes":
       date = today
       break
     case "waiting_on_them": {
@@ -359,7 +381,10 @@ async function judgePhone(sb, deps, phone, opts = {}) {
 
   let llm = null
   if (f.isDnc) llm = { state: "dnc", date: null, reason: "On the do-not-contact list.", connected: false }
-  else {
+  else if (f.autopilotRow && !rows.some((r) => isInbound(r) && r.created_at > (f.autopilotRow.autopilot_since || f.autopilotRow.created_at)) && !opts.fresh) {
+    // On autopilot and they haven't replied: autopilot owns them. Nothing to rule on.
+    llm = { state: "none", date: null, reason: "On autopilot, no reply yet.", connected: false, usage: null }
+  } else {
     const personal = await fetchPersonalTexts(phone, rows[0].created_at)
     const ctx = { name: f.name, address: f.address, source: f.source, standing, hint: opts.hint, today, thread: buildThread(rows, personal) }
     llm = await askModel(deps.anthropic, ctx)
@@ -378,11 +403,12 @@ async function judgePhone(sb, deps, phone, opts = {}) {
 
 async function dueNow(sb) {
   const since = new Date(Date.now() - LOOKBACK_DAYS * DAY).toISOString()
-  const { data: recent, error } = await sb.from("leads").select("caller_phone, created_at").gte("created_at", since).not("caller_phone", "is", null).order("created_at", { ascending: false }).limit(1000)
+  const { data: recent, error } = await sb.from("leads").select("caller_phone, created_at, lead_type").gte("created_at", since).not("caller_phone", "is", null).order("created_at", { ascending: false }).limit(1000)
   if (error) throw new Error(`recent: ${error.message}`)
   const latest = new Map()
   for (const r of recent || []) {
     if (!r.caller_phone || /anonymous/i.test(r.caller_phone) || !/^\+\d{8,}$/.test(r.caller_phone)) continue
+    if (String(r.lead_type || "").startsWith("drip_")) continue // an auto-text going out is not news about the person
     if (!latest.has(r.caller_phone)) latest.set(r.caller_phone, r.created_at)
   }
   const phones = [...latest.keys()]
