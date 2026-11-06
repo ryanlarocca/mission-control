@@ -1699,6 +1699,14 @@ export interface TelegramButton {
   url?: string
 }
 
+function inlineKeyboard(buttons: TelegramButton[][]) {
+  return {
+    inline_keyboard: buttons.map((row) =>
+      row.map((b) => (b.url ? { text: b.text, url: b.url } : { text: b.text, callback_data: b.data ?? "" }))
+    ),
+  }
+}
+
 // Returns whether Telegram accepted the message — callers that must not
 // fail silently (the website-lead alert) check it; the rest ignore it.
 export async function sendTelegramAlert(
@@ -1712,13 +1720,7 @@ export async function sendTelegramAlert(
     return false
   }
   const payload: Record<string, unknown> = { chat_id: chatId, text, parse_mode: "HTML" }
-  if (opts?.buttons?.length) {
-    payload.reply_markup = {
-      inline_keyboard: opts.buttons.map((row) =>
-        row.map((b) => (b.url ? { text: b.text, url: b.url } : { text: b.text, callback_data: b.data ?? "" }))
-      ),
-    }
-  }
+  if (opts?.buttons?.length) payload.reply_markup = inlineKeyboard(opts.buttons)
   try {
     const res = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
       method: "POST",
@@ -1741,7 +1743,8 @@ export async function sendTelegramAlert(
 export async function sendTelegramVoice(
   audioBuffer: Buffer,
   caption: string,
-  filename: string = "voicemail.mp3"
+  filename: string = "voicemail.mp3",
+  opts?: { buttons?: TelegramButton[][] }
 ): Promise<void> {
   const token = leadAlertBotToken()
   const chatId = process.env.TELEGRAM_CHAT_ID
@@ -1755,6 +1758,7 @@ export async function sendTelegramVoice(
     form.append("voice", new Blob([new Uint8Array(audioBuffer)], { type: "audio/mpeg" }), filename)
     form.append("caption", caption.slice(0, 1024)) // Telegram caption limit
     form.append("parse_mode", "HTML")
+    if (opts?.buttons?.length) form.append("reply_markup", JSON.stringify(inlineKeyboard(opts.buttons)))
 
     const res = await fetch(`https://api.telegram.org/bot${token}/sendVoice`, {
       method: "POST",
@@ -1764,11 +1768,11 @@ export async function sendTelegramVoice(
       const errText = await res.text()
       console.error(`[telegram] sendVoice failed ${res.status}: ${errText}`)
       // Fall back to text-only so Ryan still gets the alert
-      await sendTelegramAlert(caption)
+      await sendTelegramAlert(caption, opts)
     }
   } catch (e) {
     console.error("[telegram] sendVoice threw:", e)
-    await sendTelegramAlert(caption)
+    await sendTelegramAlert(caption, opts)
   }
 }
 
@@ -2293,10 +2297,15 @@ export async function processRecordingBackground(args: {
     }
     const caption = captionLines.join("\n")
 
+    // 📞 Call back — the same recorded relay as the card's Call button
+    // (rings Ryan's cell, then dials the caller from the line they called;
+    // DNC numbers are refused in startLeadCall).
+    const { callButton } = await import("@/lib/websiteLead")
+    const buttons = callButton(callerPhone, "📞 Call back")
     if (audio) {
-      await sendTelegramVoice(audio, caption)
+      await sendTelegramVoice(audio, caption, "voicemail.mp3", { buttons })
     } else {
-      await sendTelegramAlert(caption)
+      await sendTelegramAlert(caption, { buttons })
     }
     // Reply Planner: plan + draft as a second message (non-blocking). An
     // opt-out gets one too — the "you're off my list" confirmation (one reply
