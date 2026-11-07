@@ -769,6 +769,9 @@ def main():
     problems = ["%s (%s)" % (r["dial_id"], (r["raw"].get("reason") or "")[:80]) for r in readings
                 if isinstance(r["raw"], dict) and r["raw"].get("status") == "FAILED"]
     problems += ["%s: no cards" % g for g in groups if not group_cards.get(g) and g != "scc"]
+    # one city failing inside a group still leaves cards, but undercounts the whole group
+    # (a San Jose failure would read as SCC inventory collapsing): alert on it too.
+    problems += [n for n in notes if "FAILED" in n]
     if a.write:
         try:
             skipped = write(sb, key, readings, snaps) or {}

@@ -201,3 +201,11 @@ class TestPartialSource(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class WarnDedup(unittest.TestCase):
+    def test_same_notice_in_two_files_has_one_key(self):
+        a = S.warn_key("2026-06-29", 67, "Cepheid")
+        b = S.warn_key("2026-06-29", 67, "CEPHEID  904 Caribbean Dr  Sunnyvale")
+        self.assertEqual(a, b)
+        self.assertNotEqual(a, S.warn_key("2026-06-29", 20, "Cepheid"))       # different headcount = different notice

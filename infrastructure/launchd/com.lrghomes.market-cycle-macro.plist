@@ -1,26 +1,23 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <!--
-  Market-cycle macro collector (2026-11-02): daily 06:30 PT pull of every
-  history dial (FRED, Zillow, Realtor.com via FRED, EDD WARN, Apartment List,
-  Indeed, Nasdaq basket, C.A.R. + SCCAOR monthly releases). Writes only
-  readings newer than what is stored, plus silent scheduled-release notes
-  (cycle_notes). A failed source posts one Telegram alert.
-  Spec: briefs/BRIEF_MARKET_CYCLE_TRACKER_2026-11-01.md (3.3).
+  Market-cycle daily chain (brief v2, Nov 7, 2026), 06:30 PT:
+    1. collect-macro.py --write   every history dial (FRED, Zillow, Realtor.com
+       via FRED, EDD WARN, Apartment List, Indeed, Nasdaq basket, C.A.R. +
+       SCCAOR); new readings + recent revisions; one Telegram alert on failure
+    2. tripwires.py --live --write --post   every big tripwire, daily
+    3. review.ts --check --write --send     the review, only when due
+       (data-ready cadence, lib/marketCycle/schedule.ts) or a tripwire is pending
+  Replaces the separate 07:30 com.lrghomes.market-cycle-review job (removed:
+  it could run before the collector finished).
+  PATH includes /opt/homebrew/bin for pdftotext and npx (LaunchAgents run with
+  a bare environment).
 
-  Prerequisites: both market-cycle migrations applied
-  (2026-11-01_market_cycle.sql, 2026-11-02_market_cycle_macro.sql), then
-  python3 scripts/market-cycle/sync-registry.py --write and
-  python3 scripts/market-cycle/bootstrap-history.py --write.
-
-  PATH includes /opt/homebrew/bin so pdftotext (EDD + SCCAOR PDFs) is found
-  (DEPLOYMENT.md gotcha #2: LaunchAgents run with a bare environment).
-
-  Install (Mac mini) — NOT installed yet:
+  Install / reload (Mac mini):
     cp infrastructure/launchd/com.lrghomes.market-cycle-macro.plist ~/Library/LaunchAgents/
-    launchctl load ~/Library/LaunchAgents/com.lrghomes.market-cycle-macro.plist
-  Run once:  launchctl start com.lrghomes.market-cycle-macro
-  Logs:      /tmp/lrg-market-cycle-macro.log, /tmp/lrg-market-cycle-macro-err.log
+    launchctl bootout gui/$(id -u)/com.lrghomes.market-cycle-macro 2>/dev/null; launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.lrghomes.market-cycle-macro.plist
+  Run once:  launchctl kickstart gui/$(id -u)/com.lrghomes.market-cycle-macro
+  Log:       ~/Library/Logs/lrg-market-cycle-daily.log (stdout + stderr; /tmp is emptied nightly)
 -->
 <plist version="1.0">
 <dict>
@@ -28,9 +25,9 @@
   <string>com.lrghomes.market-cycle-macro</string>
   <key>ProgramArguments</key>
   <array>
-    <string>/opt/homebrew/bin/python3</string>
-    <string>scripts/market-cycle/collect-macro.py</string>
-    <string>--write</string>
+    <string>/bin/sh</string>
+    <string>scripts/market-cycle/run.sh</string>
+    <string>daily</string>
   </array>
   <key>WorkingDirectory</key>
   <string>/Users/ryanlarocca/Projects/PROJECTS/mission-control</string>
@@ -40,6 +37,8 @@
     <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
     <key>HOME</key>
     <string>/Users/ryanlarocca</string>
+    <key>PYTHONUNBUFFERED</key>
+    <string>1</string>
   </dict>
   <key>StartCalendarInterval</key>
   <dict>
@@ -49,9 +48,9 @@
     <integer>30</integer>
   </dict>
   <key>StandardOutPath</key>
-  <string>/tmp/lrg-market-cycle-macro.log</string>
+  <string>/Users/ryanlarocca/Library/Logs/lrg-market-cycle-daily.log</string>
   <key>StandardErrorPath</key>
-  <string>/tmp/lrg-market-cycle-macro-err.log</string>
+  <string>/Users/ryanlarocca/Library/Logs/lrg-market-cycle-daily.log</string>
   <key>RunAtLoad</key>
   <false/>
 </dict>

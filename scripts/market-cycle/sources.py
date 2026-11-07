@@ -288,7 +288,7 @@ def warn_notices(county="Santa Clara County"):
     (notices, file_status) where file_status lists each file OK/FAILED."""
     def go():
         links = edd_links()
-        notices, status = [], []
+        notices, status, xkeys = [], [], {}
         url = EDD_BASE + links["latest_xlsx"]
         try:
             blob, _, _ = http_get(url)
@@ -298,6 +298,8 @@ def warn_notices(county="Santa Clara County"):
             for r in rows[hdr_i + 1:]:
                 if r.get("A", "").strip() == county and r.get("B") and r.get("G"):
                     notices.append((excel_date(r["B"]), int(float(r["G"])), url)); n += 1
+                    k = warn_key(excel_date(r["B"]), int(float(r["G"])), r.get("E"))
+                    xkeys[k] = xkeys.get(k, 0) + 1
             title = rows[0].get("A", "").split("\n")[0]
             status.append("xlsx OK (%s; %d %s notices)" % (title.strip(), n, county))
         except Exception as e:
@@ -314,18 +316,30 @@ def warn_notices(county="Santa Clara County"):
                 blob, _, _ = http_get(url)
                 txt = pdf_text(blob, pdftotext)
                 lines = [l for l in txt.splitlines() if county in l]
-                n = 0
+                n = dup = 0
                 for l in lines:
                     m = rx.search(l)
                     if m:
                         mo, da, yr = m.group(1).split("/")
-                        notices.append(("%s-%s-%s" % (yr, mo, da), int(m.group(5).replace(",", "")), url)); n += 1
-                miss = len(lines) - n
-                status.append("%s PDF OK (%d notices%s)" % (key, n, ", %d lines unparsed" % miss if miss else ""))
+                        day, emp = "%s-%s-%s" % (yr, mo, da), int(m.group(5).replace(",", ""))
+                        k = warn_key(day, emp, m.group(4))
+                        if xkeys.get(k):            # already in the xlsx: one notice, counted once
+                            xkeys[k] -= 1; dup += 1
+                            continue
+                        notices.append((day, emp, url)); n += 1
+                miss = len(lines) - n - dup
+                status.append("%s PDF OK (%d notices%s%s)" % (key, n, ", %d already in the xlsx" % dup if dup else "", ", %d lines unparsed" % miss if miss else ""))
             except Exception as e:
                 status.append("%s FAILED (%s)" % (key, e))
         return notices, status
     return cached("edd:notices:" + county, go)
+
+
+def warn_key(day, employees, company):
+    """Same notice in two EDD files: notice date + headcount + the company's first
+    word (the PDF's company column can run into the next column)."""
+    first = (str(company or "").strip().split() or [""])[0]
+    return (day, employees, re.sub(r"[^a-z0-9]", "", first.lower()))
 
 
 def warn_monthly(notices):
@@ -1082,11 +1096,13 @@ def fetch_dial(dial, cfg, backfill=False):
         return rows, SCCAOR_STATS, " | ".join(status), extras
     if f == "derived":
         dials = {d["id"]: d for d in cfg["dials"]}
-        nrows, _, _, _ = fetch_dial(dials[src["numerator_dial"]], cfg, backfill)
+        sfr_only = src.get("value") == "sfr_only"   # scc_months_supply: SFR inventory / SFR sales (like for like)
+        # sfr_only never uses the numerator dial (Realtor.com via FRED): don't fetch it, so the
+        # dial doesn't fail whenever FRED is down (Nov 7, 2026).
+        nrows = [] if sfr_only else fetch_dial(dials[src["numerator_dial"]], cfg, backfill)[0]
         drows, _, _, dext = fetch_dial(dials[src["denominator_dial"]], cfg, backfill)
         a = dict((d[:7], v) for d, v in nrows)
         rows, extras = [], {}
-        sfr_only = src.get("value") == "sfr_only"   # scc_months_supply: SFR inventory / SFR sales (like for like)
         for d, v in drows:
             if not v:
                 continue

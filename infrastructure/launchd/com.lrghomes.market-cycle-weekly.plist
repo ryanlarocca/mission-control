@@ -1,20 +1,16 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <!--
-  Market-cycle weekly collector + tripwire engine (briefs/BRIEF_MARKET_CYCLE_TRACKER_2026-11-01.md §3.3).
-  Monday 06:00 local (PT on the mini):
-    1. collect-weekly.py: MLSListings (SCC + tiers, panels, owned zips), NODs, listed-property Pile mentions
-       → cycle_readings + cycle_listing_snapshots. Posts one Telegram line only if the SCC fetch or the write fails.
-    2. tripwires.py: evaluates the big tripwires; a NEW firing inserts cycle_tripwire_events and posts the
-       3-line card via the Marketing bot. Quiet otherwise (no weekly card).
-  Step 2 runs even if step 1 fails (";"): the macro / manual tripwires don't depend on the MLS pull.
+  Market-cycle weekly chain, Mondays 06:00 PT:
+    1. collect-weekly.py --write --alert-on-failure   MLSListings counts,
+       snapshots, panels, owned zips, NODs (readings dated to the Monday)
+    2. tripwires.py --live --write --post
 
-  Prerequisites: supabase/migrations/2026-11-01_market_cycle.sql and 2026-11-02_market_cycle_listings.sql applied.
-  NOT INSTALLED. Install (Mac mini):
+  Install / reload (Mac mini):
     cp infrastructure/launchd/com.lrghomes.market-cycle-weekly.plist ~/Library/LaunchAgents/
-    launchctl load ~/Library/LaunchAgents/com.lrghomes.market-cycle-weekly.plist
-  Run once:  launchctl start com.lrghomes.market-cycle-weekly
-  Logs:      /tmp/lrg-market-cycle-weekly.log, /tmp/lrg-market-cycle-weekly-err.log
+    launchctl bootout gui/$(id -u)/com.lrghomes.market-cycle-weekly 2>/dev/null; launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.lrghomes.market-cycle-weekly.plist
+  Run once:  launchctl kickstart gui/$(id -u)/com.lrghomes.market-cycle-weekly
+  Log:       ~/Library/Logs/lrg-market-cycle-weekly.log (stdout + stderr; /tmp is emptied nightly)
 -->
 <plist version="1.0">
 <dict>
@@ -23,8 +19,8 @@
   <key>ProgramArguments</key>
   <array>
     <string>/bin/sh</string>
-    <string>-c</string>
-    <string>python3 scripts/market-cycle/collect-weekly.py --write --alert-on-failure; python3 scripts/market-cycle/tripwires.py --live --write --post</string>
+    <string>scripts/market-cycle/run.sh</string>
+    <string>weekly</string>
   </array>
   <key>WorkingDirectory</key>
   <string>/Users/ryanlarocca/Projects/PROJECTS/mission-control</string>
@@ -47,9 +43,9 @@
     <integer>0</integer>
   </dict>
   <key>StandardOutPath</key>
-  <string>/tmp/lrg-market-cycle-weekly.log</string>
+  <string>/Users/ryanlarocca/Library/Logs/lrg-market-cycle-weekly.log</string>
   <key>StandardErrorPath</key>
-  <string>/tmp/lrg-market-cycle-weekly-err.log</string>
+  <string>/Users/ryanlarocca/Library/Logs/lrg-market-cycle-weekly.log</string>
   <key>RunAtLoad</key>
   <false/>
 </dict>

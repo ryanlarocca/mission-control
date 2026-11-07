@@ -154,13 +154,13 @@ class TestMonthsSupply(unittest.TestCase):
         fred_rows = [("2026-08-01", 1859.0), ("2026-09-01", 1987.0)]
         sccaor = ({"2026-09": {"sales": 726.0, "inventory": 1224.0, "avg_dom": 27.0, "source_url": "u"},
                    "2026-10": {"sales": 700.0, "inventory": 1300.0, "avg_dom": 30.0, "source_url": "u"}}, [])
-        with mock.patch.object(S, "fred", return_value=fred_rows), mock.patch.object(S, "sccaor_months", return_value=sccaor):
+        with mock.patch.object(S, "fred", side_effect=S.SourceError("FRED down")) as fred, mock.patch.object(S, "sccaor_months", return_value=sccaor):
             rows, _, _, extras = S.fetch_dial(dial, cfg)
         # like for like: SCCAOR SFR inventory / SFR sales, every month SCCAOR has both
         self.assertEqual(rows, [("2026-09-01", 1.69), ("2026-10-01", 1.86)])
-        # the old all-types ratio stays in raw for reference (None when Realtor.com has no month)
-        self.assertEqual(extras["2026-09-01"]["raw"]["all_types_actives_over_sfr_sales"], 2.74)
-        self.assertIsNone(extras["2026-10-01"]["raw"]["all_types_actives_over_sfr_sales"])
+        # never touches FRED (it failed with FRED down on Nov 7, 2026); no all-types cross-check
+        fred.assert_not_called()
+        self.assertIsNone(extras["2026-09-01"]["raw"]["all_types_actives_over_sfr_sales"])
 
 
 if __name__ == "__main__":
