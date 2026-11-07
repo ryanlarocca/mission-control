@@ -1,6 +1,6 @@
 """Market-cycle registry + write paths: corridor merge rule, sync-registry, bootstrap
 --write and collect-macro --write against a local fake PostgREST (never Supabase)."""
-import contextlib, importlib.util, io, json, os, sys, unittest
+import contextlib, datetime as dt, importlib.util, io, json, os, sys, unittest
 from unittest import mock
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -209,6 +209,46 @@ class TestCollectWrite(FakeDbCase):
         db = collect.Db(self.fake.url, "k")
         res = collect.run(self.cfg, db, only={"cpi_yoy"}, fetch=self.fake_fetch({"cpi_yoy": [("2026-09-01", 1.0)]}))
         self.assertEqual(res[0]["status"], "SKIPPED")
+
+    def test_site_outage_is_quiet_until_the_next_morning_then_alerts_once(self):
+        """Nov 7, 2026: FRED down 06:30-10:09 → 32-line alert. Now: deferred + hourly
+        retries, silent the same day; one plain line only if still down next morning."""
+        import tempfile
+        quiet(sync.main, ["--write"])
+        tmp = tempfile.mkdtemp()
+        state = {"down": True}
+
+        def fetch(dial, cfg, backfill=False):
+            if dial["id"] == "cpi_yoy" and state["down"]:
+                raise S.TransportError("TimeoutError: The read operation timed out", "fred.stlouisfed.org")
+            if dial["id"] == "brent":
+                raise S.SourceError("HTTP 404")
+            return [("2026-09-01", 3.7)], "https://src/" + dial["id"], "note", {}
+
+        def run(argv, today):
+            out = io.StringIO()
+            with mock.patch.object(collect, "STATE_DIR", tmp), mock.patch.object(S, "fetch_dial", fetch), \
+                    mock.patch.object(S, "TODAY", today), contextlib.redirect_stdout(out):
+                collect.main(argv)
+            return out.getvalue()
+        d1, d2 = dt.date(2026, 11, 7), dt.date(2026, 11, 8)
+        out = run(["--write", "--only", "cpi_yoy,brent"], d1)
+        self.assertIn("DEFERRED", out)
+        self.assertNotIn("hasn't answered", out)
+        self.assertIn("data source broken", out)                       # the 404 still alerts the same day
+        self.assertIn("cpi_yoy", json.load(open(os.path.join(tmp, "macro-pending.json")))["dials"])
+        out = run(["--write", "--retry-pending"], d1)                   # hourly: still down, silent
+        self.assertNotIn("ALERT", out)
+        out = run(["--write", "--only", "cpi_yoy"], d2)                  # next morning: one line
+        self.assertIn("ALERT: Market tracker: fred.stlouisfed.org hasn't answered since Nov 7, 2026", out)
+        self.assertIn("1 reading missing", out)
+        out = run(["--write", "--only", "cpi_yoy"], d2)                  # not repeated
+        self.assertNotIn("ALERT", out)
+        state["down"] = False
+        out = run(["--write", "--retry-pending"], d2)                   # back: fills in, state cleared
+        self.assertIn("PENDING (site outages being retried hourly): 0", out)
+        self.assertFalse(os.path.exists(os.path.join(tmp, "macro-pending.json")))
+        self.assertIn("nothing pending", run(["--write", "--retry-pending"], d2))
 
     def test_main_write_end_to_end_without_alerting(self):
         quiet(sync.main, ["--write"])

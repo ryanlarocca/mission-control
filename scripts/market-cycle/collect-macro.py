@@ -28,15 +28,27 @@ Usage:
 
 --write needs both cycle_* migrations applied and the registry synced
 (sync-registry.py --write); dials missing from cycle_dials are skipped and listed.
+
+Outages vs breakage (brief v2 P2.1, Ryan 2026-11-07: "if something breaks
+initially and then it works later, I don't want to hear about that"):
+  • a site that doesn't answer (timeouts, resets) → the dial is DEFERRED: no
+    alert; it's kept in a pending file and retried every hour
+    (`--retry-pending`, launchd com.lrghomes.market-cycle-retry) until it works.
+    If it is still failing at the next morning's daily run, ONE line per site
+    goes to Telegram, once per outage.
+  • a blocked page, a moved file, a changed format → FAILED: alert the same day.
+  Pending file: ~/Library/Application Support/lrg-market-cycle/macro-pending.json
+  (MC_STATE_DIR overrides; not /tmp, which macOS empties nightly).
 A FAILED source on a --write run posts one Telegram alert (silent failures must
 alert); --no-alert suppresses it. Stdlib only.
 """
-import argparse, datetime as dt, os, re, sys, urllib.error
+import argparse, datetime as dt, json, os, re, sys, urllib.error
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import sources as S  # noqa: E402
 
 SKIP_FETCH = ("manual", "web", "mlslistings")
+STATE_DIR = os.environ.get("MC_STATE_DIR") or os.path.expanduser("~/Library/Application Support/lrg-market-cycle")
 SHOW_LATEST = 3
 # Sources revise recent prints (EDD posts WARN notices days late, FRED/C.A.R.
 # revise, a month in progress keeps growing): every run re-checks this many of
@@ -121,12 +133,12 @@ def run(cfg, db=None, only=None, fetch=None, today=None):
         r = {"dial": d, "status": "OK", "reason": None, "series": [], "note_row": None, "cal_ids": cal_ids.get(d["id"], set())}
         results.append(r)
         collect_one(r, d, cfg, db, fetch, known, cal_ids, cal_dates, today)
-    again = [r for r in results if r["status"] == "FAILED"]
+    again = [r for r in results if r["status"] in ("FAILED", "DEFERRED")]
     if again:
         # a dropped connection can outlast one dial's retries: ask each failed source once more
         S.forget_failures()
         for r in again:
-            r.update(status="OK", reason=None, series=[], note_row=None)
+            r.update(status="OK", reason=None, series=[], note_row=None, host=None)
             collect_one(r, r["dial"], cfg, db, fetch, known, cal_ids, cal_dates, today)
     return results
 
@@ -140,6 +152,9 @@ def collect_one(r, d, cfg, db, fetch, known, cal_ids, cal_dates, today):
         rows, url, note, extras = fetch(d, cfg)
         if not rows:
             raise S.SourceError("parsed 0 rows")
+    except S.TransportError as e:
+        r["status"], r["reason"], r["host"] = "DEFERRED", str(e), e.host or "?"
+        return
     except S.SourceError as e:
         r["status"], r["reason"] = "FAILED", str(e)
         return
@@ -176,6 +191,75 @@ def new_reading_rows(results):
     return out
 
 
+def group_by_host(results):
+    out = {}
+    for r in results:
+        out.setdefault(r.get("host") or "?", []).append(r["dial"]["id"])
+    return out
+
+
+# ---------------------------------------------------------------- pending (outage) state
+def pending_path():
+    return os.path.join(STATE_DIR, "macro-pending.json")
+
+
+def load_pending():
+    try:
+        with open(pending_path()) as f:
+            st = json.load(f)
+        return {"dials": st.get("dials") or {}, "alerted": st.get("alerted") or {}}
+    except (OSError, ValueError):
+        return {"dials": {}, "alerted": {}}
+
+
+def save_pending(st):
+    if not st["dials"] and not st["alerted"]:
+        try:
+            os.remove(pending_path())
+        except OSError:
+            pass
+        return
+    os.makedirs(STATE_DIR, exist_ok=True)
+    tmp = pending_path() + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(st, f, indent=1, sort_keys=True)
+    os.replace(tmp, pending_path())
+
+
+def update_pending(st, results, now):
+    """DEFERRED dials enter (keeping the time they first failed); anything that
+    worked — or broke for real (alerted separately) — leaves. A site with no
+    pending dial left is no longer 'alerted'."""
+    for r in results:
+        did = r["dial"]["id"]
+        if r["status"] == "DEFERRED":
+            prev = st["dials"].get(did) or {}
+            st["dials"][did] = {"since": prev.get("since") or now, "host": r.get("host") or "?", "reason": (r["reason"] or "")[:200]}
+        elif r["status"] != "SKIPPED":
+            st["dials"].pop(did, None)
+    live_hosts = {v["host"] for v in st["dials"].values()}
+    st["alerted"] = {h: t for h, t in st["alerted"].items() if h in live_hosts}
+    return st
+
+
+def overdue_alert(st, today, now):
+    """One plain line per site still failing at a daily run after the day it started,
+    once per outage. Returns the text (None when nothing to say) and marks the sites."""
+    by_host = {}
+    for did, v in st["dials"].items():
+        if v["since"][:10] < today and v["host"] not in st["alerted"]:
+            by_host.setdefault(v["host"], []).append(v["since"])
+    if not by_host:
+        return None
+    parts = []
+    for host, since in sorted(by_host.items()):
+        first = dt.datetime.fromisoformat(min(since))
+        parts.append("%s hasn't answered since %s — %d reading%s missing" % (
+            host, first.strftime("%b %-d, %Y %-I:%M %p"), len(since), "" if len(since) == 1 else "s"))
+        st["alerted"][host] = now
+    return "Market tracker: " + "; ".join(parts) + ". They fill in automatically when it's back; still retrying hourly."
+
+
 def print_report(results, dry):
     fmt = S.fmt
     print("%-42s %-8s %6s  %-14s %s" % ("dial", "status", "new", "latest value", "as_of"))
@@ -200,6 +284,10 @@ def print_report(results, dry):
                     print("  %-44s %s" % (name, "  ".join("%s=%s" % (d[:10], fmt(v)) for d, v in s["new"][-SHOW_LATEST:])))
     bad = [r for r in results if r["status"] in ("FAILED", "PARTIAL", "SKIPPED")] + \
           [dict(r, status="FAILED", reason="variant %s: %s" % (s["variant"], s["error"])) for r in results for s in r["series"] if "error" in s]
+    deferred = [r for r in results if r["status"] == "DEFERRED"]
+    print("\nDEFERRED (site not answering — retried hourly, no alert today): %s" % ("none" if not deferred else ""))
+    for host, n in sorted(group_by_host(deferred).items()):
+        print("  %-36s %d dial(s): %s" % (host, len(n), ", ".join(n)))
     print("\nFAILED / PARTIAL / SKIPPED SOURCES: %s" % ("none" if not bad else ""))
     for r in bad:
         print("  %-36s %s: %s" % (r["dial"]["id"], r["status"], r["reason"]))
@@ -226,9 +314,16 @@ def main(argv=None):
     ap.add_argument("--live", action="store_true", help="read the latest stored readings from Supabase; write nothing")
     ap.add_argument("--only", help="comma-separated dial ids")
     ap.add_argument("--no-alert", action="store_true", help="no Telegram alert on FAILED sources")
+    ap.add_argument("--retry-pending", action="store_true", help="hourly: retry only the dials a site outage deferred; never alerts")
     a = ap.parse_args(argv)
     cfg = S.load_config()
     only = set(a.only.split(",")) if a.only else None
+    pending = load_pending() if a.write else {"dials": {}, "alerted": {}}
+    if a.retry_pending:
+        if not pending["dials"]:
+            print("market-cycle macro retry — nothing pending")
+            return
+        only = set(pending["dials"]) & (only or set(pending["dials"]))
     env, db = S.load_env(), None
     mode = "WRITE" if a.write else ("LIVE READ (no writes)" if a.live else "DRY RUN (no database access)")
     if a.write or a.live:
@@ -262,9 +357,22 @@ def main(argv=None):
                 S.telegram_alert(env, "Market-cycle macro collector: Supabase write failed (%s)." % msg[:300])
             sys.exit(3)
         print("\nWROTE %d readings, %d new release notes" % (len(rows), n_notes))
-        if bad and not a.no_alert and db.sb.startswith("https://"):
-            S.telegram_alert(env, "Market-cycle macro collector: %d source(s) failed today — %s" % (
-                len(bad), "; ".join("%s: %s" % (r["dial"]["id"], (r["reason"] or "")[:120]) for r in bad)))
+        now = dt.datetime.now().isoformat(timespec="seconds")
+        update_pending(pending, results, now)
+        alert = None if a.retry_pending else overdue_alert(pending, S.TODAY.isoformat(), now)
+        save_pending(pending)
+        print("PENDING (site outages being retried hourly): %d dial(s)" % len(pending["dials"]))
+        send = not a.no_alert and db.sb.startswith("https://")
+        if alert:
+            print("ALERT: " + alert)
+            if send:
+                S.telegram_alert(env, alert)
+        if bad and not a.retry_pending:
+            text = "Market tracker: %d data source%s broken (not an outage, retrying won't fix it) — %s" % (
+                len(bad), "" if len(bad) == 1 else "s", "; ".join("%s: %s" % (r["dial"]["id"], (r["reason"] or "")[:100]) for r in bad))
+            print("ALERT: " + text)
+            if send:
+                S.telegram_alert(env, text)
     elif db is None:
         print("Dry run: nothing written. --write upserts the new readings and release notes.")
 

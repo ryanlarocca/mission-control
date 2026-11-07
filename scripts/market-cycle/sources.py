@@ -48,6 +48,44 @@ def load_config(path=CONFIG):
 # ---------------------------------------------------------------- HTTP
 HTTP_ATTEMPTS = 5          # transient transport errors only (truncated bodies, resets, timeouts)
 NO_RETRY_CODES = (401, 403, 404, 410, 429)
+HOST_TRIP = 3              # transport failures in a row before a host is skipped for the rest of the run
+
+
+class TransportError(SourceError):
+    """The site didn't answer (timeouts, resets, DNS) — worth trying again later,
+    unlike a blocked page, a moved file or a format change (plain SourceError).
+    `host` groups the alert ("fred.stlouisfed.org: 29 dials")."""
+
+    def __init__(self, msg, host=None):
+        super().__init__(msg)
+        self.host = host
+
+
+# Per-host circuit breaker (brief v2 P2.1). On Nov 7, 2026 FRED didn't answer for
+# ~3.5 h and the run retried each of its 29 series 5x, twice (06:30 → 10:09). Now
+# the first HOST_TRIP consecutive transport failures open the host; every later
+# request to it fails at once with TransportError, and the dials are retried hourly.
+_host_fails = {}
+
+
+def host_of(url):
+    return urllib.parse.urlparse(url).hostname or "?"
+
+
+def _host_open(host):
+    return _host_fails.get(host, 0) >= HOST_TRIP
+
+
+def _host_failed(host):
+    _host_fails[host] = _host_fails.get(host, 0) + 1
+
+
+def _host_ok(host):
+    _host_fails[host] = 0
+
+
+def _open_error(host):
+    return TransportError("%s not answering (skipped after %d failures in a row)" % (host, HOST_TRIP), host)
 
 
 def _transient(e):
@@ -65,62 +103,82 @@ def _sleep_before_retry(i):
 def http_get(url, accept=None, attempts=HTTP_ATTEMPTS, timeout=45, ua=None):
     """GET with at most `attempts` tries. Blocked or missing pages (401/403/404/410/429)
     are never retried (never hammer a blocked site); dropped connections and truncated
-    bodies (IncompleteRead) are. A truncated body is never used. Returns (bytes, final_url, content_type)."""
-    last = None
+    bodies (IncompleteRead) are. A truncated body is never used. Returns (bytes, final_url, content_type).
+    Raises TransportError when the host didn't answer (or its breaker is open), SourceError otherwise."""
+    host = host_of(url)
+    last, transport = None, False
     for i in range(attempts):
+        if _host_open(host):
+            raise _open_error(host)
         try:
             h = {"User-Agent": ua or UA}
             if accept:
                 h["Accept"] = accept
             req = urllib.request.Request(url, headers=h)
             with urllib.request.urlopen(req, timeout=timeout) as r:
-                return r.read(), r.geturl(), r.headers.get("Content-Type", "")
+                body = r.read()
+                _host_ok(host)
+                return body, r.geturl(), r.headers.get("Content-Type", "")
         except urllib.error.HTTPError as e:
-            last = "HTTP %d" % e.code
+            _host_ok(host)                  # the host answered
+            last, transport = "HTTP %d" % e.code, False
             e.close()
             if not _transient(e):
                 break                       # blocked or missing: retrying won't help
         except Exception as e:              # timeouts, DNS, resets, IncompleteRead
             last = "%s: %s" % (type(e).__name__, e)
             if not _transient(e):
+                transport = False
                 break
+            transport = True
+            _host_failed(host)
         if i + 1 < attempts:
             _sleep_before_retry(i)
+    if transport:
+        raise TransportError(last or "unknown error", host)
     raise SourceError(last or "unknown error")
 
 
 def http_lines(url, timeout=300):
     """Open a large text file for streaming (Zillow zip file, Indeed metro file). One try:
     callers wrap open + full read in stream_retry, since a stream can break mid-file."""
+    host = host_of(url)
+    if _host_open(host):
+        raise _open_error(host)
     try:
         req = urllib.request.Request(url, headers={"User-Agent": UA})
         r = urllib.request.urlopen(req, timeout=timeout)
+        _host_ok(host)
         return io.TextIOWrapper(r, encoding="utf-8", errors="replace", newline="")
     except urllib.error.HTTPError as e:
+        _host_ok(host)
         raise SourceError("HTTP %d" % e.code) from e
     except Exception as e:
+        if _transient(e):
+            _host_failed(host)
+            raise TransportError("%s: %s" % (type(e).__name__, e), host) from e
         raise SourceError("%s: %s" % (type(e).__name__, e)) from e
 
 
 def stream_retry(fn, attempts=HTTP_ATTEMPTS):
     """Run fn() (open a stream and read it to the end) up to `attempts` times on transient
     errors. A stream that breaks mid-file is re-read from the start, never used partially."""
-    last = None
+    last, host = None, None
     for i in range(attempts):
         try:
             return fn()
         except SourceError as e:
             cause = e.__cause__
-            last = str(e)
+            last, host = str(e), getattr(e, "host", host)
             if cause is None or not _transient(cause):
-                raise
+                raise                       # incl. an open breaker (no cause): fail now
         except Exception as e:              # truncated stream while iterating
             last = "%s: %s" % (type(e).__name__, e)
             if not _transient(e):
-                break
+                raise SourceError(last) from e
         if i + 1 < attempts:
             _sleep_before_retry(i)
-    raise SourceError(last or "unknown error")
+    raise TransportError(last or "unknown error", host)
 
 
 _cache = {}
@@ -132,19 +190,27 @@ def cached(key, fn):
         try:
             _cache[key] = ("ok", fn())
         except SourceError as e:
-            _cache[key] = ("err", str(e))
+            _cache[key] = ("err", e)        # the exception itself: a TransportError stays one
         except Exception as e:
-            _cache[key] = ("err", "%s: %s" % (type(e).__name__, e))
+            _cache[key] = ("err", SourceError("%s: %s" % (type(e).__name__, e)))
     st, val = _cache[key]
     if st == "err":
-        raise SourceError(val)
+        raise val
     return val
 
 
 def forget_failures():
-    """Drop memoised failures so a second pass over FAILED dials asks each source once more."""
+    """Drop memoised failures so a second pass over failed dials asks each source once more.
+    A host whose breaker is open gets exactly one probe (one more failure re-opens it)."""
     for k in [k for k, (st, _) in _cache.items() if st == "err"]:
         del _cache[k]
+    for h in [h for h, n in _host_fails.items() if n >= HOST_TRIP]:
+        _host_fails[h] = HOST_TRIP - 1
+
+
+def reset_hosts():
+    """Forget every breaker (tests; a new run starts closed)."""
+    _host_fails.clear()
 
 
 def find_pdftotext():

@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Market-cycle outage retry (brief v2 P2.1, Ryan 2026-11-07), every hour:
+  run.sh retry exits at once unless a site outage left dials pending in
+  ~/Library/Application Support/lrg-market-cycle/macro-pending.json. When it
+  has work: collect-macro.py --write --retry-pending (silent), tripwires,
+  review check. It never alerts; the next 06:30 daily run sends one line per
+  site still down, once per outage. Skips while the daily/weekly chain runs.
+
+  Install / reload (Mac mini):
+    cp infrastructure/launchd/com.lrghomes.market-cycle-retry.plist ~/Library/LaunchAgents/
+    launchctl bootout gui/$(id -u)/com.lrghomes.market-cycle-retry 2>/dev/null; launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.lrghomes.market-cycle-retry.plist
+  Log:       ~/Library/Logs/lrg-market-cycle-retry.log (only written when there was work)
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.lrghomes.market-cycle-retry</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/sh</string>
+    <string>scripts/market-cycle/run.sh</string>
+    <string>retry</string>
+  </array>
+  <key>WorkingDirectory</key>
+  <string>/Users/ryanlarocca/Projects/PROJECTS/mission-control</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+    <key>HOME</key>
+    <string>/Users/ryanlarocca</string>
+    <key>PYTHONUNBUFFERED</key>
+    <string>1</string>
+  </dict>
+  <key>StartInterval</key>
+  <integer>3600</integer>
+  <key>StandardOutPath</key>
+  <string>/Users/ryanlarocca/Library/Logs/lrg-market-cycle-retry.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/ryanlarocca/Library/Logs/lrg-market-cycle-retry.log</string>
+  <key>RunAtLoad</key>
+  <false/>
+</dict>
+</plist>

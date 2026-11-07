@@ -37,6 +37,8 @@ class TestHttpRetry(unittest.TestCase):
         p = mock.patch.object(S.time, "sleep")
         p.start()
         self.addCleanup(p.stop)
+        S.reset_hosts()
+        self.addCleanup(S.reset_hosts)
 
     def test_truncated_body_is_retried_and_never_used(self):
         calls = [_truncated, _truncated, lambda *a, **k: _Resp(b"observation_date,X\n")]
@@ -45,12 +47,40 @@ class TestHttpRetry(unittest.TestCase):
         self.assertEqual(body, b"observation_date,X\n")
         self.assertEqual(calls, [])
 
-    def test_gives_up_after_the_attempt_limit(self):
+    def test_gives_up_when_the_host_breaker_opens(self):
         with mock.patch.object(S.urllib.request, "urlopen", side_effect=_truncated) as u:
-            with self.assertRaises(S.SourceError) as cm:
+            with self.assertRaises(S.TransportError) as cm:
                 S.http_get("https://example.test/x")
-        self.assertEqual(u.call_count, S.HTTP_ATTEMPTS)
-        self.assertIn("IncompleteRead", str(cm.exception))
+        self.assertEqual(u.call_count, S.HOST_TRIP)                  # 3 failures in a row, not 5
+        self.assertEqual(cm.exception.host, "example.test")
+
+    def test_open_host_is_skipped_without_a_request_other_hosts_are_not(self):
+        """FRED on Nov 7, 2026: once it stops answering, its other 28 series cost nothing."""
+        with mock.patch.object(S.urllib.request, "urlopen", side_effect=_truncated):
+            with self.assertRaises(S.TransportError):
+                S.http_get("https://fred.test/a")
+        with mock.patch.object(S.urllib.request, "urlopen", side_effect=lambda *a, **k: _Resp(b"ok")) as u:
+            with self.assertRaises(S.TransportError) as cm:
+                S.http_get("https://fred.test/b")
+            self.assertEqual(u.call_count, 0)
+            self.assertIn("not answering", str(cm.exception))
+            self.assertEqual(S.http_get("https://zillow.test/c")[0], b"ok")
+            S.forget_failures()                                       # second pass: one probe, and it answers
+            self.assertEqual(S.http_get("https://fred.test/b")[0], b"ok")
+
+    def test_blocked_page_is_not_a_transport_failure(self):
+        with mock.patch.object(S.urllib.request, "urlopen", side_effect=_http(403)):
+            for _ in range(5):
+                with self.assertRaises(S.SourceError) as cm:
+                    S.http_get("https://example.test/x")
+                self.assertNotIsInstance(cm.exception, S.TransportError)
+
+    def test_a_cached_transport_failure_keeps_its_type(self):
+        def boom():
+            raise S.TransportError("timed out", "fred.test")
+        for _ in range(2):
+            with self.assertRaises(S.TransportError):
+                S.cached("t:x", boom)
 
     def test_blocked_or_missing_page_is_asked_once(self):
         for code in (403, 404, 429):
