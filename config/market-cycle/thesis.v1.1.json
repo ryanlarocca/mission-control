@@ -3125,33 +3125,148 @@
       "date": "2027-01-13",
       "name": "CPI (Dec) (~Jan 13)",
       "dial_id": "cpi_yoy",
-      "tentative": true
+      "tentative": false
     },
     {
       "date": "2027-01-27",
       "name": "FOMC decision (Jan 26-27)",
       "dial_id": "fomc_decision",
-      "tentative": true
+      "tentative": false
     },
     {
       "date": "TBD",
       "name": "Hyperscaler Q4 earnings calls / 2027 capex guidance (late Jan-early Feb)",
       "dial_id": "big4_capex_2027",
       "tentative": true
+    },
+    {
+      "date": "2027-02-11",
+      "name": "CPI (Jan 2027)",
+      "dial_id": "cpi_yoy",
+      "tentative": false
+    },
+    {
+      "date": "2027-03-10",
+      "name": "CPI (Feb 2027)",
+      "dial_id": "cpi_yoy",
+      "tentative": false
+    },
+    {
+      "date": "2027-04-13",
+      "name": "CPI (Mar 2027)",
+      "dial_id": "cpi_yoy",
+      "tentative": false
+    },
+    {
+      "date": "2027-05-12",
+      "name": "CPI (Apr 2027)",
+      "dial_id": "cpi_yoy",
+      "tentative": false
+    },
+    {
+      "date": "2027-06-10",
+      "name": "CPI (May 2027)",
+      "dial_id": "cpi_yoy",
+      "tentative": false
+    },
+    {
+      "date": "2027-07-14",
+      "name": "CPI (Jun 2027)",
+      "dial_id": "cpi_yoy",
+      "tentative": false
+    },
+    {
+      "date": "2027-08-11",
+      "name": "CPI (Jul 2027)",
+      "dial_id": "cpi_yoy",
+      "tentative": false
+    },
+    {
+      "date": "2027-09-14",
+      "name": "CPI (Aug 2027)",
+      "dial_id": "cpi_yoy",
+      "tentative": false
+    },
+    {
+      "date": "2027-10-14",
+      "name": "CPI (Sep 2027)",
+      "dial_id": "cpi_yoy",
+      "tentative": false
+    },
+    {
+      "date": "2027-11-10",
+      "name": "CPI (Oct 2027)",
+      "dial_id": "cpi_yoy",
+      "tentative": false
+    },
+    {
+      "date": "2027-12-10",
+      "name": "CPI (Nov 2027)",
+      "dial_id": "cpi_yoy",
+      "tentative": false
+    },
+    {
+      "date": "2027-03-17",
+      "name": "FOMC decision (Mar 16-17)",
+      "dial_id": "fomc_decision",
+      "tentative": false
+    },
+    {
+      "date": "2027-04-28",
+      "name": "FOMC decision (Apr 27-28)",
+      "dial_id": "fomc_decision",
+      "tentative": false
+    },
+    {
+      "date": "2027-06-09",
+      "name": "FOMC decision (Jun 8-9)",
+      "dial_id": "fomc_decision",
+      "tentative": false
+    },
+    {
+      "date": "2027-07-28",
+      "name": "FOMC decision (Jul 27-28)",
+      "dial_id": "fomc_decision",
+      "tentative": false
+    },
+    {
+      "date": "2027-09-15",
+      "name": "FOMC decision (Sep 14-15)",
+      "dial_id": "fomc_decision",
+      "tentative": false
+    },
+    {
+      "date": "2027-10-27",
+      "name": "FOMC decision (Oct 26-27)",
+      "dial_id": "fomc_decision",
+      "tentative": false
+    },
+    {
+      "date": "2027-12-08",
+      "name": "FOMC decision (Dec 7-8)",
+      "dial_id": "fomc_decision",
+      "tentative": false
+    },
+    {
+      "date": "2028-01-26",
+      "name": "FOMC decision (Jan 25-26, 2028)",
+      "dial_id": "fomc_decision",
+      "tentative": false
     }
   ],
   "calendar_notes": "The Fed's and BLS's full 2027 calendars are loaded at build (brief 3.1 item 6).",
   "checkpoint_schedule": {
-    "shakedown": "2026-12-14",
+    "shakedown": "2026-12-21",
     "first_formal": "2027-01-18",
-    "monthly": "Monday after the CPI release (12th-21st)",
+    "monthly": "Data-ready (Ryan 2026-11-07): the first Monday on/after the 15th once last month's CPI and Zillow ZHVI prints are both stored; never on a day with an FOMC decision that day or in the next 3 days (it slides a week); from the last Monday of the month it runs whatever has arrived. Once per month. Dates here are the expected ones; lib/marketCycle/schedule.ts decides.",
     "quarterly_rewrite_months": [
       "Feb",
       "May",
       "Aug",
       "Nov"
     ],
-    "first_quarterly": "mid-Feb 2027"
+    "first_quarterly": "mid-Feb 2027",
+    "calendar_sources": "CPI: bls.gov/schedule/news_release/cpi.htm (published through the Nov 2027 print, fetched 2026-11-07). FOMC: federalreserve.gov/monetarypolicy/fomccalendars.htm (2027 + Jan 2028, fetched 2026-11-07). Add the rest of 2028 when published."
   },
   "geographies": {
     "scored": {

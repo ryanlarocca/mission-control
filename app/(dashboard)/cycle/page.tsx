@@ -106,8 +106,8 @@ export default async function CyclePage() {
   }
   const votes = computeVotes(state.dials, state.readings, today)
   const voteById = new Map(votes.map((v) => [v.dial_id, v]))
-  const due = checkpointDue(today, state.calendar, state.tripwireEvents)
-  const next = nextCheckpoint(today, state.calendar)
+  const due = checkpointDue(today, { calendar: state.calendar, readings: state.readings, checkpoints: state.checkpoints }, state.tripwireEvents)
+  const next = nextCheckpoint(today, { calendar: state.calendar, checkpoints: state.checkpoints })
   const pending = pendingTripwires(state.tripwireEvents)
   const lastCp = state.checkpoints[0] ?? null
   const notesSince = state.notes.filter((n) => !lastCp || n.date > lastCp.date)
@@ -133,7 +133,7 @@ export default async function CyclePage() {
       <div>
         <h1 className="text-lg font-semibold text-zinc-100">Market cycle</h1>
         <p className="text-xs text-zinc-500">
-          Thesis v{THESIS.version} · {longDate(today)} · {due.due ? `review due today (${due.kind})` : next ? `next review ${longDate(next.date)} (${next.kind})` : "no review scheduled"}
+          Thesis v{THESIS.version} · {longDate(today)} · {due.due ? `review due today (${due.kind})` : next ? `next review ~${longDate(next.date)} (${next.kind})` : "no review scheduled"}
         </p>
       </div>
 

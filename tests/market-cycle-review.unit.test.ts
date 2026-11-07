@@ -1,11 +1,11 @@
 import { describe, it, expect } from "vitest"
 import fs from "node:fs"
 import path from "node:path"
-import { configClaims, configDials } from "@/lib/marketCycle/config"
+import { configCalendar, configClaims, configDials } from "@/lib/marketCycle/config"
 import { computeVotes, qualifyingBloc, seasonalBand, tallyVotes, voteForDial } from "@/lib/marketCycle/votes"
 import { checkProposal, clampMove } from "@/lib/marketCycle/rules"
 import { applyClaimUpdates, brier, dueClaims, liveProbability, resolveClaim } from "@/lib/marketCycle/claims"
-import { checkpointDue, mondayAfter, mondayOnOrAfter, nextCheckpoint, scheduledCheckpointInMonth } from "@/lib/marketCycle/schedule"
+import { checkpointDue, lastMondayOf, mondayAfter, mondayOnOrAfter, nextCheckpoint, plannedDate, scheduledCheckpointInMonth } from "@/lib/marketCycle/schedule"
 import { MAX_CARD_LINES, renderCard, renderTripwireCard } from "@/lib/marketCycle/card"
 import { parseProposal } from "@/lib/marketCycle/prompt"
 import { runReview } from "@/lib/marketCycle/review"
@@ -242,46 +242,89 @@ describe("claims", () => {
   })
 })
 
-describe("schedule", () => {
-  const cal = (dates: string[]): CalendarEntry[] => dates.map((d) => ({ date: d, label: "CPI", dial_id: "cpi_yoy", tentative: false }))
+describe("schedule (data-ready cadence, Ryan 2026-11-07)", () => {
+  const fomc = (dates: string[]): CalendarEntry[] => dates.map((d) => ({ date: d, label: "FOMC decision", dial_id: "fomc_decision", tentative: false }))
+  // last month's CPI + Zillow prints stored (as_of month = ym − 1)
+  const prints = (ym: string): Record<string, Reading[]> => ({
+    cpi_yoy: [{ dial_id: "cpi_yoy", as_of: `${ym}-01`, value: 3.1, source_url: "x", raw: null }],
+    zhvi_scc: [{ dial_id: "zhvi_scc", as_of: `${ym}-30`, value: 1_717_000, source_url: "x", raw: null }],
+  })
+  const noZillow = (ym: string): Record<string, Reading[]> => ({ cpi_yoy: prints(ym).cpi_yoy, zhvi_scc: [{ dial_id: "zhvi_scc", as_of: "2026-09-30", value: 1, source_url: "x", raw: null }] })
   const none: TripwireEvent[] = []
+  const inp = (readings: Record<string, Reading[]>, calendar: CalendarEntry[] = [], checkpoints: { date: string; kind: Checkpoint["kind"] }[] = []) => ({ calendar, readings, checkpoints })
 
-  it("shakedown Mon Dec 14, 2026 and first formal Mon Jan 18, 2027; nothing formal before", () => {
-    expect(checkpointDue("2026-12-14", cal(["2026-12-10"]), none)).toMatchObject({ due: true, kind: "shakedown" })
-    expect(checkpointDue("2026-11-16", cal(["2026-11-10"]), none).due).toBe(false)
-    expect(checkpointDue("2027-01-18", cal(["2027-01-13"]), none)).toMatchObject({ due: true, kind: "monthly" })
-    expect(checkpointDue("2027-01-19", cal(["2027-01-13"]), none).due).toBe(false)
-  })
-
-  it("monthly = the Monday after the CPI release (strictly after a Monday release)", () => {
+  it("helpers: first Monday on/after the 15th, last Monday, Monday after", () => {
+    expect(plannedDate("2026-12")).toBe("2026-12-21")
+    expect(plannedDate("2027-03")).toBe("2027-03-15")
+    expect(lastMondayOf("2027-01")).toBe("2027-01-25")
+    expect(lastMondayOf("2027-02")).toBe("2027-02-22")
     expect(mondayAfter("2027-03-10")).toBe("2027-03-15")
-    expect(mondayAfter("2027-04-12")).toBe("2027-04-19")
-    expect(checkpointDue("2027-03-15", cal(["2027-03-10"]), none)).toMatchObject({ due: true, kind: "monthly" })
-    expect(checkpointDue("2027-03-16", cal(["2027-03-10"]), none).due).toBe(false)
-  })
-
-  it("falls back to the Monday on or after the 15th when no CPI date is loaded", () => {
     expect(mondayOnOrAfter("2027-06-15")).toBe("2027-06-21")
-    expect(mondayOnOrAfter("2027-03-15")).toBe("2027-03-15")
-    expect(scheduledCheckpointInMonth("2027-06", [])).toEqual({ date: "2027-06-21", kind: "monthly" })
   })
 
-  it("quarterly = the Feb / May / Aug / Nov checkpoint", () => {
-    expect(scheduledCheckpointInMonth("2027-02", cal(["2027-02-10"]))).toEqual({ date: "2027-02-15", kind: "quarterly" })
-    expect(scheduledCheckpointInMonth("2027-05", cal(["2027-05-12"]))?.kind).toBe("quarterly")
-    expect(scheduledCheckpointInMonth("2027-08", cal(["2027-08-11"]))?.kind).toBe("quarterly")
-    expect(scheduledCheckpointInMonth("2027-11", cal(["2027-11-10"]))?.kind).toBe("quarterly")
-    expect(scheduledCheckpointInMonth("2027-03", cal(["2027-03-10"]))?.kind).toBe("monthly")
-    expect(nextCheckpoint("2026-11-01", [])).toEqual({ date: "2026-12-14", kind: "shakedown" })
+  it("the shakedown is Mon Dec 21, 2026 (the Dec 16 Fed decision is before it); nothing before December", () => {
+    const cal = fomc(["2026-12-16"])
+    expect(scheduledCheckpointInMonth("2026-12", cal)).toEqual({ date: "2026-12-21", kind: "shakedown" })
+    expect(checkpointDue("2026-12-21", inp(prints("2026-11"), cal), none)).toMatchObject({ due: true, kind: "shakedown" })
+    expect(checkpointDue("2026-12-14", inp(prints("2026-11"), cal), none).due).toBe(false)
+    expect(scheduledCheckpointInMonth("2026-11", cal)).toBeNull()
+    expect(nextCheckpoint("2026-11-07", { calendar: cal, checkpoints: [] })).toEqual({ date: "2026-12-21", kind: "shakedown" })
+  })
+
+  it("waits for last month's Zillow print, then runs on the next Monday", () => {
+    expect(checkpointDue("2027-03-15", inp(noZillow("2027-02")), none)).toMatchObject({ due: false })
+    expect(checkpointDue("2027-03-15", inp(noZillow("2027-02")), none).reason).toMatch(/zhvi_scc/)
+    expect(checkpointDue("2027-03-17", inp(prints("2027-02")), none)).toMatchObject({ due: false }) // data in on a Wednesday → next Monday
+    expect(checkpointDue("2027-03-22", inp(prints("2027-02")), none)).toMatchObject({ due: true, kind: "monthly" })
+  })
+
+  it("slides a week past an FOMC decision that day or within 3 days", () => {
+    const cal = fomc(["2027-03-17"])
+    expect(scheduledCheckpointInMonth("2027-03", cal)).toEqual({ date: "2027-03-22", kind: "monthly" })
+    expect(checkpointDue("2027-03-15", inp(prints("2027-02"), cal), none).due).toBe(false)
+    expect(checkpointDue("2027-03-22", inp(prints("2027-02"), cal), none).due).toBe(true)
+  })
+
+  it("last-Monday fallback runs whatever arrived, catches up a missed day, and still dodges the Fed", () => {
+    expect(checkpointDue("2027-03-29", inp(noZillow("2027-02")), none)).toMatchObject({ due: true, kind: "monthly" })
+    expect(checkpointDue("2027-03-30", inp(noZillow("2027-02")), none).due).toBe(true) // Monday's run was missed
+    const jan = fomc(["2027-01-27"])
+    expect(scheduledCheckpointInMonth("2027-01", jan)).toEqual({ date: "2027-01-18", kind: "monthly" })
+    expect(checkpointDue("2027-01-25", inp(noZillow("2027-01"), jan), none).due).toBe(false) // Fed on the 27th
+    expect(checkpointDue("2027-01-27", inp(noZillow("2027-01"), jan), none).due).toBe(false) // decision day itself
+    expect(checkpointDue("2027-01-28", inp(noZillow("2027-01"), jan), none).due).toBe(true)
+  })
+
+  it("once per month: a stored scheduled checkpoint ends it; a tripwire review doesn't", () => {
+    const done = inp(prints("2027-02"), [], [{ date: "2027-03-15", kind: "monthly" }])
+    expect(checkpointDue("2027-03-22", done, none).due).toBe(false)
+    expect(checkpointDue("2027-03-29", done, none).due).toBe(false)
+    const tw = inp(prints("2027-02"), [], [{ date: "2027-03-03", kind: "tripwire" }])
+    expect(checkpointDue("2027-03-15", tw, none)).toMatchObject({ due: true, kind: "monthly" })
+    expect(nextCheckpoint("2027-03-15", { calendar: [], checkpoints: [{ date: "2027-03-15", kind: "monthly" }] })).toEqual({ date: "2027-04-19", kind: "monthly" })
+  })
+
+  it("quarterly = the Feb / May / Aug / Nov review", () => {
+    expect(scheduledCheckpointInMonth("2027-02", [])?.kind).toBe("quarterly")
+    expect(scheduledCheckpointInMonth("2027-05", [])?.kind).toBe("quarterly")
+    expect(scheduledCheckpointInMonth("2027-08", [])?.kind).toBe("quarterly")
+    expect(scheduledCheckpointInMonth("2027-11", [])?.kind).toBe("quarterly")
+    expect(scheduledCheckpointInMonth("2027-03", [])?.kind).toBe("monthly")
   })
 
   it("a tripwire with review_requested and no reviewed_at makes a review due out of cycle", () => {
     const ev: TripwireEvent = { tripwire_id: "ccc_oas_record", dial_id: "ccc_oas", fired_on: "2027-03-02", reading: 20.4, detail: null, review_requested: true, reviewed_at: null }
-    expect(checkpointDue("2027-03-03", [], [ev])).toMatchObject({ due: true, kind: "tripwire", tripwirePending: true })
-    expect(checkpointDue("2027-03-03", [], [{ ...ev, reviewed_at: "2027-03-03T15:00:00Z" }]).due).toBe(false)
-    expect(checkpointDue("2027-03-03", [], [{ ...ev, review_requested: false }]).due).toBe(false)
+    expect(checkpointDue("2027-03-03", inp({}), [ev])).toMatchObject({ due: true, kind: "tripwire", tripwirePending: true })
+    expect(checkpointDue("2027-03-03", inp({}), [{ ...ev, reviewed_at: "2027-03-03T15:00:00Z" }]).due).toBe(false)
+    expect(checkpointDue("2027-03-03", inp({}), [{ ...ev, review_requested: false }]).due).toBe(false)
     // a scheduled review the same day keeps its kind and carries the tripwire
-    expect(checkpointDue("2027-03-15", cal(["2027-03-10"]), [ev])).toMatchObject({ due: true, kind: "monthly", tripwirePending: true })
+    expect(checkpointDue("2027-03-15", inp(prints("2027-02")), [ev])).toMatchObject({ due: true, kind: "monthly", tripwirePending: true })
+  })
+
+  it("the config calendar knows the 2027 Fed meetings and CPI prints", () => {
+    const cal = configCalendar()
+    expect(cal.filter((e) => e.dial_id === "fomc_decision" && e.date?.startsWith("2027")).length).toBe(8)
+    expect(cal.filter((e) => e.dial_id === "cpi_yoy" && e.date?.startsWith("2027")).length).toBe(12)
   })
 })
 

@@ -323,20 +323,39 @@ def exit_line(data, cfg, price, exit_month):
 
 
 def next_checkpoint(data, cfg, today):
-    sch = cfg["checkpoint_schedule"]
-    if today <= sch["shakedown"]:
-        return sch["shakedown"], "shakedown"
-    if today <= sch["first_formal"]:
-        return sch["first_formal"], "first formal review"
+    """Expected next review date: same rule as lib/marketCycle/schedule.ts (first Monday
+    on/after the 15th, pushed a week past an FOMC decision that day or within 3 days;
+    last-Monday fallback; nothing before the shakedown month), without the data-ready
+    wait. Mirrors lib/cycleContext.ts nextCheckpoint."""
     cal = data.get("calendar")
     if not cal:
         cal = [{"date": c["date"], "dial_id": c["dial_id"]} for c in cfg["calendar"]]
-    cpi = sorted(c["date"] for c in cal if c.get("dial_id") == "cpi_yoy" and c.get("date") and re.match(r"\d{4}-\d{2}-\d{2}$", c["date"]))
-    for d in cpi:
-        x = dt.date.fromisoformat(d)
-        monday = x + dt.timedelta(days=(7 - x.weekday()) % 7 or 7)
-        if monday.isoformat() >= today:
-            return monday.isoformat(), "quarterly" if monday.month in QUARTERLY_MONTHS else "monthly"
+    fomc = sorted(c["date"] for c in cal if c.get("dial_id") == "fomc_decision" and c.get("date") and re.match(r"\d{4}-\d{2}-\d{2}$", c["date"]))
+
+    def soon(day):
+        hit = [f for f in fomc if day.isoformat() <= f <= (day + dt.timedelta(days=3)).isoformat()]
+        return dt.date.fromisoformat(hit[0]) if hit else None
+    first = cfg["checkpoint_schedule"]["shakedown"][:7]
+    t = dt.date.fromisoformat(today)
+    y, m = t.year, t.month
+    for _ in range(14):
+        ym = "%04d-%02d" % (y, m)
+        if ym >= first:
+            d15 = dt.date(y, m, 15)
+            day = d15 + dt.timedelta(days=(7 - d15.weekday()) % 7)
+            nxt = dt.date(y + (m == 12), m % 12 + 1, 1)
+            end = nxt - dt.timedelta(days=1)
+            last = end - dt.timedelta(days=end.weekday())
+            while day < last and soon(day):
+                day += dt.timedelta(days=7)
+            if day >= last:
+                day = last
+                f = soon(day)
+                if f:
+                    day = f + dt.timedelta(days=1)
+            if day.isoformat() >= today:
+                return day.isoformat(), "shakedown" if ym == first else ("quarterly" if m in QUARTERLY_MONTHS else "monthly")
+        y, m = (y + 1, 1) if m == 12 else (y, m + 1)
     return None, None
 
 
@@ -354,7 +373,7 @@ def checkpoint_line(data, cfg, today):
     else:
         last = "Last checkpoint: n/a (none yet)"
     d, kind = next_checkpoint(data, cfg, today)
-    return last + " · Next: " + ("%s (%s)" % (date_label(d), kind) if d else "n/a (no CPI date on the calendar)")
+    return last + " · Next: " + ("%s (%s)" % (date_label(d), kind) if d else "n/a")
 
 
 def render(data, cfg, zip_code, price, exit_month=None, today=None):

@@ -247,18 +247,35 @@ function exitLine(data: CycleContextData, cfg: CycleConfig, price: number, exitM
   )
   return `${head} (${t ? t.label : "tier"} ≈ county; straight line from today's ${fsigned(dd.today)} to each band's midpoint by its typical trough, flat after): ${parts.join(" · ")}`
 }
+/** Expected next review date — the same rule as lib/marketCycle/schedule.ts
+ *  (first Monday on/after the 15th, pushed a week past an FOMC decision that day
+ *  or within 3 days; last-Monday fallback; nothing before the shakedown month),
+ *  without its data-ready wait. Mirrored in scripts/market-cycle/cycle-context.py. */
 export function nextCheckpoint(data: CycleContextData, cfg: CycleConfig, today: string): [string | null, string | null] {
-  const sch = cfg.checkpoint_schedule
-  if (today <= sch.shakedown) return [sch.shakedown, "shakedown"]
-  if (today <= sch.first_formal) return [sch.first_formal, "first formal review"]
   const cal = data.calendar && data.calendar.length ? data.calendar : cfg.calendar.map((c) => ({ date: c.date, dial_id: c.dial_id }))
-  const cpi = cal.filter((c) => c.dial_id === "cpi_yoy" && c.date && /^\d{4}-\d{2}-\d{2}$/.test(c.date)).map((c) => c.date as string).sort()
-  for (const d of cpi) {
-    const x = new Date(d + "T00:00:00Z")
-    const weekday = (x.getUTCDay() + 6) % 7 // Monday = 0, as Python's weekday()
-    const add = (7 - weekday) % 7 || 7
-    const monday = new Date(x.getTime() + add * 86_400_000).toISOString().slice(0, 10)
-    if (monday >= today) return [monday, QUARTERLY_MONTHS.includes(Number(monday.slice(5, 7))) ? "quarterly" : "monthly"]
+  const fomc = cal.filter((c) => c.dial_id === "fomc_decision" && c.date && /^\d{4}-\d{2}-\d{2}$/.test(c.date)).map((c) => c.date as string)
+  const add = (d: string, n: number) => new Date(Date.parse(d + "T00:00:00Z") + n * 86_400_000).toISOString().slice(0, 10)
+  const wd = (d: string) => new Date(d + "T00:00:00Z").getUTCDay()
+  const soon = (d: string) => fomc.filter((f) => f >= d && f <= add(d, 3)).sort()[0] ?? null
+  const first = cfg.checkpoint_schedule.shakedown.slice(0, 7)
+  for (let i = 0; i < 14; i++) {
+    const m = new Date(today.slice(0, 7) + "-01T00:00:00Z")
+    m.setUTCMonth(m.getUTCMonth() + i)
+    const ym = m.toISOString().slice(0, 7)
+    if (ym < first) continue
+    const d15 = ym + "-15"
+    let day = add(d15, (8 - wd(d15)) % 7)
+    const n = new Date(m)
+    n.setUTCMonth(n.getUTCMonth() + 1)
+    const end = add(n.toISOString().slice(0, 10), -1)
+    const last = add(end, -((wd(end) + 6) % 7))
+    while (day < last && soon(day)) day = add(day, 7)
+    if (day >= last) {
+      day = last
+      const f = soon(day)
+      if (f) day = add(f, 1)
+    }
+    if (day >= today) return [day, ym === first ? "shakedown" : QUARTERLY_MONTHS.includes(Number(ym.slice(5, 7))) ? "quarterly" : "monthly"]
   }
   return [null, null]
 }
@@ -272,7 +289,7 @@ function checkpointLine(data: CycleContextData, cfg: CycleConfig, today: string)
   const cp = data.checkpoint
   const last = cp ? `Last checkpoint ${dateLabel(cp.date)} (${cp.kind || "?"}): ${oneLiner(cp.argument) || "no argument stored"}` : "Last checkpoint: n/a (none yet)"
   const [d, kind] = nextCheckpoint(data, cfg, today)
-  return last + " · Next: " + (d ? `${dateLabel(d)} (${kind})` : "n/a (no CPI date on the calendar)")
+  return last + " · Next: " + (d ? `${dateLabel(d)} (${kind})` : "n/a")
 }
 
 /** The ≤10-line block. Pure. */

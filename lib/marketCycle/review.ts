@@ -106,7 +106,7 @@ export async function runReview(opts: ReviewOptions, deps: ReviewDeps): Promise<
   const loaded = await deps.loadState()
   const state: ReviewState = opts.today ? { ...loaded, today: opts.today } : loaded
   const today = state.today
-  const due = checkpointDue(today, state.calendar, state.tripwireEvents)
+  const due = checkpointDue(today, { calendar: state.calendar, readings: state.readings, checkpoints: state.checkpoints }, state.tripwireEvents)
   const empty: ReviewResult = {
     skipped: true, reason: due.reason, due, kind: null, votes: [], tally: null, proposalSource: null, proposal: null,
     verdict: null, modelRaw: [], rows: null, card: null, checkpointId: null, telegramMessageId: null,
@@ -181,13 +181,15 @@ export async function runReview(opts: ReviewOptions, deps: ReviewDeps): Promise<
   const after = verdict.weights
   const claimUpdates = verdict.validClaimUpdates
   const changedClaims = applyClaimUpdates(state.claims, claimUpdates, today, state.checkpoints)
-  const nextCp = nextCheckpoint(today, state.calendar)
+  // the checkpoint being written now counts as this month's (once per month)
+  const doneNow = kind === "tripwire" ? [] : [{ date: today, kind }]
+  const nextCp = nextCheckpoint(today, { calendar: state.calendar, checkpoints: [...state.checkpoints, ...doneNow] })
   const calNext = state.calendar
     .filter((c) => c.date && c.date > today)
     .sort((a, b) => (a.date as string).localeCompare(b.date as string))
     .slice(0, 2)
     .map((c) => `${longDate(c.date as string)} ${c.label}`)
-  const nextDates = proposal.next_dates.length ? proposal.next_dates : [...calNext, ...(nextCp ? [`${longDate(nextCp.date)} ${nextCp.kind} review`] : [])]
+  const nextDates = proposal.next_dates.length ? proposal.next_dates : [...calNext, ...(nextCp ? [`~${longDate(nextCp.date)} ${nextCp.kind} review`] : [])]
   const voting = votes.filter((v) => v.vote !== "none")
   const checkpoint: PlannedRows["checkpoint"] = {
     date: today,

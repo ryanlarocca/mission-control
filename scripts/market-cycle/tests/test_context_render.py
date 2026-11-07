@@ -54,7 +54,7 @@ class MissingData(unittest.TestCase):
         self.assertEqual(lines[3], "Tier <$1.3M (SCC): actives %s · days on site %s · cut share %s" % (cc.NA, cc.NA, cc.NA))
         self.assertEqual(lines[5], "Stale-comp drift: " + cc.NA)
         self.assertEqual(lines[6], "Exit Apr 2027: " + cc.NA)
-        self.assertEqual(lines[7], "Last checkpoint: n/a (none yet) · Next: Dec 14, 2026 (shakedown)")
+        self.assertEqual(lines[7], "Last checkpoint: n/a (none yet) · Next: Dec 21, 2026 (shakedown)")
 
     def test_null_values_are_missing(self):
         d = fixture()
