@@ -229,7 +229,30 @@ def pdf_text(blob, pdftotext):
 FRED_CSV = "https://fred.stlouisfed.org/graph/fredgraph.csv?id="
 
 
+FRED_API = "https://api.stlouisfed.org/fred/series/observations?file_type=json&series_id=%s&api_key=%s"
+
+
+def fred_api_key():
+    """FRED's official API key (fredaccount.stlouisfed.org), if one is set. Since
+    Nov 7, 2026 FRED's front end stalls our named client on fredgraph.csv (read
+    timeouts that look like an outage); the API is the sanctioned route."""
+    return os.environ.get("FRED_API_KEY") or load_env().get("FRED_API_KEY") or None
+
+
 def fred(series):
+    key = fred_api_key()
+
+    def go_api():
+        body, _, _ = http_get(FRED_API % (urllib.parse.quote(series), urllib.parse.quote(key)))
+        try:
+            obs = json.loads(body.decode("utf-8", "replace"))["observations"]
+        except (ValueError, KeyError) as e:
+            raise SourceError("FRED API: unexpected reply (%s)" % e)
+        rows = [(o["date"], float(o["value"])) for o in obs if o.get("value") not in (None, "", ".")]
+        if not rows:
+            raise SourceError("FRED returned no observations")
+        return rows
+
     def go():
         body, _, ctype = http_get(FRED_CSV + series)
         text = body.decode("utf-8", "replace")
@@ -245,7 +268,7 @@ def fred(series):
         if not rows:
             raise SourceError("FRED returned no observations")
         return rows
-    return cached("fred:" + series, go)
+    return cached("fred:" + series, go_api if key else go)
 
 
 # ---------------------------------------------------------------- Zillow
@@ -1349,7 +1372,7 @@ def load_env():
             with open(ep) as f:
                 env = dict((k, v.strip().strip("'\"")) for k, v in re.findall(r"^([A-Z0-9_]+)=(.*)$", f.read(), re.M))
             break
-    for k in ("LRG_SUPABASE_URL", "LRG_SUPABASE_SERVICE_KEY", "TELEGRAM_BOT_TOKEN", "CAMPAIGN_BOT_TOKEN", "TELEGRAM_CHAT_ID"):
+    for k in ("LRG_SUPABASE_URL", "LRG_SUPABASE_SERVICE_KEY", "TELEGRAM_BOT_TOKEN", "CAMPAIGN_BOT_TOKEN", "TELEGRAM_CHAT_ID", "FRED_API_KEY"):
         if os.environ.get(k):
             env[k] = os.environ[k]
     return env

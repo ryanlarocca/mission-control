@@ -239,3 +239,23 @@ class WarnDedup(unittest.TestCase):
         b = S.warn_key("2026-06-29", 67, "CEPHEID  904 Caribbean Dr  Sunnyvale")
         self.assertEqual(a, b)
         self.assertNotEqual(a, S.warn_key("2026-06-29", 20, "Cepheid"))       # different headcount = different notice
+
+
+class FredApi(unittest.TestCase):
+    def setUp(self):
+        S._cache.clear()
+        S.reset_hosts()
+
+    def test_api_key_switches_to_the_official_api(self):
+        reply = b'{"observations": [{"date": "2026-09-01", "value": "4.2"}, {"date": "2026-10-01", "value": "."}]}'
+        with mock.patch.dict(os.environ, {"FRED_API_KEY": "k123"}), \
+                mock.patch.object(S.urllib.request, "urlopen", side_effect=lambda req, **k: _Resp(reply)) as u:
+            self.assertEqual(S.fred("UNRATE"), [("2026-09-01", 4.2)])
+        self.assertIn("api.stlouisfed.org", u.call_args[0][0].full_url)
+        self.assertIn("api_key=k123", u.call_args[0][0].full_url)
+
+    def test_no_key_keeps_the_csv_download(self):
+        with mock.patch.object(S, "fred_api_key", return_value=None), \
+                mock.patch.object(S.urllib.request, "urlopen", side_effect=lambda req, **k: _Resp(b"observation_date,UNRATE\n2026-09-01,4.2\n")) as u:
+            self.assertEqual(S.fred("UNRATE"), [("2026-09-01", 4.2)])
+        self.assertIn("fredgraph.csv", u.call_args[0][0].full_url)
