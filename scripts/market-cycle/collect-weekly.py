@@ -2,7 +2,7 @@
 """Market-cycle tracker, Phase 1: the Monday weekly collector (no LLM).
 
 Spec: briefs/BRIEF_MARKET_CYCLE_TRACKER_2026-11-01.md §3.2 (weekly dials),
-Part 4 Phase 1. Registry: config/market-cycle/thesis.v1.1.json (mls_* dials,
+Part 4 Phase 1. Registry: config/market-cycle/thesis.v1.2.json (mls_* dials,
 the mls_zip_{zip}_{metric} template, scc_nod_count).
 
 What it does, per run:
@@ -65,7 +65,7 @@ sys.path.insert(0, HERE)
 import mlsl  # noqa: E402
 
 ROOT = os.path.dirname(os.path.dirname(HERE))
-CONFIG = os.path.join(ROOT, "config", "market-cycle", "thesis.v1.1.json")
+CONFIG = os.path.join(ROOT, "config", "market-cycle", "thesis.v1.2.json")
 ENV_PATHS = [os.path.join(ROOT, ".env.local"), "/Users/ryanlarocca/Projects/PROJECTS/mission-control/.env.local"]
 UA = "mission-control-market-cycle/1.0 (+stdlib urllib)"
 MLS_URL = "https://www.mlslistings.com/Search"           # stable source_url for MLS readings (upsert key)

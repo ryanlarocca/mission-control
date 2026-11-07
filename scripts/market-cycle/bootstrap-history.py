@@ -2,7 +2,7 @@
 """Market-cycle tracker, Phase 0: history bootstrap + corridor numbers.
 
 Spec: briefs/BRIEF_MARKET_CYCLE_TRACKER_2026-11-01.md (Part 3.4, Part 4 Phase 0).
-Registry: config/market-cycle/thesis.v1.1.json (every dial with has_history=true
+Registry: config/market-cycle/thesis.v1.2.json (every dial with has_history=true
 is fetched here). Fetchers, parsers and transforms live in sources.py and are
 shared with collect-macro.py (the daily collector), so a dial reads the same way
 in both. Here the monthly-release sources (C.A.R., SCCAOR) read their full public

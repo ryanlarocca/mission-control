@@ -6,7 +6,7 @@ import { computeVotes, qualifyingBloc, seasonalBand, tallyVotes, voteForDial } f
 import { checkProposal, clampMove } from "@/lib/marketCycle/rules"
 import { applyClaimUpdates, brier, dueClaims, liveProbability, resolveClaim } from "@/lib/marketCycle/claims"
 import { checkpointDue, lastMondayOf, mondayAfter, mondayOnOrAfter, nextCheckpoint, plannedDate, scheduledCheckpointInMonth } from "@/lib/marketCycle/schedule"
-import { MAX_CARD_LINES, renderCard, renderTripwireCard } from "@/lib/marketCycle/card"
+import { MAX_CARD_CHARS, MAX_CARD_LINES, oddsLine, renderCard, renderTripwireCard } from "@/lib/marketCycle/card"
 import { parseProposal } from "@/lib/marketCycle/prompt"
 import { runReview } from "@/lib/marketCycle/review"
 import { stateFromFixture, type CheckpointWriter, type Fixture } from "@/lib/marketCycle/data"
@@ -328,60 +328,59 @@ describe("schedule (data-ready cadence, Ryan 2026-11-07)", () => {
   })
 })
 
-describe("card", () => {
+describe("card (plain English, both bets)", () => {
   const base = {
     date: "2027-01-18",
     kind: "monthly" as const,
-    before: W0,
-    after: { bear: 40, base: 45, bull: 15 },
-    moved: true,
-    why: "three categories agree & a tripwire fired; <b>the IPO window</b> is wobbling",
-    opposite: "rents +7%, curve still steep, Dec sales +2% YoY",
-    resolved: ["C5 ✅ (we said 75)"],
-    reprobs: ["C9 45→35"],
-    next: ["Jan 27, 2027 FOMC", "Feb 10, 2027 CPI"],
+    bets: [
+      { emoji: "🏠", name: "SCC houses", before: W0, after: { bear: 40, base: 45, bull: 15 }, now: "3.4% below the Jan 2025 peak ($1.72M, Sep 2026)", why: "Homes for sale are about 50% above a normal January & <b>buyers</b> slowed", against: "San Jose rents are still up 8%" },
+      { emoji: "📈", name: "S&P 500", before: { bear: 40, base: 40, bull: 20 }, after: { bear: 40, base: 40, bull: 20 }, now: "1.7% below the Oct 6, 2026 high (7,689, Nov 4)", why: "Credit spreads are calm", against: "The NASDAQ is 11% off its high" },
+    ],
+    settled: ["S&P new high by end of 2028 ✅ (we said 60%)"],
+    reprobs: ["Homes for sale up 25% by Mar 2027: 55% → 65%"],
+    next: ["~Feb 22, 2027 quarterly review", "Jan 27, 2027 FOMC"],
     checkpointId: "6f1c1d1e-1111-4222-8333-944455556666",
     baseUrl: "https://mission-control-three-chi.vercel.app",
   }
-  const bullets = Array.from({ length: 6 }, (_, i) => ({ label: `Dial ${i} <x> & y`, category: "credit", scenario: "bear" as const }))
 
-  it("fits in ≤12 lines with every section, the year, and the overflow line", () => {
-    const c = renderCard({ ...base, bullets })
+  it("one block per bet: odds (changes only where they moved), now, why, against; then settled / re-weighed / next", () => {
+    const c = renderCard(base)
     const lines = c.text.split("\n")
     expect(lines.length).toBeLessThanOrEqual(MAX_CARD_LINES)
-    expect(lines[0]).toContain("Market cycle — Jan 18, 2027 checkpoint")
-    expect(lines[1]).toBe("Bear 35 → 40 · Base 45 → 45 · Bull 20 → 15")
-    for (const s of ["<b>Moved</b>", "<b>Why</b>:", "<b>Opposite case</b>:", "<b>Resolved</b>:", "<b>Next</b>:"]) expect(c.text).toContain(s)
-    expect(c.text).toContain("(credit → bear)")
-    expect(c.text).toContain("+3 more on /cycle")
-    expect(c.text).toContain("re-probbed C9 45→35")
+    expect(lines[0]).toBe("📊 <b>Market cycle — Jan 18, 2027 review</b>")
+    expect(c.text).toContain("🏠 <b>SCC houses</b>: Bear 35 → 40 · Base 45 · Bull 20 → 15")
+    expect(c.text).toContain("📈 <b>S&amp;P 500</b>: Bear 40 · Base 40 · Bull 20 (no change)")
+    expect(c.text).toContain("Now: 3.4% below the Jan 2025 peak")
+    for (const sct of ["<b>Why</b>:", "<b>Against</b>:", "<b>Settled</b>:", "<b>Re-weighed</b>:", "<b>Next</b>:"]) expect(c.text).toContain(sct)
+    expect(c.text).not.toMatch(/z=|σ|@ 20\d\d-|re-probbed|\bC\d+\b/)
   })
 
   it("HTML-escapes every dynamic string", () => {
-    const c = renderCard({ ...base, bullets })
-    expect(c.text).toContain("Dial 0 &lt;x&gt; &amp; y")
-    expect(c.text).toContain("&lt;b&gt;the IPO window&lt;/b&gt;")
-    expect(c.text).not.toContain("<x>")
+    const c = renderCard(base)
+    expect(c.text).toContain("&lt;b&gt;buyers&lt;/b&gt;")
+    expect(c.text).toContain("&amp; ")
   })
 
-  it("carries Details (URL to /cycle) and Disagree (cycle:disagree:<id>, ≤64 bytes)", () => {
-    const [[details, disagree]] = renderCard({ ...base, bullets }).buttons
+  it("carries Details (URL to /cycle) and Disagree (cycle:disagree:<id>, ≤64 bytes); a preview has no Disagree", () => {
+    const [[details, disagree]] = renderCard(base).buttons
     expect(details.url).toBe("https://mission-control-three-chi.vercel.app/cycle")
     expect(disagree.callback_data).toBe(`cycle:disagree:${base.checkpointId}`)
     expect(Buffer.byteLength(disagree.callback_data!)).toBeLessThanOrEqual(64)
+    const p = renderCard({ ...base, preview: true })
+    expect(p.buttons).toEqual([[details]])
+    expect(p.text.split("\n")[0]).toContain("PREVIEW — nothing saved")
   })
 
-  it("clips a long Why / Opposite case to stay phone-sized", () => {
-    const c = renderCard({ ...base, bullets, why: "x".repeat(500), opposite: "y ".repeat(300) })
-    const why = c.text.split("\n").find((l) => l.startsWith("<b>Why</b>"))!
+  it("clips a long Why / Against to stay phone-sized; stays under Telegram's limit", () => {
+    const long = { ...base, bets: base.bets.map((b) => ({ ...b, why: "x".repeat(500), against: "y ".repeat(300) })) }
+    const why = renderCard(long).text.split("\n").find((l) => l.startsWith("<b>Why</b>"))!
     expect(why.length).toBeLessThan(260)
     expect(why.endsWith("…")).toBe(true)
+    expect(renderCard(long).text.length).toBeLessThanOrEqual(MAX_CARD_CHARS)
   })
 
-  it("a no-move card says so; the tripwire card is three lines", () => {
-    const c = renderCard({ ...base, after: W0, moved: false, bullets: [], resolved: [], reprobs: [] })
-    expect(c.text).toContain("<b>Moved</b>: nothing")
-    expect(c.text).toContain("<b>Resolved</b>: none")
+  it("odds line and the tripwire card", () => {
+    expect(oddsLine(W0, W0)).toBe("Bear 35 · Base 45 · Bull 20 (no change)")
     const t = renderTripwireCard({ what: "CCC OAS ≥ 20% on a two-day close", reading: "20.4% (Mar 2, 2027) <hi>", baseUrl: base.baseUrl })
     expect(t.text.split("\n")).toHaveLength(3)
     expect(t.text).toContain("Out-of-cycle review within 24h.")
@@ -407,11 +406,15 @@ describe("prompt contract + review orchestration (dry, injected deps)", () => {
     expect(p.claim_updates).toEqual([{ id: "C5", action: "resolve", value: true, reason: "r" }, { id: "C9", action: "reprob", value: 35, reason: "r" }])
   })
 
-  it("dry run on the fixture: stub proposal, no move, card ≤12 lines, no weight-move row", async () => {
+  it("dry run on the fixture: both bets, stub proposals, no move, card fits, no weight-move rows", async () => {
     const res = await runReview({ dryRun: true, kind: "shakedown" }, { loadState: async () => stateFromFixture(fixture) })
+    expect(res.bets.map((b) => b.bet.id)).toEqual(["housing", "spx"])
+    expect(res.bets.every((b) => b.proposalSource === "stub" && b.verdict.ok)).toBe(true)
     expect(res.proposalSource).toBe("stub")
-    expect(res.verdict?.ok).toBe(true)
     expect(res.rows?.weightMove).toBeNull()
+    expect(res.rows?.weightMoves).toEqual([])
+    expect(Object.keys(res.rows?.checkpoint.bets ?? {})).toEqual(["housing", "spx"])
+    expect(res.rows?.checkpoint.bets?.spx.weights_before).toEqual({ bear: 40, base: 40, bull: 20 })
     expect(res.rows?.checkpoint.kind).toBe("shakedown")
     expect(res.card!.text.split("\n").length).toBeLessThanOrEqual(MAX_CARD_LINES)
     expect(res.proposal?.opposite_reading?.dial_id).toBe("sj_rent_yoy")
@@ -432,8 +435,10 @@ describe("prompt contract + review orchestration (dry, injected deps)", () => {
       { dryRun: false, kind: "monthly" },
       { loadState: async () => stateFromFixture(fixture), callModel: async (_s, p) => { calls.push(p); return illegal }, writer, sendCard: async () => 4242 },
     )
-    expect(calls).toHaveLength(2)
+    expect(calls).toHaveLength(4)                              // two bets × (ask + one re-ask)
     expect(calls[1]).toContain("broke these rules")
+    expect(calls[0]).toContain("BET: Santa Clara County houses")
+    expect(calls[2]).toContain("BET: US stocks — S&P 500")
     expect(res.proposalSource).toBe("model-fallback")
     expect(res.verdict?.violations.join(" ")).toMatch(/move gate/)
     expect(res.rows?.checkpoint.weights_after).toEqual(W0)

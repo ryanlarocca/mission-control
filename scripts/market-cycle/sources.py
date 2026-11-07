@@ -6,7 +6,7 @@ One code path for every free source, used by
   sync-registry.py      (config -> cycle_dials / cycle_claims / cycle_calendar)
 
 Spec: briefs/BRIEF_MARKET_CYCLE_TRACKER_2026-11-01.md. Registry:
-config/market-cycle/thesis.v1.1.json. Stdlib only (PDFs via the system
+config/market-cycle/thesis.v1.2.json. Stdlib only (PDFs via the system
 `pdftotext` when present). A source that cannot be read raises SourceError
 with the reason; nothing is ever filled in or guessed.
 
@@ -24,7 +24,7 @@ from html.parser import HTMLParser
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(os.path.dirname(HERE))
-CONFIG = os.path.join(ROOT, "config", "market-cycle", "thesis.v1.1.json")
+CONFIG = os.path.join(ROOT, "config", "market-cycle", "thesis.v1.2.json")
 ENV_PATHS = [os.path.join(ROOT, ".env.local"), "/Users/ryanlarocca/Projects/PROJECTS/mission-control/.env.local"]
 # Honest UA by default: FRED (Akamai) tarpits a spoofed Chrome UA that lacks the
 # rest of a browser's headers. The Nasdaq API needs a browser-like UA.
@@ -252,6 +252,30 @@ def fred(series):
 ZILLOW = "https://files.zillowstatic.com/research/public_csvs/zhvi/"
 
 
+def zillow_regions(fname, regions):
+    """{(RegionName, State): [(date, value)]} for every wanted region of one Zillow
+    file, read in ONE streamed pass (the City file is large: never download it once
+    per region). regions = tuple of (name, state); state None matches any."""
+    want = set(regions)
+
+    def read():
+        rdr = csv.reader(http_lines(ZILLOW + fname))
+        hdr = next(rdr)
+        dates = [(i, h) for i, h in enumerate(hdr) if re.match(r"\d{4}-\d{2}-\d{2}$", h)]
+        ri = hdr.index("RegionName")
+        si = hdr.index("State") if "State" in hdr else None
+        out = {}
+        for row in rdr:
+            if len(row) <= ri:
+                continue
+            st = row[si] if si is not None and len(row) > si else None
+            for key in ((row[ri], st), (row[ri], None)):
+                if key in want and key not in out:
+                    out[key] = [(h, float(row[i])) for i, h in dates if i < len(row) and row[i]]
+        return out
+    return cached("zillow:%s#%s" % (fname, "|".join("%s/%s" % k for k in sorted(want, key=str))), lambda: stream_retry(read))
+
+
 def zillow_county(fname, county="Santa Clara County", state="CA"):
     def read():
         # Streamed to the end of the file (not stopped at the matching row) so a
@@ -406,6 +430,25 @@ def warn_key(day, employees, company):
     word (the PDF's company column can run into the next column)."""
     first = (str(company or "").strip().split() or [""])[0]
     return (day, employees, re.sub(r"[^a-z0-9]", "", first.lower()))
+
+
+def warn_rolling(notices, days, until=None):
+    """Daily rolling sum of workers in notices dated in (d - days, d], from the first
+    notice to `until` (default today). The newest days undercount: EDD posts 1-6 days late."""
+    by = {}
+    for d, n, _ in notices:
+        by[d[:10]] = by.get(d[:10], 0) + n
+    if not by:
+        return []
+    start = dt.date.fromisoformat(min(by))
+    end = until or TODAY
+    rows, day = [], start
+    while day <= end:
+        lo = day - dt.timedelta(days=days)
+        total = sum(n for k, n in by.items() if lo < dt.date.fromisoformat(k) <= day)
+        rows.append((day.isoformat(), float(total)))
+        day += dt.timedelta(days=1)
+    return rows
 
 
 def warn_monthly(notices):
@@ -1093,11 +1136,22 @@ def fetch_dial(dial, cfg, backfill=False):
     if f == "zillow_csv":
         fname = url.rsplit("/", 1)[1]
         if did.startswith("zhvi_zip_"):
-            z = did.rsplit("_", 1)[1]
+            z = re.match(r"zhvi_zip_(\d{5})", did).group(1)      # zhvi_zip_95118 (YoY) or zhvi_zip_95118_level
             got = zillow_zips(tuple(cfg["geographies"]["owned_zips_seed"]))
             if z not in got:
                 raise SourceError("zip %s not in the Zillow zip file" % z)
-            return yoy_pct(got[z]), url, "zip " + z, {}
+            return (yoy_pct(got[z]) if tr == "yoy_pct" else got[z]), url, "zip " + z, {}
+        if src.get("region"):
+            # a display-only area (Nearby markets, v1.2): every region this file serves, one pass
+            wanted = tuple(sorted({(d["source"]["region"], d["source"].get("state")) for d in cfg["dials"]
+                                   if d.get("fetch") == "zillow_csv" and d["source"].get("region")
+                                   and d["source"]["url"].rsplit("/", 1)[1] == fname and not d["id"].startswith("zhvi_zip_")}, key=str))
+            got = zillow_regions(fname, wanted)
+            key = (src["region"], src.get("state"))
+            if key not in got:
+                raise SourceError("%s not in %s" % (src["region"], fname))
+            rows = got[key]
+            return (yoy_pct(rows) if tr == "yoy_pct" else rows), url, "%s · %s" % (src["region"], fname), {}
         rows = zillow_county(fname)
         if tr == "yoy_pct":
             rows = yoy_pct(rows)
@@ -1117,6 +1171,8 @@ def fetch_dial(dial, cfg, backfill=False):
         notices, status = warn_notices()
         if not notices:
             raise SourceError("; ".join(status))
+        if src.get("window_days"):
+            return warn_rolling(notices, int(src["window_days"])), EDD_PAGE, " | ".join(status), {}
         return warn_monthly(notices), EDD_PAGE, " | ".join(status), {}
     if f == "nasdaq_api":
         note = []
@@ -1226,12 +1282,13 @@ def dial_row(d, computed=None, existing_corridor=None):
     return row
 
 
-CLAIM_CONFIG_COLS = ("id", "version", "text", "category", "scenario_tag", "prob_initial", "resolves_on", "falsifier", "data_source")
+CLAIM_CONFIG_COLS = ("id", "version", "text", "category", "scenario_tag", "prob_initial", "resolves_on", "falsifier", "data_source", "bet_id")
 
 
 def claim_row(c, version):
     """Full row for an insert. prob_current/status are DB-owned once the row exists."""
-    row = {k: c[k] for k in CLAIM_CONFIG_COLS if k != "version"}
+    src = dict(c, bet_id=c.get("bet", "housing"))      # config key `bet` -> column bet_id (v1.2: housing | spx)
+    row = {k: src[k] for k in CLAIM_CONFIG_COLS if k != "version"}
     row.update({"version": version, "prob_current": c["prob_current"], "status": c.get("status", "open")})
     return row
 

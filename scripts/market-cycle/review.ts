@@ -6,12 +6,15 @@
 //       → dry run on a fixture, stub proposal (no model call)
 //   npx tsx scripts/market-cycle/review.ts --dry-run --llm
 //       → dry run on Supabase data WITH one real Opus call (+1 retry if it breaks a rule)
+//   npx tsx scripts/market-cycle/review.ts --preview --llm
+//       → the full review on live data with real Opus calls, sent to Telegram
+//         labelled PREVIEW; nothing written, odds unchanged
 //   npx tsx scripts/market-cycle/review.ts --check --write --send
 //       → the daily launchd job: runs only when a checkpoint is due or a
 //         tripwire is pending; writes the rows and posts the card
 //
 // Flags: --check · --kind shakedown|monthly|quarterly|tripwire · --today YYYY-MM-DD
-//        --dry-run (default) · --fixture <path> · --llm · --write · --send
+//        --dry-run (default) · --fixture <path> · --llm · --write · --send · --preview
 
 import { readFileSync } from "node:fs"
 import path from "node:path"
@@ -33,7 +36,7 @@ type Kind = "shakedown" | "monthly" | "quarterly" | "tripwire"
 const KINDS: Kind[] = ["shakedown", "monthly", "quarterly", "tripwire"]
 
 function parseArgs(argv: string[]) {
-  const a = { check: false, kind: undefined as Kind | undefined, today: undefined as string | undefined, dryRunFlag: false, fixture: undefined as string | undefined, llm: false, write: false, send: false }
+  const a = { check: false, kind: undefined as Kind | undefined, today: undefined as string | undefined, dryRunFlag: false, fixture: undefined as string | undefined, llm: false, write: false, send: false, preview: false }
   for (let i = 0; i < argv.length; i++) {
     const f = argv[i]
     if (f === "--check") a.check = true
@@ -41,6 +44,7 @@ function parseArgs(argv: string[]) {
     else if (f === "--llm") a.llm = true
     else if (f === "--write") a.write = true
     else if (f === "--send") a.send = true
+    else if (f === "--preview") a.preview = true
     else if (f === "--kind") {
       const k = argv[++i] as Kind
       if (!KINDS.includes(k)) throw new Error(`--kind must be one of ${KINDS.join("|")}`)
@@ -58,7 +62,8 @@ async function main() {
   const args = parseArgs(process.argv.slice(2))
   // Dry unless --write is given (and never when --dry-run is explicit).
   const dryRun = args.dryRunFlag || !args.write
-  if (args.send && dryRun) throw new Error("--send needs --write (the card's Disagree button points at the stored checkpoint row)")
+  if (args.preview && args.write) throw new Error("--preview never writes: drop --write")
+  if (args.send && dryRun) throw new Error("--send needs --write (the card's Disagree button points at the stored checkpoint row); use --preview for a labelled preview send")
   if (args.fixture && !dryRun) throw new Error("--fixture is dry-run only — fixture data never goes to Supabase")
 
   const { runReview, sendCardToTelegram } = await import("@/lib/marketCycle/review")
@@ -82,16 +87,18 @@ async function main() {
     : undefined
 
   const res = await runReview(
-    { dryRun, kind: args.kind, today: args.today, check: args.check, llm: args.llm, log: (l) => console.log(`· ${l}`) },
+    { dryRun, kind: args.kind, today: args.today, check: args.check, llm: args.llm, preview: args.preview, log: (l) => console.log(`· ${l}`) },
     {
       loadState,
       callModel,
       writer: !dryRun && sb ? supabaseWriter(sb) : undefined,
-      sendCard: args.send ? sendCardToTelegram : undefined,
+      sendCard: args.send || args.preview ? sendCardToTelegram : undefined,
     },
   )
 
-  const mode = dryRun ? `DRY RUN${args.llm ? " + real model call" : " (stub proposal, no model call)"}` : `LIVE${args.send ? " write + send" : " write only"}`
+  const mode = dryRun
+    ? `${args.preview ? "PREVIEW (sent to Telegram, nothing written)" : "DRY RUN"}${args.llm ? " + real model call" : " (stub proposal, no model call)"}`
+    : `LIVE${args.send ? " write + send" : " write only"}`
   console.log(`\n=== market-cycle review — ${mode}${args.fixture ? ` — fixture ${args.fixture}` : ""}`)
   console.log(`due: ${res.due.due} (${res.due.reason})`)
   if (res.skipped) {
@@ -111,11 +118,13 @@ async function main() {
   const inBand = res.votes.filter((v) => v.reading && v.vote === "none" && v.outside === null)
   for (const v of inBand) console.log(`  ${"none".padEnd(11)} ${v.dial_id.padEnd(32)} ${formatValue(v.reading!.value).padStart(8)} @ ${v.reading!.as_of}  — ${v.reason}`)
 
-  console.log(`\n--- proposal (${res.proposalSource})`)
-  if (res.modelRaw.length) res.modelRaw.forEach((r, i) => console.log(`model reply #${i + 1}:\n${r}\n`))
-  console.log(JSON.stringify(res.proposal, null, 2))
-  console.log("\n--- rules verdict")
-  console.log(JSON.stringify({ ok: res.verdict!.ok, weights: res.verdict!.weights, moved: res.verdict!.moved, direction: res.verdict!.direction, cap: res.verdict!.cap, violations: res.verdict!.violations, adjustments: res.verdict!.adjustments }, null, 2))
+  for (const o of res.bets) {
+    console.log(`\n--- [${o.bet.id}] proposal (${o.proposalSource}); code-settled claims: ${o.autoUpdates.map((u) => `${u.id}=${u.value}`).join(", ") || "none"}`)
+    if (o.modelRaw.length) o.modelRaw.forEach((r, i) => console.log(`model reply #${i + 1}:\n${r}\n`))
+    console.log(JSON.stringify(o.proposal, null, 2))
+    console.log(`--- [${o.bet.id}] rules verdict`)
+    console.log(JSON.stringify({ ok: o.verdict.ok, weights: o.verdict.weights, moved: o.verdict.moved, direction: o.verdict.direction, cap: o.verdict.cap, violations: o.verdict.violations, adjustments: o.verdict.adjustments }, null, 2))
+  }
 
   console.log("\n--- card (Telegram HTML)")
   console.log(res.card!.text)
@@ -123,7 +132,7 @@ async function main() {
 
   console.log(`\n--- ${dryRun ? "would-be rows" : "rows written"}`)
   console.log(JSON.stringify(res.rows, null, 2))
-  if (!dryRun) console.log(`\ncheckpoint ${res.checkpointId} · telegram message ${res.telegramMessageId ?? "(not sent)"}`)
+  if (!dryRun || args.preview) console.log(`\ncheckpoint ${res.checkpointId ?? "(none — preview)"} · telegram message ${res.telegramMessageId ?? "(not sent)"}`)
 }
 
 main().catch(async (e) => {

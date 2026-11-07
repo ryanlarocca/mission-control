@@ -1,5 +1,5 @@
 // Market-cycle tracker types (briefs/BRIEF_MARKET_CYCLE_TRACKER_2026-11-01.md).
-// Shapes mirror config/market-cycle/thesis.v1.1.json and the cycle_* tables
+// Shapes mirror config/market-cycle/thesis.v1.2.json and the cycle_* tables
 // in supabase/migrations/2026-11-01_market_cycle.sql.
 
 export type Scenario = "bear" | "base" | "bull"
@@ -15,6 +15,49 @@ export interface ScenarioDef {
   weight: number
   drawdown_bounds_pct: { min: number | null; max: number | null }
   markers?: string
+}
+
+/** A data-decidable claim's rule (thesis v1.2 `auto`; lib/marketCycle/autoclaims.ts). */
+export interface AutoRule {
+  dial: string
+  rule: "any" | "all" | "at" | "low_in"
+  op?: "lt" | "le" | "gt" | "ge"
+  threshold?: number
+  /** e.g. drawdown_from_2026-10-06_high — applied like a corridor transform. */
+  transform?: string
+  /** YYYY-MM or YYYY-MM-DD (months match on the as_of month). */
+  from?: string
+  to?: string
+  month?: string
+  low_from?: string
+  low_to?: string
+}
+
+/** Scenario timing for the page/card timeline: month windows YYYY-MM. */
+export interface ScenarioTiming {
+  low: [string, string]
+  rebound: [string, string] | null
+  analog: string
+}
+
+/** One bet (v1.2): its own question, scenarios, odds, dials and claims. */
+export interface BetDef {
+  id: string
+  name: string
+  pill: string
+  question: string
+  scored_dial: string
+  /** One-line description of the scored outcome (prompt). */
+  description: string
+  rebound_definition: string
+  scenarios: ScenarioDef[]
+  timing: Record<Scenario, ScenarioTiming>
+  depth_lines: Record<Scenario, string>
+  initial_weights: Weights
+  /** Bootstrap weight move (#0) for the odds history before the DB has one. */
+  move0: { date: string; to: Weights; reason: string; opposite_case: string; reverses_if: string } | null
+  /** Voting dials of this bet. */
+  dialIn: (dialId: string) => boolean
 }
 
 export interface Dial {
@@ -51,6 +94,9 @@ export interface Claim {
   resolves_on: string
   falsifier: string
   data_source: string
+  /** housing | spx (v1.2). Missing on rows written before the bets migration. */
+  bet_id?: string | null
+  auto?: AutoRule | null
   status: "open" | "resolved" | "void"
   resolution?: boolean | null
   resolved_at?: string | null
@@ -80,7 +126,21 @@ export interface Checkpoint {
   next_dates: string[] | null
   telegram_message_id: string | null
   ryan_note: string | null
+  /** Per-bet result (v1.2); housing is also in the legacy columns. */
+  bets?: Record<string, BetResultRow> | null
   created_at?: string
+}
+
+export interface BetResultRow {
+  weights_before: Weights
+  weights_after: Weights
+  moved: boolean
+  argument: string
+  opposite_case: string
+  reverses_if: string | null
+  proposal_source: string | null
+  votes: { dial_id: string; vote: string; reading: { as_of: string; value: number } | null }[]
+  claims_resolved: ClaimUpdate[]
 }
 
 export interface WeightMove {
@@ -94,6 +154,8 @@ export interface WeightMove {
   opposite_case: string
   reverses_if: string | null
   bootstrap_exception: boolean
+  /** housing | spx (v1.2); missing = housing. */
+  bet_id?: string | null
 }
 
 /** Sibling workstream table (defensive read: may not exist yet). */
@@ -106,6 +168,7 @@ export interface TripwireEvent {
   detail: string | null
   review_requested: boolean
   reviewed_at: string | null
+  bet_id?: string | null
 }
 
 /** Sibling workstream table (defensive read: may not exist yet). */
@@ -187,7 +250,10 @@ export interface Proposal {
 /** Everything a review needs, loaded from Supabase or a fixture. */
 export interface ReviewState {
   today: string
+  /** Housing weights (legacy; = betWeights.housing). */
   weights: Weights
+  /** Current odds per bet id. */
+  betWeights: Record<string, Weights>
   dials: Dial[]
   readings: Record<string, Reading[]> // dial_id → ascending by as_of
   claims: Claim[]

@@ -23,6 +23,11 @@ export interface RulesInput {
   claims: Claim[]
   today: string
   tripwirePending: boolean
+  /** A claim of this bet was resolved by code from readings this review (autoclaims.ts):
+   *  licenses a move and lifts the cap like a model resolution. */
+  autoResolved?: boolean
+  /** Claims resolved by code: the model may re-probabilise them but never resolve them. */
+  autoIds?: Set<string>
 }
 
 export interface RulesVerdict {
@@ -67,13 +72,14 @@ export function moveDirection(before: Weights, after: Weights): Scenario | null 
   return d > 0 ? "bear" : d < 0 ? "bull" : "base"
 }
 
-export function validateClaimUpdates(updates: ClaimUpdate[], claims: Claim[], today: string, tripwirePending: boolean): { valid: ClaimUpdate[]; violations: string[] } {
+export function validateClaimUpdates(updates: ClaimUpdate[], claims: Claim[], today: string, tripwirePending: boolean, autoIds: Set<string> = new Set()): { valid: ClaimUpdate[]; violations: string[] } {
   const byId = new Map(claims.map((c) => [c.id, c]))
   const valid: ClaimUpdate[] = []
   const violations: string[] = []
   for (const u of updates) {
     const c = byId.get(u.id)
     if (!c) { violations.push(`claim ${u.id}: unknown id`); continue }
+    if (u.action === "resolve" && autoIds.has(u.id)) { violations.push(`claim ${u.id}: resolved by code from the readings, not by the review`); continue }
     if (c.status !== "open") { violations.push(`claim ${u.id}: already ${c.status}`); continue }
     if (u.action === "reprob") {
       if (typeof u.value !== "number" || !(u.value >= 0 && u.value <= 100)) { violations.push(`claim ${u.id}: reprob value must be 0..100`); continue }
@@ -94,9 +100,9 @@ export function checkProposal(input: RulesInput, cfg: ThesisConfig = THESIS): Ru
   const violations: string[] = []
   const adjustments: string[] = []
 
-  const claimCheck = validateClaimUpdates(proposal.claim_updates ?? [], claims, today, tripwirePending)
+  const claimCheck = validateClaimUpdates(proposal.claim_updates ?? [], claims, today, tripwirePending, input.autoIds)
   violations.push(...claimCheck.violations)
-  const claimResolved = claimCheck.valid.some((u) => u.action === "resolve")
+  const claimResolved = claimCheck.valid.some((u) => u.action === "resolve") || !!input.autoResolved
   const cap = claimResolved || tripwirePending ? cfg.vote_rules.cap_points.claim_resolved_or_tripwire : cfg.vote_rules.cap_points.monthly
 
   const pw = proposal.proposed_weights

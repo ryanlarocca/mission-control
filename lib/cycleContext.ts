@@ -6,7 +6,7 @@
 // Context, never a substitute for pocket comps. Missing data prints
 // "n/a (no reading yet)"; nothing is filled in.
 import type { SupabaseClient } from "@supabase/supabase-js"
-import thesis from "@/config/market-cycle/thesis.v1.1.json"
+import thesis from "@/config/market-cycle/thesis.v1.2.json"
 
 export const NA = "n/a (no reading yet)"
 export const CONTEXT_LABEL = "MACRO CONTEXT (market-cycle tracker) — context, not comps"

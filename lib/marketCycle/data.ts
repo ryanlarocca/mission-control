@@ -1,5 +1,5 @@
 import type { SupabaseClient } from "@supabase/supabase-js"
-import { THESIS, configCalendar, configClaims, configDials, initialWeights } from "./config"
+import { BETS, THESIS, claimBet, configCalendar, configClaims, configDials, initialWeights } from "./config"
 import type {
   CalendarEntry,
   Checkpoint,
@@ -36,6 +36,25 @@ export function groupReadings(rows: Reading[]): Record<string, Reading[]> {
   for (const k of Object.keys(out)) out[k].sort((a, b) => a.as_of.localeCompare(b.as_of))
   return out
 }
+
+/** Current odds per bet: the bet's newest stored move, else its config move #0.
+ *  Moves written before the bets migration have no bet_id and are housing's. */
+export function betWeightsFrom(moves: WeightMove[]): Record<string, Weights> {
+  const out: Record<string, Weights> = {}
+  for (const b of BETS) {
+    const m = moves.find((x) => (x.bet_id || "housing") === b.id)
+    const w = m?.to_weights
+    out[b.id] = w ? { bear: Number(w.bear), base: Number(w.base), bull: Number(w.bull) } : { ...b.initial_weights }
+  }
+  return out
+}
+
+/** Earliest window start of any auto-resolved claim (their readings must stay loaded). */
+export const AUTO_SINCE = (() => {
+  const starts = THESIS.claims.flatMap((c) => (c.auto ? [c.auto.from ?? c.auto.month ?? ""] : [])).filter(Boolean).map((d) => (d.length === 7 ? d + "-01" : d))
+  return starts.sort()[0] ?? "2026-10-01"
+})()
+export const AUTO_DIALS = Array.from(new Set(THESIS.claims.flatMap((c) => (c.auto ? [c.auto.dial] : []))))
 
 export function todayPT(): string {
   return new Intl.DateTimeFormat("en-CA", { timeZone: "America/Los_Angeles", year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date())
@@ -80,9 +99,15 @@ export async function loadFromSupabase(sb: SupabaseClient, today: string = today
   // Base series only (variant ''). collect-macro/bootstrap also store corridor variants
   // (10d_avg, 2d_close, drawdowns) under the same dial_id; votes compute their own reads
   // from the base prints, so a variant row here would be read as a second value that day.
-  const [recent, older] = await Promise.all([
+  // Auto-resolved claims read their whole window (from Oct 2026): once the
+  // 400-day window no longer reaches back that far, load those dials' older rows too.
+  const autoOnly = AUTO_DIALS.filter((id) => !seasonalIds.includes(id))
+  const [recent, older, autoOlder] = await Promise.all([
     paginate<Reading>((a, b) => sb.from("cycle_readings").select(sel).eq("variant", "").gte("as_of", recentSince).lte("as_of", today).order("as_of").order("id").range(a, b)),
     paginate<Reading>((a, b) => sb.from("cycle_readings").select(sel).eq("variant", "").in("dial_id", seasonalIds).gte("as_of", seasonalSince).lt("as_of", recentSince).order("as_of").order("id").range(a, b)),
+    AUTO_SINCE < recentSince && autoOnly.length
+      ? paginate<Reading>((a, b) => sb.from("cycle_readings").select(sel).eq("variant", "").in("dial_id", autoOnly).gte("as_of", AUTO_SINCE).lt("as_of", recentSince).order("as_of").order("id").range(a, b))
+      : Promise.resolve([] as Reading[]),
   ])
 
   const [claims, checkpoints, weightMoves, calendar, owned, events, notes] = await Promise.all([
@@ -95,13 +120,17 @@ export async function loadFromSupabase(sb: SupabaseClient, today: string = today
     optional<CycleNote>("cycle_notes", sb.from("cycle_notes").select("*").order("date", { ascending: false }).limit(200)),
   ])
 
-  const claimRows = claims.length ? claims.map((c) => ({ ...c, prob_initial: Number(c.prob_initial), prob_current: Number(c.prob_current) })) : configClaims()
-  const latest = weightMoves[0]?.to_weights
+  // Config claims not yet in the DB (new in a thesis version, before sync-registry) still count.
+  const stored = claims.map((c) => ({ ...c, prob_initial: Number(c.prob_initial), prob_current: Number(c.prob_current), bet_id: claimBet(c) }))
+  const have = new Set(stored.map((c) => c.id))
+  const claimRows = [...stored, ...configClaims().filter((c) => !have.has(c.id))]
+  const betWeights = betWeightsFrom(weightMoves)
   return {
     today,
-    weights: latest ? { bear: Number(latest.bear), base: Number(latest.base), bull: Number(latest.bull) } : initialWeights(),
+    weights: betWeights.housing ?? initialWeights(),
+    betWeights,
     dials,
-    readings: groupReadings([...older, ...recent]),
+    readings: groupReadings([...older, ...autoOlder, ...recent]),
     claims: claimRows,
     checkpoints,
     weightMoves,
@@ -131,9 +160,12 @@ export interface Fixture {
 export function stateFromFixture(fx: Fixture, todayOverride?: string): ReviewState {
   const overrides = new Map((fx.claims ?? []).map((c) => [c.id, c]))
   const claims = configClaims().map((c) => ({ ...c, ...(overrides.get(c.id) ?? {}) }) as Claim)
+  const betWeights = betWeightsFrom(fx.weight_moves ?? [])
+  if (fx.weights) betWeights.housing = fx.weights
   return {
     today: todayOverride ?? fx.today ?? todayPT(),
-    weights: fx.weights ?? fx.weight_moves?.[0]?.to_weights ?? initialWeights(),
+    weights: betWeights.housing,
+    betWeights,
     dials: configDials(THESIS, fx.dial_corridors ?? {}),
     readings: groupReadings(fx.readings ?? []),
     claims,

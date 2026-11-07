@@ -28,7 +28,7 @@ def load(name, fname):
 
 cw = load("collect_weekly", "collect-weekly.py")
 tw = load("tripwires", "tripwires.py")
-with open(os.path.join(os.path.dirname(os.path.dirname(MC)), "config", "market-cycle", "thesis.v1.1.json")) as _f:
+with open(os.path.join(os.path.dirname(os.path.dirname(MC)), "config", "market-cycle", "thesis.v1.2.json")) as _f:
     CFG = json.load(_f)
 TIERS = CFG["geographies"]["tiers"]
 
@@ -266,6 +266,17 @@ class Tripwires(unittest.TestCase):
     def test_manual_readings_never_feed_a_threshold(self):
         rd = [{"dial_id": "scc_warn_workers", "as_of": "2026-11-01", "value": 2000, "source_url": "manual:baseline"}]
         self.assertEqual(self.run_fx(rd, [])["scc_warn_spike"]["status"], "NO_DATA")
+
+    def test_spx_drawdown_needs_two_closes_and_names_the_stock_bet(self):
+        rd = [{"dial_id": "sp500", "as_of": "2026-10-06", "value": 7818.93, "source_url": "fred"},
+              {"dial_id": "sp500", "as_of": "2027-03-01", "value": 7100, "source_url": "fred"},
+              {"dial_id": "sp500", "as_of": "2027-03-02", "value": 7030, "source_url": "fred"}]       # -10.09%
+        r = {x["tripwire_id"]: x for x in tw.evaluate(CFG, rd, [], dt.date(2027, 3, 2))}["spx_drawdown_10"]
+        self.assertEqual(r["status"], "QUIET")                                                       # one close
+        rd.append({"dial_id": "sp500", "as_of": "2027-03-03", "value": 7000, "source_url": "fred"})
+        r = {x["tripwire_id"]: x for x in tw.evaluate(CFG, rd, [], dt.date(2027, 3, 3))}["spx_drawdown_10"]
+        self.assertEqual((r["status"], r["fired_on"], r["bet_id"]), ("FIRED", "2027-03-03", "spx"))
+        self.assertIn("S&amp;P 500 closed 10% or more below its Oct 6, 2026 high", r["card"])
 
     def test_no_data(self):
         r = self.run_fx([], [])

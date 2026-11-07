@@ -33,17 +33,19 @@ type Thesis = {
 }
 
 const thesis: Thesis = JSON.parse(
-  fs.readFileSync(path.join(process.cwd(), "config", "market-cycle", "thesis.v1.1.json"), "utf-8"),
+  fs.readFileSync(path.join(process.cwd(), "config", "market-cycle", "thesis.v1.2.json"), "utf-8"),
 )
 const dialIds = new Set(thesis.dials.map((d) => d.id))
 const isIsoDate = (s: string) => /^\d{4}-\d{2}-\d{2}$/.test(s) && new Date(s + "T00:00:00Z").toISOString().slice(0, 10) === s
 
-describe("market-cycle thesis v1.1 config", () => {
-  it("has 32 claims with unique ids C1..C32", () => {
-    expect(thesis.claims).toHaveLength(32)
+describe("market-cycle thesis v1.2 config", () => {
+  it("has 36 claims with unique ids C1..C36, each on a known bet", () => {
+    expect(thesis.claims).toHaveLength(36)
     const ids = thesis.claims.map((c) => c.id)
-    expect(new Set(ids).size).toBe(32)
-    expect(ids).toEqual(Array.from({ length: 32 }, (_, i) => `C${i + 1}`))
+    expect(new Set(ids).size).toBe(36)
+    expect(ids).toEqual(Array.from({ length: 36 }, (_, i) => `C${i + 1}`))
+    const bets = new Set((thesis as unknown as { bets: { id: string }[] }).bets.map((b) => b.id))
+    for (const c of thesis.claims as unknown as { bet: string }[]) expect(bets.has(c.bet)).toBe(true)
   })
 
   it("every claim probability is within 0..100 and starts at its initial value", () => {

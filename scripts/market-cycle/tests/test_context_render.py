@@ -49,7 +49,7 @@ class MissingData(unittest.TestCase):
         lines = cc.render({"today": "2026-11-01", "readings": {}}, CFG, "95123", 1150000, "2027-04")
         self.assertLessEqual(len(lines), 10)
         self.assertIn("partition: " + cc.NA, lines[1])
-        self.assertIn("thesis v1.1", lines[1])                # weights fall back to the committed thesis
+        self.assertIn("thesis v1.2", lines[1])                # weights fall back to the committed thesis
         self.assertEqual(lines[2].count(cc.NA), 5)
         self.assertEqual(lines[3], "Tier <$1.3M (SCC): actives %s · days on site %s · cut share %s" % (cc.NA, cc.NA, cc.NA))
         self.assertEqual(lines[5], "Stale-comp drift: " + cc.NA)

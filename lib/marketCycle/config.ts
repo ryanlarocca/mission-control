@@ -1,7 +1,7 @@
-import thesisJson from "@/config/market-cycle/thesis.v1.1.json"
-import type { CalendarEntry, Claim, Dial, ScenarioDef, Weights } from "./types"
+import thesisJson from "@/config/market-cycle/thesis.v1.2.json"
+import type { AutoRule, BetDef, CalendarEntry, Claim, Dial, Scenario, ScenarioDef, ScenarioTiming, Weights } from "./types"
 
-// The committed thesis (config/market-cycle/thesis.v1.1.json). Pure: no I/O
+// The committed thesis (config/market-cycle/thesis.v1.2.json). Pure: no I/O
 // beyond the static JSON import, so it works in Next, vitest and tsx alike.
 
 export interface ThesisConfig {
@@ -21,7 +21,8 @@ export interface ThesisConfig {
     reverses_if: string
     bootstrap_exception: boolean
   }[]
-  claims: (Claim & { also_reads: string[] })[]
+  claims: (Claim & { also_reads: string[]; bet?: string; auto?: AutoRule })[]
+  bets: RawBet[]
   vote_rules: {
     weights_move_when: string
     cap_points: { monthly: number; claim_resolved_or_tripwire: number }
@@ -45,7 +46,64 @@ export interface ThesisConfig {
   }
 }
 
+interface RawBet {
+  id: string
+  name: string
+  pill: string
+  question: string
+  scored_dial: string
+  scored_object?: { description: string }
+  rebound_definition: string
+  scenarios: ScenarioDef[] | string
+  timing: Record<Scenario, ScenarioTiming>
+  depth_lines: Record<Scenario, string>
+  weight_moves?: ThesisConfig["weight_moves"]
+  exclude_dials?: string[]
+  dial_ids?: string[]
+}
+
 export const THESIS = thesisJson as unknown as ThesisConfig
+
+/** The bets (v1.2): housing reads the top-level scenarios / weight moves
+ *  (unchanged from v1.1); every other bet carries its own. */
+export function configBets(cfg: ThesisConfig = THESIS): BetDef[] {
+  return cfg.bets.map((b) => {
+    const housing = b.id === "housing"
+    const moves = housing ? cfg.weight_moves : (b.weight_moves ?? [])
+    const last = moves[moves.length - 1]
+    const scenarios = Array.isArray(b.scenarios) ? b.scenarios : cfg.scenarios
+    const exclude = new Set(b.exclude_dials ?? [])
+    const only = b.dial_ids ? new Set(b.dial_ids) : null
+    return {
+      id: b.id,
+      name: b.name,
+      pill: b.pill,
+      question: b.question,
+      scored_dial: b.scored_dial,
+      description: housing ? cfg.scored_object.description : (b.scored_object?.description ?? b.name),
+      rebound_definition: b.rebound_definition,
+      scenarios,
+      timing: b.timing,
+      depth_lines: b.depth_lines,
+      initial_weights: last ? { bear: last.to.bear, base: last.to.base, bull: last.to.bull } : { bear: 33, base: 34, bull: 33 },
+      move0: last ? { date: last.date, to: last.to, reason: last.reason, opposite_case: last.opposite_case, reverses_if: last.reverses_if } : null,
+      dialIn: (id: string) => (only ? only.has(id) : !exclude.has(id)),
+    }
+  })
+}
+
+export const BETS = configBets()
+export const betById = (id: string): BetDef | undefined => BETS.find((b) => b.id === id)
+
+/** The bet a claim belongs to: the DB row's bet_id, else the config's, else housing. */
+export function claimBet(c: { id: string; bet_id?: string | null }, cfg: ThesisConfig = THESIS): string {
+  return c.bet_id || cfg.claims.find((x) => x.id === c.id)?.bet || "housing"
+}
+
+/** The config's auto rule for a claim (never stored in the DB). */
+export function claimAuto(id: string, cfg: ThesisConfig = THESIS): AutoRule | null {
+  return cfg.claims.find((x) => x.id === id)?.auto ?? null
+}
 
 export function initialWeights(cfg: ThesisConfig = THESIS): Weights {
   const last = cfg.weight_moves[cfg.weight_moves.length - 1]
@@ -63,6 +121,7 @@ export function configClaims(cfg: ThesisConfig = THESIS): Claim[] {
     resolves_on: c.resolves_on,
     falsifier: c.falsifier,
     data_source: c.data_source,
+    bet_id: c.bet ?? "housing",
     status: c.status,
     resolution: null,
     resolved_at: null,

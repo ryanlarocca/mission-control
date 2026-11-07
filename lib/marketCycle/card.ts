@@ -1,12 +1,15 @@
 import type { CheckpointKind, Scenario, Weights } from "./types"
 
-// The one-screen Telegram card (brief §3.5). Pure: HTML text + buttons.
-// ≤12 lines: header · weights before → after · blank · Moved (+ bullets) ·
-// Why · Opposite case · Resolved · Next. Buttons: Details (URL → /cycle)
-// and Disagree (callback cycle:disagree:<checkpoint id> → force-reply).
+// The one-screen Telegram card (brief v2, Nov 7, 2026). Pure: HTML text + buttons.
+// Plain English (Ryan: the Nov 2 card's "z=2.62", "@ 2026-09-01" and
+// "re-probbed C18" read as slop). Header, then one block per bet — odds,
+// where it stands now, why, the case against — then claims settled, claims
+// re-weighed, next dates. The dial-by-dial detail lives on /cycle.
+// Buttons: Details (URL → /cycle) and Disagree (callback
+// cycle:disagree:<checkpoint id> → force-reply).
 
 export const CYCLE_DISAGREE_PREFIX = "cycle:disagree:"
-export const MAX_CARD_LINES = 12
+export const MAX_CARD_LINES = 16
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
 
 export const esc = (s: unknown) => String(s ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
@@ -36,33 +39,43 @@ const CATEGORY_LABEL: Record<string, string> = {
 export const categoryLabel = (c: string) => CATEGORY_LABEL[c] ?? c.replace(/_/g, " ")
 
 const KIND_LABEL: Record<CheckpointKind, string> = {
-  shakedown: "shakedown checkpoint",
-  monthly: "checkpoint",
-  quarterly: "quarterly checkpoint",
+  shakedown: "shakedown review",
+  monthly: "review",
+  quarterly: "quarterly review",
   tripwire: "out-of-cycle review",
 }
 
 export interface CardBullet {
-  label: string // e.g. "SCC actives 1,987 (Sep 2026), 2.6σ over its band"
+  label: string // e.g. "Homes for sale 1,970 (Oct 2026), about 50% above normal"
   category: string
   scenario: Scenario | "unexplained"
+}
+
+/** One bet's block on the card. */
+export interface CardBet {
+  emoji: string
+  name: string
+  before: Weights
+  after: Weights
+  /** "3.4% below the Jan 2025 peak (Sep 2026)" */
+  now: string | null
+  why: string
+  against: string
 }
 
 export interface CardInput {
   date: string
   kind: CheckpointKind
-  before: Weights
-  after: Weights
-  bullets: CardBullet[]
-  /** True when the weights changed; otherwise the bullets are "votes, no move". */
-  moved: boolean
-  why: string
-  opposite: string
-  resolved: string[] // e.g. "C5 ✅ (we said 75)"
-  reprobs: string[] // e.g. "C9 45→35"
-  next: string[] // e.g. "Jan 27, 2027 FOMC"
+  bets: CardBet[]
+  /** Claims settled this review, plain English: "S&P new high by end of 2028 ✅ (we said 60%)" */
+  settled: string[]
+  /** "Inventory up 25% by Mar 2027: 55% → 65%" */
+  reprobs: string[]
+  next: string[] // e.g. "~Jan 18, 2027 review"
   checkpointId: string
   baseUrl: string
+  /** A preview send: labelled, nothing stored, no Disagree button. */
+  preview?: boolean
 }
 
 export interface CardButton {
@@ -77,32 +90,38 @@ export interface Card {
 }
 
 const cap = (s: string) => s.charAt(0).toUpperCase() + s.slice(1)
+const SC = ["bear", "base", "bull"] as const
+
+/** "Bear 35 → 40 · Base 45 · Bull 20 → 15", or "… (no change)". */
+export function oddsLine(before: Weights, after: Weights): string {
+  const same = SC.every((s) => before[s] === after[s])
+  return SC.map((s) => (before[s] === after[s] ? `${cap(s)} ${after[s]}` : `${cap(s)} ${before[s]} → ${after[s]}`)).join(" · ") + (same ? " (no change)" : "")
+}
+
+/** Telegram's hard limit is 4096 characters; stay well under. */
+export const MAX_CARD_CHARS = 3500
 
 export function renderCard(c: CardInput): Card {
-  const header = `📊 <b>Market cycle — ${esc(longDate(c.date))} ${esc(KIND_LABEL[c.kind])}</b>`
-  const weights = (["bear", "base", "bull"] as const).map((s) => `${cap(s)} ${c.before[s]} → ${c.after[s]}`).join(" · ")
-  const lines = [header, weights, ""]
-  const fixedAfter = 4 // Why, Opposite, Resolved, Next
-  const room = MAX_CARD_LINES - lines.length - 1 - fixedAfter // bullets under the Moved header
-  if (c.bullets.length === 0) {
-    lines.push(c.moved ? "<b>Moved</b>: claim resolution / tripwire only" : "<b>Moved</b>: nothing — no dial cleared the vote rules")
-  } else {
-    lines.push(c.moved ? "<b>Moved</b>" : "<b>Votes</b> (below the move gate — no move)")
-    const shown = c.bullets.length > room ? c.bullets.slice(0, room - 1) : c.bullets
-    for (const b of shown) lines.push(`• ${esc(oneLine(b.label))} (${esc(categoryLabel(b.category))} → ${esc(b.scenario)})`)
-    if (shown.length < c.bullets.length) lines.push(`• +${c.bullets.length - shown.length} more on /cycle`)
+  const lines: string[] = []
+  if (c.preview) lines.push("🧪 <b>PREVIEW — nothing saved, odds not changed</b>")
+  lines.push(`📊 <b>Market cycle — ${esc(longDate(c.date))} ${esc(KIND_LABEL[c.kind])}</b>`)
+  for (const b of c.bets) {
+    lines.push("")
+    lines.push(`${b.emoji} <b>${esc(b.name)}</b>: ${esc(oddsLine(b.before, b.after))}`)
+    if (b.now) lines.push(`Now: ${esc(oneLine(b.now))}`)
+    lines.push(`<b>Why</b>: ${esc(clip(oneLine(b.why)) || "—")}`)
+    lines.push(`<b>Against</b>: ${esc(clip(oneLine(b.against)) || "—")}`)
   }
-  lines.push(`<b>Why</b>: ${esc(clip(oneLine(c.why)) || "—")}`)
-  lines.push(`<b>Opposite case</b>: ${esc(clip(oneLine(c.opposite)) || "—")}`)
-  const res = c.resolved.length ? c.resolved.join(" · ") : "none"
-  lines.push(`<b>Resolved</b>: ${esc(res)}${c.reprobs.length ? ` · re-probbed ${esc(c.reprobs.join(", "))}` : ""}`)
+  lines.push("")
+  if (c.settled.length) lines.push(`<b>Settled</b>: ${esc(c.settled.slice(0, 4).join(" · "))}${c.settled.length > 4 ? ` · +${c.settled.length - 4} more` : ""}`)
+  if (c.reprobs.length) lines.push(`<b>Re-weighed</b>: ${esc(c.reprobs.slice(0, 3).join(" · "))}${c.reprobs.length > 3 ? ` · +${c.reprobs.length - 3} more` : ""}`)
   lines.push(`<b>Next</b>: ${esc(c.next.slice(0, 3).join(" · ") || "—")}`)
+  let text = lines.join("\n")
+  if (text.length > MAX_CARD_CHARS) text = text.slice(0, MAX_CARD_CHARS - 1) + "…"
+  const details = { text: "📈 Details", url: `${c.baseUrl.replace(/\/$/, "")}/cycle` }
   return {
-    text: lines.join("\n"),
-    buttons: [[
-      { text: "📈 Details", url: `${c.baseUrl.replace(/\/$/, "")}/cycle` },
-      { text: "✋ Disagree", callback_data: `${CYCLE_DISAGREE_PREFIX}${c.checkpointId}` },
-    ]],
+    text,
+    buttons: c.preview ? [[details]] : [[details, { text: "✋ Disagree", callback_data: `${CYCLE_DISAGREE_PREFIX}${c.checkpointId}` }]],
   }
 }
 

@@ -2,7 +2,7 @@
 """Market-cycle tracker: big-tripwire engine (thresholds only, no judgment).
 
 Spec: briefs/BRIEF_MARKET_CYCLE_TRACKER_2026-11-01.md §3.4 (Tripwires), §3.5 (the
-3-line card). Rules: config/market-cycle/thesis.v1.1.json → tripwires.big; every
+3-line card). Rules: config/market-cycle/thesis.v1.2.json → tripwires.big; every
 threshold comes from the dial's `corridor` (or, for the SCC actives rule, from the
 rule text) — nothing numeric is hard-coded here.
 
@@ -16,6 +16,8 @@ rule text) — nothing numeric is hard-coded here.
     scc_price_reduced_record  realtor_price_reduced_share_scc >= corridor.bear_at_or_above for two consecutive readings
                               (the dial is monthly; "two consecutive weeks" in the rule = two consecutive readings)
     scc_warn_spike            scc_warn_workers >= corridor.bear_at_or_above in a month (one reading)
+    spx_drawdown_10           sp500 drawdown from the corridor's dated high (drawdown_from_YYYY-MM-DD_high) at or
+                              below corridor.tripwire_at_or_below on two consecutive closes (stock bet, v1.2)
   event tripwires (no automatic source — recorded by hand as a manual reading)
     ant_ipo_fail (ant_ipo) · hormuz (hormuz_status) · fed_intermeeting (fomc_decision)
     fire when the dial has a reading with value 1 and source_url starting 'manual:tripwire'
@@ -60,7 +62,7 @@ import urllib.request
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(os.path.dirname(HERE))
-CONFIG = os.path.join(ROOT, "config", "market-cycle", "thesis.v1.1.json")
+CONFIG = os.path.join(ROOT, "config", "market-cycle", "thesis.v1.2.json")
 ENV_PATHS = [os.path.join(ROOT, ".env.local"), "/Users/ryanlarocca/Projects/PROJECTS/mission-control/.env.local"]
 MANUAL_SRC = "manual:tripwire"
 EVENT_LOOKBACK_DAYS = 45            # an older manual event reading is history, not news
@@ -221,6 +223,31 @@ def ev_scc_actives(tw, dial, readings, today):
                        "card": card(what, "Reading: %s actives, %+.1f%% YoY" % (fmt_num(v), y), day)}, "weekly", today)
 
 
+def ev_drawdown(tw, dial, readings, today, k=2):
+    """sp500 (stock bet): % below the dated high in corridor.transform, at or below
+    corridor.tripwire_at_or_below on k consecutive closes."""
+    cor = dial.get("corridor") or {}
+    m = re.match(r"drawdown_from_(\d{4}-\d{2}-\d{2})_high$", str(cor.get("transform") or ""))
+    if not m or "tripwire_at_or_below" not in cor:
+        return {"status": "NO_THRESHOLD", "detail": "dial %s needs corridor.transform drawdown_from_<date>_high and tripwire_at_or_below" % dial["id"]}
+    anchor, thr = m.group(1), float(cor["tripwire_at_or_below"])
+    pts = thin(series(readings, dial["id"]), MIN_GAP_DAYS.get(dial["cadence"], 1))
+    ref = dict(pts).get(anchor)
+    if not ref:
+        return {"status": "NO_DATA", "detail": "no %s close on %s (the reference high)" % (dial["id"], anchor)}
+    dd = [(day, 100.0 * (v / ref - 1)) for day, v in pts if day >= anchor]
+    latest = dd[-1]
+    base = "latest %s %+.1f%% from the %s high on %s; fire at or below %g%%, %d consecutive closes" % (dial["id"], latest[1], anchor, latest[0], thr, k)
+    i = onset(dd, lambda v: v <= thr, k, CONSECUTIVE_GAP_DAYS.get(dial["cadence"], 5))
+    if i is None:
+        return {"status": "QUIET", "detail": base}
+    day, v = dd[i]
+    level = dict(pts)[day]
+    what = "%s closed %g%% or more below its %s high for %d days running" % ("S&P 500" if dial["id"] == "sp500" else dial["name"], abs(thr), nice_date(anchor), k)
+    return historical({"status": "FIRED", "fired_on": day, "reading": round(v, 2), "detail": base + "; crossing completed on %s" % day,
+                       "card": card(what, "Reading: %s, %.1f%% below the high" % (fmt_num(level), abs(v)), day)}, dial["cadence"], today)
+
+
 def ev_event(tw, dial, readings, today):
     rows = [r for r in readings if r["dial_id"] == dial["id"] and str(r.get("source_url") or "").startswith(MANUAL_SRC)
             and r.get("value") is not None and float(r["value"]) == 1.0 and (today - d(r["as_of"])).days <= EVENT_LOOKBACK_DAYS]
@@ -245,13 +272,15 @@ def evaluate(cfg, readings, events, today):
             res = ev_event(tw, dial, readings, today)
         elif tw["id"] == "scc_actives_yoy":
             res = ev_scc_actives(tw, dial, readings, today)
+        elif tw["id"] == "spx_drawdown_10":
+            res = ev_drawdown(tw, dial, readings, today)
         elif tw["id"] == "ccc_oas_record":
             k = 2 if (dial.get("corridor") or {}).get("read_as") == "2d_close" else 1
             res = ev_threshold(tw, dial, readings, k, "tripwire_at_or_above", today)
         else:
             k = 2 if "two consecutive" in tw["rule"] else 1
             res = ev_threshold(tw, dial, readings, k, "bear_at_or_above", today)
-        res.update({"tripwire_id": tw["id"], "dial_id": tw["dial_id"], "rule": tw["rule"]})
+        res.update({"tripwire_id": tw["id"], "dial_id": tw["dial_id"], "rule": tw["rule"], "bet_id": tw.get("bet")})
         if res["status"] == "FIRED" and (tw["id"], res["fired_on"]) in done:
             res["status"] = "ALREADY_FIRED"
         out.append(res)
@@ -294,7 +323,7 @@ def live_inputs(cfg, env, today):
     if not sb or not key:
         sys.exit("LRG_SUPABASE_URL / LRG_SUPABASE_SERVICE_KEY missing")
     ids = sorted({t["dial_id"] for t in cfg["tripwires"]["big"] if t["dial_id"]} | {"realtor_active_scc"})
-    since = (today - dt.timedelta(days=430)).isoformat()
+    since = min((today - dt.timedelta(days=430)).isoformat(), "2026-10-06")     # spx_drawdown_10 needs its reference close
     readings = sb_get_all(sb, key, "cycle_readings?select=dial_id,as_of,value,source_url,raw&variant=eq.&dial_id=in.(%s)&as_of=gte.%s&order=as_of.asc,id.asc"
                           % (",".join(ids), since))
     events = sb_get_all(sb, key, "cycle_tripwire_events?select=tripwire_id,fired_on&order=id.asc")
@@ -381,6 +410,8 @@ def main():
             if a.write:
                 row = {"tripwire_id": r["tripwire_id"], "dial_id": r["dial_id"], "fired_on": r["fired_on"], "reading": r["reading"],
                        "detail": r["card"] + "\n---\n" + r["detail"], "review_requested": True}
+                if r.get("bet_id"):
+                    row["bet_id"] = r["bet_id"]                     # cycle_tripwire_events.bet_id (2026-11-07 migration)
                 got = sb_req(sb, key, "POST", "cycle_tripwire_events?on_conflict=tripwire_id,fired_on", [row], prefer="resolution=ignore-duplicates,return=representation")
                 ev_id = got[0]["id"] if got else None
                 print("  event row %s" % ("inserted id=%s" % ev_id if ev_id else "already present (not re-posted)"))

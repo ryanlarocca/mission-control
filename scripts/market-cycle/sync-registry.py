@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Market-cycle registry sync: config/market-cycle/thesis.v1.1.json -> Supabase.
+"""Market-cycle registry sync: config/market-cycle/thesis.v1.2.json -> Supabase.
 
 Upserts
   cycle_dials            every dial; config key `fetch` -> column fetch_method

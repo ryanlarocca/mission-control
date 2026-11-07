@@ -2,7 +2,7 @@ import { THESIS, type ThesisConfig } from "./config"
 import { dueClaims, openClaims } from "./claims"
 import { pendingTripwires } from "./schedule"
 import { formatValue, tallyLine } from "./votes"
-import { SCENARIOS, type CheckpointKind, type DialVote, type Proposal, type ReviewState, type Scenario, type Tally, type Weights } from "./types"
+import { SCENARIOS, type BetDef, type CheckpointKind, type Claim, type ClaimUpdate, type DialVote, type Proposal, type ReviewState, type Scenario, type Tally, type Weights } from "./types"
 
 // The Opus review prompt (brief §3.5 / Part 4 Phase 2). It states the vote
 // rules so the model proposes legal moves; rules.ts is still the enforcer.
@@ -11,8 +11,8 @@ import { SCENARIOS, type CheckpointKind, type DialVote, type Proposal, type Revi
 
 export const PROPOSAL_SHAPE = `{
   "proposed_weights": {"bear": <int>, "base": <int>, "bull": <int>},
-  "argument": "<= 2 short phone lines (max ~160 characters): why the weights are what they are",
-  "opposite_case": "<= 2 short phone lines (max ~200 characters), written against the NEW weights, naming the strongest reading that disagrees",
+  "argument": "<= 2 short phone lines (max ~160 characters), plain English: why the odds are what they are",
+  "opposite_case": "<= 2 short phone lines (max ~200 characters), plain English, written against the NEW odds, naming the strongest reading that disagrees",
   "opposite_reading": {"dial_id": "<id of that disagreeing dial>", "reading": "<its value + as-of>"},
   "reverses_if": "<one line: what would reverse this move, or null>",
   "dials_moved": [{"dial_id": "<id>", "reading": "<value + as-of>", "direction": "up|down", "scenario": "bear|base|bull"}],
@@ -23,10 +23,21 @@ export const PROPOSAL_SHAPE = `{
 export interface PromptInput {
   state: ReviewState
   kind: CheckpointKind
+  /** The bet under review (v1.2). Votes, claims and weights are this bet's. */
+  bet: BetDef
+  weights: Weights
+  claims: Claim[]
   votes: DialVote[]
   tally: Tally
   tripwirePending: boolean
+  /** Claims code resolved from the readings this review (never the model's call). */
+  autoUpdates?: ClaimUpdate[]
+  autoIds?: Set<string>
 }
+
+/** Plain-English rule for every line Ryan reads (Ryan 2026-11-07: the Nov 2 card's
+ *  "z=2.62", "@ 2026-09-01" and "re-probbed C18" read as slop). */
+export const PLAIN_ENGLISH = "Write argument, opposite_case and reverses_if in plain English for a phone: no dial ids, no z-scores or sigma, no ISO dates (write \"Oct 2026\" or \"Nov 4\"), no claim ids (say what the claim is). Name things the way a person would: \"homes for sale\", \"the 10-year Treasury\", \"San Jose rents\". Give the number and what it is compared with (\"about 50% above a normal October\")."
 
 const w = (x: Weights) => SCENARIOS.map((s) => `${s} ${x[s]}`).join(" / ")
 
@@ -40,21 +51,33 @@ export function lastCheckpointDate(state: ReviewState): string | null {
 }
 
 export function buildReviewPrompt(input: PromptInput, cfg: ThesisConfig = THESIS): { system: string; prompt: string } {
-  const { state, kind, votes, tally, tripwirePending } = input
+  const { state, kind, bet, weights, votes, tally, tripwirePending } = input
+  const autoIds = input.autoIds ?? new Set<string>()
+  const autoUpdates = input.autoUpdates ?? []
   const cap = cfg.vote_rules.cap_points
   const system = [
-    "You run the monthly review of Ryan LaRocca's written market-cycle thesis for Santa Clara County housing.",
-    "You are disciplined and literal: you move weights only when the stored readings justify it under the rules below, and you always argue the other side.",
+    `You run the monthly review of one bet in Ryan LaRocca's written market-cycle thesis: ${bet.name}.`,
+    "You are disciplined and literal: you move the odds only when the stored readings justify it under the rules below, and you always argue the other side.",
+    "Ryan reads the result on his phone and is not a statistician.",
     "Reply with ONE JSON object and nothing else — no prose, no code fences.",
   ].join(" ")
 
-  const scen = cfg.scenarios
-    .map((s) => `- ${s.id} (${state.weights[s.id]}%): ${s.definition}. Typical markers: ${s.markers ?? "—"}`)
+  const scen = bet.scenarios
+    .map((s) => {
+      const t = bet.timing[s.id]
+      return `- ${s.id} (${weights[s.id]}%): ${s.definition}. Low expected ${t.low[0]}–${t.low[1]}; rebound ${t.rebound ? `${t.rebound[0]}–${t.rebound[1]}` : "after 2028"} (${bet.rebound_definition}). Typical markers: ${s.markers ?? "—"}`
+    })
     .join("\n")
-  const claims = openClaims(state.claims)
-  const due = new Set(dueClaims(state.claims, state.today).map((c) => c.id))
+  const claims = openClaims(input.claims)
+  const due = new Set(dueClaims(input.claims, state.today).map((c) => c.id))
+  const autoById = new Map(autoUpdates.map((u) => [u.id, u]))
   const claimLines = claims
-    .map((c) => `- ${c.id}${due.has(c.id) ? " [DUE — resolve it]" : ""} (${c.category}, ${c.scenario_tag}) p=${c.prob_current} (initial ${c.prob_initial}), resolves ${c.resolves_on}: ${c.text}. Falsifier: ${c.falsifier}`)
+    .map((c) => {
+      const tag = autoById.has(c.id)
+        ? ` [RESOLVED BY CODE this review: ${autoById.get(c.id)!.value} — ${autoById.get(c.id)!.reason}]`
+        : autoIds.has(c.id) ? " [code resolves this from the readings — never resolve it; re-probabilise only]" : due.has(c.id) ? " [DUE — resolve it]" : ""
+      return `- ${c.id}${tag} (${c.category}, ${c.scenario_tag}) p=${c.prob_current} (initial ${c.prob_initial}), resolves ${c.resolves_on}: ${c.text}. Falsifier: ${c.falsifier}`
+    })
     .join("\n")
   const voting = votes.filter((v) => v.vote !== "none")
   const inBand = votes.filter((v) => v.vote === "none" && v.reading && v.reason.startsWith("inside"))
@@ -62,9 +85,9 @@ export function buildReviewPrompt(input: PromptInput, cfg: ThesisConfig = THESIS
   const pending = pendingTripwires(state.tripwireEvents)
   const since = lastCheckpointDate(state)
   const notes = state.notes.filter((n) => !since || n.date > since)
-  const ownedDials = state.dials.filter((d) => d.category === "owned_property" || /^mls_zip_/.test(d.id))
+  const ownedDials = bet.id === "housing" ? state.dials.filter((d) => d.category === "owned_property" || /^mls_zip_/.test(d.id)) : []
   const ownedLines = [
-    ...state.ownedProperties.map((p) => `- ${p.flag}: ${p.address ?? "(address not set)"} ${p.zip}${p.listed_on ? `, listed ${p.listed_on}` : ""}`),
+    ...(bet.id === "housing" ? state.ownedProperties : []).map((p) => `- ${p.flag}: ${p.address ?? "(address not set)"} ${p.zip}${p.listed_on ? `, listed ${p.listed_on}` : ""}`),
     ...ownedDials.flatMap((d) => {
       const rs = state.readings[d.id] ?? []
       const r = rs[rs.length - 1]
@@ -84,7 +107,8 @@ export function buildReviewPrompt(input: PromptInput, cfg: ThesisConfig = THESIS
 
   const prompt = `CHECKPOINT: ${kind} review on ${state.today}. Last checkpoint: ${since ?? "none (first review after weight move #0)"}.
 
-SCENARIOS — a partition of one outcome (${cfg.scored_object.description}). Current weights: ${w(state.weights)}.
+BET: ${bet.name} — "${bet.question}"
+SCENARIOS — a partition of one outcome (${bet.description}). Current odds: ${w(weights)}.
 ${scen}
 
 RULES (code enforces these; an illegal proposal is rejected and the weights do not move):
@@ -94,8 +118,9 @@ RULES (code enforces these; an illegal proposal is rejected and the weights do n
 4. A move cites ≥2 readings in dials_moved, each a dial that has a reading below.
 5. The opposite case is written against the NEW weights with this month's data and must name the strongest reading that disagrees; put that dial in opposite_reading. If any dial voted against the move's direction, opposite_reading must be one of those dials.
 6. Unexplained dials and listed properties are opposite-case material only — never a reason to move.
-7. Claims: resolve every claim marked DUE (value true if the claim came true, false if its falsifier held, "void" only if the data cannot exist). You may re-probabilise any open claim (0-100) with a one-line reason. Claim text never changes here. Early resolution only when a tripwire is pending.
+7. Claims: resolve every claim marked DUE (value true if the claim came true, false if its falsifier held, "void" only if the data cannot exist). Claims marked as resolved by code are already settled from the readings — never resolve them yourself (a code resolution counts as a claim resolution for rules 2 and 3). You may re-probabilise any open claim (0-100) with a one-line reason. Claim text never changes here. Early resolution only when a tripwire is pending.
 8. No move is a normal, good outcome. Do not move to look busy.
+9. ${PLAIN_ENGLISH}
 
 VOTES (tally: ${tallyLine(tally)})
 ${voting.length ? voting.map(voteLine).join("\n") : "- no dial passed the three tests this month"}

@@ -2,7 +2,7 @@ import { getLeadsClient } from "@/lib/leads"
 import { THESIS, configCalendar, configClaims, configDials, initialWeights } from "@/lib/marketCycle/config"
 import { brierByCategory } from "@/lib/marketCycle/claims"
 import { categoryLabel, longDate } from "@/lib/marketCycle/card"
-import { loadFromSupabase, todayPT } from "@/lib/marketCycle/data"
+import { betWeightsFrom, loadFromSupabase, todayPT } from "@/lib/marketCycle/data"
 import { checkpointDue, nextCheckpoint, pendingTripwires } from "@/lib/marketCycle/schedule"
 import { computeVotes, formatValue } from "@/lib/marketCycle/votes"
 import type { Dial, DialVote, Reading, ReviewState, Scenario, VoteKind, WeightMove } from "@/lib/marketCycle/types"
@@ -23,6 +23,7 @@ function configOnlyState(today: string): ReviewState {
   return {
     today,
     weights: initialWeights(),
+    betWeights: betWeightsFrom([]),
     dials: configDials(),
     readings: {},
     claims: configClaims(),

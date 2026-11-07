@@ -75,7 +75,7 @@ class FakeDbCase(unittest.TestCase):
 class TestSyncRegistry(FakeDbCase):
     def test_dry_run_counts(self):
         p = sync.plan(self.cfg)
-        self.assertEqual(len(p["claims"]), 32)
+        self.assertEqual(len(p["claims"]), 36)
         self.assertEqual(len(p["dials"]), len(self.cfg["dials"]))
         self.assertEqual(len(p["calendar"]), len(self.cfg["calendar"]))
         self.assertNotIn("diff", p)
@@ -84,7 +84,7 @@ class TestSyncRegistry(FakeDbCase):
         quiet(sync.main, ["--write"])
         t = self.fake.tables
         self.assertEqual(len(t["cycle_dials"]), len(self.cfg["dials"]))
-        self.assertEqual(len(t["cycle_claims"]), 32)
+        self.assertEqual(len(t["cycle_claims"]), 36)
         self.assertEqual(len(t["cycle_thesis_versions"]), 1)
         self.assertEqual(len(t["cycle_calendar"]), len(self.cfg["calendar"]))
         cpi = next(r for r in t["cycle_dials"] if r["id"] == "cpi_yoy")
@@ -96,7 +96,7 @@ class TestSyncRegistry(FakeDbCase):
         out = io.StringIO()
         with contextlib.redirect_stdout(out):
             sync.main(["--live"])
-        self.assertIn("claims    new 0, changed 0, unchanged 32", out.getvalue())
+        self.assertIn("claims    new 0, changed 0, unchanged 36", out.getvalue())
         self.assertIn("dials     new 0, changed 0", out.getvalue())
         quiet(sync.main, ["--write"])
         self.assertEqual(len(t["cycle_calendar"]), len(self.cfg["calendar"]))          # no duplicate calendar rows
