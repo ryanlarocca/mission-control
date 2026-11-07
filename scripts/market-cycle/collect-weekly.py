@@ -643,7 +643,7 @@ def post_alert(env, text):
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--write", action="store_true", help="upsert readings + snapshots (default: dry run, no database access)")
-    ap.add_argument("--as-of", help="reading / snapshot date (default: today = the Monday run date under launchd)")
+    ap.add_argument("--as-of", help="reading / snapshot date (default: the Monday of this week = the launchd run date)")
     ap.add_argument("--only", help="comma-separated fetch groups: " + ",".join(GROUPS))
     ap.add_argument("--prior-snapshots", help="dry run: JSON file of an earlier week's snapshot rows")
     ap.add_argument("--skip-nod", action="store_true")
@@ -654,7 +654,7 @@ def main():
     cfg = json.load(open(CONFIG))
     tiers = cfg["geographies"]["tiers"]
     today = dt.date.today()
-    week = dt.date.fromisoformat(a.as_of) if a.as_of else today
+    week = dt.date.fromisoformat(a.as_of) if a.as_of else week_of(today)   # a re-run later in the week overwrites, never adds a "week"
     as_of = week.isoformat()
     env = load_env()
     groups = [g for g in GROUPS if not a.only or g in a.only.split(",")]

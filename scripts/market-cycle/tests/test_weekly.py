@@ -238,6 +238,35 @@ class Tripwires(unittest.TestCase):
         rd = [{"dial_id": "hormuz_status", "as_of": "2026-11-01", "value": 1, "source_url": "manual:tripwire", "raw": "Strait reopened"}]
         self.assertEqual(self.run_fx(rd, [])["hormuz"]["status"], "FIRED")
 
+    def test_baseline_the_day_before_is_not_a_second_week(self):
+        """Nov 1 (manual baseline) + Nov 2 (Monday run) fired '2 consecutive weeks' on Nov 2, 2026."""
+        rd = [r for r in self.fx["readings"] if r["dial_id"] != "mls_scc_active_sfr"]
+        rd += [{"dial_id": "mls_scc_active_sfr", "as_of": "2026-10-26", "value": 1000, "source_url": "x"},
+               {"dial_id": "mls_scc_active_sfr", "as_of": "2026-11-01", "value": 1060, "source_url": "x"},     # +41.3%
+               {"dial_id": "mls_scc_active_sfr", "as_of": "2026-11-02", "value": 1080, "source_url": "x"}]     # +44.0%, one day later
+        self.assertEqual([p for p, _ in tw.thin(tw.series(rd, "mls_scc_active_sfr"), 5)], ["2026-10-26", "2026-11-02"])
+        r = {x["tripwire_id"]: x for x in tw.evaluate(CFG, rd, [], dt.date(2026, 11, 2))}["scc_actives_yoy"]
+        self.assertEqual(r["status"], "QUIET")
+        rd.append({"dial_id": "mls_scc_active_sfr", "as_of": "2026-11-09", "value": 1085, "source_url": "x"})
+        r = {x["tripwire_id"]: x for x in tw.evaluate(CFG, rd, [], dt.date(2026, 11, 9))}["scc_actives_yoy"]
+        self.assertEqual((r["status"], r["fired_on"]), ("FIRED", "2026-11-09"))
+
+    def test_thin_measures_from_the_first_reading_of_a_period(self):
+        pts = [("2026-11-01", 1), ("2026-11-02", 2), ("2026-11-05", 3), ("2026-11-07", 4), ("2026-11-09", 5)]
+        self.assertEqual(tw.thin(pts, 5), [("2026-11-05", 3), ("2026-11-09", 5)])
+
+    def test_backfilled_crossing_is_history_not_news(self):
+        """The first live run after the backfill fired scc_warn_spike on Oct 2025 (2,066 workers)."""
+        rd = [{"dial_id": "scc_warn_workers", "as_of": "2025-10-01", "value": 2066, "source_url": "edd"},
+              {"dial_id": "scc_warn_workers", "as_of": "2026-10-01", "value": 569, "source_url": "edd"}]
+        r = {x["tripwire_id"]: x for x in tw.evaluate(CFG, rd, [], dt.date(2026, 11, 2))}["scc_warn_spike"]
+        self.assertEqual(r["status"], "HISTORICAL")
+        self.assertNotIn("card", r)
+
+    def test_manual_readings_never_feed_a_threshold(self):
+        rd = [{"dial_id": "scc_warn_workers", "as_of": "2026-11-01", "value": 2000, "source_url": "manual:baseline"}]
+        self.assertEqual(self.run_fx(rd, [])["scc_warn_spike"]["status"], "NO_DATA")
+
     def test_no_data(self):
         r = self.run_fx([], [])
         self.assertEqual(r["ccc_oas_record"]["status"], "NO_DATA")

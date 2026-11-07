@@ -38,6 +38,10 @@ import sources as S  # noqa: E402
 
 SKIP_FETCH = ("manual", "web", "mlslistings")
 SHOW_LATEST = 3
+# Sources revise recent prints (EDD posts WARN notices days late, FRED/C.A.R.
+# revise, a month in progress keeps growing): every run re-checks this many of
+# the newest stored readings per dial and rewrites the ones whose value changed.
+REVISE_WINDOW = {"daily": 10, "weekly": 4, "monthly": 3, "quarterly": 2}
 
 
 def collectable(cfg, only=None):
@@ -61,8 +65,14 @@ class Db:
         return {r["id"] for r in self.req("GET", "cycle_dials?select=id") or []}
 
     def latest(self, dial_id, variant):
-        got = self.req("GET", "cycle_readings?select=as_of&dial_id=eq.%s&variant=eq.%s&order=as_of.desc&limit=1" % (S.q(dial_id), S.q(variant)))
-        return got[0]["as_of"] if got else None
+        got = self.recent(dial_id, variant, 1)
+        return got[0][0] if got else None
+
+    def recent(self, dial_id, variant, n):
+        """The n newest stored readings, newest first: [(as_of, value)]."""
+        got = self.req("GET", "cycle_readings?select=as_of,value&dial_id=eq.%s&variant=eq.%s&order=as_of.desc&limit=%d" % (
+            S.q(dial_id), S.q(variant), n))
+        return [(g["as_of"][:10], g["value"]) for g in got or []]
 
     def calendar(self):
         return [(r["date"], r["dial_id"]) for r in self.req("GET", "cycle_calendar?select=date,dial_id") or []]
@@ -142,9 +152,11 @@ def collect_one(r, d, cfg, db, fetch, known, cal_ids, cal_dates, today):
         if isinstance(vrows, Exception):
             r["series"].append({"variant": variant, "error": str(vrows)})
             continue
-        latest = db.latest(d["id"], variant) if db else None
+        stored = db.recent(d["id"], variant, REVISE_WINDOW.get(d.get("cadence"), 3)) if db else []
+        latest = stored[0][0] if stored else None
         r["series"].append({"variant": variant, "rows": vrows, "latest_stored": latest,
-                            "new": [x for x in S.new_only(vrows, latest) if x[0][:10] >= S.STORE_SINCE]})
+                            "new": [x for x in S.new_only(vrows, latest) if x[0][:10] >= S.STORE_SINCE],
+                            "revised": S.revisions(vrows, stored)})
     if d["id"] in cal_ids:
         base = r["series"][0]
         txt = S.release_note(d, base["rows"], base["new"], cal_dates.get(d["id"], []), base["latest_stored"])
@@ -159,7 +171,8 @@ def new_reading_rows(results):
             continue
         for s in r["series"]:
             if "new" in s:
-                out += S.reading_rows(r["dial"]["id"], s["variant"], s["new"], r["source_url"], r["source_note"], r["extras"])
+                rev = [(d, new) for d, _old, new in s.get("revised", [])]
+                out += S.reading_rows(r["dial"]["id"], s["variant"], s["new"] + rev, r["source_url"], r["source_note"], r["extras"])
     return out
 
 
@@ -190,15 +203,20 @@ def print_report(results, dry):
     print("\nFAILED / PARTIAL / SKIPPED SOURCES: %s" % ("none" if not bad else ""))
     for r in bad:
         print("  %-36s %s: %s" % (r["dial"]["id"], r["status"], r["reason"]))
+    revised = [(r["dial"]["id"] + ("#" + s["variant"] if s["variant"] else ""), x) for r in results if r["status"] in ("OK", "PARTIAL")
+               for s in r["series"] for x in s.get("revised", [])]
+    print("\nREVISED STORED READINGS: %s" % ("none" if not revised else ""))
+    for name, (d, old, new) in revised:
+        print("  %-44s %s: %s -> %s" % (name, d, fmt(old), fmt(new)))
     notes = [r["note_row"] for r in results if r["note_row"]]
     print("\nSCHEDULED-RELEASE NOTES (%s): %s" % ("would be written to cycle_notes" if dry else "cycle_notes", "none" if not notes else ""))
     for n in notes:
         print("  [%s] %s" % (n["dial_id"], n["text"]))
     ok = sum(1 for r in results if r["status"] == "OK")
-    print("\n%d dials: %d OK, %d PARTIAL, %d FAILED, %d SKIPPED; %d new readings (incl. variants)" % (
+    print("\n%d dials: %d OK, %d PARTIAL, %d FAILED, %d SKIPPED; %d new readings (incl. variants), %d revised" % (
         len(results), ok, sum(1 for r in results if r["status"] == "PARTIAL"), sum(1 for r in results if r["status"] == "FAILED"),
         sum(1 for r in results if r["status"] == "SKIPPED"),
-        sum(len(s.get("new", [])) for r in results for s in r["series"])))
+        sum(len(s.get("new", [])) for r in results for s in r["series"]), len(revised)))
     return bad, notes
 
 

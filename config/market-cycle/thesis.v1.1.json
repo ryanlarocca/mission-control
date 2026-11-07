@@ -1669,7 +1669,10 @@
         "down": "bear"
       },
       "band_rule": "corridor",
-      "corridor": null,
+      "corridor": {
+        "base_at_or_below": -8.0,
+        "bear_at_or_below": -15.0
+      },
       "has_history": true,
       "votes": true,
       "geography": "scc",

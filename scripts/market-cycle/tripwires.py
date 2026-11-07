@@ -25,6 +25,14 @@ Persistence fires once per episode: the alarm is raised on the reading that comp
 the required run of consecutive crossings, not again while it persists, and a
 (tripwire_id, fired_on) already in cycle_tripwire_events is never re-posted.
 
+Consecutive means a real period apart: readings closer than MIN_GAP_DAYS for the
+dial's cadence count as one reading (the newer value wins), so a baseline taken the
+day before the Monday run is not a second "week" (Nov 1 + Nov 2, 2026 was). Only
+news fires: a crossing completed on a reading older than RECENT_DAYS is reported as
+HISTORICAL and never posted (the first live run after the backfill fired the WARN
+tripwire on Oct 2025). Readings whose source_url starts with 'manual:' never feed a
+threshold series.
+
 Recording an event tripwire (e.g. Anthropic pulls its IPO):
   python3 scripts/market-cycle/tripwires.py --record ant_ipo --date 2026-11-20 --note "ANT IPO postponed — <news url>"            # prints the row
   python3 scripts/market-cycle/tripwires.py --record ant_ipo --date 2026-11-20 --note "ANT IPO postponed — <news url>" --write    # inserts it
@@ -57,6 +65,8 @@ ENV_PATHS = [os.path.join(ROOT, ".env.local"), "/Users/ryanlarocca/Projects/PROJ
 MANUAL_SRC = "manual:tripwire"
 EVENT_LOOKBACK_DAYS = 45            # an older manual event reading is history, not news
 CONSECUTIVE_GAP_DAYS = {"daily": 5, "weekly": 10, "monthly": 45}   # max gap for two readings to count as consecutive
+MIN_GAP_DAYS = {"daily": 1, "weekly": 5, "monthly": 20}            # closer than this = the same reading period
+RECENT_DAYS = {"daily": 7, "weekly": 14, "monthly": 75}            # a crossing older than this is history, not news
 EVENT_TRIPWIRES = {"ant_ipo_fail", "hormuz", "fed_intermeeting"}
 
 
@@ -79,11 +89,33 @@ def fmt_num(v, units=""):
 
 def series(readings, dial_id, exclude_manual=True):
     rows = [r for r in readings if r["dial_id"] == dial_id and r.get("value") is not None
-            and not (exclude_manual and str(r.get("source_url") or "").startswith(MANUAL_SRC))]
+            and not (exclude_manual and str(r.get("source_url") or "").startswith("manual:"))]
     best = {}
     for r in sorted(rows, key=lambda r: (str(r["as_of"])[:10], str(r.get("source_url") or ""))):
         best[str(r["as_of"])[:10]] = float(r["value"])                 # one value per date
     return sorted(best.items())
+
+
+def thin(points, min_gap):
+    """Collapse readings closer than min_gap days into one (the newest value, dated
+    on its own day). The gap is measured from the first reading of each group, so a
+    run of re-reads every few days cannot drift into a fake series of periods."""
+    out, anchor = [], None
+    for day, v in points:
+        if out and (d(day) - d(anchor)).days < min_gap:
+            out[-1] = (day, v)
+        else:
+            out.append((day, v))
+            anchor = day
+    return out
+
+
+def historical(res, cadence, today):
+    """A FIRED result whose crossing completed long ago becomes HISTORICAL (never posted)."""
+    if res.get("status") == "FIRED" and (today - d(res["fired_on"])).days > RECENT_DAYS.get(cadence, 75):
+        res = dict(res, status="HISTORICAL", detail=res["detail"] + "; older than %d days: history, not news" % RECENT_DAYS.get(cadence, 75))
+        res.pop("card", None)
+    return res
 
 
 def onset(points, cond, k, max_gap):
@@ -119,7 +151,7 @@ def ev_threshold(tw, dial, readings, k, key_label, today):
     if key is None or key not in cor:
         return {"status": "NO_THRESHOLD", "detail": "dial %s has no %s in its corridor" % (dial["id"], key_label or "threshold")}
     thr = float(cor[key])
-    pts = series(readings, dial["id"])
+    pts = thin(series(readings, dial["id"]), MIN_GAP_DAYS.get(dial["cadence"], 1))
     if not pts:
         return {"status": "NO_DATA", "detail": "no readings for %s" % dial["id"]}
     gap = CONSECUTIVE_GAP_DAYS.get(dial["cadence"], 45)
@@ -130,8 +162,8 @@ def ev_threshold(tw, dial, readings, k, key_label, today):
         return {"status": "QUIET", "detail": base}
     day, v = pts[i]
     what = "%s at or above %s%s" % (dial["name"], fmt_num(thr, dial.get("units") or ""), " for %d consecutive readings" % k if k > 1 else "")
-    return {"status": "FIRED", "fired_on": day, "reading": v, "detail": base + "; crossing completed on %s" % day,
-            "card": card(what, "Reading: %s" % fmt_num(v, dial.get("units") or ""), day)}
+    return historical({"status": "FIRED", "fired_on": day, "reading": v, "detail": base + "; crossing completed on %s" % day,
+                       "card": card(what, "Reading: %s" % fmt_num(v, dial.get("units") or ""), day)}, dial["cadence"], today)
 
 
 def scc_yoy_points(readings, today):
@@ -174,7 +206,7 @@ def ev_scc_actives(tw, dial, readings, today):
     if not pts:
         return {"status": "NO_DATA", "detail": "no YoY could be formed (%s)" % (kdesc or "no Realtor.com year-ago month / calibration")}
     gap = CONSECUTIVE_GAP_DAYS["weekly"]
-    yo = [(day, y) for day, y, _ in pts]
+    yo = thin([(day, y) for day, y, _ in pts], MIN_GAP_DAYS["weekly"])
     latest = pts[-1]
     base = "latest YoY %+.1f%% on %s (%s; %s); fire above +%g%% or below %g%%, %d consecutive weeks" % (latest[1], latest[0], latest[2], kdesc, hi, lo, k)
     hits = [(onset(yo, lambda v: v > hi, k, gap), "above +%g%%" % hi), (onset(yo, lambda v: v < lo, k, gap), "below %g%%" % lo)]
@@ -185,8 +217,8 @@ def ev_scc_actives(tw, dial, readings, today):
     day, y = yo[i]
     v = dict(series(readings, "mls_scc_active_sfr"))[day]
     what = "SCC active SFR count %s YoY for %d consecutive weeks" % (side, k)
-    return {"status": "FIRED", "fired_on": day, "reading": round(y, 2), "detail": base + "; crossing completed on %s" % day,
-            "card": card(what, "Reading: %s actives, %+.1f%% YoY" % (fmt_num(v), y), day)}
+    return historical({"status": "FIRED", "fired_on": day, "reading": round(y, 2), "detail": base + "; crossing completed on %s" % day,
+                       "card": card(what, "Reading: %s actives, %+.1f%% YoY" % (fmt_num(v), y), day)}, "weekly", today)
 
 
 def ev_event(tw, dial, readings, today):
@@ -362,8 +394,9 @@ def main():
             else:
                 print("  (not posted: add --post)")
     fired = [r for r in results if r["status"] == "FIRED"]
-    print("\n%d fired, %d already fired, %d quiet, %d no data, %d manual" % (
-        len(fired), sum(r["status"] == "ALREADY_FIRED" for r in results), sum(r["status"] == "QUIET" for r in results),
+    print("\n%d fired, %d already fired, %d historical, %d quiet, %d no data, %d manual" % (
+        len(fired), sum(r["status"] == "ALREADY_FIRED" for r in results), sum(r["status"] == "HISTORICAL" for r in results),
+        sum(r["status"] == "QUIET" for r in results),
         sum(r["status"] in ("NO_DATA", "NO_THRESHOLD") for r in results), sum(r["status"] == "MANUAL" for r in results)))
 
 

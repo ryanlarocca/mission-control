@@ -94,6 +94,18 @@ describe("votes (§3.4 tests 1-3)", () => {
     expect(t.totals.bear).toBe(1)
   })
 
+  it("the scored object votes on its own partition lines, even with a bootstrap corridor stored in the DB", () => {
+    // Bootstrap stores its stats nested (scenario_bounds_pct); before the fix the
+    // dial read "corridor not set" at every review.
+    const stored = { computed: { scenario_bounds_pct: { bull_above: -8, bear_at_or_below: -15 } }, rule: "corridor" }
+    const dd = configDials(undefined, { zhvi_scc_drawdown: stored }).find((d) => d.id === "zhvi_scc_drawdown")!
+    const v = (vals: [string, number][]) => voteForDial(dd, vals.map(([a, b]) => r(dd.id, a, b)), "2026-11-01")
+    expect(v([["2026-08-31", -3.8], ["2026-09-30", -3.4]]).reason).toMatch(/inside its corridor/)
+    expect(v([["2026-08-31", -8.5], ["2026-09-30", -9.1]]).vote).toBe("base")
+    expect(v([["2026-08-31", -15.2], ["2026-09-30", -16]]).vote).toBe("bear")
+    expect(v([["2026-08-31", -7], ["2026-09-30", -9]]).vote).toBe("none") // once — needs a second print
+  })
+
   it("context-only, event and stale dials never vote", () => {
     expect(voteForDial(dial("zhvi_zip_95118"), [r("zhvi_zip_95118", "2026-09-01", -9)], "2026-11-01").reason).toMatch(/context only/)
     expect(voteForDial(dial("fomc_decision"), [r("fomc_decision", "2026-10-28", 1)], "2026-11-01").vote).toBe("none")

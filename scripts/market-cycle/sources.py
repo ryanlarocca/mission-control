@@ -961,6 +961,21 @@ def reading_rows(dial_id, variant, rows, source_url, note, extras=None, since=No
     return out
 
 
+def revisions(rows, stored):
+    """[(as_of, stored_value, fetched_value)] for already-stored readings whose
+    fetched value differs. stored = [(as_of, value)] newest first (a window, not
+    the whole history), so only recent prints are ever rewritten."""
+    have = {d[:10]: v for d, v in stored}
+    out = []
+    for d, v in rows:
+        old = have.get(d[:10])
+        if old is None or v is None:
+            continue
+        if abs(float(v) - float(old)) > 1e-9 * max(1.0, abs(float(old))):
+            out.append((d[:10], old, v))
+    return out
+
+
 def new_only(rows, latest_as_of):
     """Readings strictly newer than the latest stored as_of (None = nothing stored)."""
     if not latest_as_of:

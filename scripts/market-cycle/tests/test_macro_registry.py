@@ -182,6 +182,29 @@ class TestCollectWrite(FakeDbCase):
         self.assertEqual(sum(len(s["new"]) for r in res2 for s in r["series"]), 0)
         self.assertTrue(all(r["note_row"] is None for r in res2))
 
+    def test_revised_recent_months_are_rewritten_not_ignored(self):
+        """EDD posts WARN notices days late: Oct 2026 was stored as 463 and the file
+        now says 569. The month must be rewritten; months outside the window and
+        unchanged months are left alone."""
+        quiet(sync.main, ["--write"])
+        db = collect.Db(self.fake.url, "k")
+        url = "https://src/scc_warn_workers"
+        self.fake.tables["cycle_readings"] += [
+            {"id": 10 + i, "dial_id": "scc_warn_workers", "variant": "", "as_of": d, "value": v, "source_url": url}
+            for i, (d, v) in enumerate([("2026-07-01", 735), ("2026-08-01", 1138), ("2026-09-01", 400), ("2026-10-01", 463), ("2026-11-01", 108)])]
+        fetched = [("2026-07-01", 999), ("2026-08-01", 1138), ("2026-09-01", 400), ("2026-10-01", 569), ("2026-11-01", 182)]
+        res = collect.run(self.cfg, db, only={"scc_warn_workers"}, fetch=self.fake_fetch({"scc_warn_workers": fetched}))
+        s = res[0]["series"][0]
+        self.assertEqual(s["new"], [])
+        self.assertEqual(s["revised"], [("2026-10-01", 463, 569), ("2026-11-01", 108, 182)])   # Jul is outside the 3-month window
+        db.upsert_readings(collect.new_reading_rows(res))
+        stored = {r["as_of"]: r["value"] for r in self.fake.tables["cycle_readings"] if r["dial_id"] == "scc_warn_workers"}
+        self.assertEqual(stored["2026-10-01"], 569)
+        self.assertEqual(stored["2026-11-01"], 182)
+        self.assertEqual(stored["2026-07-01"], 735)
+        res2 = collect.run(self.cfg, db, only={"scc_warn_workers"}, fetch=self.fake_fetch({"scc_warn_workers": fetched}))
+        self.assertEqual(res2[0]["series"][0]["revised"], [])
+
     def test_dial_missing_from_registry_is_skipped(self):
         db = collect.Db(self.fake.url, "k")
         res = collect.run(self.cfg, db, only={"cpi_yoy"}, fetch=self.fake_fetch({"cpi_yoy": [("2026-09-01", 1.0)]}))
