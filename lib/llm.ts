@@ -1,4 +1,5 @@
 import Anthropic from "@anthropic-ai/sdk"
+import { apiKeyFor, recordLlmUsage, type LlmLane } from "./llmUsage"
 
 // Single Anthropic client for every text-completion call in the app
 // (2026-09-09). Replaces the nine ad-hoc OpenRouter fetches that were still
@@ -16,8 +17,10 @@ export const SONNET = "claude-sonnet-5"
 // whole history plus Ryan's gist. Auto keeps Sonnet.
 export const OPUS = "claude-opus-5-5"
 
+export type { LlmLane } from "./llmUsage"
+
 export function hasLlmKey(): boolean {
-  return !!process.env.ANTHROPIC_API_KEY
+  return !!(process.env.ANTHROPIC_API_KEY || process.env.ANTHROPIC_API_KEY_DRAFTS || process.env.ANTHROPIC_API_KEY_BACKGROUND)
 }
 
 export interface CompleteTextArgs {
@@ -41,8 +44,12 @@ export interface CompleteTextArgs {
   // of returning a clipped answer. Default on — a truncated JSON blob fails
   // the parse and a truncated paragraph loses the details Ryan cares about.
   retryOnTruncate?: boolean
-  // Log prefix, e.g. "[analyze-call]".
+  // Log prefix, e.g. "[analyze-call]". Also the feature name in llm_usage.
   tag?: string
+  // Which Console key pays (2026-11-07, lib/llmUsage.ts): "drafts" for the
+  // writing Ryan reads and sends (lib/reply, lib/coach, the CRMS composer),
+  // "background" (default) for everything else.
+  lane?: LlmLane
 }
 
 export interface CompleteTextResult {
@@ -51,10 +58,9 @@ export interface CompleteTextResult {
   truncated: boolean
 }
 
-let client: Anthropic | null = null
-function getClient(): Anthropic {
-  if (!client) client = new Anthropic()
-  return client
+const clients: Partial<Record<LlmLane, Anthropic>> = {}
+function getClient(lane: LlmLane): Anthropic {
+  return (clients[lane] ??= new Anthropic({ apiKey: apiKeyFor(lane) }))
 }
 
 /** One user-turn completion. Throws `Anthropic.APIError` (or a plain Error on
@@ -65,16 +71,27 @@ export async function completeText(args: CompleteTextArgs): Promise<CompleteText
   const retry = args.retryOnTruncate ?? true
   const disableThinking = model === SONNET && args.thinking === false
   const effort = model === OPUS ? args.effort : undefined
+  const lane: LlmLane = args.lane ?? "background"
 
   const run = async (maxTokens: number) => {
-    const response = await getClient().messages.create({
-      model,
-      max_tokens: maxTokens,
-      ...(args.system ? { system: args.system } : {}),
-      ...(disableThinking ? { thinking: { type: "disabled" as const } } : {}),
-      ...(effort ? { output_config: { effort } } : {}),
-      messages: [{ role: "user", content: args.prompt }],
-    })
+    let response: Anthropic.Message
+    try {
+      response = await getClient(lane).messages.create({
+        model,
+        max_tokens: maxTokens,
+        // The system prompt is the fixed part of every call at a site, so it
+        // is marked for the prompt cache (reads bill at 5–10% of input). Too
+        // short a system prompt simply doesn't cache — no error, no cost.
+        ...(args.system ? { system: [{ type: "text" as const, text: args.system, cache_control: { type: "ephemeral" as const } }] } : {}),
+        ...(disableThinking ? { thinking: { type: "disabled" as const } } : {}),
+        ...(effort ? { output_config: { effort } } : {}),
+        messages: [{ role: "user", content: args.prompt }],
+      })
+    } catch (e) {
+      await recordLlmUsage({ lane, model, tag, error: e })
+      throw e
+    }
+    await recordLlmUsage({ lane, model, tag, usage: response.usage })
     if (response.stop_reason === "refusal") throw new Error(`${tag} model declined the request`)
     const text = response.content
       .filter((b): b is Anthropic.TextBlock => b.type === "text")

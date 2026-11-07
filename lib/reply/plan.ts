@@ -85,7 +85,7 @@ moment:
   check_in      — light touch, no ask.`
 
   try {
-    const out = await completeText({ model: SONNET, prompt, maxTokens: 400, thinking: false, tag: "[reply/plan]" })
+    const out = await completeText({ model: SONNET, prompt, maxTokens: 400, thinking: false, tag: "[reply/plan]", lane: "drafts" })
     const parsed = JSON.parse(extractJsonObject(out.text)) as Partial<Plan>
     const okMoment = ctx.kind === "lead" ? isLeadMoment(parsed.moment) : isRelationshipMoment(parsed.moment)
     if (!okMoment) return null

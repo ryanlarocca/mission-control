@@ -6,7 +6,7 @@ import { createHash } from "node:crypto"
 import fs from "node:fs"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
-import Anthropic from "@anthropic-ai/sdk"
+import { createRequire } from "node:module"
 
 const MODEL = "claude-sonnet-5"
 // Bump when COMPOSE_RULES / temperature / example policy changes so reply
@@ -206,7 +206,7 @@ If RYAN'S NOTE ON THIS DRAFT is provided, it is his reason for rejecting the pre
 let client = null
 function anthropic() {
   if (!process.env.ANTHROPIC_API_KEY) throw new Error("ANTHROPIC_API_KEY not set")
-  return (client ??= new Anthropic())
+  return (client ??= createRequire(import.meta.url)("./llm-usage.cjs").anthropicClient({ tag: "[campaign-compose]" }))
 }
 
 function sanitize(text) {

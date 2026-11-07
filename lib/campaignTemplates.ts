@@ -1,4 +1,5 @@
 import Anthropic from "@anthropic-ai/sdk"
+import { laneClient } from "@/lib/llmUsage"
 import { getLeadsClient } from "@/lib/leads"
 
 // Template-level copy editing from Telegram (Ryan 2026-08-06: "handle
@@ -63,7 +64,7 @@ async function getTemplate(touch: number): Promise<TemplateRow | null> {
 
 async function composeRevision(current: TemplateRow, guidance: string): Promise<{ subject?: string; body?: string; error?: string }> {
   if (!process.env.ANTHROPIC_API_KEY) return { error: "ANTHROPIC_API_KEY not set" }
-  const client = new Anthropic()
+  const client = laneClient("background", "[campaign-templates]")
   try {
     const response = await client.messages.create({
       model: MODEL,

@@ -2,15 +2,17 @@
 // per-email classification and filing proposals, Sonnet for the rules doc and
 // deal screens. PDFs go to the model as document blocks (no local PDF parser
 // in the repo), capped by MAX_PDF_TO_MODEL_BYTES.
-import Anthropic from "@anthropic-ai/sdk"
+import { createRequire } from "node:module"
 import { MAX_PDF_TO_MODEL_BYTES, warn } from "./env.mjs"
 
 // The Haiku constant was removed 2026-10-21 (Ryan: Sonnet everywhere) — short JSON sites pass thinking:false.
 export const SONNET = "claude-sonnet-5"
 
+// Background-lane key + one llm_usage row per call (scripts/llm-usage.cjs).
+const { anthropicClient } = createRequire(import.meta.url)("../llm-usage.cjs")
 let client = null
 function anthropic() {
-  if (!client) client = new Anthropic()
+  if (!client) client = anthropicClient({ tag: "[inbox-agent]" })
   return client
 }
 
@@ -40,9 +42,11 @@ export async function complete({ model = SONNET, system, prompt, docs = [], maxT
   content.push({ type: "text", text: prompt })
   const run = async (max_tokens) => {
     const res = await anthropic().messages.create({
+      __tag: tag,
       model,
       max_tokens,
-      ...(system ? { system } : {}),
+      // Fixed per call site, so cached (reads bill at 10% of input).
+      ...(system ? { system: [{ type: "text", text: system, cache_control: { type: "ephemeral" } }] } : {}),
       ...(model === SONNET && thinking === false ? { thinking: { type: "disabled" } } : {}),
       messages: [{ role: "user", content }],
     })

@@ -9,7 +9,7 @@ import type { CallScript } from "@/lib/coach/script"
 // before dialing. Two blocks in phone-readable type: the voicemail he'll
 // leave if nobody answers, and the live opener + questions + likely
 // objection if they do. Rendered by the Follow Ups and Leads cards; the
-// script comes from POST /api/coach/script (Opus, lib/coach/script.ts).
+// script comes from POST /api/coach/script (Sonnet since 2026-11-07, lib/coach/script.ts).
 //
 // `leadId` is the outbound call row when the panel opened from a Call —
 // the API saves the script on that row so the post-call rater can see it.

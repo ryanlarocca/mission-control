@@ -215,7 +215,8 @@ async function askModel(anthropic, ctx) {
     const res = await anthropic.messages.create({
       model: MODEL,
       max_tokens: 4000, // the model thinks first; the JSON itself is ~100 tokens
-      system: systemPrompt(ctx.today),
+      // Same all day and sent ~8 times a run, so cached (reads bill at 10%).
+      system: [{ type: "text", text: systemPrompt(ctx.today), cache_control: { type: "ephemeral" } }],
       messages: [{ role: "user", content: user }],
     })
     const out = (res.content || []).map((b) => b.text || "").join("")
@@ -488,9 +489,9 @@ if (require.main === module) {
     }
   }
   const { createClient } = require("@supabase/supabase-js")
-  const Anthropic = require("@anthropic-ai/sdk")
   const sb = createClient(process.env.LRG_SUPABASE_URL, process.env.LRG_SUPABASE_SERVICE_KEY)
-  const anthropic = new Anthropic()
+  // Background-lane key + one llm_usage row per verdict (scripts/llm-usage.cjs).
+  const anthropic = require("./llm-usage.cjs").anthropicClient({ tag: "[judge]" })
   const args = process.argv.slice(2)
   const flag = (k) => { const i = args.indexOf(k); return i >= 0 ? args[i + 1] : null }
   const live = (process.env.JUDGE_LIVE || "").trim().toLowerCase() === "true"

@@ -12,7 +12,7 @@
 //    the agent brings candidates to Ryan and edits REPLY_PLAYBOOK.md on his yes.
 // Output: briefs/tests/reply-review-<date>.md + a Telegram summary.
 import { createClient } from "@supabase/supabase-js"
-import Anthropic from "@anthropic-ai/sdk"
+import { createRequire } from "node:module"
 import { readFileSync, writeFileSync } from "node:fs"
 
 const envText = readFileSync(new URL("../.env.local", import.meta.url), "utf8")
@@ -86,7 +86,7 @@ const allByMoment = {}
 for (const w of allWhys) (allByMoment[w.moment || "?"] ??= []).push(w.why_text)
 const candidates = []
 if (process.env.ANTHROPIC_API_KEY) {
-  const client = new Anthropic()
+  const client = createRequire(import.meta.url)("./llm-usage.cjs").anthropicClient({ tag: "[reply-review]" })
   for (const [moment, list] of Object.entries(allByMoment)) {
     if (list.length < 3) continue
     const prompt = `These are Ryan's one-sentence notes on AI-drafted replies, all for the same kind of moment ("${moment}"). A plain note says why a draft was wrong; a note starting "coach:" is the gist he dictated for a reply he wanted written his way. Group them into themes. For each theme give a short name, the count, the indices of the notes in it, and — only when the count is 3 or more — a one-sentence principle, phrased as a rule for how to write (never as an example sentence).

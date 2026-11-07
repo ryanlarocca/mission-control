@@ -1,4 +1,4 @@
-// Pre-call script (Sales Coach, 2026-11-02). Opus reads the whole cluster
+// Pre-call script (Sales Coach, 2026-11-02). The model reads the whole cluster
 // and writes two things Ryan reads off the card while the call rings: the
 // voicemail he'll leave if nobody picks up, and the live opener plus the
 // three questions and the likely objection if they do. The hook is the
@@ -6,7 +6,7 @@
 // — not a generic "any interest in selling". Ryan, after the Rita
 // voicemail (2026-11-02): the message gave her no reason to call back.
 
-import { completeText, extractJsonObject, hasLlmKey, OPUS } from "@/lib/llm"
+import { completeText, extractJsonObject, hasLlmKey, SONNET } from "@/lib/llm"
 import { formatPhone } from "@/lib/utils"
 import { describeLeadContext, type LeadCoachContext } from "./context"
 
@@ -65,7 +65,9 @@ ${voice}
 
 Write the script.`
   try {
-    const out = await completeText({ model: OPUS, system: SYSTEM, prompt, maxTokens: 8192, effort: "medium", tag: "[coach/script]" })
+    // Sonnet since 2026-11-07 (API cost audit): prep Ryan skims, not words
+    // that go out, and every card open warms one. Thinking stays on.
+    const out = await completeText({ model: SONNET, system: SYSTEM, prompt, maxTokens: 8192, tag: "[coach/script]", lane: "drafts" })
     const j = JSON.parse(extractJsonObject(out.text)) as {
       hook?: unknown; voicemail?: unknown; live?: { opener?: unknown; questions?: unknown; objection?: unknown; answer?: unknown }; watch_out?: unknown
     }

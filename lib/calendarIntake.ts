@@ -1,4 +1,5 @@
 import Anthropic from "@anthropic-ai/sdk"
+import { laneClient } from "@/lib/llmUsage"
 import { sidecarHeaders } from "./sidecar"
 import type { ImageMediaType } from "@/lib/contactIntake"
 
@@ -91,7 +92,7 @@ export async function extractEvent(args: {
   image?: { base64: string; mediaType: ImageMediaType }
 }): Promise<{ event?: ExtractedEvent; error?: string }> {
   if (!process.env.ANTHROPIC_API_KEY) return { error: "ANTHROPIC_API_KEY not set" }
-  const client = new Anthropic()
+  const client = laneClient("background", "[calendar-intake]")
   const content: Anthropic.ContentBlockParam[] = []
   if (args.image) {
     content.push({ type: "image", source: { type: "base64", media_type: args.image.mediaType, data: args.image.base64 } })

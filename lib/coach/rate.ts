@@ -4,8 +4,9 @@
 // score against fixed anchors, what went well, what to improve, advice,
 // and the line to say next time. Posted to the Marketing bot (the same
 // chat as lead alerts) and stored as JSON on the call row so the weekly
-// view can read it later. Skipped under 15 seconds, for Personal contacts,
-// and for Jackie's calls.
+// view can read it later. Skipped under 90 seconds (2026-11-07 cost audit:
+// rings + a voicemail rarely pass that; a real conversation does), for
+// Personal contacts, and for Jackie's calls.
 
 import type { SupabaseClient } from "@supabase/supabase-js"
 import { completeText, extractJsonObject, hasLlmKey, OPUS } from "@/lib/llm"
@@ -16,7 +17,7 @@ import {
 } from "./context"
 import type { CallScript } from "./script"
 
-export const MIN_RATE_SEC = 15
+export const MIN_RATE_SEC = 90
 
 export type RatedCallType = "voicemail" | "conversation" | "no_contact"
 
@@ -80,7 +81,7 @@ interface RawRating {
 async function rateWithOpus(prompt: string, opts: { separated: boolean; talkRatio: number | null }): Promise<CallRating | null> {
   if (!hasLlmKey()) return null
   try {
-    const out = await completeText({ model: OPUS, system: SYSTEM, prompt, maxTokens: 8192, effort: "medium", tag: "[coach/rate]" })
+    const out = await completeText({ model: OPUS, system: SYSTEM, prompt, maxTokens: 8192, effort: "medium", tag: "[coach/rate]", lane: "drafts" })
     const j = JSON.parse(extractJsonObject(out.text)) as RawRating
     const str = (v: unknown) => (typeof v === "string" ? v.trim() : "")
     const list = (v: unknown) => (Array.isArray(v) ? v.map(str).filter(Boolean) : [])

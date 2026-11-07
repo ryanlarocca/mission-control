@@ -25,7 +25,7 @@ const fs = require("node:fs")
 const path = require("node:path")
 const { google } = require("googleapis")
 const { createClient } = require("@supabase/supabase-js")
-const { Anthropic } = require("@anthropic-ai/sdk")
+const { anthropicClient: makeAnthropicClient } = require("./llm-usage.cjs")
 const { buildEmailMime } = require("./email-mime.js")
 const { runAutopilot } = require("./autopilot.js")
 
@@ -783,6 +783,7 @@ Respond in JSON only: { "ok": true | false, "issues": ["short phrase per failed 
 Default to ok:true. Do not rewrite the draft.`
   try {
     const res = await getAnthropic().messages.create({
+      __tag: "[drip/critic]",
       model: SONNET_MODEL,
       max_tokens: 2048,
       thinking: { type: "disabled" },
@@ -869,6 +870,15 @@ const MC_BASE_URL = (process.env.MC_BASE_URL || "https://mission-control-three-c
 // The Prepare button waits 90s on the whole engine run (sidecar execFile).
 const OPUS_WRITER_TIMEOUT_MS = 70000
 
+/** Why this touch can't go out on this channel, or null when it can. Runs
+ *  before any model call — see the channel guards in processLead. */
+function cannotSendOn(channel, lead) {
+  // e.g. an email touch but the address was never captured or was cleared.
+  if (channel === "email" && !lead.email) return "channel_email_no_address"
+  if (channel === "imessage" && !lead.caller_phone) return "channel_imessage_no_phone"
+  return null
+}
+
 function touchBriefFor(args) {
   return buildSystemPrompt({ ...args, history: "(the full conversation is given separately in this prompt)" })
     .replace(/\n*Output ONLY the message body[^\n]*\s*$/, "")
@@ -903,7 +913,8 @@ async function writeTouchWithOpus(args) {
 
 let anthropicClient = null
 function getAnthropic() {
-  if (!anthropicClient) anthropicClient = new Anthropic()
+  // Background-lane key + one llm_usage row per call (scripts/llm-usage.cjs).
+  if (!anthropicClient) anthropicClient = makeAnthropicClient({ tag: "[drip]" })
   return anthropicClient
 }
 
@@ -915,6 +926,7 @@ async function generateMessage(args) {
   const systemPrompt = buildSystemPrompt(args)
   try {
     const res = await getAnthropic().messages.create({
+      __tag: "[drip/fallback]",
       model: DRIP_MODEL,
       max_tokens: 400,
       thinking: { type: "disabled" },
@@ -1825,6 +1837,14 @@ async function processLead(sb, lead) {
     console.log(`[drip] is_bad_number=true on ${lead.id} — skipping to email touch #${activeTouch.touchNumber}`)
   }
 
+  // Channel guards BEFORE the writer (2026-11-07 API cost audit). These used
+  // to run after the message was written, so a lead with no email on an
+  // email touch got a full Opus draft every hourly pass, thrown away each
+  // time (~72 a day across 3 leads, invisible because nothing is recorded
+  // for a skipped touch). Cheap checks first, model last.
+  const cannotSend = cannotSendOn(activeChannel, lead)
+  if (cannotSend) return { skipped: cannotSend }
+
   // Special-case missed-call touch 0 — fixed copy, no model call.
   let messageBody
   let critic = null
@@ -1863,11 +1883,6 @@ async function processLead(sb, lead) {
   if (critic && !critic.ok) console.log(`[drip] critic flagged touch for ${lead.id}: ${critic.issues.join("; ")}`)
 
   const channel = activeChannel
-  // Channel guards — skip if we can't actually send. e.g. email-only campaign
-  // but the lead has no email address (rare but possible if the address was
-  // manually cleared from the row).
-  if (channel === "email" && !lead.email) return { skipped: "channel_email_no_address" }
-  if (channel === "imessage" && !lead.caller_phone) return { skipped: "channel_imessage_no_phone" }
 
   const subject = channel === "email" ? dripEmailSubject(lead) : null
 
@@ -2024,6 +2039,7 @@ module.exports = {
   extractResponsivenessSignals,
   generateMessage,
   buildSystemPrompt,
+  cannotSendOn,
   touchBriefFor,
   writeTouchWithOpus,
   sendSms,

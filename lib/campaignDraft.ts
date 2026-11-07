@@ -1,4 +1,5 @@
 import Anthropic from "@anthropic-ai/sdk"
+import { laneClient } from "@/lib/llmUsage"
 import { getLeadsClient } from "@/lib/leads"
 import { sendCampaignEmailReply } from "@/lib/campaignEmail"
 
@@ -62,7 +63,7 @@ async function buildThread(
 
 async function composeWithClaude(userContent: string): Promise<{ draft?: string; error?: string }> {
   if (!process.env.ANTHROPIC_API_KEY) return { error: "ANTHROPIC_API_KEY not set" }
-  const client = new Anthropic()
+  const client = laneClient("background", "[campaign-draft]")
   try {
     const response = await client.messages.create({
       model: MODEL,

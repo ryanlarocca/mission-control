@@ -241,7 +241,7 @@ export async function coachDraft(args: CoachArgs): Promise<CoachResult | null> {
       // Auto runs at medium: 2026-11-03 sweep on Arthur's Not right chain was
       // 14.6 s at high vs 10.2 s at medium with drafts of the same quality;
       // Ryan called 15 s too long. Coach keeps high.
-      model: OPUS, system: auto ? AUTO_SYSTEM : COACH_SYSTEM, prompt, maxTokens: COACH_MAX_TOKENS, thinking: true, effort: auto ? "medium" : "high", tag: auto ? "[reply/auto]" : "[reply/coach]",
+      model: OPUS, system: auto ? AUTO_SYSTEM : COACH_SYSTEM, prompt, maxTokens: COACH_MAX_TOKENS, thinking: true, effort: auto ? "medium" : "high", tag: auto ? "[reply/auto]" : "[reply/coach]", lane: "drafts",
     })
     const parsed = JSON.parse(extractJsonObject(out.text)) as { read?: unknown; subject?: unknown; body?: unknown }
     body = typeof parsed.body === "string" ? parsed.body.trim() : ""

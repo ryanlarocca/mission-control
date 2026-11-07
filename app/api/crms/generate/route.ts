@@ -596,7 +596,7 @@ export async function POST(request: Request) {
     try {
       // Thinking off: this is a one-tap composer in the UI and the message is
       // a few sentences — adaptive thinking would only add latency here.
-      const out = await completeText({ model: MODEL, prompt, maxTokens: 512, thinking: false, tag: "[crms/generate]" })
+      const out = await completeText({ model: MODEL, prompt, maxTokens: 512, thinking: false, tag: "[crms/generate]", lane: "drafts" })
       raw = out.text
     } catch (e) {
       console.error("crms/generate: model call failed:", e instanceof Error ? e.message : String(e))

@@ -69,7 +69,7 @@ Respond in JSON only:
 Default to ok:true. Do not rewrite the draft.`
 
   try {
-    const out = await completeText({ model: SONNET, prompt, maxTokens: 1024, thinking: false, tag: "[reply/critic]" })
+    const out = await completeText({ model: SONNET, prompt, maxTokens: 1024, thinking: false, tag: "[reply/critic]", lane: "drafts" })
     const parsed = JSON.parse(extractJsonObject(out.text)) as { ok?: unknown; issues?: unknown }
     const issues = Array.isArray(parsed.issues) ? parsed.issues.filter((x): x is string => typeof x === "string") : []
     const ok = parsed.ok !== false || issues.length === 0

@@ -1,4 +1,5 @@
 import Anthropic from "@anthropic-ai/sdk"
+import { laneClient } from "@/lib/llmUsage"
 import { createHash } from "node:crypto"
 import { getLeadsClient } from "@/lib/leads"
 import { SONNET, completeText, extractJsonObject } from "@/lib/llm"
@@ -416,7 +417,7 @@ export async function followUpOnScreen(screenId: string, ask: string): Promise<s
     type: "text",
     text: `DEAL: ${scr.address || "?"} (${scr.tier}) · first screen: ${scr.verdict} — ${scr.summary}\nFACTS FROM FIRST SCREEN: ${JSON.stringify({ ...facts, followups: undefined })}\n${prior.length ? `EARLIER FOLLOW-UPS:\n${prior.map((p) => `Q: ${p.q}\nA: ${p.a}`).join("\n")}\n` : ""}\nEMAIL THREAD:\n${renderThread(thread, 8000)}\n\nRYAN'S FOLLOW-UP: ${ask}`,
   })
-  const client = new Anthropic()
+  const client = laneClient("background", "[inbox-screen-followup]")
   const res = await client.messages.create({ model: SONNET, max_tokens: 4096, system: SCREEN_FOLLOWUP_SYSTEM, messages: [{ role: "user", content }] })
   const answer = res.content.filter((b): b is Anthropic.TextBlock => b.type === "text").map((b) => b.text).join("").trim() || "No answer."
   await sb.from("inbox_deal_screens").update({ facts: { ...facts, followups: [...prior, { q: ask, a: answer, at: new Date().toISOString() }] } }).eq("id", screenId)

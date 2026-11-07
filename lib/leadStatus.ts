@@ -7,7 +7,7 @@ import {
   type LeadStatus,
 } from "@/lib/leads"
 import { isAnonymousCaller } from "@/lib/anonymous"
-import { completeText, extractJsonObject, hasLlmKey, OPUS } from "@/lib/llm"
+import { completeText, extractJsonObject, hasLlmKey, SONNET } from "@/lib/llm"
 
 // Automatic lead status (Ryan 2026-10-24). Ryan stopped keeping New / Active
 // / Nurture current by hand — "busy work". The rules, agreed in chat:
@@ -168,11 +168,13 @@ HISTORY (oldest → newest):
 ${history}
 """`
 
-/** Opus reads the whole cluster and returns the person's stage. */
+/** The model reads the whole cluster and returns the person's stage. Sonnet
+ *  with thinking since 2026-11-07 (API cost audit): a five-way sort, run on
+ *  every new call and by the nightly sweep. */
 export async function judgeLeadStage(history: string): Promise<{ stage: LeadStage; reason: string } | null> {
   if (!hasLlmKey() || !history.trim()) return null
   const today = new Date().toISOString().slice(0, 10)
-  const out = await completeText({ model: OPUS, effort: "medium", prompt: STAGE_PROMPT(history, today), maxTokens: 8192, tag: "[lead-stage]" })
+  const out = await completeText({ model: SONNET, prompt: STAGE_PROMPT(history, today), maxTokens: 8192, tag: "[lead-stage]" })
   if (!out.text || out.truncated) return null
   const parsed = JSON.parse(extractJsonObject(out.text)) as { stage?: unknown; reason?: unknown }
   const stages: LeadStage[] = ["lead", "not_now", "sold", "wrong_person", "unclear"]

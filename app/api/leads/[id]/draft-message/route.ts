@@ -259,6 +259,7 @@ ${sharedContext}`
       // Short draft, interactive: the thinking budget would eat the answer.
       thinking: false,
       tag: "[draft-message]",
+      lane: "drafts",
     })
     const content = out.text
     if (!content) return NextResponse.json({ error: "empty model response" }, { status: 502 })

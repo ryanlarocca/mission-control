@@ -52,7 +52,7 @@ RULES
 - reasoning: ONE line, under 160 characters, in note shorthand, with what the message establishes: his number if any, the reasoning behind it, and their stated position. Example shape: "At $950K; renovated comps $1.2–1.3M; he is at $1.6M." If the message establishes nothing worth a note (a thank-you, a scheduling line), return null.
 - Never invent. Only what the gist and the message say.`
   try {
-    const out = await completeText({ model: SONNET, prompt, maxTokens: 300, thinking: false, tag: "[reply/facts]" })
+    const out = await completeText({ model: SONNET, prompt, maxTokens: 300, thinking: false, tag: "[reply/facts]", lane: "drafts" })
     const parsed = JSON.parse(extractJsonObject(out.text)) as { offer_amount?: unknown; reasoning?: unknown }
     const offer = typeof parsed.offer_amount === "number" && Number.isFinite(parsed.offer_amount) && parsed.offer_amount > 0 ? Math.round(parsed.offer_amount) : null
     const reasoning = typeof parsed.reasoning === "string" && parsed.reasoning.trim() ? parsed.reasoning.trim() : null

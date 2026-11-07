@@ -1,4 +1,5 @@
 import Anthropic from "@anthropic-ai/sdk"
+import { laneClient } from "@/lib/llmUsage"
 import { getLeadsClient } from "@/lib/leads"
 import { normalizeCategory } from "@/lib/crms"
 import { fetchAllRelationships, normalizeAltPhones, planPhoneChange, relationshipsByAnyPhone, to10Digit } from "@/lib/relationships"
@@ -93,7 +94,7 @@ export async function extractContactFromImage(args: {
   caption: string
 }): Promise<{ contact?: ExtractedContact; error?: string }> {
   if (!process.env.ANTHROPIC_API_KEY) return { error: "ANTHROPIC_API_KEY not set" }
-  const client = new Anthropic()
+  const client = laneClient("background", "[contact-intake]")
   try {
     const response = await client.messages.create({
       model: MODEL,
