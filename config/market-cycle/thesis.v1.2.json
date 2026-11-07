@@ -3859,7 +3859,7 @@
       "question": "Where's the bottom for the typical SCC house, and when does it start climbing again?",
       "scored_dial": "zhvi_scc_drawdown",
       "scenarios": "see top-level `scenarios` (unchanged from v1.1)",
-      "rebound_definition": "prices rising vs a year earlier again (zhvi_scc_yoy > 0)",
+      "rebound_definition": "prices rising vs a year earlier again",
       "timing": {
         "bear": {
           "low": [

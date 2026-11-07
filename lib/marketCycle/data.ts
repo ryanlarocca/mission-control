@@ -93,7 +93,8 @@ export async function loadFromSupabase(sb: SupabaseClient, today: string = today
   const dialRows = await core<{ id: string; corridor: Record<string, unknown> | null }>("cycle_dials", sb.from("cycle_dials").select("id, corridor"))
   const dials = configDials(THESIS, Object.fromEntries(dialRows.map((d) => [d.id, d.corridor])))
   const seasonalIds = dials.filter((d) => d.band_rule === "seasonal_1sd").map((d) => d.id)
-  const recentSince = shiftDays(today, -400)
+  // 440 days: "vs last year" on a monthly print that lags ~6 weeks needs the same month a year earlier
+  const recentSince = shiftDays(today, -440)
   const seasonalSince = shiftDays(today, -6 * 366)
   const sel = "dial_id, as_of, value, source_url, raw"
   // Base series only (variant ''). collect-macro/bootstrap also store corridor variants
@@ -236,6 +237,17 @@ export function supabaseWriter(sb: SupabaseClient): CheckpointWriter {
  *  Appends (dated) when a note already exists. Returns the checkpoint date. */
 export async function storeRyanNote(sb: SupabaseClient, cardMessageId: number, note: string): Promise<string | null> {
   const { data, error } = await sb.from("cycle_checkpoints").select("id, date, ryan_note").eq("telegram_message_id", String(cardMessageId)).maybeSingle()
+  if (error || !data) return null
+  const row = data as { id: string; date: string; ryan_note: string | null }
+  const stamped = `[${todayPT()}] ${note.trim()}`
+  const { error: upErr } = await sb.from("cycle_checkpoints").update({ ryan_note: row.ryan_note ? `${row.ryan_note}\n${stamped}` : stamped }).eq("id", row.id)
+  if (upErr) throw new Error(upErr.message)
+  return row.date
+}
+
+/** The web Disagree (/cycle): same stamped note, keyed by checkpoint id. */
+export async function storeRyanNoteById(sb: SupabaseClient, checkpointId: string, note: string): Promise<string | null> {
+  const { data, error } = await sb.from("cycle_checkpoints").select("id, date, ryan_note").eq("id", checkpointId).maybeSingle()
   if (error || !data) return null
   const row = data as { id: string; date: string; ryan_note: string | null }
   const stamped = `[${todayPT()}] ${note.trim()}`
