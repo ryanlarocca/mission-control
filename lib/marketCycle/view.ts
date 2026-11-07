@@ -58,6 +58,13 @@ export function previousReading(dial: Pick<Dial, "cadence">, rows: Reading[]): {
   return null
 }
 
+/** Tone of a change-style value: above zero is good when "up" is bullish, below zero bad; ±0.05 is flat. */
+export function signTone(dial: Pick<Dial, "direction_map">, value: number): Tone {
+  if (Math.abs(value) < 0.05) return "flat"
+  const side = dial.direction_map[value > 0 ? "up" : "down"]
+  return side === "bull" ? "good" : side === "bear" ? "bad" : "flat"
+}
+
 /** ▲▼▬ = direction since the previous reading; tone = what that means for SCC
  *  house prices (the dial's own up/down → bull/bear map): green good, red bad,
  *  gray flat or context (Ryan 2026-11-07). */
@@ -65,8 +72,17 @@ export function trend(dial: Pick<Dial, "cadence" | "direction_map">, rows: Readi
   const v = valued(rows)
   const last = v[v.length - 1]
   const prev = previousReading(dial, rows)
-  if (!last || !prev) return { arrow: "▬", tone: "flat", prev }
+  if (!last) return { arrow: "▬", tone: "flat", prev }
+  if (!prev) return { arrow: "▬", tone: format === "pct_signed" && !context ? signTone(dial, last.value) : "flat", prev }
   const d = last.value - prev.value
+  const arrowOnly = d === 0 ? "▬" : d > 0 ? "▲" : "▼"
+  if (format === "pct_signed" && !context) {
+    // A "change" number (vs last year, below the peak) is coloured by the number
+    // itself, not by last month's move: −3.4% from the peak is red even when it
+    // was −3.8% the month before (Ryan 2026-11-07). The arrow still shows the move.
+    const tiny = Math.abs(d) < 0.05
+    return { arrow: tiny ? "▬" : arrowOnly, tone: signTone(dial, last.value), prev }
+  }
   const pctLike = format === "pct" || format === "pct_signed" || format === "pts" || format === "ratio"
   const flat = pctLike ? Math.abs(d) < (format === "ratio" ? 0.005 : 0.05) : Math.abs(d) <= Math.abs(prev.value) * 0.01
   if (flat) return { arrow: "▬", tone: "flat", prev }

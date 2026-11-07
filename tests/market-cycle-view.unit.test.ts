@@ -35,6 +35,21 @@ describe("/cycle view model", () => {
     expect(trend(condo, [r(condo.id, "2026-08-31", -3.79), r(condo.id, "2026-09-30", -3.85)], "pct_signed", true).tone).toBe("flat")
   })
 
+  it("change numbers are coloured by the number itself (Ryan: a drop from the peak is red, even when it improved)", () => {
+    const dd = dial("zhvi_scc_drawdown")
+    expect(trend(dd, [r(dd.id, "2026-08-31", -3.761), r(dd.id, "2026-09-30", -3.357)], "pct_signed")).toMatchObject({ arrow: "▲", tone: "bad" })
+    const low = dial("zhvi_scc_bottom_yoy")
+    expect(trend(low, [r(low.id, "2026-08-31", -0.281), r(low.id, "2026-09-30", -0.189)], "pct_signed")).toMatchObject({ arrow: "▲", tone: "bad" })
+    const top = dial("zhvi_scc_top_yoy")
+    expect(trend(top, [r(top.id, "2026-08-31", 3.542), r(top.id, "2026-09-30", 3.542)], "pct_signed")).toMatchObject({ arrow: "▬", tone: "good" })
+  })
+
+  it("the page shows single-family numbers only (no Realtor.com all-types rows)", () => {
+    expect(Object.keys(DISPLAY).filter((id) => id.startsWith("realtor_"))).toEqual([])
+    expect(DISPLAY.mls_scc_price_cut_share.key).toBe(3)
+    expect(DISPLAY.mls_scc_pending_ratio.key).toBe(4)
+  })
+
   it("formats read like a person wrote them", () => {
     expect(formatValue(-3.357, "pct_signed")).toBe("−3.4%")
     expect(formatValue(7.18, "pct")).toBe("7.18%")

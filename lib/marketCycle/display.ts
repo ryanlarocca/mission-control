@@ -1,3 +1,6 @@
+// Single-family only (Ryan 2026-11-07: "I don't really care about condos and
+// townhomes"): the Realtor.com county series are all property types, so they
+// are not shown (they still vote in the review).
 // How each dial reads on /cycle (Ryan 2026-11-07 walkthrough, mockup
 // PROJECTS/market-cycle-tracker/mockups/full-page-v2.png): a plain name with no
 // source prefix, one short gray line saying what it is, a group for the scroll
@@ -45,8 +48,8 @@ export const DISPLAY: Record<string, DialDisplay> = {
   // ---- key numbers (also live in their group, but shown once: on top)
   zhvi_scc_drawdown: { label: "Drop from peak", what: "Typical SCC house vs the Jan 2025 peak", group: "Home prices", format: "pct_signed", key: 1 },
   mls_scc_active_sfr: { label: "Homes for sale", what: "Single-family, this week", group: "Supply & pace", format: "int", key: 2 },
-  realtor_price_reduced_share_scc: { label: "Price cuts", what: "Share of listings with a cut", group: "Supply & pace", format: "pct", key: 3 },
-  realtor_pending_ratio_scc: { label: "Buyer pace", what: "Homes going into contract per home for sale", group: "Supply & pace", format: "ratio", key: 4 },
+  mls_scc_price_cut_share: { label: "Price cuts", what: "Single-family listings with a cut, this week", group: "Supply & pace", format: "pct", key: 3 },
+  mls_scc_pending_ratio: { label: "Buyer pace", what: "Single-family homes in contract per home for sale", group: "Supply & pace", format: "ratio", key: 4 },
   mortgage30: { label: "Mortgage rate", what: "30-year fixed", group: "Rates", format: "pct", key: 5 },
   brent: { label: "Oil (Brent)", what: "Per barrel", group: "Inflation & oil", format: "usd", key: 6 },
   sp500: { label: "S&P 500", group: "Stocks & credit", format: "int", key: 7 },
@@ -58,7 +61,6 @@ export const DISPLAY: Record<string, DialDisplay> = {
   zhvi_scc_yoy: { label: "Home value vs last year", group: "Home prices", format: "pct_signed" },
   zhvi_scc_top_yoy: { label: "High-end homes vs last year", group: "Home prices", format: "pct_signed" },
   zhvi_scc_bottom_yoy: { label: "Lower-end homes vs last year", group: "Home prices", format: "pct_signed" },
-  realtor_median_list_price_scc: { label: "Asking prices vs last year", what: "Median list price, all types", group: "Home prices", format: "pct_signed" },
   mls_scc_list_to_sale: { label: "Sale-to-list price", what: "Recent sales vs asking", group: "Home prices", format: "pct" },
   zhvi_scc_condo_yoy: { label: "Condos/townhomes vs last year", what: "Context only", group: "Home prices", format: "pct_signed", context: true },
 
@@ -68,7 +70,6 @@ export const DISPLAY: Record<string, DialDisplay> = {
   scc_months_supply: { label: "Months of supply", what: "Time to sell every listing", group: "Supply & pace", format: "num" },
   car_scc_sfr_sales: { label: "Closed sales", what: "Single-family", group: "Supply & pace", format: "int" },
   mls_scc_withdrawn_share: { label: "Withdrawn / relisted", what: "Share of listings", group: "Supply & pace", format: "pct" },
-  realtor_active_scc: { label: "Homes for sale (all types)", what: "Monthly; the yardstick for 'normal'", group: "Supply & pace", format: "int" },
 
   // ---- distress & rent
   scc_nod_count: { label: "Notices of default", what: "Owners behind on their mortgage, weekly", group: "Distress & rent", format: "int" },

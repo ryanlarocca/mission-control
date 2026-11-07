@@ -47,6 +47,25 @@ function configOnlyState(today: string): ReviewState {
 }
 
 /** All-time high per dial (zip / area "vs peak" needs history the page window doesn't hold). */
+/** SCC single-family inventory (realtor association, monthly since 2023), from the
+ *  months-of-supply readings' raw numerator — the single-family yardstick for
+ *  "homes for sale" (Ryan: single-family only). Full history for "vs normal". */
+async function sfrInventory(): Promise<Reading[]> {
+  const { data } = await getLeadsClient().from("cycle_readings").select("as_of, raw").eq("dial_id", "scc_months_supply").eq("variant", "").order("as_of")
+  return ((data ?? []) as { as_of: string; raw: unknown }[]).flatMap((r) => {
+    let raw = r.raw as Record<string, unknown> | string | null
+    if (typeof raw === "string") {
+      try {
+        raw = JSON.parse(raw) as Record<string, unknown>
+      } catch {
+        raw = null
+      }
+    }
+    const v = raw && typeof raw === "object" ? Number(raw.sccaor_sfr_inventory) : NaN
+    return Number.isFinite(v) ? [{ dial_id: "scc_sfr_inventory", as_of: r.as_of, value: v, source_url: "sccaor", raw: null }] : []
+  })
+}
+
 async function peaks(ids: string[]): Promise<Record<string, { as_of: string; value: number }>> {
   const sb = getLeadsClient()
   const got = await Promise.all(
@@ -59,6 +78,12 @@ async function peaks(ids: string[]): Promise<Record<string, { as_of: string; val
   const out: Record<string, { as_of: string; value: number }> = {}
   for (const [id, v] of got) if (v) out[id] = v
   return out
+}
+
+/** The first Monday run a full week after the first weekly snapshot: when week-over-week numbers start. */
+function fromDateLabel(firstWeek: string | undefined): string | null {
+  if (!firstWeek) return null
+  return longDate(mondayOnOrAfter(new Date(Date.parse(firstWeek + "T00:00:00Z") + 6 * 86_400_000).toISOString().slice(0, 10))).replace(/, \d{4}$/, "")
 }
 
 // ---------------------------------------------------------------- small pieces
@@ -211,7 +236,7 @@ function BetCard({ bet, weights, now, accent, nextReview }: { bet: BetDef; weigh
 }
 
 function AreaRow({ title, small, tag, value, yoy, peak, slots, when, big }: { title: string; small: string | null; tag: string | null; value: number; yoy: number | null; peak: { pct: number; month: string } | null; slots: MonthSlot[]; when: string; big?: boolean }) {
-  const tone = (v: number | null) => (v === null ? TONE.flat : v > 0.5 ? TONE.good : v < -0.5 ? TONE.bad : TONE.flat)
+  const tone = (v: number | null) => (v === null ? TONE.flat : v >= 0.05 ? TONE.good : v <= -0.05 ? TONE.bad : TONE.flat)
   return (
     <div className="flex items-center gap-2 border-t border-zinc-800 py-2.5 first:border-t-0">
       <div className="min-w-0 flex-1">
@@ -264,6 +289,8 @@ export default async function CyclePage() {
   const zipDials = state.ownedProperties.length ? Array.from(new Set(state.ownedProperties.map((p) => p.zip))) : ["95118", "95123", "95130"]
   const peakIds = [...NEARBY.map((n) => n.dial), ...zipDials.map((z) => `zhvi_zip_${z}_level`)]
   const allTime: Record<string, { as_of: string; value: number }> = loadError ? {} : await peaks(peakIds).catch(() => ({}))
+  const sfrInv = loadError ? [] : await sfrInventory().catch(() => [] as Reading[])
+  R["scc_sfr_inventory"] = sfrInv
 
   // ---- one dial row
   const row = (id: string, opts: { sub?: string; chartId?: string } = {}): RowData | null => {
@@ -285,14 +312,6 @@ export default async function CyclePage() {
       chip: votes.get(id) ?? null,
     }
   }
-  // Realtor.com monthly, merged under the MLS weekly headline: "Oct: 1,970 all types, about 50% above a normal October (…)"
-  const realtorNote = (id: string, label: string, withNormal = true) => {
-    const d = dialById.get(id)
-    const l = latest(R[id])
-    if (!d || !l) return undefined
-    const n = withNormal ? vsNormal(d, R[id] ?? []) : null
-    return `${MON[Number(l.as_of.slice(5, 7)) - 1]}: ${formatValue(l.value, "int")} ${label}${n ? `, ${n}` : ""}`
-  }
   const drawdownNote = (id: string, what = "its Oct 6 high") => {
     const d = dialById.get(id)
     if (!d) return undefined
@@ -300,13 +319,22 @@ export default async function CyclePage() {
     const l = s[s.length - 1]
     return l ? `${Math.abs(l.value).toFixed(1)}% ${l.value < 0 ? "below" : "above"} ${what}` : undefined
   }
-  const cutsCount = latest(R["realtor_price_reduced_scc"])
-  const mlsPending = latest(R["mls_scc_pending_ratio"])
+  // Homes for sale: our weekly single-family count, with the realtor association's
+  // single-family inventory as the 12-month chart and the "normal" yardstick.
+  const invLast = latest(sfrInv)
+  const invDial = dialById.get("scc_months_supply")
+  const invNormal = invDial && invLast ? vsNormal({ ...invDial, id: "scc_sfr_inventory", corridor: null }, sfrInv) : null
+  const invNote = invLast ? `${MON[Number(invLast.as_of.slice(5, 7)) - 1]}: ${formatValue(invLast.value, "int")} listed${invNormal ? `, ${invNormal}` : ""}` : undefined
+  // Price cuts need two weekly snapshots of the same listings: until then, say when it starts.
+  const cutsRows = valued(R["mls_scc_price_cut_share"])
+  const cutsReady = cutsRows.length >= 2
   const keyRows = [
     row("zhvi_scc_drawdown"),
-    row("mls_scc_active_sfr", { sub: realtorNote("realtor_active_scc", "all types"), chartId: "realtor_active_scc" }),
-    row("realtor_price_reduced_share_scc", { sub: cutsCount ? `${formatValue(cutsCount.value, "int")} homes` : undefined }),
-    row("realtor_pending_ratio_scc", { sub: mlsPending ? `this week ${formatValue(mlsPending.value, "ratio")}` : undefined }),
+    row("mls_scc_active_sfr", { sub: invNote, chartId: "scc_sfr_inventory" }),
+    cutsReady
+      ? row("mls_scc_price_cut_share")
+      : { id: "mls_scc_price_cut_share", label: "Price cuts", value: "—", tone: "flat" as Tone, arrow: "", sub: `Single-family listings with a cut · first reading ${fromDateLabel(valued(R["mls_scc_active_sfr"])[0]?.as_of)}`, slots: [], chip: null },
+    row("mls_scc_pending_ratio"),
     row("mortgage30"),
     row("brent"),
     row("sp500", { sub: drawdownNote("sp500") }),
@@ -335,8 +363,7 @@ export default async function CyclePage() {
       .filter(([id, d]) => d.group === g && !keyIds.has(id))
       .map(([id]) => {
         if (id === "scc_warn_workers_30d") return row(id, { sub: warnSub, chartId: "scc_warn_workers" })
-        if (id === "mls_scc_new_listings_7d") return row(id, { sub: realtorNote("realtor_new_listings_scc", "all types"), chartId: "realtor_new_listings_scc" })
-        if (id === "mls_scc_median_dos") return row(id, { sub: realtorNote("realtor_dom_scc", "days, all types", false), chartId: "realtor_dom_scc" })
+
         if (id === "basket_index") return row(id, { sub: drawdownNote("basket_index") })
         return row(id)
       })
@@ -355,12 +382,11 @@ export default async function CyclePage() {
     const cutsPrev = cd ? previousReading(cd, R[b.cuts] ?? []) : null
     return { label: b.label, forSale: l?.value ?? null, delta: l && prev ? l.value - prev.value : null, cuts: cuts && cutsPrev ? cuts.value : null }
   })
-  const firstWeek = valued(R["mls_scc_tier_1_3m_2m_active_sfr"])[0]?.as_of
-  // the first Monday run a full week after the first snapshot
-  const fromDate = firstWeek ? longDate(mondayOnOrAfter(new Date(Date.parse(firstWeek + "T00:00:00Z") + 6 * 86_400_000).toISOString().slice(0, 10))).replace(/, \d{4}$/, "") : null
+  const fromDate = fromDateLabel(valued(R["mls_scc_tier_1_3m_2m_active_sfr"])[0]?.as_of)
   const top = latest(R["zhvi_scc_top_yoy"])
   const bottom = latest(R["zhvi_scc_bottom_yoy"])
-  const toneOf = (v: number | undefined) => (v === undefined ? TONE.flat : v > 0.5 ? TONE.good : v < -0.5 ? TONE.bad : TONE.flat)
+  // same rule as every change number: below zero red, above zero green (±0.05 flat)
+  const toneOf = (v: number | undefined) => (v === undefined ? TONE.flat : v >= 0.05 ? TONE.good : v <= -0.05 ? TONE.bad : TONE.flat)
 
   // ---- zips + nearby markets
   const area = (dialId: string, title: string, small: string | null, tag: string | null) => {
