@@ -10,7 +10,7 @@ import { sha256, inspectPdf, renderPages, buildFinalPdf, buildInterimPdf, checkF
 import { CONSENT_VERSION } from "./consent.mjs"
 import { fontKey } from "./fonts.mjs"
 import { sendMail, driveClient, driveDownload, driveMeta, driveResolvePath, driveUpload, driveFolderLink } from "./google.mjs"
-import { inviteEmail, completedEmail, inviteText, completedText } from "./emails.mjs"
+import { inviteEmail, completedEmail, inviteText, completedText, noticeText } from "./emails.mjs"
 import { sendText, normalizePhone } from "./sms.mjs"
 import { notify, esc } from "./notify.mjs"
 
@@ -46,12 +46,13 @@ export function normalizeSigners(input) {
     const phone = phoneRaw ? normalizePhone(phoneRaw) : null
     const role = s.role === "buyer" ? "buyer" : "seller"
     const order = Math.max(1, Math.min(9, Number(s.order) || 1))
-    let delivery = ["email", "text", "both"].includes(s.delivery) ? s.delivery : "email"
+    let delivery = ["email", "text", "both", "email_notice"].includes(s.delivery) ? s.delivery : "email"
     if (!name && !email && !phoneRaw) continue
     if (!name) throw new UserError(`Signer ${i + 1}: name is required`)
     if (email && !EMAIL_RE.test(email)) throw new UserError(`Signer ${i + 1} (${name}): "${email}" is not a valid email`)
     if (phoneRaw && !phone) throw new UserError(`Signer ${i + 1} (${name}): "${phoneRaw}" is not a 10-digit phone number`)
     if (delivery !== "email" && !phone) throw new UserError(`Signer ${i + 1} (${name}): a phone number is needed to send by text`)
+    if (delivery === "email_notice" && !email) throw new UserError(`Signer ${i + 1} (${name}): an email address is needed to email the link`)
     if (delivery !== "text" && !email) {
       if (phone) delivery = "text"
       else throw new UserError(`Signer ${i + 1} (${name}): needs an email address or a phone number`)
@@ -63,13 +64,28 @@ export function normalizeSigners(input) {
   return out
 }
 
+/** People who don't sign but are emailed the completed PDF with everyone else. */
+export function normalizeCopyTo(input) {
+  const out = []
+  for (const c of input || []) {
+    const name = String(c.name || "").trim().replace(/\s+/g, " ")
+    const email = String(c.email || "").trim().toLowerCase()
+    if (!name && !email) continue
+    if (!EMAIL_RE.test(email)) throw new UserError(`Copy to ${name || "(no name)"}: "${email}" is not a valid email`)
+    out.push({ name: name || email, email })
+  }
+  if (out.length > 4) throw new UserError("At most 4 copy-to people")
+  return out
+}
+
 /**
  * Create an envelope and send the first round of invitations.
  * `pdfBytes` or `driveFileId` (downloaded through Ryan's Drive) — one of them.
  */
-export async function createEnvelope({ title, propertyAddress, agreementDate, message, pdfBytes, driveFileId, signers, createdBy }) {
+export async function createEnvelope({ title, propertyAddress, agreementDate, message, pdfBytes, driveFileId, signers, copyTo, createdBy }) {
   const db = getDb()
   const cleanSigners = normalizeSigners(signers)
+  const cleanCopyTo = normalizeCopyTo(copyTo)
   let bytes = pdfBytes ? Buffer.from(pdfBytes) : null
   let driveFolderId = null
   if (!bytes && driveFileId) {
@@ -101,13 +117,13 @@ export async function createEnvelope({ title, propertyAddress, agreementDate, me
 
   const ts = now()
   const insertEnv = db.prepare(`INSERT INTO envelopes (id, title, property_address, agreement_date, message, source, drive_file_id, drive_folder_id,
-    original_sha256, original_path, page_count, view_page_count, is_template, status, created_at, created_by)
-    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+    original_sha256, original_path, page_count, view_page_count, is_template, status, created_at, created_by, copy_to)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
   const insertSigner = db.prepare(`INSERT INTO signers (id, envelope_id, order_index, role, name, email, phone, delivery, placement, status) VALUES (?,?,?,?,?,?,?,?,?,?)`)
   db.exec("BEGIN")
   try {
     insertEnv.run(id, title, propertyAddress || null, agreementDate || null, message || null, driveFileId ? "drive" : "upload", driveFileId || null, driveFolderId,
-      sha256(bytes), originalPath, pageCount, pageCount, info.isTemplate ? 1 : 0, "in_progress", ts, createdBy || "admin")
+      sha256(bytes), originalPath, pageCount, pageCount, info.isTemplate ? 1 : 0, "in_progress", ts, createdBy || "admin", cleanCopyTo.length ? JSON.stringify(cleanCopyTo) : null)
     for (const s of cleanSigners) {
       const placement = s === firstSeller || s === firstBuyer ? "template" : "addendum"
       insertSigner.run(crypto.randomBytes(6).toString("hex"), id, s.order, s.role, s.name, s.email, s.phone, s.delivery, placement, "waiting")
@@ -117,7 +133,7 @@ export async function createEnvelope({ title, propertyAddress, agreementDate, me
     db.exec("ROLLBACK")
     throw e
   }
-  addEvent(id, "created", { details: { title, pages: pageCount, template: info.isTemplate, source: driveFileId ? "drive" : "upload", signers: cleanSigners.length } })
+  addEvent(id, "created", { details: { title, pages: pageCount, template: info.isTemplate, source: driveFileId ? "drive" : "upload", signers: cleanSigners.length, copyTo: cleanCopyTo.map((c) => c.email) } })
   await refreshInterim(id) // the addendum box + page are there from the first signer on
   const sent = await sendPending(id)
   return { id, sent }
@@ -248,7 +264,7 @@ export async function sendToSigner(envelope, signer, { resend = false } = {}) {
   const link = `${env.baseUrl}/s/${token}`
   const channels = []
   const wantEmail = signer.delivery !== "text" && signer.email
-  const wantText = signer.delivery !== "email" && signer.phone
+  const wantText = (signer.delivery === "text" || signer.delivery === "both") && signer.phone
   // Email first; if it fails and a text is also wanted, the text still goes.
   let emailErr = null
   if (wantEmail) {
@@ -258,6 +274,16 @@ export async function sendToSigner(envelope, signer, { resend = false } = {}) {
       channels.push(`email:${signer.email}`)
       addEvent(envelope.id, resend ? "link_resent" : "invitation_sent", { signerId: signer.id, details: { channel: "email", to: signer.email, gmailId, expiresAt } })
     } catch (e) { emailErr = e }
+  }
+  // email_notice: the link went by email; a short text from Ryan's cell (no link) tells them to look for it.
+  if (signer.delivery === "email_notice" && signer.phone && !emailErr && !resend) {
+    try {
+      await sendText(signer.phone, noticeText({ envelope, signer }))
+      addEvent(envelope.id, "notice_text_sent", { signerId: signer.id, details: { to: signer.phone } })
+    } catch (e) {
+      addEvent(envelope.id, "text_failed", { signerId: signer.id, details: { error: String(e?.message || e) } })
+      await notify(`⚠️ e-sign: the link was emailed to ${esc(signer.name)}, but the heads-up text did not go: ${esc(e?.message || e)}`)
+    }
   }
   if (wantText) {
     try {
@@ -447,7 +473,7 @@ export async function deliver(envelopeId) {
 
   const already = new Set(getEvents(envelopeId).filter((e) => e.kind === "completion_email_sent" || e.kind === "completion_text_sent").map((e) => JSON.parse(e.details || "{}").to))
   for (const s of signers) {
-    if (s.delivery === "email" || !s.phone || already.has(s.phone)) continue
+    if ((s.delivery !== "text" && s.delivery !== "both") || !s.phone || already.has(s.phone)) continue
     try {
       await sendText(s.phone, completedText({ envelope, signer: s }))
       addEvent(envelopeId, "completion_text_sent", { details: { to: s.phone } })
@@ -455,7 +481,8 @@ export async function deliver(envelopeId) {
       problems.push(`Text to ${s.phone}: ${e?.message || e}`)
     }
   }
-  const recipients = [...signers.filter((s) => s.email && s.delivery !== "text").map((s) => ({ name: s.name, email: s.email })), { name: env.ownerName, email: env.senderEmail }]
+  const copyTo = envelope.copy_to ? JSON.parse(envelope.copy_to) : []
+  const recipients = [...signers.filter((s) => s.email && s.delivery !== "text").map((s) => ({ name: s.name, email: s.email })), ...copyTo, { name: env.ownerName, email: env.senderEmail }]
   const seen = new Set()
   for (const r of recipients) {
     if (seen.has(r.email) || already.has(r.email)) continue
@@ -477,7 +504,7 @@ export async function deliver(envelopeId) {
   if (problems.length) {
     await notify(`🔴 e-sign: <b>${esc(envelope.title)}</b> is fully signed, but delivery had problems:\n• ${problems.map(esc).join("\n• ")}\nRetry from ${env.baseUrl}/admin/e/${envelopeId}`)
   } else if (!getEvents(envelopeId).some((e) => e.kind === "completion_notified")) {
-    await notify(`✅ <b>${esc(envelope.title)}</b> is fully signed by ${esc(signers.map((s) => s.name).join(", "))}.\nCompleted PDF emailed to everyone.${link}\nSHA-256 <code>${envelope.final_sha256.slice(0, 16)}…</code>`)
+    await notify(`✅ <b>${esc(envelope.title)}</b> is fully signed by ${esc(signers.map((s) => s.name).join(", "))}.\nCompleted PDF emailed to everyone${copyTo.length ? ` (copy to ${esc(copyTo.map((c) => c.name).join(", "))})` : ""}.${link}\nSHA-256 <code>${envelope.final_sha256.slice(0, 16)}…</code>`)
     addEvent(envelopeId, "completion_notified")
   }
   return { problems }

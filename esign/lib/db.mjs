@@ -42,7 +42,7 @@ CREATE TABLE IF NOT EXISTS signers (
   name TEXT NOT NULL,
   email TEXT NOT NULL,
   phone TEXT,
-  delivery TEXT NOT NULL DEFAULT 'email', -- 'email' | 'text' | 'both'
+  delivery TEXT NOT NULL DEFAULT 'email', -- 'email' | 'text' | 'both' | 'email_notice' (link by email + a heads-up text with no link)
   placement TEXT NOT NULL,         -- 'template' | 'addendum' | 'fields' (self-sign: on the document's own lines)
   token_hash TEXT,
   token_expires_at TEXT,
@@ -103,7 +103,9 @@ export function getDb() {
   //   doc_label      — file name stem inside that folder ("Access Acknowledgment")
   //   drive_signed_* — the clean signed copy (no certificate) — the one that gets shared
   for (const [col, type] of [["kind", "TEXT NOT NULL DEFAULT 'standard'"], ["fields_json", "TEXT"], ["source_path", "TEXT"], ["source_sha256", "TEXT"],
-    ["filing_folder", "TEXT"], ["doc_label", "TEXT"], ["drive_source_id", "TEXT"], ["drive_signed_id", "TEXT"], ["drive_signed_link", "TEXT"], ["drive_folder_link", "TEXT"]]) {
+    ["filing_folder", "TEXT"], ["doc_label", "TEXT"], ["drive_source_id", "TEXT"], ["drive_signed_id", "TEXT"], ["drive_signed_link", "TEXT"], ["drive_folder_link", "TEXT"],
+    // copy_to (2026-11-06) — JSON [{name, email}]: people who don't sign but get the completed PDF
+    ["copy_to", "TEXT"]]) {
     if (!ecols.includes(col)) db.exec(`ALTER TABLE envelopes ADD COLUMN ${col} ${type}`)
   }
   return db

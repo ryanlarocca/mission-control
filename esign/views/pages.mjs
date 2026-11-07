@@ -195,9 +195,12 @@ export function adminNew({ prefill = {}, offers = [], error, offersError }) {
     <div id="signers"></div>
     <button class="btn small secondary" id="addsigner" type="button">+ Add signer</button>
   </div>
+  <div class="field"><span>Copy to (optional) — doesn't sign; emailed the completed PDF when everyone has signed</span>
+    ${[0, 1].map((i) => { const c = (prefill.copyTo || [])[i] || {}; return `<div class="signer-row"><input type="text" name="cc_name[]" placeholder="Name" value="${esc(c.name || "")}"><input type="email" name="cc_email[]" placeholder="Email" value="${esc(c.email || "")}"></div>` }).join("")}
+  </div>
   <button class="btn" type="submit">Send for signature</button>
 </form></div>
-<template id="signer-tpl"><input type="text" name="s_name[]" placeholder="Full legal name" class="full"><input type="email" name="s_email[]" placeholder="Email"><input type="tel" name="s_phone[]" placeholder="Cell phone"><select name="s_role[]"><option value="seller">Seller</option><option value="buyer">Buyer (me / partner)</option></select><select name="s_delivery[]" aria-label="Send by"><option value="email">By email</option><option value="text">By text (my cell)</option><option value="both">Email + text</option></select><div class="row full"><select name="s_order[]"><option value="1">Signs 1st</option><option value="2">Signs 2nd</option><option value="3">Signs 3rd</option><option value="4">Signs 4th</option></select><button class="link rm" type="button">remove</button></div></template>
+<template id="signer-tpl"><input type="text" name="s_name[]" placeholder="Full legal name" class="full"><input type="email" name="s_email[]" placeholder="Email"><input type="tel" name="s_phone[]" placeholder="Cell phone"><select name="s_role[]"><option value="seller">Seller</option><option value="buyer">Buyer (me / partner)</option></select><select name="s_delivery[]" aria-label="Send by"><option value="email">By email</option><option value="text">By text (my cell)</option><option value="both">Email + text</option><option value="email_notice">Email link + heads-up text (no link)</option></select><div class="row full"><select name="s_order[]"><option value="1">Signs 1st</option><option value="2">Signs 2nd</option><option value="3">Signs 3rd</option><option value="4">Signs 4th</option></select><button class="link rm" type="button">remove</button></div></template>
 <script>window.PREFILL=${pre}</script>`,
   })
 }
@@ -208,7 +211,7 @@ export function adminDetail({ envelope, signers, events, flash, error, freshLink
   const rows = signers.map((s) => {
     const canSend = open && s.status !== "signed" && s.order_index <= tier
     const link = freshLinks[s.id]
-    return `<tr><td><strong>${esc(s.name)}</strong><div class="ev">${[s.email, s.phone].filter(Boolean).map(esc).join(" · ")}<br>${s.role} · order ${s.order_index} · by ${s.delivery === "both" ? "email + text" : s.delivery} · ${s.placement === "template" ? "on the agreement" : s.placement === "fields" ? "on the form's own lines" : "on the addendum"}</div></td>
+    return `<tr><td><strong>${esc(s.name)}</strong><div class="ev">${[s.email, s.phone].filter(Boolean).map(esc).join(" · ")}<br>${s.role} · order ${s.order_index} · by ${s.delivery === "both" ? "email + text" : s.delivery === "email_notice" ? "email + heads-up text" : s.delivery} · ${s.placement === "template" ? "on the agreement" : s.placement === "fields" ? "on the form's own lines" : "on the addendum"}</div></td>
 <td><span class="pill ${s.status}">${s.status}</span><div class="ev">${s.sent_at ? `sent ${esc(fmtTsPT(s.sent_at))}${s.send_count > 1 ? ` (×${s.send_count})` : ""}<br>` : ""}${s.opened_at ? `opened ${esc(fmtTsPT(s.opened_at))} · ${esc(geoLabel(s.open_geo))} · ${esc(deviceLabel(s.open_ua))}<br>` : ""}${s.signed_at ? `signed ${esc(fmtTsPT(s.signed_at))} · ${esc(geoLabel(s.sign_geo))}` : ""}</div></td>
 <td class="actions">${canSend ? `<form method="post" action="/admin/e/${envelope.id}/resend/${s.id}" style="display:inline"><button class="btn small secondary" type="submit">Resend</button></form><form method="post" action="/admin/e/${envelope.id}/link/${s.id}" style="display:inline"><button class="btn small secondary" type="submit">Get link to text</button></form>` : ""}${link ? `<div class="ev">Fresh link (expires ${esc(fmtDatePT(link.expiresAt))}):<br><code>${esc(link.link)}</code> <button class="link" data-copy="${esc(link.link)}">copy</button></div>` : ""}</td></tr>`
   }).join("")
@@ -226,6 +229,7 @@ export function adminDetail({ envelope, signers, events, flash, error, freshLink
 <p><span class="pill ${envelope.status}">${envelope.status.replace("_", " ")}</span> · ${esc(envelope.property_address || "")} · created ${esc(fmtTsPT(envelope.created_at))}${envelope.completed_at ? ` · completed ${esc(fmtTsPT(envelope.completed_at))}` : ""}${envelope.is_template ? " · LRG purchase agreement template" : ""}</p>
 ${files}<div class="row">${actions}${retryBuild}</div>
 <table class="list stack" style="margin-top:14px"><thead><tr><th>Signer</th><th>Status</th><th></th></tr></thead><tbody>${rows}</tbody></table>
+${envelope.copy_to ? `<p class="ev">Copy when signed: ${JSON.parse(envelope.copy_to).map((c) => `${esc(c.name)} &lt;${esc(c.email)}&gt;`).join(", ")}</p>` : ""}
 <h2 style="margin-top:20px">Fingerprints</h2><p class="ev">Original SHA-256: <code>${envelope.original_sha256}</code></p>${envelope.final_sha256 ? `<p class="ev">Final SHA-256: <code>${envelope.final_sha256}</code></p>` : ""}
 <p class="ev">Envelope <code>${envelope.id}</code> · public record page: <a href="/verify/${envelope.id}">/verify/${envelope.id}</a></p>
 <h2 style="margin-top:20px">Event log</h2>${ev}</div>`,

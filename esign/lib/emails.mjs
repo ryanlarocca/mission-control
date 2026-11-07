@@ -73,6 +73,12 @@ export function inviteText({ envelope, signer, link, expiresAt }) {
   return `Hi ${first}, it's ${env.ownerName} with ${env.businessName}. Here's the ${envelope.title} to review and sign on your phone:\n${link}\nThe link is just for you and works until ${fmtLongDatePT(expiresAt)}. Call or text me with any questions.`
 }
 
+/** email_notice delivery: a heads-up from Ryan's cell that the link is in their inbox (no link in the text). */
+export function noticeText({ envelope, signer }) {
+  const first = signer.name.split(/\s+/)[0]
+  return `Hi ${first}, it's ${env.ownerName} with ${env.businessName}. I just emailed you the ${envelope.title} to review and sign. Look for an email from ${env.senderEmail}. Call or text me with any questions.`
+}
+
 export function completedText({ envelope, signer }) {
   const first = signer.name.split(/\s+/)[0]
   return `Hi ${first}, ${envelope.title} is now signed by everyone. Your copy (with the signing certificate) is here:\n${env.baseUrl}/verify/${envelope.id}\nThank you! — ${env.ownerName}, ${env.businessName}`

@@ -91,6 +91,11 @@ function signersFromForm(arr) {
   return names.map((name, i) => ({ name, email: emails[i], phone: phones[i], role: roles[i], order: orders[i], delivery: deliveries[i] }))
 }
 
+function copyToFromForm(arr) {
+  const names = arr("cc_name[]"), emails = arr("cc_email[]")
+  return names.map((name, i) => ({ name, email: emails[i] }))
+}
+
 /** Where this signer's "Sign here" tab sits on the page images (template signers only). */
 function signSpot(envelope, signer) {
   if (envelope.fields_json && signer.placement === "fields") {
@@ -280,6 +285,7 @@ app.get("/admin/new", async (c) => {
 app.post("/admin/envelopes", async (c) => {
   const { body, arr, str } = await parseForm(c)
   const signers = signersFromForm(arr)
+  const copyTo = copyToFromForm(arr)
   const source = str("source")
   let pdfBytes = null, driveFileId = null
   if (source === "upload") {
@@ -290,7 +296,7 @@ app.post("/admin/envelopes", async (c) => {
   try {
     const { id, sent } = await E.createEnvelope({
       title: str("title"), propertyAddress: str("property_address"), agreementDate: str("agreement_date") || null, message: str("message"),
-      pdfBytes, driveFileId, signers, createdBy: "admin",
+      pdfBytes, driveFileId, signers, copyTo, createdBy: "admin",
     })
     await notify(`📨 Sent <b>${tesc(getEnvelope(id).title)}</b> for signature → ${tesc(sent.join(", "))}\n${env.baseUrl}/admin/e/${id}`)
     return c.redirect(`/admin/e/${id}?flash=${encodeURIComponent(`Sent to ${sent.join(", ")}`)}`)
@@ -299,7 +305,7 @@ app.post("/admin/envelopes", async (c) => {
     if (!(e instanceof E.UserError)) console.error("[esign] create failed:", e)
     let offers = []
     try { offers = await listRecentOffers(await driveClient()) } catch { /* shown empty */ }
-    return html(c, V.adminNew({ prefill: { title: str("title"), address: str("property_address"), date: str("agreement_date"), message: str("message"), drive: driveFileId, source, signers }, offers, error: msg }), 400)
+    return html(c, V.adminNew({ prefill: { title: str("title"), address: str("property_address"), date: str("agreement_date"), message: str("message"), drive: driveFileId, source, signers, copyTo }, offers, error: msg }), 400)
   }
 })
 
