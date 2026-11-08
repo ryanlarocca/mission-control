@@ -10,6 +10,7 @@ import { sendThreadedEmailReply } from "@/lib/emailReply"
 import { buildLeadContext } from "./context"
 import { proposePlan, stampLeadMoment, type Plan } from "./plan"
 import { draftReply, type DraftChannel } from "./draft"
+import { coachDraft } from "./coach"
 import { executePlanServer } from "./execute"
 import { MOMENT_LABELS, NEXT_ACTION_LABELS } from "@/lib/reply-client"
 
@@ -126,6 +127,32 @@ function defaultAction(moment: string): string {
     case "invitation_to_talk": return "schedule_call"
     default: return "reply_only"
   }
+}
+
+/** "draft: <gist>" replied to a lead alert (2026-11-07, Ryan on Anita's text
+ *  alert): the coach writer drafts from his gist and posts it with the same
+ *  ✅/🔁/❌ buttons. Nothing is sent until ✅. Replies to the posted draft
+ *  redraft via redraftFromTelegram (the gist rides the parent chain). */
+export async function coachDraftFromTelegram(phone: string, gist: string, replyTo?: number | null): Promise<{ ok: boolean; error?: string }> {
+  const sb = getLeadsClient()
+  const { data: lead } = await sb.from("leads").select("id").eq("caller_phone", phone).order("created_at", { ascending: false }).limit(1).maybeSingle<{ id: string }>()
+  if (!lead) return { ok: false, error: `no lead on file for ${phone}` }
+  const ctx = await buildLeadContext(lead.id)
+  if (!ctx) return { ok: false, error: "lead not found" }
+  const channel: DraftChannel = ctx.inboundChannel === "email" && ctx.email ? "email" : "sms"
+  if (channel === "sms" && !ctx.phone) return { ok: false, error: "no phone" }
+  // His gist decides what happens, not the record: the proposed plan said
+  // "schedule call" on Anita's pass. ✅ sends the reply and nothing else.
+  const proposed = await proposePlan(ctx)
+  if (!proposed) return { ok: false, error: "plan unavailable" }
+  const plan: Plan = { ...proposed, next_action: "reply_only" }
+  const out = await coachDraft({ ctx, channel, surface: "telegram", gist, plan, notes: ctx.notes })
+  if (!out || !out.draftId) return { ok: false, error: "draft unavailable" }
+  await postDraftMessage({
+    draftId: out.draftId, name: ctx.name || ctx.phone || ctx.email || "lead", plan: out.plan, body: out.body, subject: out.subject, channel,
+    replyTo, note: out.read ? `🧠 ${out.read}` : null,
+  })
+  return { ok: true }
 }
 
 /** Reply-to-draft text or the 🔁 button: redraft (with the why when given) and post v2. */

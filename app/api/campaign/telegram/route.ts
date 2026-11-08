@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server"
-import { findPlannerDraftByTgMessage, redraftFromTelegram, sendPlannerDraft, dismissPlannerDraft } from "@/lib/reply/telegram"
+import { coachDraftFromTelegram, findPlannerDraftByTgMessage, redraftFromTelegram, sendPlannerDraft, dismissPlannerDraft } from "@/lib/reply/telegram"
 import { getLeadsClient, lookupLeadName, normalizeE164, sendLeadSms } from "@/lib/leads"
 import { approveBatch, setPaused, campaignStatusLine } from "@/lib/campaignBatch"
 import { resolveSender, setSenderPaused, recordCanaryVerdict, recordPostmaster } from "@/lib/campaignSenders"
@@ -424,6 +424,16 @@ async function handlePendingReply(chatId: number, msg: TgMessage, pendingText: s
 function extractPhone(text: string): string | null {
   const m = text.match(/\((\d{3})\)\s?(\d{3})-(\d{4})/)
   return m ? `${m[1]}${m[2]}${m[3]}` : null
+}
+
+// Lead-line alerts embed the lead phone in E.164 ("+1408…") or, for
+// email/DM leads, as "(xxx) xxx-xxxx" under a "New … lead" header.
+function leadPhoneFromAlert(text: string): string | null {
+  const e164 = text.match(/\+\d{10,15}/)?.[0]
+  if (e164) return normalizeE164(e164) || e164
+  const header = /\bnew (lead|[\w ]*lead|recording)\b/i.test(text) && !/agents line/i.test(text)
+  const ten = header ? extractPhone(text) : null
+  return ten ? `+1${ten}` : null
 }
 
 export async function POST(request: Request) {
@@ -1243,10 +1253,23 @@ export async function POST(request: Request) {
   const draftMatch = /^draft:\s*([\s\S]+)$/i.exec(body)
   if (draftMatch) {
     const nameMatch = /AGENT REPLY[^—]*—\s*(.+?)\s*\(after T/i.exec(repliedText)
+    // Lead alert (text / call / voicemail / email lead): the coach writer
+    // drafts from his gist and posts it with ✅/🔁/❌ — never sent as-is.
+    const draftLeadPhone = nameMatch ? null : leadPhoneFromAlert(repliedText)
+    if (draftLeadPhone) {
+      await tg("sendMessage", { chat_id: chatId, text: "✍️ Drafting…", reply_to_message_id: msg.message_id })
+      waitUntil((async () => {
+        const out = await coachDraftFromTelegram(draftLeadPhone, draftMatch[1].trim(), msg.message_id)
+        if (!out.ok) await tg("sendMessage", { chat_id: chatId, text: `⚠️ Couldn't draft — ${out.error}`, reply_to_message_id: msg.message_id })
+      })().catch(async (e) => {
+        await tg("sendMessage", { chat_id: chatId, text: `⚠️ Couldn't draft — ${e instanceof Error ? e.message : String(e)}`, reply_to_message_id: msg.message_id })
+      }))
+      return NextResponse.json({ ok: true })
+    }
     if (!nameMatch) {
       await tg("sendMessage", {
         chat_id: chatId,
-        text: "⚠️ Drafting works on email AGENT REPLY alerts — reply to one of those with draft: <guidance>.",
+        text: "⚠️ Drafting works on lead alerts and email AGENT REPLY alerts — reply to one of those with draft: <guidance>.",
         reply_to_message_id: msg.message_id,
       })
       return NextResponse.json({ ok: true })
@@ -1323,13 +1346,7 @@ export async function POST(request: Request) {
   // "(xxx) xxx-xxxx" under a "New … lead" header. Replies go out on the LEAD
   // line via sendLeadSms (DNC guard, timeline row, cadence reset) — never the
   // agents line. Same path as the old /api/telegram/webhook bridge.
-  const leadE164 = repliedText.match(/\+\d{10,15}/)?.[0]
-  const leadHeader = /\bnew (lead|[\w ]*lead|recording)\b/i.test(repliedText) && !/agents line/i.test(repliedText)
-  const leadPhone = leadE164
-    ? normalizeE164(leadE164) || leadE164
-    : leadHeader && extractPhone(repliedText)
-      ? `+1${extractPhone(repliedText)}`
-      : null
+  const leadPhone = leadPhoneFromAlert(repliedText)
   if (leadPhone) {
     // "call her back" on a lead alert places the card's recorded call
     // instead of texting those words to the lead.
