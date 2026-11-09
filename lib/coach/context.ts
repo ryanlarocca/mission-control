@@ -35,12 +35,15 @@ export interface LeadCoachContext {
   // 15-month-old text quoted back "comes off a little bit strange").
   lastFromThem: string | null
   daysSinceThem: number | null
+  // A signed purchase agreement (lib/deals) or a closed deal — the script
+  // talks about closing, never "have you decided?".
+  deal: { pendingAt: string | null; closedAt: string | null; price: number | null; closeBy: string | null; signedAt: string | null; recordedAt: string | null } | null
 }
 
 export async function gatherLeadContext(sb: SupabaseClient, phone: string): Promise<LeadCoachContext> {
   const { data } = await sb
     .from("leads")
-    .select("id, created_at, lead_type, twilio_number, message, name, property_address, notes, ai_notes, ai_summary, source, status, temperature, offer_amount, offer_verbalized_at, mail_pieces_detail, coach_script")
+    .select("id, created_at, lead_type, twilio_number, message, name, property_address, notes, ai_notes, ai_summary, source, status, temperature, offer_amount, offer_verbalized_at, mail_pieces_detail, coach_script, pending_at, deal_closed_at, deal_details")
     .eq("caller_phone", phone)
     .order("created_at", { ascending: true })
     .limit(60)
@@ -48,7 +51,7 @@ export async function gatherLeadContext(sb: SupabaseClient, phone: string): Prom
   const ctx: LeadCoachContext = {
     phone, name: null, propertyAddress: null, sources: [], status: null, temperature: null,
     offerAmount: null, offerVerbalizedAt: null, mailPieces: null, notes: [], aiNotes: null, aiSummary: null,
-    timeline: [], lastScript: null, lastScriptAt: null, newestId: null, lastFromThem: null, daysSinceThem: null,
+    timeline: [], lastScript: null, lastScriptAt: null, newestId: null, lastFromThem: null, daysSinceThem: null, deal: null,
   }
   const seenNotes = new Set<string>()
   for (const r of rows) {
@@ -58,6 +61,14 @@ export async function gatherLeadContext(sb: SupabaseClient, phone: string): Prom
     if (r.status) ctx.status = r.status
     if (r.temperature) ctx.temperature = r.temperature
     if (typeof r.offer_amount === "number") { ctx.offerAmount = r.offer_amount; ctx.offerVerbalizedAt = r.offer_verbalized_at ?? null }
+    if (r.pending_at || r.deal_closed_at || r.deal_details) {
+      const d = (r.deal_details ?? null) as { price?: number | null; close_by?: string | null; signed_at?: string | null; set_at?: string | null } | null
+      const cur = ctx.deal ?? { pendingAt: null, closedAt: null, price: null, closeBy: null, signedAt: null, recordedAt: null }
+      ctx.deal = {
+        pendingAt: r.pending_at ?? cur.pendingAt, closedAt: r.deal_closed_at ?? cur.closedAt,
+        price: d?.price ?? cur.price, closeBy: d?.close_by ?? cur.closeBy, signedAt: d?.signed_at ?? cur.signedAt, recordedAt: d?.set_at ?? cur.recordedAt,
+      }
+    }
     if (r.mail_pieces_detail) ctx.mailPieces = typeof r.mail_pieces_detail === "string" ? r.mail_pieces_detail : JSON.stringify(r.mail_pieces_detail)
     if (r.ai_notes) ctx.aiNotes = r.ai_notes
     if (r.ai_summary) ctx.aiSummary = r.ai_summary
@@ -128,7 +139,13 @@ export function describeLeadContext(ctx: LeadCoachContext): string {
     lines.push(`Last message from them: ${ctx.lastFromThem} (${d} days ago)${stale ? " — STALE: they will not remember the exchange; soft reminder with an out, no details quoted back" : " — recent: use their words"}`)
   }
   if (ctx.status) lines.push(`Status: ${ctx.status}${ctx.temperature ? ` · ${ctx.temperature}` : ""}`)
-  if (ctx.offerAmount != null) lines.push(`Offer on file: $${ctx.offerAmount.toLocaleString()}${ctx.offerVerbalizedAt ? ` (verbalized ${ctx.offerVerbalizedAt.slice(0, 10)})` : ""}`)
+  if (ctx.deal?.closedAt) {
+    lines.push(`DEAL CLOSED ${ctx.deal.closedAt.slice(0, 10)}: Ryan bought it. This is an after-the-sale call — thank them, help with anything left over; nothing about selling.`)
+  } else if (ctx.deal?.pendingAt) {
+    const price = ctx.deal.price ?? ctx.offerAmount
+    lines.push(`UNDER CONTRACT: they signed Ryan's purchase agreement ${(ctx.deal.signedAt ?? ctx.deal.pendingAt).slice(0, 10)}${price != null ? ` at $${price.toLocaleString()}` : ""}${ctx.deal.closeBy ? `, close by ${ctx.deal.closeBy}` : ""}. The decision is made — never ask whether they've decided, talked it over, or where they landed. Talk closing: escrow and title, the walkthrough, timing, move-out, their questions.`)
+  }
+  if (ctx.offerAmount != null && !ctx.deal?.pendingAt) lines.push(`Offer on file: $${ctx.offerAmount.toLocaleString()}${ctx.offerVerbalizedAt ? ` (verbalized ${ctx.offerVerbalizedAt.slice(0, 10)})` : ""}`)
   if (ctx.mailPieces) lines.push(`Mail they received: ${ctx.mailPieces.slice(0, 600)}`)
   if (ctx.aiSummary) lines.push(`Card summary: ${ctx.aiSummary}`)
   if (ctx.aiNotes) lines.push(`Last call notes: ${ctx.aiNotes}`)

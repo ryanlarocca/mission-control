@@ -59,6 +59,8 @@ export async function POST(request: NextRequest) {
     && Date.now() - new Date(ctx.lastScriptAt).getTime() < freshMs
     && cached.numberToSay === numberToSay
     && (!ctx.lastFromThem || ctx.lastFromThem <= ctx.lastScriptAt.slice(0, 10))
+    // A contract signed (or a deal closed) after the script was written.
+    && !(ctx.deal && [ctx.deal.recordedAt, ctx.deal.signedAt, ctx.deal.pendingAt, ctx.deal.closedAt].some((t) => t && t > ctx.lastScriptAt!))
   let script: CallScript | null = fresh ? cached : null
   let reused = !!script
   if (!script) {

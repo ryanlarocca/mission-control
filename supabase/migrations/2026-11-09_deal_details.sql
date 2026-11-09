@@ -1,0 +1,14 @@
+-- Signed contracts reach the lead card (2026-11-09, lib/deals.ts).
+--
+-- When a purchase agreement is fully signed on sign.lrghomes.com, the e-sign
+-- service tells Mission Control (POST /api/leads/contract). pending_at gets
+-- the signing day like a Pending tap; this column holds the contract terms
+-- the card, the judge and the call scripts read, written on every row of the
+-- person (like appointment_details):
+--
+--   { envelope_id, title, price, earnest_money, closing_days,
+--     signed_at, close_by (YYYY-MM-DD, Pacific), drive_link,
+--     seller_name, source: "esign", set_at }
+--
+-- No new table, so no new RLS policy: leads already has RLS on.
+alter table leads add column if not exists deal_details jsonb;

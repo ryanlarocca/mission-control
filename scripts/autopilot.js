@@ -258,7 +258,7 @@ function isInbound(row) {
 async function clusterRows(sb, lead) {
   const { data, error } = await sb
     .from("leads")
-    .select("id, created_at, lead_type, twilio_number, message, ai_summary, notes, status, is_dnc, is_junk, recommended_followup_date, name, caller_phone")
+    .select("id, created_at, lead_type, twilio_number, message, ai_summary, notes, status, is_dnc, is_junk, recommended_followup_date, name, caller_phone, pending_at, deal_closed_at")
     .eq("caller_phone", lead.caller_phone)
     .order("created_at", { ascending: true })
   if (error) throw new Error(error.message)
@@ -307,6 +307,11 @@ async function runAutopilot(sb, deps) {
       if (rows.some((r) => r.is_dnc || r.is_junk || String(r.status || "").toLowerCase() === "dead")) {
         if (live) await stopAutopilot(sb, lead)
         bump("stopped_dead"); continue
+      }
+      // 1a. Under contract or closed (2026-11-09, lib/deals) → off autopilot.
+      if (rows.some((r) => r.pending_at || r.deal_closed_at)) {
+        if (live) await stopAutopilot(sb, lead)
+        bump("stopped_deal"); continue
       }
 
       // 1b. Last text didn't land on a phone (landline / unreachable):

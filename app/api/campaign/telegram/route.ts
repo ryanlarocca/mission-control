@@ -523,6 +523,18 @@ export async function POST(request: Request) {
       })().catch((e) => console.error("[campaign-tg] appointment undo failed:", e instanceof Error ? e.message : String(e))))
       return NextResponse.json({ ok: true })
     }
+    // Signed contract ↩️ Undo (2026-11-09, lib/deals): the e-sign service's
+    // "fully signed" card carries it — takes Pending + the terms off the lead.
+    if (cb.data.startsWith("dealundo:") && typeof chatId === "number") {
+      const id = cb.data.slice("dealundo:".length)
+      const cardId = cb.message?.message_id
+      await tg("answerCallbackQuery", { callback_query_id: cb.id, text: "Undoing…" })
+      const { undoContract } = await import("@/lib/deals")
+      const out = /^[0-9a-f-]{36}$/.test(id) ? await undoContract(getLeadsClient(), id) : { ok: false, label: "bad button" }
+      if (out.ok) await tg("editMessageReplyMarkup", { chat_id: chatId, message_id: cardId, reply_markup: { inline_keyboard: [] } })
+      await tg("sendMessage", { chat_id: chatId, text: out.ok ? `↩️ ${out.label}.` : `⚠️ ${out.label}.`, reply_to_message_id: cardId })
+      return NextResponse.json({ ok: true })
+    }
     // Daily lead-status summary (2026-10-24): ↩️ Undo puts one automatic
     // move back and makes Ryan's status stick (lib/leadStatus).
     if (cb.data.startsWith("lsundo:")) {

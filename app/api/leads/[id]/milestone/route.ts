@@ -46,6 +46,8 @@ export async function POST(request: NextRequest, { params }: { params: { id: str
 
     // Noon UTC keeps the calendar date stable in Pacific time.
     const update: Record<string, unknown> = { [COLUMN[milestone]]: date ? `${date}T12:00:00Z` : null }
+    // Clearing Pending clears the signed contract's terms with it (lib/deals).
+    if (milestone === "pending" && date === null) update.deal_details = null
     if (milestone === "closed") {
       if (date === null) update.deal_value = null
       else if (dealValue !== undefined) update.deal_value = dealValue

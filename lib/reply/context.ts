@@ -47,6 +47,8 @@ export interface LeadContext {
   // new number.
   offer_amount: number | null
   offer_verbalized_at: string | null
+  /** A signed purchase agreement / closed deal (lib/deals, 2026-11-09). */
+  deal?: { pendingAt: string | null; closedAt: string | null; price: number | null; closeBy: string | null } | null
   drip_campaign_type: string | null
   recommended_followup_date: string | null
   followup_reason: string | null
@@ -194,6 +196,9 @@ interface LeadRow {
   message: string | null
   offer_amount: number | null
   offer_verbalized_at: string | null
+  pending_at?: string | null
+  deal_closed_at?: string | null
+  deal_details?: { price?: number | null; close_by?: string | null } | null
   drip_campaign_type: string | null
   recommended_followup_date: string | null
   followup_reason: string | null
@@ -203,7 +208,7 @@ interface LeadRow {
 export type LeadThreadRow = Pick<LeadRow, "created_at" | "lead_type" | "twilio_number" | "message">
 
 const LEAD_COLS =
-  "id, created_at, name, email, caller_phone, gmail_thread_id, source, campaign_label, property_address, property_details, status, temperature, moment, ai_summary, notes, lead_type, twilio_number, message, offer_amount, offer_verbalized_at, drip_campaign_type, recommended_followup_date, followup_reason, is_dnc, mail_record_id"
+  "id, created_at, name, email, caller_phone, gmail_thread_id, source, campaign_label, property_address, property_details, status, temperature, moment, ai_summary, notes, lead_type, twilio_number, message, offer_amount, offer_verbalized_at, pending_at, deal_closed_at, deal_details, drip_campaign_type, recommended_followup_date, followup_reason, is_dnc, mail_record_id"
 
 /** Supabase lead rows → thread items. Exported for the context unit test.
  *  A "call" row (lead_type call, drip or not) is a recorded live conversation
@@ -290,6 +295,13 @@ export async function buildLeadContext(leadId: string, opts: { live?: boolean } 
     notes: Array.from(new Set(rows.map((r) => ryanNotes(r.notes)).filter(Boolean))).join("\n") || null,
     offer_amount: pick("offer_amount"),
     offer_verbalized_at: pick("offer_verbalized_at"),
+    deal: (() => {
+      const pendingAt = pick("pending_at") ?? null
+      const closedAt = pick("deal_closed_at") ?? null
+      if (!pendingAt && !closedAt) return null
+      const d = pick("deal_details")
+      return { pendingAt, closedAt, price: d?.price ?? null, closeBy: d?.close_by ?? null }
+    })(),
     drip_campaign_type: pick("drip_campaign_type"),
     recommended_followup_date: pick("recommended_followup_date"),
     followup_reason: pick("followup_reason"),
@@ -385,7 +397,12 @@ export function describeContact(ctx: ReplyContext): string {
       pd ? `Property details: ${pd}` : null,
       `Lead status: ${ctx.status || "(none)"} · temperature: ${ctx.temperature || "(none)"}`,
       `Source: ${ctx.campaign_label || ctx.source || "(unknown)"}`,
-      ctx.offer_amount != null
+      ctx.deal?.closedAt
+        ? `DEAL CLOSED ${ctx.deal.closedAt.slice(0, 10)}: Ryan bought the property. Nothing about selling.`
+        : ctx.deal?.pendingAt
+          ? `UNDER CONTRACT: they signed Ryan's purchase agreement ${ctx.deal.pendingAt.slice(0, 10)}${ctx.deal.price != null ? ` at ${formatMoney(ctx.deal.price)}` : ""}${ctx.deal.closeBy ? `, close by ${ctx.deal.closeBy}` : ""}. The decision is made — never ask whether they've decided; help with closing (escrow, title, walkthrough, timing, move-out).`
+          : null,
+      ctx.offer_amount != null && !ctx.deal?.pendingAt
         ? `Offer on file (Ryan's last verbalized number to them): ${formatMoney(ctx.offer_amount)}${ctx.offer_verbalized_at ? ` on ${ctx.offer_verbalized_at.slice(0, 10)}` : ""}`
         : null,
       ctx.drip_campaign_type ? `Current drip track: ${ctx.drip_campaign_type}` : null,

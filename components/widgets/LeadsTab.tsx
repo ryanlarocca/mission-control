@@ -106,6 +106,8 @@ interface Lead {
   pending_at?: string | null
   deal_closed_at?: string | null
   deal_value?: number | null
+  // Signed purchase agreement terms (lib/deals, 2026-11-09).
+  deal_details?: DealTerms | null
   became_lead_at?: string | null
   // Direct-mail touch count (2026-10-24): letters received up to and
   // including the one answered; null = unknown. Cluster-wide.
@@ -207,6 +209,7 @@ interface LeadGroup {
   pendingAt: string | null
   closedAt: string | null
   dealValue: number | null
+  dealTerms: DealTerms | null
   becameLeadAt: string | null
   mailPiecesBefore: number | null
   mailPiecesDetail: string[]
@@ -493,13 +496,16 @@ function groupLeads(leads: Lead[]): LeadGroup[] {
       // Offer — surface from whichever cluster row has it stamped. The
       // analyzer writes to the analyzed row; if there's a hand-edit on
       // any sibling, that wins via newest-first walk.
-      offerAmount: newestFirst.find(r => typeof r.offer_amount === "number" && r.offer_amount > 0)?.offer_amount ?? null,
+      // A signed contract's price beats any number said on a call.
+      offerAmount: newestFirst.find(r => r.deal_details?.price)?.deal_details?.price
+        ?? newestFirst.find(r => typeof r.offer_amount === "number" && r.offer_amount > 0)?.offer_amount ?? null,
       offerVerbalizedAt: newestFirst.find(r => r.offer_verbalized_at)?.offer_verbalized_at ?? null,
       appointmentAt: newestFirst.find(r => r.appointment_at)?.appointment_at ?? null,
       appointmentDetails: newestFirst.find(r => r.appointment_details)?.appointment_details ?? null,
       pendingAt: newestFirst.find(r => r.pending_at)?.pending_at ?? null,
       closedAt: newestFirst.find(r => r.deal_closed_at)?.deal_closed_at ?? null,
       dealValue: newestFirst.find(r => typeof r.deal_value === "number" && r.deal_value > 0)?.deal_value ?? null,
+      dealTerms: newestFirst.find(r => r.deal_details)?.deal_details ?? null,
       becameLeadAt: newestFirst.find(r => r.became_lead_at)?.became_lead_at ?? null,
       mailPiecesBefore: newestFirst.find(r => typeof r.mail_pieces_before === "number")?.mail_pieces_before ?? null,
       mailPiecesDetail: newestFirst.find(r => Array.isArray(r.mail_pieces_detail) && r.mail_pieces_detail.length)?.mail_pieces_detail ?? [],
@@ -3432,6 +3438,9 @@ function mergeForTimeline(authoritative: Lead[], synthetic: Lead[]): Lead[] {
 // Appointment / Pending / Closed (+ price) taps on the card. Offer keeps its
 // own row above. The chip in the card header shows how far the person got.
 type Milestone = "appointment" | "pending" | "closed"
+// What the e-sign service put on the card when the purchase agreement was
+// signed (lib/deals DealDetails — only the fields the card shows).
+interface DealTerms { price: number | null; close_by: string | null; drive_link: string | null }
 const MILESTONE_COLUMN: Record<Milestone, "appointment_at" | "pending_at" | "deal_closed_at"> = {
   appointment: "appointment_at",
   pending: "pending_at",
@@ -3490,7 +3499,7 @@ function MilestoneRow({ group, onSave }: { group: LeadGroup; onSave: (m: Milesto
   function open(m: Milestone) {
     setEditing(m)
     setDate(current[m] ? current[m]!.slice(0, 10) : today())
-    setPrice(m === "closed" && group.dealValue ? String(group.dealValue) : "")
+    setPrice(m === "closed" ? String(group.dealValue ?? group.dealTerms?.price ?? "") : "")
   }
   function commit() {
     if (!editing) return
@@ -3536,9 +3545,16 @@ function MilestoneRow({ group, onSave }: { group: LeadGroup; onSave: (m: Milesto
             title={at ? `Edit ${m}` : `Mark ${m}`}
           >
             {label[m]}{at ? ` · ${fmt(at)}` : ""}{m === "appointment" && at ? apptExtra : ""}{m === "closed" && at && group.dealValue ? ` · ${money(group.dealValue)}` : ""}
+            {m === "pending" && at && group.dealTerms?.price ? ` · ${money(group.dealTerms.price)}` : ""}
+            {m === "pending" && at && !group.closedAt && group.dealTerms?.close_by ? ` · close by ${fmt(`${group.dealTerms.close_by}T12:00:00Z`)}` : ""}
           </button>
         )
       })}
+      {group.pendingAt && group.dealTerms?.drive_link && (
+        <a href={group.dealTerms.drive_link} target="_blank" rel="noreferrer" className="rounded border border-zinc-800 bg-zinc-950 px-3 py-1 text-[11px] text-sky-300 hover:border-sky-900/60 transition-colors">
+          📄 Contract
+        </a>
+      )}
     </div>
   )
 }

@@ -13,6 +13,7 @@ import { sendMail, driveClient, driveDownload, driveMeta, driveResolvePath, driv
 import { inviteEmail, completedEmail, inviteText, completedText, noticeText } from "./emails.mjs"
 import { sendText, normalizePhone } from "./sms.mjs"
 import { notify, esc } from "./notify.mjs"
+import { crmEnabled, isSellerContract, reportContract } from "./crm.mjs"
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
 
@@ -136,7 +137,25 @@ export async function createEnvelope({ title, propertyAddress, agreementDate, me
   addEvent(id, "created", { details: { title, pages: pageCount, template: info.isTemplate, source: driveFileId ? "drive" : "upload", signers: cleanSigners.length, copyTo: cleanCopyTo.map((c) => c.email) } })
   await refreshInterim(id) // the addendum box + page are there from the first signer on
   const sent = await sendPending(id)
+  await reportOfferSent(id)
   return { id, sent }
+}
+
+/** A purchase agreement went out: the seller's lead card gets the Offer
+ *  stage and the written price (lib/crm). Never throws — Ryan hears about a
+ *  failure, the envelope itself is fine. */
+async function reportOfferSent(id) {
+  const envelope = getEnvelope(id)
+  const signers = getSigners(id)
+  if (!crmEnabled() || !isSellerContract(envelope, signers)) return
+  try {
+    const out = await reportContract("sent", envelope, signers)
+    addEvent(id, "crm_offer", { details: { status: out.status, leadId: out.leadId || null } })
+    if (out.status === "no_match") await notify(`⚠️ e-sign: sent <b>${esc(envelope.title)}</b>, but I couldn't tell which lead it's for, so the Offer isn't on a card. Set it by hand if you want it counted.`)
+  } catch (e) {
+    console.error("[esign] offer report failed:", e)
+    await notify(`⚠️ e-sign: sent <b>${esc(envelope.title)}</b>, but the lead card didn't get the Offer: ${esc(e?.message || e)}`)
+  }
 }
 
 const SAFE = (t) => String(t).replace(/[\\/:*?"<>|]+/g, "-").replace(/\s+/g, " ").trim()
@@ -497,6 +516,22 @@ export async function deliver(envelopeId) {
     }
   }
 
+  // The seller's lead card in Mission Control: Pending + the terms (lib/crm).
+  // Runs once; a failure is a delivery problem, so "Retry completion" redoes it.
+  let crmLine = ""
+  let crmButtons
+  if (crmEnabled() && isSellerContract(envelope, signers) && !getEvents(envelopeId).some((e) => e.kind === "crm_synced")) {
+    try {
+      const out = await reportContract("signed", getEnvelope(envelopeId), signers)
+      addEvent(envelopeId, "crm_synced", { details: { status: out.status, leadId: out.leadId || null, closeBy: out.closeBy || null } })
+      if (out.line) crmLine = `\n${out.line}`
+      if (out.undo) crmButtons = [[{ text: "↩️ Undo lead card", data: out.undo }]]
+    } catch (e) {
+      problems.push(`Lead card: ${e?.message || e}`)
+      console.error("[esign] lead card update failed:", e)
+    }
+  }
+
   const fresh = getEnvelope(envelopeId)
   const link = fresh.kind === "self" && fresh.drive_folder_link
     ? `\n📁 <a href="${fresh.drive_folder_link}">Folder in Drive</a> · <a href="${fresh.drive_signed_link}">signed copy</a>`
@@ -504,8 +539,11 @@ export async function deliver(envelopeId) {
   if (problems.length) {
     await notify(`🔴 e-sign: <b>${esc(envelope.title)}</b> is fully signed, but delivery had problems:\n• ${problems.map(esc).join("\n• ")}\nRetry from ${env.baseUrl}/admin/e/${envelopeId}`)
   } else if (!getEvents(envelopeId).some((e) => e.kind === "completion_notified")) {
-    await notify(`✅ <b>${esc(envelope.title)}</b> is fully signed by ${esc(signers.map((s) => s.name).join(", "))}.\nCompleted PDF emailed to everyone${copyTo.length ? ` (copy to ${esc(copyTo.map((c) => c.name).join(", "))})` : ""}.${link}\nSHA-256 <code>${envelope.final_sha256.slice(0, 16)}…</code>`)
+    await notify(`✅ <b>${esc(envelope.title)}</b> is fully signed by ${esc(signers.map((s) => s.name).join(", "))}.\nCompleted PDF emailed to everyone${copyTo.length ? ` (copy to ${esc(copyTo.map((c) => c.name).join(", "))})` : ""}.${link}${crmLine}\nSHA-256 <code>${envelope.final_sha256.slice(0, 16)}…</code>`, { buttons: crmButtons })
     addEvent(envelopeId, "completion_notified")
+  } else if (crmLine) {
+    // A retry that only redid the lead card: the signed notice already went out.
+    await notify(`<b>${esc(envelope.title)}</b>${crmLine}`, { buttons: crmButtons })
   }
   return { problems }
 }

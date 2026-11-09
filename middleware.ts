@@ -16,6 +16,9 @@ const PUBLIC_PATHS = [
   // The drip engine (Mac mini) asks this route to write a queued touch with
   // the Opus writer; same shared-secret header as telegram-draft.
   "/api/reply/drip-draft",
+  // The e-sign service (Mac mini) reports sent / signed purchase agreements
+  // (lib/deals); same shared-secret header.
+  "/api/leads/contract",
   // Twilio fetches these for outbound call relay (initiated from /api/leads/call,
   // which itself stays auth-gated).
   "/api/leads/call/bridge",

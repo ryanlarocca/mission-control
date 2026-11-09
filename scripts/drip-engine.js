@@ -1177,7 +1177,7 @@ async function telegram(text) {
 
 // ─── cluster helpers ────────────────────────────────────────────────────────
 
-const CLUSTER_COLS = "id, created_at, lead_type, twilio_number, status, is_dnc, is_junk, recommended_followup_date, followup_reason, drip_campaign_type, caller_phone, email"
+const CLUSTER_COLS = "id, created_at, lead_type, twilio_number, status, is_dnc, is_junk, recommended_followup_date, followup_reason, drip_campaign_type, caller_phone, email, pending_at, deal_closed_at"
 
 async function fetchCluster(sb, lead) {
   let q = sb.from("leads").select(CLUSTER_COLS).order("created_at", { ascending: true }).limit(500)
@@ -1191,8 +1191,10 @@ async function fetchCluster(sb, lead) {
 
 // Ryan 2026-05-22 + 2026-11-05: dead / DNC / junk on ANY row of a person
 // takes the whole person out of outreach — not just the row the engine picked.
+// 2026-11-09: so does a signed contract (Pending) or a closed deal — nobody
+// gets a "still thinking about selling?" text after they sold to Ryan.
 function clusterIsDead(rows) {
-  return rows.some((r) => r.is_dnc || r.is_junk || DRIP_STOP_STATUSES.has(String(r.status || "").toLowerCase()))
+  return rows.some((r) => r.is_dnc || r.is_junk || r.pending_at || r.deal_closed_at || DRIP_STOP_STATUSES.has(String(r.status || "").toLowerCase()))
 }
 
 function isReplyRow(row) {

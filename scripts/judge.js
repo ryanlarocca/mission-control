@@ -25,6 +25,11 @@
  *      day 3, 7, 14 after each attempt, then autopilot
  *  10. nothing new                              → leave the last verdict alone
  *
+ * Above all of them (2026-11-09, lib/deals.ts): a signed contract. Under
+ * contract → no chasing, no drips, no autopilot; one date, the close-by day.
+ * If they reach out, the model still reads it, and "they want something
+ * from Ryan" / "Ryan owes them" still come to Ryan today. Closed → nothing.
+ *
  * The judge is the only thing meant to own the date / reason / autopilot
  * state. The old per-event writers still run but get overruled 20 minutes
  * later; they come out once this has proven itself.
@@ -47,7 +52,7 @@ const CHASE_LADDER_DAYS = [1, 3, 7, 14] // after attempt 1, 2, 3, 4 — then aut
 const LOOKBACK_DAYS = 3                 // sweep: who had activity recently
 const MODEL = "claude-sonnet-5"
 const APPLE_EPOCH_OFFSET_MS = 978307200000
-const STATES = ["dnc", "dead", "appointment", "ryan_owes", "call_on", "waiting_on_them", "ryan_today", "quiet_until", "chase", "none"]
+const STATES = ["dnc", "dead", "under_contract", "closed", "appointment", "ryan_owes", "call_on", "waiting_on_them", "ryan_today", "quiet_until", "chase", "none"]
 
 // ─── dates (Pacific days, like lib/pacificDate) ─────────────────────────────
 
@@ -72,7 +77,7 @@ function pacificStamp(iso) {
 
 // ─── the thread ─────────────────────────────────────────────────────────────
 
-const ROW_COLS = "id, created_at, lead_type, twilio_number, message, ai_summary, ai_notes, notes, status, is_dnc, is_junk, is_bad_number, name, property_address, source, recommended_followup_date, followup_reason, drip_campaign_type, drip_touch_number, last_drip_sent_at, autopilot_since, autopilot_hold_until, autopilot_done_at, appointment_at, jackie_call, call_duration_sec, email"
+const ROW_COLS = "id, created_at, lead_type, twilio_number, message, ai_summary, ai_notes, notes, status, is_dnc, is_junk, is_bad_number, name, property_address, source, recommended_followup_date, followup_reason, drip_campaign_type, drip_touch_number, last_drip_sent_at, autopilot_since, autopilot_hold_until, autopilot_done_at, appointment_at, pending_at, deal_closed_at, deal_details, jackie_call, call_duration_sec, email"
 
 async function loadRows(sb, phone) {
   const { data, error } = await sb.from("leads").select(ROW_COLS).eq("caller_phone", phone).order("created_at", { ascending: true }).limit(500)
@@ -162,6 +167,13 @@ function facts(rows) {
     .filter((r) => isRyanOut(r) && /^(call|sms|imessage|email)$/.test(r.lead_type || "") && String(r.message || "").trim())
     .filter((r, i, arr) => i === 0 || new Date(r.created_at).getTime() - new Date(arr[i - 1].created_at).getTime() > 30 * 60000)
   const lastRyanOut = [...rows].reverse().find((r) => isRyanOut(r))
+  const pendingRow = rows.find((r) => r.pending_at)
+  const closedRow = rows.find((r) => r.deal_closed_at)
+  const deal = (rows.find((r) => r.deal_details) || {}).deal_details || null
+  // Something from them after the contract was signed — the only thing that
+  // brings an under-contract seller back to Ryan's list before closing day.
+  const signedAt = deal && deal.signed_at ? deal.signed_at : pendingRow ? pendingRow.pending_at : null
+  const inboundSinceContract = !!signedAt && rows.some((r) => isInbound(r) && r.created_at > signedAt)
   const dated = rows.filter((r) => r.recommended_followup_date).sort((a, b) => a.recommended_followup_date.localeCompare(b.recommended_followup_date))[0]
   return {
     newest, name: named.name || null, address: addr.property_address || null,
@@ -169,6 +181,8 @@ function facts(rows) {
     autopilotRow, attempts: attemptsSince, lastRyanOut, lastInbound,
     isDnc: rows.some((r) => r.is_dnc), isJunk: rows.some((r) => r.is_junk),
     isDead: rows.length > 0 && rows.every((r) => String(r.status || "").toLowerCase() === "dead"),
+    underContract: !!pendingRow && !closedRow, closedAt: closedRow ? closedRow.deal_closed_at : null,
+    deal, signedAt, inboundSinceContract,
     before: dated ? { date: dated.recommended_followup_date, reason: dated.followup_reason } : null,
   }
 }
@@ -233,10 +247,35 @@ async function askModel(anthropic, ctx) {
 
 // ─── the verdict (state → one date + what to write) ────────────────────────
 
+function money(n) { return `$${Number(n).toLocaleString("en-US")}` }
+
+/** "Under contract at $900,000 (signed Nov 7, 2026) — closes by Nov 17, 2026 — …" (same line as lib/deals). */
+function underContractReason(f) {
+  const d = f.deal || {}
+  const signed = f.signedAt ? fmtDay(pacificDay(new Date(f.signedAt))) : null
+  const parts = [`Under contract${d.price ? ` at ${money(d.price)}` : ""}${signed ? ` (signed ${signed})` : ""}`]
+  if (d.close_by) parts.push(`closes by ${fmtDay(d.close_by)} — tap Closed once it records`)
+  return parts.join(" — ")
+}
+
 function decide(llm, f, today) {
   let state = llm.state
   let date = null
   let reason = llm.reason
+  if (f.closedAt && !f.isDnc) {
+    return { state: "closed", date: null, reason: `Closed ${fmtDay(pacificDay(new Date(f.closedAt)))}.`, enrolAutopilot: false }
+  }
+  if (f.underContract && !f.isDnc) {
+    // They asked for something / Ryan owes them → Ryan's turn today, with the
+    // deal in the line. Anything else → wait for the close-by day.
+    if (llm.owed) {
+      const owed = llm.owed.replace(/\bRyan's\b/g, "your").replace(/\bRyan\b/g, "you").replace(/\bhis\b/g, "your").replace(/\bhim\b/g, "you")
+      return { state: "ryan_owes", date: today, reason: `You owe them: ${owed} (under contract)`.slice(0, 200), enrolAutopilot: false }
+    }
+    if (llm.state === "ryan_today") return { state: "ryan_today", date: today, reason: `${llm.reason} (under contract)`.slice(0, 200), enrolAutopilot: false }
+    const closeBy = f.deal && f.deal.close_by ? f.deal.close_by : null
+    return { state: "under_contract", date: closeBy ? (closeBy < today ? today : closeBy) : null, reason: underContractReason(f).slice(0, 200), enrolAutopilot: false }
+  }
   if (f.isDnc) { state = "dnc"; reason = reason || "On the do-not-contact list." }
   else if (f.appointment) {
     state = "appointment"
@@ -330,6 +369,14 @@ async function apply(sb, phone, rows, f, v, deps) {
 
   // Everyone else: one date on the newest row, none anywhere else.
   await upd({ recommended_followup_date: null, followup_reason: null })
+
+  if (v.state === "under_contract" || v.state === "closed") {
+    // Nobody texts a seller who signed: every drip / autopilot stamp off.
+    if (rows.some((r) => r.drip_campaign_type)) await upd({ drip_campaign_type: null }, rows.filter((r) => r.drip_campaign_type).map((r) => r.id))
+    await sb.from("drip_queue").update({ status: "skipped", error: "under_contract" }).in("lead_id", ids).in("status", ["pending", "approved"])
+    if (v.date) await upd({ recommended_followup_date: v.date, followup_reason: v.reason, followup_generated_at: now }, [f.newest.id])
+    return
+  }
   const host = f.autopilotRow || [...rows].reverse().find((r) => r.name && r.property_address) || [...rows].reverse().find((r) => r.property_address) || f.newest
 
   if (v.state === "quiet_until" || v.enrolAutopilot) {
@@ -399,12 +446,17 @@ async function judgePhone(sb, deps, phone, opts = {}) {
 
   let llm = null
   if (f.isDnc) llm = { state: "dnc", date: null, reason: "On the do-not-contact list.", connected: false }
+  else if (f.closedAt || (f.underContract && !f.inboundSinceContract)) {
+    // Signed (or closed) and nothing from them since: the deal is the plan.
+    llm = { state: "none", date: null, reason: "", connected: true, usage: null }
+  }
   else if (f.autopilotRow && !rows.some((r) => isInbound(r) && r.created_at > (f.autopilotRow.autopilot_since || f.autopilotRow.created_at)) && !opts.fresh) {
     // On autopilot and they haven't replied: autopilot owns them. Nothing to rule on.
     llm = { state: "none", date: null, reason: "On autopilot, no reply yet.", connected: false, usage: null }
   } else {
     const personal = await fetchPersonalTexts(phone, rows[0].created_at)
-    const ctx = { name: f.name, address: f.address, source: f.source, standing, hint: opts.hint, today, thread: buildThread(rows, personal) }
+    const dealHint = f.underContract ? `They are UNDER CONTRACT with Ryan — ${underContractReason(f)}. Only decide whether their newest message asks Ryan for something (ryan_today) or he owes them something (owed); don't chase a decision they already made.` : null
+    const ctx = { name: f.name, address: f.address, source: f.source, standing, hint: [opts.hint, dealHint].filter(Boolean).join(" ") || null, today, thread: buildThread(rows, personal) }
     llm = await askModel(deps.anthropic, ctx)
   }
   const v = decide(llm, f, today)
