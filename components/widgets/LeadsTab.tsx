@@ -449,7 +449,10 @@ function groupLeads(leads: Lead[]): LeadGroup[] {
     // status-driving row (manual updates target that row's id). AI summary
     // and follow-up come from whichever row in the group has them; if
     // multiple rows somehow have summaries, take the freshest.
-    const isDnc = !!statusSource.is_dnc
+    // DNC is the contact's, not a row's: any flagged row means do-not-contact
+    // (a call back from someone off the list used to add an unflagged newest
+    // row and the badge vanished, 2026-11-09).
+    const isDnc = evs.some(e => !!e.is_dnc)
     const isJunk = !!statusSource.is_junk
     const isBadNumber = !!statusSource.is_bad_number
     const usePersonalCell = !!statusSource.use_personal_cell
@@ -1521,7 +1524,10 @@ export function LeadsTab() {
   }
 
   async function clearDnc(group: LeadGroup) {
-    applyLeadEdit(prev => prev.map(l => l.id === group.mostRecentId ? { ...l, is_dnc: false } : l))
+    // The server clears every row of the contact; mirror that here so the
+    // badge (any flagged row) drops at once.
+    const ids = new Set(group.events.map(e => e.id))
+    applyLeadEdit(prev => prev.map(l => ids.has(l.id) ? { ...l, is_dnc: false } : l))
     try {
       await fetch(`/api/leads/${group.mostRecentId}/dnc`, { method: "DELETE" })
       void fetchLeads(true)

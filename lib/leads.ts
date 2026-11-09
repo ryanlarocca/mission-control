@@ -6,7 +6,7 @@ import { isAnonymousCaller } from "./anonymous"
 import { CARD_LINE } from "./card-line"
 import { LEAD_MOMENT_RUBRIC, isLeadMoment } from "@/lib/reply/moments"
 import { completeText, extractJsonObject, hasLlmKey, SONNET } from "./llm"
-import { autoLinkMailRecord } from "./mailMatch"
+import { autoLinkMailRecord, mailRecordSiteLine } from "./mailMatch"
 import { OWED_PREFIX } from "./next-touch"
 import { pacificDate, pacificDatePlusDays } from "@/lib/pacificDate"
 import { parseAnalyzedAppointment, type AnalyzedAppointment } from "@/lib/appointmentTime"
@@ -2590,12 +2590,21 @@ async function knownClusterAddress(
 ): Promise<string> {
   const num = leadingHouseNumber(heard)
   if (!num) return heard
-  let q = sb.from("leads").select("property_address").neq("id", row.id).not("property_address", "is", null).order("created_at", { ascending: false }).limit(20)
+  let q = sb.from("leads").select("property_address, mail_record_id").neq("id", row.id).order("created_at", { ascending: false }).limit(20)
   if (row.caller_phone && !isAnonymousCaller(row.caller_phone)) q = q.eq("caller_phone", row.caller_phone)
   else if (row.email) q = q.eq("email", row.email)
   else return heard
   const { data, error } = await q
   if (error) return heard
+  // The mailed record's spelling beats any transcript's: a cluster whose
+  // first row was misheard handed the mishearing to every later row
+  // ("4411 Conchatel" for Concerto Dr, 2026-11-09).
+  const recordId = (data ?? []).map((r) => r.mail_record_id as string | null).find(Boolean)
+  if (recordId) {
+    const { data: rec } = await sb.from("mail_records").select("site_address, site_city, site_zip").eq("id", recordId).maybeSingle()
+    const line = rec ? mailRecordSiteLine(rec as { site_address: string | null; site_city: string | null; site_zip: string | null }) : null
+    if (line && leadingHouseNumber(line) === num) return line
+  }
   const known = (data ?? []).map((r) => ((r.property_address as string | null) ?? "").trim()).find((a) => a && leadingHouseNumber(a) === num)
   return known || heard
 }

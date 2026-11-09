@@ -15,6 +15,7 @@
 import type { SupabaseClient } from "@supabase/supabase-js"
 import { twimlAttr } from "@/lib/relationship-calls"
 import { relationshipsByAnyPhone } from "@/lib/relationships"
+import { inboundDncStatus } from "@/lib/dnc"
 import { completeText, extractJsonObject, SONNET } from "@/lib/llm"
 
 const OPENAI_SIP_PROJECT = "proj_cdGIRfYygFHgxVOhoeq1nUJe"
@@ -142,7 +143,12 @@ export type CallerHistory = {
   relationship: boolean
   /** In Ryan's iPhone call log. */
   iphone: boolean
+  /** Name on their Relationships card, when they have one. */
+  relationshipName?: string | null
+  /** Any lead row flagged, or a seller opt-out on the master list (lib/dnc). */
   dnc: boolean
+  /** When they asked off the list, when known. */
+  dncSince?: string | null
 }
 
 export const NO_HISTORY: CallerHistory = { prior: null, relationship: false, iphone: false, dnc: false }
@@ -159,7 +165,7 @@ export function decideArm(input: {
 }): ArmDecision {
   if (input.forced) return { arm: null, jackie: !input.answered, reason: "test number" }
   const h = input.anonymous ? NO_HISTORY : input.history
-  const known = !!h.prior || h.relationship || h.iphone
+  const known = isKnownCaller(h)
   const arm: CallArm = known ? "returning" : input.answered ? "answered" : "jackie"
   if (input.answered) return { arm, jackie: false, reason: "Ryan answered" }
   if (h.relationship) return { arm, jackie: false, reason: "Relationships contact" }
@@ -180,27 +186,46 @@ export function decideArm(input: {
 
 /**
  * What we know about this number: its other lead rows (name, property,
- * DNC), a Relationships card, Ryan's iPhone history. Throws on a read error
- * — the caller sends that call to voicemail.
+ * DNC), a Relationships card, Ryan's iPhone history, the master
+ * do-not-contact list. The property is the mailed record's address when a
+ * row is linked to one (Jackie's ear misspells streets: "Conchatel" for
+ * Concerto, 2026-11-08). Throws on a read error — the caller sends that call
+ * to voicemail. Also labels the Telegram call alert, so "Repeat caller" and
+ * Jackie's routing always agree.
  */
 export async function callerHistory(sb: SupabaseClient, phone: string, currentLeadId: string | null): Promise<CallerHistory> {
-  let q = sb.from("leads").select("name, property_address, is_dnc").eq("caller_phone", phone).order("created_at", { ascending: false }).limit(50)
+  let q = sb.from("leads").select("name, property_address, is_dnc, mail_record_id").eq("caller_phone", phone).order("created_at", { ascending: false }).limit(50)
   if (currentLeadId) q = q.neq("id", currentLeadId)
-  const [leads, rels, calls] = await Promise.all([
+  const [leads, rels, calls, dnc] = await Promise.all([
     q,
-    relationshipsByAnyPhone(sb, phone.replace(/\D/g, "").slice(-10), "id", 1),
+    relationshipsByAnyPhone<{ name: string | null }>(sb, phone.replace(/\D/g, "").slice(-10), "id, name", 1),
     sb.from("phone_calls").select("id").eq("phone", phone).limit(1),
+    inboundDncStatus(sb, { phone, excludeLeadId: currentLeadId }),
   ])
   if (leads.error) throw new Error(`caller history leads read: ${leads.error.message}`)
   if (calls.error) throw new Error(`caller history phone_calls read: ${calls.error.message}`)
-  const rows = (leads.data ?? []) as { name: string | null; property_address: string | null; is_dnc: boolean | null }[]
+  const rows = (leads.data ?? []) as { name: string | null; property_address: string | null; is_dnc: boolean | null; mail_record_id: string | null }[]
   const firstOf = (k: "name" | "property_address") => rows.map((r) => r[k]?.trim()).find((v): v is string => !!v) ?? null
-  return {
-    prior: rows.length ? { name: firstOf("name"), property_address: firstOf("property_address") } : null,
-    relationship: rels.length > 0,
-    iphone: (calls.data?.length ?? 0) > 0,
-    dnc: rows.some((r) => r.is_dnc === true),
+  const recordId = rows.find((r) => r.mail_record_id)?.mail_record_id ?? null
+  let mailed: string | null = null
+  if (recordId) {
+    const { data: rec } = await sb.from("mail_records").select("site_address, site_city").eq("id", recordId).maybeSingle()
+    const site = (rec?.site_address as string | null | undefined)?.trim()
+    if (site) mailed = [site, (rec?.site_city as string | null | undefined)?.trim()].filter(Boolean).join(", ")
   }
+  return {
+    prior: rows.length ? { name: firstOf("name"), property_address: mailed ?? firstOf("property_address") } : null,
+    relationship: rels.length > 0,
+    relationshipName: rels[0]?.name?.trim() || null,
+    iphone: (calls.data?.length ?? 0) > 0,
+    dnc: rows.some((r) => r.is_dnc === true) || dnc.dnc,
+    dncSince: dnc.since,
+  }
+}
+
+/** Has this number reached us before, by any path Jackie counts? */
+export function isKnownCaller(h: CallerHistory): boolean {
+  return !!h.prior || h.relationship || h.iphone
 }
 
 function pacificMidnightIso(): string {

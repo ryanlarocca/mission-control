@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server"
 import { getLeadsClient, haltOutreachForCluster } from "@/lib/leads"
+import { clearContactDnc } from "@/lib/dnc"
 
 // Phase 7C — Part 6 + Part 9: DNC button on the lead card.
 //
@@ -134,13 +135,13 @@ export async function DELETE(
   if (!id) return NextResponse.json({ error: "id required" }, { status: 400 })
 
   try {
-    const sb = getLeadsClient()
-    const { error } = await sb.from("leads").update({ is_dnc: false }).eq("id", id)
-    if (error) {
-      return NextResponse.json({ error: error.message }, { status: 500 })
+    // Whole contact, like marking: every row of theirs and their dnc_list
+    // row. Clearing one row left the others flagged, and a later call or
+    // text carries DNC forward from any of them (lib/dnc inheritContactDnc).
+    const out = await clearContactDnc(getLeadsClient(), id)
+    if (!out.ok) {
+      return NextResponse.json({ error: out.error }, { status: out.error === "lead not found" ? 404 : 500 })
     }
-    // Best-effort: also remove from dnc_list. Don't fail if it's missing.
-    await sb.from("dnc_list").delete().eq("source_lead_id", id)
     return NextResponse.json({ ok: true })
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e)

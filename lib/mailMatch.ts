@@ -537,6 +537,16 @@ async function autoLinkInner(sb: SupabaseClient, leadId: string, opts: { alert?:
       .limit(1)
     if (sib && sib.length) {
       await linkMailRecordToCluster(sb, lead, sib[0].mail_record_id, (sib[0].mail_match_method as MailMatchMethod) ?? "manual")
+      // A returning caller's new row can mishear the street all over again;
+      // same house number as the linked record = the same house.
+      if (lead.property_address) {
+        const { data: rec } = await sb.from("mail_records").select(MAIL_RECORD_LITE_COLUMNS).eq("id", sib[0].mail_record_id).maybeSingle()
+        const record = rec as MailRecordLite | null
+        const heardNum = streetParts(parseFreeAddress(lead.property_address).street).num
+        if (record && heardNum && heardNum === streetParts(normStreet(record.site_address)).num) {
+          await correctLeadFromRecord(sb, lead, ors, record, false)
+        }
+      }
       return null
     }
     // Ryan unlinked this person by hand: don't match them again.
@@ -585,7 +595,12 @@ async function autoLinkInner(sb: SupabaseClient, leadId: string, opts: { alert?:
       )
     }
     await linkMailRecordToCluster(sb, lead, raw.record.id, raw.method, null, raw.record.prior_pieces ?? null)
-    if (letterDoor && (raw.cityCorrected || raw.soundCorrected)) {
+    // The card shows the list's spelling of the house, not the transcript's
+    // (Jackie heard "Conchatel" for Concerto Dr, 2026-11-08). An exact
+    // site-address hit is the house whatever door they used; a city or
+    // sound-alike correction only on the letter's own door. A match on the
+    // owner's mailing address or surname says nothing about which house.
+    if (raw.method === "auto_address" || (letterDoor && (raw.cityCorrected || raw.soundCorrected))) {
       await correctLeadFromRecord(sb, { ...lead, property_address: address }, ors, raw.record, !!raw.soundCorrected)
     }
     return raw
@@ -708,7 +723,7 @@ async function correctLeadFromRecord(
 ): Promise<void> {
   const heard = lead.property_address
   const fixed = mailRecordSiteLine(record)
-  if (!fixed || !heard) return
+  if (!fixed || !heard || fixed === heard) return
   const fixedName = sound ? soundAlikeName(lead.name, record.owner_name) : null
   const note = sound
     ? `Heard as "${[fixedName ? lead.name : null, heard].filter(Boolean).join(", ")}"; corrected from the mailing list.`
@@ -725,7 +740,7 @@ async function correctLeadFromRecord(
   if (fixedName) patch.name = fixedName
   const { error } = await sb.from("leads").update(patch).eq("id", lead.id).eq("property_address", heard)
   if (error) { console.error(`[mail-match] correction failed for ${lead.id}: ${error.message}`); return }
-  console.warn(`[mail-match] lead ${lead.id}: heard "${heard}", mailed record ${record.record_id} says "${fixed}"${fixedName ? `; name "${lead.name}" → "${fixedName}"` : ""}`)
+  console.log(`[mail-match] lead ${lead.id}: heard "${heard}", mailed record ${record.record_id} says "${fixed}"${fixedName ? `; name "${lead.name}" → "${fixedName}"` : ""}`)
   if (fixedName && lead.name && clusterOrs.length) {
     const { error: nameErr } = await sb.from("leads").update({ name: fixedName }).or(clusterOrs.join(",")).eq("name", lead.name)
     if (nameErr) console.error(`[mail-match] name correction failed for ${lead.id}: ${nameErr.message}`)

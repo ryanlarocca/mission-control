@@ -7,7 +7,6 @@ import {
   RESET_TO_NEW_SUFFIX,
   SOURCE_OVERRIDE_NUMBERS,
   WEBSITE_NUMBER,
-  clusterHasDnc,
   resolveIntakeStatus,
   dedupeClusterStamps,
   getCampaignSource,
@@ -25,7 +24,9 @@ import { isAnonymousCaller } from "@/lib/anonymous"
 import { describeContact, isOfficeLine, logInboundTextTouch, resolveOfficeCaller } from "@/lib/office-inbound"
 import { escapeTelegramHtml, handleInboundVendorText } from "@/lib/vendorMarketing"
 import { isKnownVendorPitch, screenVendorPitch, vendorPitchAlert, vendorPitchColumns, type VendorPitch } from "@/lib/vendorPitch"
-import { correctOptOutAddress, explicitOptOutPhrase, isCourtesyReply, isTwilioStopKeyword, markContactDnc, optOutAddressLine } from "@/lib/dnc"
+import { correctOptOutAddress, explicitOptOutPhrase, inheritContactDnc, isCourtesyReply, isTwilioStopKeyword, markContactDnc, optOutAddressLine } from "@/lib/dnc"
+import { callerHistory, isKnownCaller, type CallerHistory } from "@/lib/jackie"
+import { contactAlertLines, type AlertContact } from "@/lib/contactAlert"
 
 // Twilio fires this when a lead texts any of our lead-facing lines (the
 // campaign lines, the ported mailer lines, the Google Ads line, the office
@@ -148,6 +149,11 @@ export async function POST(request: Request) {
     // we have a Supabase client. Null for a brand-new caller (no prior row
     // carries a name yet); the alert falls back to the phone number.
     let leadName: string | null = null
+    // Who this is for the "Repeat text" alert — the same lookup the call
+    // alert and Jackie use (lib/jackie callerHistory). Null on a lookup
+    // failure; the alert then falls back to whether there's an earlier row.
+    let history: CallerHistory | null = null
+    let hasPriorRow = false
     let newLeadId: string | null = null
     // §6 (2026-10-21): a returning texter on a NOO Q4 line was reset to New —
     // read again at the Telegram alert below.
@@ -239,6 +245,11 @@ export async function POST(request: Request) {
       // genuinely new caller). Runs only when there's a prior row — a fresh
       // intake never has a name yet, so skip the query.
       if (existingRow) leadName = await lookupLeadName(sb, from)
+      hasPriorRow = !!existingRow
+      history = await callerHistory(sb, from, null).catch((e) => {
+        console.warn("[sms] caller history failed:", e instanceof Error ? e.message : String(e))
+        return null
+      })
 
       const isJunkAddr = isMobileHome(bodyText)
 
@@ -266,7 +277,7 @@ export async function POST(request: Request) {
         hasPriorRow: !!existingRow,
         inheritedStatus,
         priorSource: existingRow?.source ?? null,
-        clusterDnc: overrideSource && existingRow ? await clusterHasDnc(sb, { caller_phone: from }) : false,
+        clusterDnc: overrideSource && existingRow ? history?.dnc ?? false : false,
       })
       resetToNew = intake.reset
       const insertRow: Record<string, unknown> = {
@@ -378,8 +389,9 @@ export async function POST(request: Request) {
       // Already do-not-contact (asked off the list earlier): no card, no
       // draft, no analyzer. A new address is a correction → move the
       // do-not-contact entry; "thanks" is silent; anything else is an FYI.
-      if (insertedRow?.id && (await clusterHasDnc(sb, { caller_phone: from }))) {
-        await sb.from("leads").update({ is_dnc: true, status: "dead", recommended_followup_date: null }).eq("id", insertedRow.id)
+      // (inheritContactDnc checks their other rows and the master list, and
+      // flags this row is_dnc + dead.)
+      if (insertedRow?.id && (await inheritContactDnc(sb, insertedRow.id, { phone: from })).dnc) {
         const corrected = await correctOptOutAddress(sb, insertedRow.id, bodyText).catch((e) => {
           console.warn("[sms] opt-out address correction failed:", e instanceof Error ? e.message : String(e))
           return null
@@ -408,19 +420,32 @@ export async function POST(request: Request) {
 
     const preview = bodyText.length > 300 ? bodyText.slice(0, 300) + "…" : bodyText
     const escaped = preview.replace(/[<>&]/g, c => c === "<" ? "&lt;" : c === ">" ? "&gt;" : "&amp;")
+    const alertContact: AlertContact = history
+      ? {
+          known: isKnownCaller(history),
+          name: history.prior?.name ?? history.relationshipName ?? leadName,
+          address: history.prior?.property_address ?? null,
+          dnc: history.dnc || !!dncReply,
+          dncSince: history.dncSince ?? null,
+          iphoneOnly: !history.prior && !history.relationship && history.iphone,
+        }
+      : { known: hasPriorRow, name: leadName, address: null, dnc: !!dncReply, dncSince: null }
     if (dncReply) {
       if (dncReply.kind === "corrected") {
         await sendTelegramAlert(`📍 Do-not-contact address corrected — ${from}\n"${escaped}"\n🏠 Now off the mailing list: ${dncReply.line ?? "(address updated)"}`)
       } else if (dncReply.kind === "other") {
-        await sendTelegramAlert(`💬 Text from a do-not-contact contact (no reply drafted) — <b>${source}</b> — ${leadName ? `<b>${leadName}</b> — ` : ""}${from}\n"${escaped}"`)
+        const head = contactAlertLines({ kind: "text", source, phone: from, contact: { ...alertContact, known: true, dnc: true } })
+        await sendTelegramAlert([...head.slice(0, -1), `${head[head.length - 1]} · no reply drafted`, `"${escaped}"`].join("\n"))
       }
       return new NextResponse(EMPTY_TWIML, { headers: { "Content-Type": "text/xml" } })
     }
     // Label with the lead's name when we know it, falling back to the phone.
     // The phone stays in the alert regardless — the Telegram reply handler
     // parses it out of this text to know who to SMS back.
-    const who = leadName ? `<b>${leadName}</b> — ${from}` : from
-    const smsAlert = [`💬 New lead text — <b>${source}</b> — ${who}${resetToNew ? RESET_TO_NEW_SUFFIX : ""}\n"${escaped}"`]
+    const smsAlert = [
+      ...contactAlertLines({ kind: "text", source, phone: from, contact: alertContact, suffix: resetToNew ? RESET_TO_NEW_SUFFIX : "" }),
+      `"${escaped}"`,
+    ]
     // Append the fake-lead warning to the same note — no-op when clean.
     if (spam) smsAlert.push(...spamAlertLines(spam))
     await sendTelegramAlert(smsAlert.join("\n"))

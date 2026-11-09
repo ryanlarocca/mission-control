@@ -2,7 +2,7 @@ import { NextResponse } from "next/server"
 import { waitUntil } from "@vercel/functions"
 import { gmail_v1 } from "googleapis"
 import { triggerTelegramDraft } from "@/lib/reply/telegram"
-import { explicitOptOutPhrase, markContactDnc, optOutAddressLine } from "@/lib/dnc"
+import { explicitOptOutPhrase, inheritContactDnc, markContactDnc, optOutAddressLine } from "@/lib/dnc"
 
 // Pub/Sub push ack timeout is 10s by default; Gmail history.list + message.get
 // + Sonnet triage + Supabase insert can blow past Vercel's 10s default. Bump it.
@@ -417,6 +417,8 @@ async function ingestGoogleVoice(args: {
   }
   const insertedId = ins.id as string
   console.log(`[email][gv] Inserted Legacy DM lead ${insertedId} — ${parsed.kind} from ${phone}`)
+  // Someone already do-not-contact writing again: this row stays DNC too.
+  await inheritContactDnc(sb, insertedId, { phone, email: null })
 
   if (cluster?.dripCampaignType) {
     try {
@@ -736,6 +738,8 @@ async function handleAppsScript(payload: AppsScriptPayload): Promise<NextRespons
   const insertedId = ins.id as string
 
   console.log(`[email] Inserted email lead ${insertedId} from ${senderEmail} (${campaign.source})`)
+  // Someone already do-not-contact writing again: this row stays DNC too.
+  await inheritContactDnc(sb, insertedId, { phone, email: senderEmail })
 
   // Re-engagement carried the cluster's drip stamp onto this new event
   // row. Sweep so exactly ONE row drives the drip engine (same fix as the
@@ -1037,6 +1041,8 @@ async function processSingleMessage(args: {
   }
   const insertedId = ins.id as string
   console.log(`[email] Inserted email lead ${insertedId} from ${senderEmail} (${campaign.source})`)
+  // Someone already do-not-contact writing again: this row stays DNC too.
+  await inheritContactDnc(sb, insertedId, { phone, email: senderEmail })
 
   // Re-engagement carried the cluster's drip stamp onto this new event
   // row — sweep so the engine sees one driver row.
@@ -1399,5 +1405,9 @@ async function draftOrOptOut(
     await triggerTelegramDraft(leadId)
     return
   }
+  // Already do-not-contact (inheritContactDnc flagged the row): no reply
+  // draft, same as a text from them.
+  const { data: row } = await sb.from("leads").select("is_dnc").eq("id", leadId).maybeSingle()
+  if (row?.is_dnc) return
   if (triage && !triage.is_dead && !suspicious) await triggerTelegramDraft(leadId)
 }

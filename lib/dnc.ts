@@ -13,6 +13,7 @@
 // copy both of the others into it).
 
 import type { SupabaseClient } from "@supabase/supabase-js"
+import { isAnonymousCaller } from "./anonymous"
 import { isSuppressed, normalizeSuppressionEmail, normalizeSuppressionPhone, type SuppressionChannel } from "./suppression"
 import {
   autoLinkMailRecord, linkMailRecordToCluster, mailSearchCampaignId, normStreet, parseFreeAddress,
@@ -128,6 +129,95 @@ export async function optOutConfirmationAllowed(
     .gt("created_at", since)
     .limit(1)
   return !sent || sent.length === 0
+}
+
+// ─── a DNC'd contact reaching us again ─────────────────────────────────────
+
+export interface InboundDnc {
+  dnc: boolean
+  /** When they first asked off (earliest master-list entry), when known. */
+  since: string | null
+}
+
+/**
+ * Is someone calling, texting or emailing us already do-not-contact? Any of
+ * their lead rows flagged is_dnc, or a seller opt-out on the master list.
+ * Email-only list entries don't count (bounces and agent-campaign
+ * unsubscribes, not a request to stop), nor do agent opt-outs — those belong
+ * to Relationships. Withheld numbers are never a key. Throws on a read error.
+ */
+export async function inboundDncStatus(
+  sb: SupabaseClient,
+  who: { phone?: string | null; email?: string | null; excludeLeadId?: string | null }
+): Promise<InboundDnc> {
+  const phone = who.phone && !isAnonymousCaller(who.phone) ? who.phone : null
+  const leadOrs: string[] = []
+  for (const p of phoneVariants(phone)) leadOrs.push(`caller_phone.eq.${p}`)
+  const email = normalizeSuppressionEmail(who.email)
+  if (email) leadOrs.push(`email.ilike.${email}`)
+  if (!leadOrs.length) return { dnc: false, since: null }
+
+  let leadQ = sb.from("leads").select("id").or(leadOrs.join(",")).eq("is_dnc", true).limit(1)
+  if (who.excludeLeadId) leadQ = leadQ.neq("id", who.excludeLeadId)
+  const ten = normalizeSuppressionPhone(phone)
+  const listQ = (col: "phone" | "email", value: string, channels: string[]) =>
+    sb.from("suppression").select("created_at").eq(col, value).eq("audience", "seller").in("channel", channels)
+      .order("created_at", { ascending: true }).limit(1)
+  const [leadHit, phoneHit, emailHit] = await Promise.all([
+    leadQ,
+    ten ? listQ("phone", ten, ["all", "call", "sms"]) : null,
+    email ? listQ("email", email, ["all"]) : null,
+  ])
+  for (const r of [leadHit, phoneHit, emailHit]) if (r?.error) throw new Error(`DNC lookup failed: ${r.error.message}`)
+  const dates = [phoneHit?.data?.[0]?.created_at, emailHit?.data?.[0]?.created_at].filter((d): d is string => !!d).sort()
+  const dnc = !!leadHit.data?.length || dates.length > 0
+  return { dnc, since: dnc ? dates[0] ?? null : null }
+}
+
+/**
+ * A new event row from someone already do-not-contact keeps their status:
+ * is_dnc + dead, no follow-up date. Without this the card (which reads its
+ * flags from the newest row) dropped the badge the first time they called
+ * back (2026-11-09). Returns what it found; never throws.
+ */
+export async function inheritContactDnc(
+  sb: SupabaseClient,
+  leadId: string,
+  who: { phone?: string | null; email?: string | null }
+): Promise<InboundDnc> {
+  try {
+    const status = await inboundDncStatus(sb, { ...who, excludeLeadId: leadId })
+    if (status.dnc) {
+      const { error } = await sb.from("leads").update({ is_dnc: true, status: "dead", recommended_followup_date: null }).eq("id", leadId)
+      if (error) console.warn(`[dnc] carrying DNC onto ${leadId} failed: ${error.message}`)
+    }
+    return status
+  } catch (e) {
+    console.warn(`[dnc] DNC check for ${leadId} failed:`, e instanceof Error ? e.message : String(e))
+    return { dnc: false, since: null }
+  }
+}
+
+/**
+ * Undo a DNC for the whole contact: is_dnc off on every row of the cluster
+ * and their dnc_list row removed (the DB triggers drop the matching
+ * master-list entries). Opt-outs that came from elsewhere (an old Google
+ * Voice request, a call note) stay on the master list.
+ */
+export async function clearContactDnc(sb: SupabaseClient, leadId: string): Promise<{ ok: boolean; error?: string }> {
+  const { data: lead } = await sb
+    .from("leads")
+    .select("id, caller_phone, email, gmail_thread_id")
+    .eq("id", leadId)
+    .maybeSingle<Pick<LeadIdentity, "id" | "caller_phone" | "email" | "gmail_thread_id">>()
+  if (!lead) return { ok: false, error: "lead not found" }
+  const { data: rows, error } = await sb.from("leads").update({ is_dnc: false }).or(clusterOr(lead)).select("id")
+  if (error) return { ok: false, error: error.message }
+  const ids = (rows ?? []).map(r => r.id as string)
+  if (!ids.includes(leadId)) ids.push(leadId)
+  const { error: listErr } = await sb.from("dnc_list").delete().in("source_lead_id", ids)
+  if (listErr) console.warn(`[dnc] dnc_list delete failed for ${leadId}: ${listErr.message}`)
+  return { ok: true }
 }
 
 // ─── address match for opt-outs ────────────────────────────────────────────

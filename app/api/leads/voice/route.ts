@@ -8,21 +8,20 @@ import {
   JACKIE_LINES,
   SOURCE_OVERRIDE_NUMBERS,
   WEBSITE_NUMBER,
-  clusterHasDnc,
   resolveIntakeStatus,
   dedupeClusterStamps,
   getCampaignSource,
   getLeadsClient,
   isOwnedNumber,
   type LeadStatus,
-  lookupLeadName,
   parseTwilioBody,
   sendTelegramAlert,
 } from "@/lib/leads"
 import { isAnonymousCaller } from "@/lib/anonymous"
 import { describeContact, isOfficeLine, openInboundCallTouch, resolveOfficeCaller } from "@/lib/office-inbound"
 import { PROD_BASE, twimlAttr } from "@/lib/relationship-calls"
-import { getJackieFlip, jackieDialTwiml } from "@/lib/jackie"
+import { callerHistory, getJackieFlip, isKnownCaller, jackieDialTwiml, type CallerHistory } from "@/lib/jackie"
+import { contactAlertLines } from "@/lib/contactAlert"
 import { scoreLeadSpam, spamAlertLines, spamReviewColumns, type SpamScore } from "@/lib/lead-spam"
 
 // TwiML voice webhook for LRG Homes Twilio numbers.
@@ -214,9 +213,13 @@ export async function POST(request: Request) {
     // known, and read again at the Telegram alert below (outside the try),
     // so it has to be declared out here.
     let spam: SpamScore | null = null
-    // Lead name for the Telegram alert label — resolved inside the try once
-    // we have a client; null for an unknown / anonymous caller.
-    let leadName: string | null = null
+    // Who this is, for the Telegram alert and the DNC carry-over — the same
+    // lookup Jackie routes on (lib/jackie callerHistory), so "Repeat caller"
+    // and "goes to your voicemail, not Jackie" always agree. Null for a
+    // withheld number, or when the lookup failed (the alert falls back to
+    // whether this number has an earlier row).
+    let history: CallerHistory | null = null
+    let hasPriorRow = false
     // §6 (2026-10-21): a returning caller on a NOO Q4 line was reset to New —
     // read again at the Telegram alert below.
     let resetToNew = false
@@ -235,18 +238,27 @@ export async function POST(request: Request) {
       // SKIP this for anonymous callers — they all share one placeholder
       // value, so inheriting would cross-contaminate unrelated people's
       // status / source / drip stamp.
-      const { data: existingRows } = isAnon
-        ? { data: null }
-        : await sb
-            .from("leads")
-            .select("id, source, source_type, drip_campaign_type, status")
-            .eq("caller_phone", callerPhone)
-            .not("twilio_number", "is", null)
-            .order("created_at", { ascending: false })
-            .limit(1)
+      const [{ data: existingRows }, knownAs] = isAnon
+        ? [{ data: null }, null]
+        : await Promise.all([
+            sb
+              .from("leads")
+              .select("id, source, source_type, drip_campaign_type, status")
+              .eq("caller_phone", callerPhone)
+              .not("twilio_number", "is", null)
+              .order("created_at", { ascending: false })
+              .limit(1),
+            callerHistory(sb, callerPhone, null).catch((e) => {
+              console.warn("[voice] caller history failed:", e instanceof Error ? e.message : String(e))
+              return null
+            }),
+          ])
       const existingRow = existingRows?.[0] ?? null
-      // Best-effort name for the alert — only for known callers with a prior row.
-      if (!isAnon && existingRow) leadName = await lookupLeadName(sb, callerPhone)
+      history = knownAs
+      hasPriorRow = !!existingRow
+      // Asked off the list before (any of their rows, or the master list):
+      // this row stays do-not-contact too, so the card keeps its badge.
+      const dnc = history?.dnc ?? false
       const inheritedStatus: LeadStatus =
         (existingRow?.status as LeadStatus | undefined) ?? "new"
 
@@ -262,7 +274,7 @@ export async function POST(request: Request) {
         hasPriorRow: !!existingRow,
         inheritedStatus,
         priorSource: existingRow?.source ?? null,
-        clusterDnc: overrideSource && existingRow ? await clusterHasDnc(sb, { caller_phone: callerPhone }) : false,
+        clusterDnc: overrideSource && existingRow ? dnc : false,
       })
       resetToNew = intake.reset
       const insertRow: Record<string, unknown> = {
@@ -276,8 +288,9 @@ export async function POST(request: Request) {
         twilio_number: twilioNumber,
         caller_phone: callerPhone,
         lead_type: "call",
-        status: intake.status,
+        status: dnc ? "dead" : intake.status,
       }
+      if (dnc) insertRow.is_dnc = true
       if (intake.isJunk === false) insertRow.is_junk = false
       if (isAnon) {
         // Junk by default — most blocked-ID calls are spam, and you can't
@@ -374,8 +387,23 @@ export async function POST(request: Request) {
       console.error("[voice] Supabase insert threw:", e)
     }
     // Await so Vercel doesn't kill the in-flight fetch when the response returns.
-    const callWho = leadName ? `<b>${leadName}</b> — ${callerPhone}` : callerPhone
-    const callAlert = [`📞 New lead call — <b>${source}</b> — ${callWho}${resetToNew ? RESET_TO_NEW_SUFFIX : ""}`]
+    const callAlert = contactAlertLines({
+      kind: "call",
+      source,
+      phone: callerPhone,
+      contact: history
+        ? {
+            known: isKnownCaller(history),
+            name: history.prior?.name ?? history.relationshipName ?? null,
+            address: history.prior?.property_address ?? null,
+            dnc: history.dnc,
+            dncSince: history.dncSince ?? null,
+            iphoneOnly: !history.prior && !history.relationship && history.iphone,
+          }
+        : { known: hasPriorRow, name: null, address: null, dnc: false, dncSince: null },
+      jackieLine: JACKIE_LINES.has(twilioNumber),
+      suffix: resetToNew ? RESET_TO_NEW_SUFFIX : "",
+    })
     // Append the fake-lead warning to the same note — no-op when clean.
     if (spam) callAlert.push(...spamAlertLines(spam))
     await sendTelegramAlert(callAlert.join("\n"))
