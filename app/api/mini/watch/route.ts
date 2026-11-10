@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server"
 import { getLeadsClient, sendTelegramAlert } from "@/lib/leads"
+import { GB_KB as GB, spaceLevel, type SpaceLevel } from "@/lib/miniSpace"
 
 // Outside watcher for the Mac mini (2026-11-06). Every other alert about the
 // mini runs on the mini itself, so when it was off, frozen or offline nothing
@@ -18,12 +19,15 @@ export const dynamic = "force-dynamic"
 const QUIET_MS = 4 * 60_000
 const WATCHDOG_MS = 20 * 60_000
 
+
 type Row = {
   beat_at: string
   watchdog_at: string | null
   info: { quiet_until?: string } | null
   down_alerted_at: string | null
   watchdog_alerted_at: string | null
+  free_kb: number | null
+  space_level: SpaceLevel
 }
 
 function pacific(iso: string): string {
@@ -52,7 +56,7 @@ async function claim(col: "down_alerted_at" | "watchdog_alerted_at", expected: s
 export async function GET() {
   const { data: row, error } = await getLeadsClient()
     .from("mini_heartbeat")
-    .select("beat_at, watchdog_at, info, down_alerted_at, watchdog_alerted_at")
+    .select("beat_at, watchdog_at, info, down_alerted_at, watchdog_alerted_at, free_kb, space_level")
     .eq("id", "mini")
     .maybeSingle<Row>()
   if (error || !row) {
@@ -93,6 +97,25 @@ export async function GET() {
     } else if (sinceTick <= WATCHDOG_MS && row.watchdog_alerted_at) {
       if (await claim("watchdog_alerted_at", row.watchdog_alerted_at, null)) {
         await sendTelegramAlert("✅ Mac mini watchdog is running again.")
+      }
+    }
+  }
+
+  // Free disk, judged on a fresh beat only.
+  if (!quiet && sinceBeat <= QUIET_MS) {
+    const next = spaceLevel(row.free_kb, row.space_level)
+    if (next !== row.space_level) {
+      const q = getLeadsClient().from("mini_heartbeat").update({ space_level: next }).eq("id", "mini")
+      const { data: won } = await (row.space_level === null ? q.is("space_level", null) : q.eq("space_level", row.space_level)).select("id")
+      if (won?.length) {
+        const gb = row.free_kb != null ? Math.round(row.free_kb / GB) : null
+        if (next === "urgent") {
+          await sendTelegramAlert(`🔴 <b>Mac mini is almost out of space</b> — ${gb} GB free. When it fills up, texts, call recordings and Mac mini chats stop saving. Tell me “free up space on the mini” and I'll clear what can be recreated.`)
+        } else if (next === "warn" && row.space_level !== "urgent") {
+          await sendTelegramAlert(`🟡 <b>Mac mini is getting full</b> — ${gb} GB free. Nothing is broken yet; tell me “free up space on the mini” when you have a minute.`)
+        } else if (next === null) {
+          await sendTelegramAlert(`✅ Mac mini has room again — ${gb} GB free.`)
+        }
       }
     }
   }

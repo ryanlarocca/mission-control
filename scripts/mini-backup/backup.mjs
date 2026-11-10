@@ -54,6 +54,18 @@ function sources() {
   add("claude/settings.local.json", path.join(HOME, ".claude/settings.local.json"))
   add("claude/CLAUDE.md", path.join(HOME, ".claude/CLAUDE.md"))
   add("claude/keybindings.json", path.join(HOME, ".claude/keybindings.json"))
+  // Video editor working text (2026-11-09): cut lists, timelines, shotlogs,
+  // paid shoot reports, the vault manifest + clip library catalogue. Media is
+  // NOT here — footage lives in the Drive vault (Marketing/Videos/Library).
+  add("video-editor/working-text", path.join(HOME, "Movies/VideoEditor"), {
+    dir: true,
+    skip: /\/(work|\.cache|sheets)\//,
+    filter: (f) => /\.(json|md|py|ya?ml|txt|srt|ass|sh|csv)$/i.test(f),
+  })
+  // The old Thadius workspace: the bridge launcher and the CRMS sidecar still
+  // start from it (~/.openclaw/workspace/PROJECTS is a symlink). Its git
+  // history goes in as a bundle (gitArtifacts).
+  add("openclaw-workspace", path.join(HOME, ".openclaw/workspace"), { dir: true, skip: /\/\.git\/|node_modules/ })
   // gitignored runtime state in mission-control
   for (const f of fs.readdirSync(path.join(MC_ROOT, "scripts")).filter((f) => /^\..*\.json$/.test(f))) add(`state/mission-control/scripts/${f}`, path.join(MC_ROOT, "scripts", f))
   return S
@@ -118,6 +130,39 @@ function gitArtifacts(manifest) {
         fs.writeFileSync(list, untracked.map(({ u }) => u).join("\n") + "\n")
         sh(`tar -czf '${tar}' -C '${dir}' -T '${list}'`); return tar
       })
+    }
+  }
+  // Uncommitted work sitting in chat-session worktrees (briefs written but not
+  // yet committed lived in one copy, 2026-11-09). Junk and build output skipped.
+  const wtRoot = path.join(MC_ROOT, ".claude/worktrees")
+  if (fs.existsSync(wtRoot)) {
+    const files = []
+    for (const w of fs.readdirSync(wtRoot)) {
+      const wdir = path.join(wtRoot, w)
+      let list = ""
+      try { list = sh(`git -C '${wdir}' ls-files --others --modified --exclude-standard`) } catch { continue }
+      for (const u of list.split("\n").filter(Boolean)) {
+        if (/(^|\/)(node_modules|\.next|__pycache__)(\/|$)|\.pyc$/.test(u)) continue
+        try { const s = fs.statSync(path.join(wdir, u)); if (s.isFile() && s.size < 50 * 1024 * 1024) files.push({ u: `${w}/${u}`, s }) } catch {}
+      }
+    }
+    if (files.length) {
+      const key = crypto.createHash("sha1").update(files.map(({ u, s }) => `${u}:${s.size}:${Math.round(s.mtimeMs)}`).join("\n")).digest("hex")
+      want("repos/worktrees.uncommitted.tar.gz", key, () => {
+        const tar = path.join(TMP, "worktrees.uncommitted.tar.gz"), list = path.join(TMP, "worktrees.uncommitted.list")
+        fs.writeFileSync(list, files.map(({ u }) => u).join("\n") + "\n")
+        sh(`tar -czf '${tar}' -C '${wtRoot}' -T '${list}'`); return tar
+      })
+    }
+  }
+  // Thadius workspace history (its own repo, no remote).
+  const ocw = path.join(HOME, ".openclaw/workspace")
+  if (fs.existsSync(path.join(ocw, ".git"))) {
+    let refs = ""
+    try { refs = sh(`git -C '${ocw}' for-each-ref --format='%(objectname) %(refname)'`) } catch {}
+    if (refs) {
+      const k = crypto.createHash("sha1").update(refs).digest("hex")
+      want("repos/openclaw-workspace.bundle", k, () => { const b = path.join(TMP, "openclaw-workspace.bundle"); sh(`git -C '${ocw}' bundle create '${b}' --all`); return b })
     }
   }
   return out
