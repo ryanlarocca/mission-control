@@ -1562,10 +1562,10 @@
       "category": "equities_ai",
       "source": {
         "name": "Daily closes for NVDA AAPL GOOGL META AVGO AMD AMAT LRCX KLAC INTC CSCO",
-        "url": "https://api.nasdaq.com/api/quote/{SYMBOL}/historical?assetclass=stocks"
+        "url": "https://api.tiingo.com/tiingo/daily/{SYMBOL}/prices"
       },
-      "fetch": "nasdaq_api",
-      "units": "index (first bootstrap day = 100)",
+      "fetch": "tiingo",
+      "units": "index (2024-08-23 = 100)",
       "transform": "basket_equal_weight",
       "direction_map": {
         "up": "bull",
@@ -1581,7 +1581,7 @@
       "has_history": true,
       "votes": true,
       "geography": "scc",
-      "notes": "Brief named Stooq (https://stooq.com/q/d/l/?s=nvda.us&i=d); Stooq now serves a JavaScript proof-of-work page to scripts, so the bootstrap tries Stooq first and falls back to the Nasdaq public historical API. C30 = drawdown from 52-week high."
+      "notes": "Tiingo official API, free plan (TIINGO_API_KEY), adjusted closes; capped at 40 requests/hour and 200/day in sources.py (free plan: 50/hour, 1,000/day, 500 tickers/month; a normal day uses 11). Stooq (the brief's pick) and Nasdaq.com's site feed both refuse scripts \u2014 Nasdaq since 2026-11-10. Base fixed at 2024-08-23 = 100."
     },
     {
       "id": "big4_capex_2027",
@@ -3562,8 +3562,7 @@
     "zillow_csv",
     "edd_warn_xlsx",
     "apartmentlist",
-    "stooq",
-    "nasdaq_api",
+    "tiingo",
     "indeed_csv",
     "car_html",
     "sccaor_html",

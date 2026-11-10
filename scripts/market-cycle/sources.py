@@ -100,7 +100,7 @@ def _sleep_before_retry(i):
     time.sleep(min(2 * (i + 1), 8))
 
 
-def http_get(url, accept=None, attempts=HTTP_ATTEMPTS, timeout=45, ua=None):
+def http_get(url, accept=None, attempts=HTTP_ATTEMPTS, timeout=45, ua=None, headers=None):
     """GET with at most `attempts` tries. Blocked or missing pages (401/403/404/410/429)
     are never retried (never hammer a blocked site); dropped connections and truncated
     bodies (IncompleteRead) are. A truncated body is never used. Returns (bytes, final_url, content_type).
@@ -114,6 +114,7 @@ def http_get(url, accept=None, attempts=HTTP_ATTEMPTS, timeout=45, ua=None):
             h = {"User-Agent": ua or UA}
             if accept:
                 h["Accept"] = accept
+            h.update(headers or {})
             req = urllib.request.Request(url, headers=h)
             with urllib.request.urlopen(req, timeout=timeout) as r:
                 body = r.read()
@@ -512,34 +513,65 @@ def apartmentlist(name="San Jose, CA", ltype="City", bed="overall"):
 BASKET = ["NVDA", "AAPL", "GOOGL", "META", "AVGO", "AMD", "AMAT", "LRCX", "KLAC", "INTC", "CSCO"]
 
 
-def stooq_probe():
-    """Brief named Stooq. Probe once; report why it can't be used."""
-    def go():
-        body, _, _ = http_get("https://stooq.com/q/d/l/?s=nvda.us&i=d", attempts=1)
-        t = body[:200].decode("utf-8", "replace")
-        if t.startswith("Date,"):
-            return "OK"
-        if "verify your browser" in body.decode("utf-8", "replace"):
-            raise SourceError("serves a JavaScript proof-of-work challenge instead of CSV")
-        raise SourceError("not a CSV response")
-    return cached("stooq", go)
+# Tiingo's official API (free plan, key in TIINGO_API_KEY). Stooq (the brief's pick) and
+# Nasdaq.com's site feed both started refusing scripts — Nasdaq on Nov 10, 2026 — so the
+# basket moved to a service that issues keys for exactly this.
+TIINGO_DAILY = "https://api.tiingo.com/tiingo/daily/%s/prices?startDate=%s"
+TIINGO_PAGE = "https://api.tiingo.com/tiingo/daily/{SYMBOL}/prices"
+BASKET_BASE = "2024-08-23"   # index = 100 on this day, fixed (it used to slide with an 800-day window)
+# Ryan, 2026-11-10: stay inside the free plan. Tiingo's free limits are 50 requests/hour,
+# 1,000/day and 500 different tickers/month; a normal day is 11 requests. These caps stop
+# us well short, so a loop or a stuck retry can never cost the free key.
+TIINGO_CAPS = {"hour": 40, "day": 200, "month_symbols": 100}
+TIINGO_USAGE = os.path.expanduser("~/.cache/lrg-market-cycle/tiingo-usage.json")
 
 
-def nasdaq_closes(sym, days=800):
+def tiingo_key():
+    return os.environ.get("TIINGO_API_KEY") or load_env().get("TIINGO_API_KEY") or None
+
+
+def tiingo_take(sym, now=None, path=None):
+    """Count one Tiingo request before making it; SourceError instead of passing our caps."""
+    path, now = path or TIINGO_USAGE, now or time.time()
+    month = time.strftime("%Y-%m", time.localtime(now))
+    try:
+        with open(path) as f:
+            u = json.load(f)
+    except (OSError, ValueError):
+        u = {}
+    calls = [t for t in u.get("calls", []) if now - t < 86400]
+    syms = u.get("symbols", []) if u.get("month") == month else []
+    hour = sum(1 for t in calls if now - t < 3600)
+    if hour >= TIINGO_CAPS["hour"]:
+        raise SourceError("held back to stay on Tiingo's free plan: %d requests in the last hour (our cap %d)" % (hour, TIINGO_CAPS["hour"]))
+    if len(calls) >= TIINGO_CAPS["day"]:
+        raise SourceError("held back to stay on Tiingo's free plan: %d requests in the last 24 h (our cap %d)" % (len(calls), TIINGO_CAPS["day"]))
+    if sym not in syms and len(syms) >= TIINGO_CAPS["month_symbols"]:
+        raise SourceError("held back to stay on Tiingo's free plan: %d tickers this month (our cap %d)" % (len(syms), TIINGO_CAPS["month_symbols"]))
+    calls.append(now)
+    if sym not in syms:
+        syms.append(sym)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp = path + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump({"month": month, "symbols": syms, "calls": calls}, f)
+    os.replace(tmp, path)
+
+
+def tiingo_closes(sym, since=BASKET_BASE):
+    """[(date, adjusted close)] — split- and dividend-adjusted, so a stock split can't fake a crash."""
     def go():
-        frm = (TODAY - dt.timedelta(days=days)).isoformat()
-        url = "https://api.nasdaq.com/api/quote/%s/historical?assetclass=stocks&fromdate=%s&todate=%s&limit=9999" % (sym, frm, TODAY.isoformat())
-        body, _, _ = http_get(url, accept="application/json", ua=BROWSER_UA)
-        d = json.loads(body)
-        rows = ((d.get("data") or {}).get("tradesTable") or {}).get("rows") or []
-        if not rows:
-            raise SourceError("Nasdaq API returned no rows for %s (%s)" % (sym, (d.get("status") or {}).get("bCodeMessage")))
-        out = []
-        for r in rows:
-            mo, da, yr = r["date"].split("/")
-            out.append(("%s-%s-%s" % (yr, mo, da), float(r["close"].replace("$", "").replace(",", ""))))
-        return sorted(out)
-    return cached("nasdaq:" + sym, go)
+        key = tiingo_key()
+        if not key:
+            raise SourceError("TIINGO_API_KEY is not set")
+        tiingo_take(sym)
+        body, _, _ = http_get(TIINGO_DAILY % (sym, since), accept="application/json",
+                              headers={"Authorization": "Token " + key})
+        rows = json.loads(body)
+        if not isinstance(rows, list) or not rows:
+            raise SourceError("Tiingo returned no prices for %s (%s)" % (sym, str(rows)[:120]))
+        return sorted((r["date"][:10], float(r["adjClose"])) for r in rows if r.get("adjClose") is not None)
+    return cached("tiingo:" + sym, go)
 
 
 INDEED_METRO = "https://raw.githubusercontent.com/hiring-lab/job_postings_tracker/master/US/metro_job_postings_us.csv"
@@ -1197,21 +1229,18 @@ def fetch_dial(dial, cfg, backfill=False):
         if src.get("window_days"):
             return warn_rolling(notices, int(src["window_days"])), EDD_PAGE, " | ".join(status), {}
         return warn_monthly(notices), EDD_PAGE, " | ".join(status), {}
-    if f == "nasdaq_api":
-        note = []
-        try:
-            stooq_probe(); note.append("stooq OK")
-        except SourceError as e:
-            note.append("stooq unusable (%s); using Nasdaq API" % e)
-        series, missing = {}, []
-        for s in BASKET:
+    if f == "tiingo":
+        series, missing, outage = {}, [], True
+        for sym in BASKET:
             try:
-                series[s] = nasdaq_closes(s)
+                series[sym] = tiingo_closes(sym)
             except SourceError as e:
-                missing.append("%s: %s" % (s, e))
+                missing.append("%s: %s" % (sym, e))
+                outage = outage and isinstance(e, TransportError)
         if missing:
-            raise SourceError("basket incomplete, not computed: " + "; ".join(missing))
-        return basket_index(series), "https://api.nasdaq.com/api/quote/{SYMBOL}/historical", "; ".join(note), {}
+            msg = "basket incomplete, not computed: " + "; ".join(missing)
+            raise TransportError(msg, "api.tiingo.com") if outage else SourceError(msg)
+        return basket_index(series), TIINGO_PAGE, "Tiingo adjusted closes; %s = 100" % BASKET_BASE, {}
     if f == "indeed_csv":
         return indeed_metro(), INDEED_METRO, "CBSA 41940", {}
     if f == "car_html":

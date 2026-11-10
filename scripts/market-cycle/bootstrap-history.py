@@ -278,7 +278,7 @@ def main():
             results[d["id"]] = {"status": "OK", "rows": rows, "source_url": url, "note": note, "extras": extras,
                                 "variants": S.corridor_variants(d, rows)}
             print("%-34s %-30s %-8s %6d  %-10s  %-10s  %s" % (d["id"], src[:30], "OK", len(rows), rows[0][0], rows[-1][0], fmt(rows[-1][1])))
-            if d["fetch"] in ("edd_warn_xlsx", "nasdaq_api", "car_html", "sccaor_html") or "reference peak" in note:
+            if d["fetch"] in ("edd_warn_xlsx", "tiingo", "car_html", "sccaor_html") or "reference peak" in note:
                 print("    note: " + note)
             for v, vr in results[d["id"]]["variants"]:
                 if isinstance(vr, Exception):
