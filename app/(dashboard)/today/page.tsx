@@ -5,10 +5,11 @@ import Link from "next/link"
 import { cn } from "@/lib/utils"
 import { handleSessionExpired } from "@/lib/session-expired"
 import {
-  apptWhen, dateLine, describeDue, fmtDate, fmtTime, fmtUsd, fmtWhen, greeting, orderFollowUps,
+  apptWhen, dateLine, describeDue, fmtDate, fmtTime, fmtUsd, fmtWhen, fmtYmd, greeting, orderFollowUps,
   type FollowUpsLite,
 } from "@/lib/today"
 import type { TodayPayload } from "@/lib/todayData"
+import { projectLine, recentlyTouched, type ProjectSummary } from "@/lib/projectsView"
 
 // Today (Mission Control 2.0 shell, 2026-11-10) — the landing page on every
 // device. Layout = the approved "Signal" mockup
@@ -17,6 +18,7 @@ import type { TodayPayload } from "@/lib/todayData"
 //   /api/follow-ups      Follow-ups due tile + Due today list (+ failed drips → Autopilot pill)
 //   /api/crms/contacts   Touches due tile (`total`)
 //   /api/today           health pills, appointments, Jackie overnight, AI spend
+//   /api/projects        Projects · last touched card (desktop only; Part D)
 
 type Source<T> = { data: T | null; error: string | null }
 const empty = <T,>(): Source<T> => ({ data: null, error: null })
@@ -36,6 +38,7 @@ export default function TodayPage() {
   const [today, setToday] = useState<Source<TodayPayload>>(empty)
   const [fu, setFu] = useState<Source<FollowUpsLite>>(empty)
   const [crms, setCrms] = useState<Source<{ total: number }>>(empty)
+  const [projects, setProjects] = useState<Source<{ projects: ProjectSummary[] }>>(empty)
 
   const load = useCallback(async () => {
     setNow(new Date())
@@ -54,6 +57,7 @@ export default function TodayPage() {
       run<TodayPayload>("/api/today", setToday),
       run<FollowUpsLite>("/api/follow-ups", setFu),
       run<{ total: number }>("/api/crms/contacts", setCrms),
+      run<{ projects: ProjectSummary[] }>("/api/projects?view=summary", setProjects),
     ])
   }, [])
 
@@ -74,6 +78,7 @@ export default function TodayPage() {
   const appts = t?.appointments ?? null
   const jackie = t?.jackie ?? null
   const spend = t?.spend ?? null
+  const recent = projects.data ? recentlyTouched(projects.data.projects ?? []) : null
 
   return (
     <div className="max-w-[1180px] text-signal-ink">
@@ -194,7 +199,8 @@ export default function TodayPage() {
           </section>
         </div>
 
-        {/* AI spend */}
+        {/* AI spend + Projects (desktop) */}
+        <div className="md:flex md:flex-col md:gap-[18px] min-w-0">
         <section className="mt-[22px] md:mt-0 min-w-0">
           <H2>AI spend</H2>
           <Card>
@@ -232,6 +238,34 @@ export default function TodayPage() {
             )}
           </Card>
         </section>
+
+        {/* Projects · last touched — desktop only (phone Today is unchanged). */}
+        <section className="hidden md:block min-w-0">
+          <H2>Projects · last touched</H2>
+          <Card>
+            {!recent ? (
+              <StateLine error={projects.error} />
+            ) : recent.length === 0 ? (
+              <Row><div className="text-sm text-signal-muted">No projects synced yet.</div></Row>
+            ) : (
+              recent.map(p => (
+                <RowLink key={p.slug} href={`/projects?open=${encodeURIComponent(p.slug)}`}>
+                  <div className="min-w-0 flex-1">
+                    <div className="text-sm font-semibold truncate">{p.name}</div>
+                    <div className="text-xs text-signal-muted mt-0.5 truncate">{projectLine(p)}</div>
+                  </div>
+                  <div className="font-num text-xs text-signal-muted whitespace-nowrap shrink-0">{p.updated_on ? fmtYmd(p.updated_on) : "—"}</div>
+                </RowLink>
+              ))
+            )}
+            {recent && (
+              <Link href="/projects" className="flex items-center px-3.5 py-3 min-h-[44px] border-t border-signal-border text-xs font-semibold text-signal-accent">
+                All projects →
+              </Link>
+            )}
+          </Card>
+        </section>
+        </div>
       </div>
     </div>
   )

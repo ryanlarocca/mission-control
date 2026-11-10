@@ -122,3 +122,72 @@ Ryan's name for the list of tools and ideas not on day one. Day-one scope is del
 - `GET /api/hopper` (list, open first, newest first), `POST` (title, optional note/kind), `PATCH` (status, title, note). Session-gated.
 - Page: two groups (Tools, Ideas), each item = title + one-line note; an "Add an idea" box at the top (title, optional note) that works with the phone keyboard; a small menu per item to mark it picked up or dropped (dropped items hide; picked-up items show under a collapsed "Picked up" heading).
 - Seed — Tools: Property Lookup (one address box: owner of record, sales chain, skip trace, mail history, comps, existing lead/relationship record) · Underwrite (deal + loan calculator: purchase, rehab, ARV, loan terms → profit vs the $200k gate) · Sign (a screen for the e-sign service) · Offers (a screen for the offer bot) · Video Editor (footage, drafts, covers, post results). Ideas: Deal Flow revamp (every property ever pitched and what happened to it) · Past Deals folder (underwriting vs actual, each becomes a comp) · Health v2 (per-job last success, plain-English error log, helper freeze watchdog) · Texts search with an AI layer · Jackie controls screen · Loans ledger / money dates on Today · Desktop calendar page · Business card generator · DNC scrub as a paste-a-list tool · Adobe replacement · Death-of-a-joint-tenant mail package · Networking bot: search Meetup / Eventbrite · Jackie as full-time receptionist · "My Cell" flag on leads · Auto-clear video scratch files at wrap · The Board (retired 2026-11-10; revive if wanted) · Referral business outreach (24-source scraper concept) · Contact detail page for Relationships · Database farming ideas · Leads list: slim download + load the full record when a card opens · "New version — tap to reload" banner.
+
+---
+
+## Part D — Projects page rebuilt on the project memos
+
+Today's `/projects` (ProjectsWidget → `/api/projects/{list,content,state,create}` → the Mac mini sidecar) reads folders live through the mini's tunnel: slow, down when the mini is down, and it shows raw files. Replace it with a read-only page fed from Supabase, which the mini keeps in sync from the memos.
+
+Source of truth stays the memo files on the mini: `~/Projects/PROJECTS/<slug>/PROJECT_MEMO.md` (+ `CHANGELOG.md`), and retired ones under `~/Projects/PROJECTS/_archive/<slug>/`. Format spec: "Memo format" in `~/Projects/PROJECTS/MEMO_INDEX.md` — read it and several real memos before writing the parser (they vary: some "Where we left off" blocks use **Now / Next / Blockers** bullets, others dated bullets).
+
+Header block (every memo):
+```
+# <Project Name>
+
+> **Status:** 🟢 Active — <phrase>          (also 🟡 Planning, ⏸ Parked, 🪦 Dormant/Retired; free text after the dash)
+> **Plain:** <one plain-English sentence for Ryan — new line, being added to every memo 2026-11-10; may be missing>
+> **Owns:** <one line>
+> **Updated:** YYYY-MM-DD  ·  **Changelog:** …
+```
+
+### 1. Table — `supabase/migrations/2026-11-10_project_memos.sql` (RLS enabled, no policies; the lead applies it)
+`project_memos`: `slug text primary key`, `name text not null`, `status text not null` (`active` | `planning` | `parked` | `retired`), `status_line text` (the text after the status word, emoji stripped), `plain text`, `owns text`, `updated_on date`, `left_off text` (the "📍 Where we left off" section body, markdown, capped at 6,000 chars), `ships jsonb not null default '[]'` (newest first, up to 8: `{ date: "YYYY-MM-DD", title: string }` from the changelog's `## YYYY-MM-DD … — title` headings, backtick-quoted commit hashes and trailing "(…LIVE)" parentheticals stripped from the title), `archived boolean not null default false`, `synced_at timestamptz not null default now()`.
+
+### 2. Sync script — `scripts/projects-sync.mjs` (runs on the mini; plain Node, no new dependencies; follow the env-loading and Supabase REST style of an existing script such as `scripts/mini-backup/` or `scripts/llm-spend-report.mjs`)
+- Walk `~/Projects/PROJECTS/*/PROJECT_MEMO.md` and `~/Projects/PROJECTS/_archive/*/PROJECT_MEMO.md` (skip folders with no memo; skip `mission-control` itself and anything starting with `_tmp`).
+- Status mapping from the Status line: 🟢 or the words Active / LIVE / live → `active`; 🟡 or Planning → `planning`; ⏸ or Parked → `parked`; 🪦 or Dormant / Retired → `retired`; anything under `_archive/` → `retired` + `archived = true`; unknown → `planning` and print a warning naming the memo.
+- Upsert every memo by slug; delete rows whose memo no longer exists. `--dry-run` prints what it would write (name, status, updated, plain, ship count) without touching the database. Exit non-zero and send one Telegram line (same helper/env the other mini scripts use for alerts) if the upsert fails — silent failures are not acceptable here.
+- The parser is pure functions in `lib/projectMemo.ts` (importable by the script via a small `.mjs` twin or by keeping the parser in the `.mjs` and unit-testing that — choose whichever matches how other scripts in `scripts/` share code with `tests/`; look before deciding). Unit tests in `tests/project-memo.unit.test.ts`: header parsing with and without `Plain:`, each status form, a Now/Next/Blockers block and a dated-bullets block, changelog heading forms like `## 2026-11-09 (afternoon) — Signed contracts update the lead card automatically (\`150240d\`)`.
+- The lead installs the schedule (launchd) and adds the wrap-procedure line — do not create or load any launchd job.
+
+### 3. API — `GET /api/projects` (session-gated; `force-dynamic`): all rows, ordered by `updated_on` desc. Fail soft (503 + plain message) if the table is missing.
+Delete the old sidecar-backed routes `app/api/projects/{list,content,state,create}` and `components/widgets/ProjectsWidget.tsx` once nothing imports them. Leave `lib/sidecar.ts` alone. If `react-markdown` / `remark-gfm` end up with zero importers, report it (do not edit package.json) — but the new page may keep using react-markdown for the "where we left off" text if that reads better.
+
+### 4. Page — `/projects` (phone-first, navy Signal look, same components/classes as `/today` and `/hopper`)
+- Three groups in this order: **Active**, **Planning**, **Parked**; a "Show retired (N)" toggle at the bottom reveals **Retired**. Within a group: most recently touched first.
+- Row: project name; the `plain` sentence (fall back to `status_line`, then `owns`); right side: last touched date (with the year) — amber when an Active project has not been touched in 30+ days.
+- Tap a row → it expands in place: **Recent ships** (date + title, up to 8) first, then **Where we left off** (the markdown block), then a muted "Synced <relative time>" line. Read-only: no edit, no create, no state buttons.
+- Header line: "N active · N planning · N parked" and when the data was last synced. If the newest `synced_at` is older than 36 hours, show one amber line: "This list hasn't refreshed since <date>."
+- Also add a **Projects · last touched** card to the Today page's desktop layout (third column, under AI spend; five most recently touched non-retired projects: name, plain line, date) — it was in the approved desktop mockup. Phone Today is unchanged.
+
+---
+
+## Part E — Health page (v1)
+
+One page that answers "is everything running?" in plain words, readable in ten seconds on a phone. v1 shows what the mini and the app already know; it adds one small reporter on the mini so the page does not depend on the mini's tunnel being up.
+
+### 1. Reporter on the mini — `scripts/mini-status.mjs` (plain Node, no new dependencies; conventions as in `scripts/llm-spend-report.mjs` / `scripts/mini-tidy.mjs`)
+Runs every 5 minutes (the lead installs the launchd job `com.lrghomes.mini-status` — do not create or load it). Collects a snapshot and upserts it into one row (`id='mini'`) of a new table `mini_status` (`id text pk`, `reported_at timestamptz`, `snapshot jsonb`; migration `supabase/migrations/2026-11-10_mini_status.sql`, RLS on, no policies; the lead applies it). `--dry-run` prints the snapshot and writes nothing. Snapshot:
+- `jobs[]`: every `~/Library/LaunchAgents/com.lrghomes.*.plist` (skip `.disabled*`): `label`, a plain `name` (label minus `com.lrghomes.`, dashes → spaces), `schedule` in plain words from the plist (`KeepAlive` → "always on"; `StartInterval` 300 → "every 5 min"; `StartCalendarInterval` → "daily 3:10 AM" / "Mondays 8:40 AM" / "hourly at :10"), `running` (has a pid in `launchctl list`), `lastExit` (the status column; for a KeepAlive job a negative value such as -15 only means it was restarted — report it as ok), and `ok`.
+- `bridge`: parse `python3 ~/bin/claude-remote-ctl.py status` (lines like "🟢 Mac mini bridge: connected", "Sessions open: 3 of 32", "Claude login: 26 days left"; 30 s timeout) → `connected`, `sessions`, `capacity`, `loginDaysLeft`. If the command fails or times out, `bridge: null` and an entry in `errors`.
+- `backup`: mtime of `~/.mini-backup/manifest.json` (last successful nightly backup) and whether `~/Library/Logs/lrghomes/mini-backup.err` has been written since.
+- `helper` (the Relationships helper, a.k.a. the CRMS sidecar): `GET http://localhost:5799/health` with a 5 s timeout → `ok`, `pid`.
+- `textHistory`: mtime of `~/Projects/PROJECTS/comprehensive-relationship-management/data/unified_messages.db` (the hourly merge of text history) → `stale` when older than 3 hours.
+- `disk`: free GB on `/System/Volumes/Data`.
+- `uptime`: boot time.
+- NEVER open, stat or read anything under `~/Library/Messages`, `~/Library/Mail` or `~/Library/Containers` — on this machine a blocked privacy prompt makes such reads hang forever and, done from the helper, freezes it (this happened 2026-11-10).
+- Alerts (Telegram, same bot/chat env and helper style as `scripts/mini-tidy.mjs`; one line on a state CHANGE only, state kept in `~/Library/Logs/lrghomes/mini-status.state.json`; a recovery line when it clears): helper not answering for two consecutive runs → restart it with `launchctl kickstart -k gui/<uid>/com.lrghomes.crms-sidecar` and say so; text history stale; a job with a failing last exit. No alert for things `/api/mini/watch` already alerts on (mini down, bridge watchdog silent, low disk).
+- Unit-test the pure parts (plist schedule → words, `launchctl list` line parsing, ctl status parsing, state-change logic) in `tests/mini-status.unit.test.ts`.
+
+### 2. API — `GET /api/health` (session-gated, `force-dynamic`, NOT in PUBLIC_PATHS), parallel reads, each failing soft like `/api/today`:
+- `mini_heartbeat` row (alive, bridge watchdog, free space — reuse `lib/today.ts` helpers / thresholds) and the `mini_status` snapshot (+ how old it is).
+- Judge: newest `lead_verdicts.judged_at`.
+- Jackie: on/off from `getJackieFlip()` (`lib/jackie.ts`, `inbox_settings` key `jackie_flip`), since when; her calls in the last 7 days (count of leads with `jackie_call` not null).
+- AI spend by key: `llm_usage_rollup` for the month to date and for yesterday, grouped by `lane` (labels: "Drafts & coaching", "Background jobs"), plus the top five features (`tag`) this month. Target $100/month.
+
+### 3. Page — `/health` (phone-first, Signal look; add **Health** to the Ops group in the sidebar and to the More sheet, between Projects and The Hopper)
+- Top: one verdict line — "Everything is running." (teal) or "N things need a look." (amber) — and "Checked <relative time>" from the snapshot age; amber if the snapshot is older than 15 minutes ("The mini hasn't reported since …").
+- Cards, in this order, each with a ✓ / ! mark and plain sentences: **Mac mini** (checked in N sec ago · up since <date> · N GB free · last backup <date, time>), **Phone bridge** (connected · N of 32 chats open · Claude login: N days left — amber at ≤ 7 days), **Relationships helper** (answering · text history refreshed <relative>), **Judge** (ran today at …), **Jackie** (on/off since <date> · N calls this week), **AI spend** (month to date vs $100 with a bar; yesterday; by key; top five features), **Scheduled jobs** (collapsed by default: "33 jobs · all ok" or "33 jobs · 2 need a look", expanding to a list of name · schedule · state, problems first).
+- Read-only. No restart or control buttons in v1.
+- The Today page's health pills link to `/health`.
