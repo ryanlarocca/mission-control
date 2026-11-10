@@ -5,58 +5,24 @@ import Link from "next/link"
 import { usePathname } from "next/navigation"
 import { cn } from "@/lib/utils"
 import {
-  Home, Activity, Calendar, MessageSquare, Terminal, Bot, Monitor,
-  FileText, Zap, BarChart2, TrendingUp, Search, Dumbbell, FolderKanban,
-  Brain, Menu, X, Bug, Users, Phone, Megaphone, Target, Gauge,
+  FolderKanban, Menu, X, Users, Phone, Megaphone, Zap, Gauge,
 } from "lucide-react"
 
 const navGroups = [
   {
-    label: "Command",
-    items: [
-      { href: "/board", label: "The Board", icon: Target },
-      { href: "/chat", label: "Chat", icon: MessageSquare },
-      { href: "/terminal", label: "Terminal", icon: Terminal },
-      { href: "/agents", label: "Agents", icon: Bot },
-      { href: "/macmini", label: "Mac Mini", icon: Monitor },
-    ],
-  },
-  {
     label: "Real Estate",
     items: [
-      { href: "/pipeline", label: "Pipeline", icon: Home },
       { href: "/relationships", label: "Relationships", icon: Users },
       { href: "/leads", label: "Leads", icon: Phone },
       { href: "/campaigns", label: "Campaigns", icon: Megaphone },
       { href: "/email-campaign", label: "Email Drip", icon: Zap },
-      { href: "/redfin", label: "Redfin Search", icon: Search },
-      { href: "/deal-flow", label: "Deal Flow", icon: BarChart2 },
       { href: "/cycle", label: "Market Cycle", icon: Gauge },
-    ],
-  },
-  {
-    label: "Physiq",
-    items: [
-      { href: "/physiq", label: "Portal", icon: Dumbbell },
-      { href: "/social", label: "Social", icon: Activity },
-    ],
-  },
-  {
-    label: "Business",
-    items: [
-      { href: "/ads", label: "Google Ads", icon: BarChart2 },
-      { href: "/stocks", label: "Stocks", icon: TrendingUp },
     ],
   },
   {
     label: "Resources",
     items: [
-      { href: "/documents", label: "Documents", icon: FileText },
-      { href: "/skills", label: "Skills", icon: Zap },
-      { href: "/calendar", label: "Calendar", icon: Calendar },
       { href: "/projects", label: "Projects", icon: FolderKanban },
-      { href: "/memory", label: "Memory", icon: Brain },
-      { href: "/bugs", label: "Bugs", icon: Bug },
     ],
   },
 ]

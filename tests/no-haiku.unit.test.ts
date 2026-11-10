@@ -7,11 +7,10 @@ import { join, relative } from "node:path"
 // so nothing can regress to Haiku. This is a plain fs scan of lib/, app/ and
 // scripts/ (the Mac mini launchd scripts moved too on 2026-10-21; archive/ is
 // historical and skipped)
-// for the model id. lib/mockData.ts is display-only fixture data (fake
-// history rows) and is excluded.
+// for the model id.
 
 const ROOT = join(__dirname, "..")
-const SKIP = new Set(["lib/mockData.ts"])
+const SKIP = new Set<string>()
 const SKIP_DIRS = new Set(["scripts/archive", "scripts/inbox-agent/node_modules"])
 const EXT = /\.(ts|tsx|js|mjs)$/
 

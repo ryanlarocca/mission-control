@@ -4,7 +4,7 @@ import { formatLoad, formatShortDate, type StrengthCard } from "@/lib/gymTracker
 import { Sparkline } from "./Sparkline"
 
 // One strength exercise card. The whole card is the tap target → opens the
-// Log Set sheet. Matches PhysiqWidget styling (zinc-900 / zinc-800).
+// Log Set sheet. zinc-900 / zinc-800 styling.
 export function ExerciseCard({
   card,
   onTap,
