@@ -261,6 +261,16 @@ async function campaignScope(sb: SupabaseClient, campaignId: string | null): Pro
   return mailSearchCampaignId((data as CampaignScopeLite | null) ?? null, campaignId)
 }
 
+/** An opt-out still counts as a response to the letter (a removal) — credit it like any contact. */
+async function creditQuietly(sb: SupabaseClient, leadId: string): Promise<void> {
+  try {
+    const { creditMailPerson } = await import("./mailCredit")
+    await creditMailPerson(sb, leadId, { alert: false })
+  } catch (e) {
+    console.warn("[dnc] mail credit failed:", e instanceof Error ? e.message : String(e))
+  }
+}
+
 /** Link the cluster to the mailed record the opt-out is about (exact match first, then the loose one). */
 export async function matchOptOutAddress(sb: SupabaseClient, lead: LeadIdentity, heard: string | null): Promise<OptOutRecord | null> {
   if (!lead.mail_record_id) {
@@ -275,6 +285,7 @@ export async function matchOptOutAddress(sb: SupabaseClient, lead: LeadIdentity,
     if (fuzzy) {
       await linkMailRecordToCluster(sb, lead, fuzzy.id, "auto_address", null, fuzzy.prior_pieces ?? null)
       lead.mail_record_id = fuzzy.id
+      await creditQuietly(sb, lead.id)
     }
   }
   if (!lead.mail_record_id) return null
@@ -390,6 +401,7 @@ export async function correctOptOutAddress(sb: SupabaseClient, leadId: string, t
   const rec = exact.record ?? (await fuzzyMailRecordForOptOut(sb, scope, heard))
   if (!rec || rec.id === lead.mail_record_id) return null
   await linkMailRecordToCluster(sb, lead, rec.id, "auto_address", null, rec.prior_pieces ?? null)
+  await creditQuietly(sb, lead.id)
   const { data: full } = await sb.from("mail_records").select(RECORD_COLS).eq("id", rec.id).maybeSingle()
   const record = (full as OptOutRecord | null) ?? null
   const { data: rows } = await sb.from("leads").select("id").or(clusterOr(lead))

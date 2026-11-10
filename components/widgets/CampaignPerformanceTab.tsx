@@ -46,6 +46,18 @@ interface CampaignPerf {
   legacy?: boolean
   order_number?: string | null
   closed_deals?: { name: string | null; address: string | null; closed_at: string; deal_value: number | null }[]
+  // How real responses first reached out (2026-11-09): the letter's own
+  // number, the website form, the website number, other.
+  by_door?: DoorCounts
+  // A/B parents: the family counted once per person (the API de-dupes).
+  family?: FamilyCounts | null
+}
+
+interface DoorCounts { letter: number; website_form: number; website_number: number; other: number }
+interface FamilyCounts {
+  total_responses: number; removals: number; junk: number; responses: number; leads: number
+  appointments: number; offers: number; pending: number; closed: number; deal_value_total: number
+  by_door: DoorCounts
 }
 
 interface OfferEntry {
@@ -146,9 +158,16 @@ export function CampaignPerformanceTab() {
   // get the rollup numbers.
   function aggregateForDisplay(group: ParentGroup): CampaignPerf {
     if (group.children.length === 0) return group.parent
-    const sum = (key: keyof CampaignPerf) => group.children.reduce((acc, c) => acc + ((c[key] as number) ?? 0), 0)
-    const pieces = sum("pieces_sent")
-    const cost = sum("total_cost")
+    const sumKids = (key: keyof CampaignPerf) => group.children.reduce((acc, c) => acc + ((c[key] as number) ?? 0), 0)
+    // People counts come from the API's family rollup (one person answering
+    // both letters is one response); pieces and cost still add up.
+    const fam = group.parent.family ?? null
+    const sum = (key: keyof CampaignPerf) => {
+      if (fam && key in fam) return (fam as unknown as Record<string, number>)[key as string] ?? 0
+      return sumKids(key)
+    }
+    const pieces = sumKids("pieces_sent")
+    const cost = sumKids("total_cost")
     const responses = sum("responses")
     const total = sum("total_responses")
     const leads = sum("leads")
@@ -180,6 +199,7 @@ export function CampaignPerformanceTab() {
       cost_per_lead: costAll && leads > 0 ? costAll / leads : null,
       cost_per_closed: costAll && closed > 0 ? costAll / closed : null,
       roi: costAll && dealValue > 0 ? (dealValue - costAll) / costAll : null,
+      by_door: fam?.by_door ?? group.parent.by_door,
     }
   }
 
@@ -505,6 +525,12 @@ function FunnelInline({ c }: { c: CampaignPerf }) {
           ))}
         </tbody>
       </table>
+      {c.by_door && c.by_door.website_form + c.by_door.website_number > 0 && (
+        <div className="text-zinc-500" title="How real responses first reached out">
+          Reached you by: letter # {c.by_door.letter} · website form {c.by_door.website_form} · website # {c.by_door.website_number}
+          {c.by_door.other > 0 && <> · other {c.by_door.other}</>}
+        </div>
+      )}
       <div className="text-zinc-500">
         {c.deal_value_total > 0 && <>Closed value {fmtMoney(c.deal_value_total)} · </>}ROI: <span className={c.roi == null ? "text-zinc-500" : c.roi >= 0 ? "text-emerald-400" : "text-red-400"}>{fmtRoi(c.roi)}</span>
       </div>

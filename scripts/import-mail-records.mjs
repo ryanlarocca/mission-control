@@ -101,6 +101,19 @@ if (expectPath) {
 if (!commit) { console.log("dry run — add --commit to write"); process.exit(0) }
 
 const sb = createClient(process.env.LRG_SUPABASE_URL, process.env.LRG_SUPABASE_SERVICE_KEY, { auth: { persistSession: false } })
+// One list at a time until the second-list work ships (briefs/
+// BRIEF_MAILER_CREDIT_RULE_2026-11-09.md, Phase 2): with two lists loaded a
+// house on both comes back as two candidates (no auto-link), every person's
+// link is overwritten person-wide, and the old list's segments lose its
+// responders. Re-importing the SAME campaign is still fine.
+{
+  const { data: other, error } = await sb.from("mail_records").select("campaign_id").neq("campaign_id", campaign).limit(1)
+  if (error) { console.error(`list check failed: ${error.message}`); process.exit(3) }
+  if (other && other.length) {
+    console.error(`REFUSED: campaign ${other[0].campaign_id} already has a mailing list loaded. A second list needs the Phase 2 work in briefs/BRIEF_MAILER_CREDIT_RULE_2026-11-09.md first.`)
+    process.exit(4)
+  }
+}
 for (let i = 0; i < records.length; i += 500) {
   const { error } = await sb.from("mail_records").upsert(records.slice(i, i + 500), { onConflict: "campaign_id,record_id" })
   if (error) { console.error(`upsert failed at ${i}: ${error.message}`); process.exit(3) }

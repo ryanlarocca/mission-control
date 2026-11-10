@@ -123,6 +123,8 @@ describe("autoLinkMailRecord on an A/B child campaign", () => {
         const scoped = eqValue(c, "campaign_id")
         const street = eqValue(c, "site_street_norm")
         if (scoped === PARENT && street === "860 24TH AVE") return { data: [{ ...RECORD, piece: opts.recordPiece }] }
+        // "does this campaign have a list?" probe (2026-11-09)
+        if (scoped === PARENT && !street && !has(c, "like") && !has(c, "ilike")) return { data: [{ id: "rec-1" }] }
         return { data: [] }
       }
       throw new Error(`unexpected table ${c.table}`)
@@ -169,17 +171,22 @@ describe("autoLinkMailRecord on an A/B child campaign", () => {
     expect(warn).not.toHaveBeenCalled()
   })
 
-  it("falls back to the lead's own campaign_id when the campaign row is missing", async () => {
+  it("falls back to the lead's own campaign_id when the campaign row is missing, then to every list", async () => {
     const { sb, log } = scenario({ campaignRow: null, leadCampaignId: CHILD_A, recordPiece: "A" })
     const result = await autoLinkMailRecord(sb, LEAD)
-    expect(result?.record).toBeNull() // the child has no records of its own
-    for (const q of log.filter(c => c.table === "mail_records")) expect(eqValue(q, "campaign_id")).toBe(CHILD_A)
+    expect(result?.record).toBeNull()
+    const scoped = log.filter(c => c.table === "mail_records").map(q => eqValue(q, "campaign_id"))
+    // first the probe on the child's own scope (no list there) …
+    expect(scoped[0]).toBe(CHILD_A)
+    // … then an open search across lists (2026-11-09): a campaign without a
+    // loaded list can't place the house, so it never scopes to one
+    expect(scoped.slice(1).every(v => v === undefined)).toBe(true)
   })
 
-  it("skips the campaign lookup for an unattributed lead", async () => {
+  it("skips the scoping lookup for an unattributed lead and searches every list", async () => {
     const { sb, log } = scenario({ campaignRow: null, leadCampaignId: null, recordPiece: "A" })
     await autoLinkMailRecord(sb, LEAD)
-    expect(log.some(c => c.table === "campaigns")).toBe(false)
+    expect(log.some(c => c.table === "campaigns" && eqValue(c, "id") !== undefined)).toBe(false)
     for (const q of log.filter(c => c.table === "mail_records")) expect(eqValue(q, "campaign_id")).toBeUndefined()
   })
 })

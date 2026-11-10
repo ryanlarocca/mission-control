@@ -128,6 +128,12 @@ interface Lead {
   mail_record_id?: string | null
   mail_match_method?: string | null   // "auto_address" | "auto_mail_address" | "auto_surname" | "auto_soundalike" | "manual" | null
   mail_match_candidates?: string[] | null
+  // Mailer credit (2026-11-09, lib/mailCredit): how campaign_id was set
+  // (line | inherited | match | manual), the campaign's label, and the linked
+  // record's arm ('none' = on the list, never mailed) — from GET /api/leads.
+  campaign_via?: string | null
+  campaign_source_label?: string | null
+  mail_record_arm?: string | null
 }
 
 // chat.db stores timestamps in Apple epoch (seconds since 2001-01-01); the
@@ -149,6 +155,14 @@ interface SyntheticGmail {
   body: string
   timestamp: number   // Unix epoch ms
   is_from_ryan: boolean
+}
+
+// The door a credited contact came through (mirrors lib/mailCredit doorLabel).
+function creditDoorLabel(l: Lead): string | null {
+  if (l.lead_type === "form") return "Website form"
+  if (l.twilio_number === "+16506703914") return "Website #"
+  if (l.twilio_number?.startsWith("email:")) return "Email"
+  return null
 }
 
 function isOutbound(l: Lead): boolean {
@@ -228,6 +242,13 @@ interface LeadGroup {
   // Some row in the cluster belongs to a campaign whose mailed list is loaded
   // — only then can the lead be matched, so only then is "Unmatched" shown.
   mailListLoaded: boolean
+  // Mailer credit (2026-11-09): the mailing a list match credited this person
+  // to (outranks campaign_label / source on the main chip) and the door that
+  // contact came through ("website form", "website number", …).
+  creditLabel: string | null
+  creditDoor: string | null
+  // Linked record was never mailed (arm 'none').
+  mailRecordNotMailed: boolean
 }
 
 // Phase 7D: top-row lifecycle chips only. Source / temperature / flag-hides
@@ -458,6 +479,8 @@ function groupLeads(leads: Lead[]): LeadGroup[] {
     // carrying mail_record_id is authoritative; take the newest. Candidates
     // only matter when nothing is linked.
     const mailRow = newestFirst.find(e => e.mail_record_id)
+    const creditRow = newestFirst.find(e =>
+      !isOutbound(e) && (e.campaign_via === "match" || e.campaign_via === "manual") && !!e.campaign_source_label) ?? null
     const candidateRow = newestFirst.find(e => Array.isArray(e.mail_match_candidates) && e.mail_match_candidates.length > 0)
     groups.push({
       phone: key,
@@ -516,6 +539,9 @@ function groupLeads(leads: Lead[]): LeadGroup[] {
       campaignId: newestFirst.map(e => e.campaign_id).find(v => !!v) ?? null,
       campaignPiece: mostRecentInbound?.campaign_piece ?? null,
       mailListLoaded: newestFirst.some(r => r.campaign_mail_list === true),
+      creditLabel: creditRow?.campaign_source_label ?? null,
+      creditDoor: creditRow ? creditDoorLabel(creditRow) : null,
+      mailRecordNotMailed: mailRow?.mail_record_arm === "none",
     })
   }
   // Sort groups by newest event first
@@ -2210,12 +2236,12 @@ function LeadCard(p: LeadCardProps) {
   // Display the campaign_label (Phase 7C overlay) when set, falling back to
   // the historical source. Untouched legacy rows that aren't relabeled fall
   // through to "Unknown".
-  const displayCampaign = group.campaignLabel || group.source || "Unknown"
+  const displayCampaign = group.creditLabel || group.campaignLabel || group.source || "Unknown"
   const sourceClass = SOURCE_BADGE[displayCampaign] || SOURCE_BADGE.Unknown
   // The source-type chip is dropped when it would just repeat the campaign
   // chip (a Website lead showed WEBSITE · WEBSITE).
   const sourceTypeLabel = group.sourceType ? (SOURCE_TYPE_LABEL[group.sourceType] || group.sourceType) : null
-  const sourceTypeClass = group.sourceType && sourceTypeLabel?.toLowerCase() !== displayCampaign.toLowerCase()
+  const sourceTypeClass = !group.creditDoor && group.sourceType && sourceTypeLabel?.toLowerCase() !== displayCampaign.toLowerCase()
     ? SOURCE_TYPE_BADGE[group.sourceType]
     : null
   // Campaign + earlier campaigns + source type. Rendered twice in the
@@ -2225,8 +2251,8 @@ function LeadCard(p: LeadCardProps) {
       <span className={`${mainSize} py-0.5 font-semibold rounded uppercase tracking-wider whitespace-nowrap ${sourceClass}`}>
         {displayCampaign}
       </span>
-      {group.sources
-        .filter(src => src !== displayCampaign && src !== group.campaignLabel)
+      {Array.from(new Set([...(group.creditLabel && group.campaignLabel ? [group.campaignLabel] : []), ...group.sources]))
+        .filter(src => src !== displayCampaign && (!!group.creditLabel || src !== group.campaignLabel))
         .map(src => (
           <span
             key={src}
@@ -2239,6 +2265,14 @@ function LeadCard(p: LeadCardProps) {
       {sourceTypeClass && (
         <span className={`${extraSize} py-0.5 font-semibold rounded uppercase tracking-wider whitespace-nowrap ${sourceTypeClass}`}>
           {sourceTypeLabel}
+        </span>
+      )}
+      {group.creditDoor && (
+        <span
+          title="Matched to the mailing list — this is how they reached you"
+          className={`${extraSize} py-0.5 font-semibold rounded uppercase tracking-wider whitespace-nowrap bg-zinc-800 text-zinc-300 border border-zinc-700`}
+        >
+          via {group.creditDoor}
         </span>
       )}
     </>
@@ -2422,7 +2456,7 @@ function LeadCard(p: LeadCardProps) {
                   className="px-1.5 py-0.5 text-[9px] font-semibold rounded uppercase tracking-wider bg-emerald-950 text-emerald-300 border border-emerald-900 shrink-0"
                   title={`Linked to a mailed record${group.mailMatchMethod ? ` (${group.mailMatchMethod.replace(/_/g, " ")})` : ""}`}
                 >
-                  📬 Matched
+                  {group.mailRecordNotMailed ? "📬 On list — not mailed" : "📬 Matched"}
                 </span>
               )}
               {isOnMarket(group.listing) && (

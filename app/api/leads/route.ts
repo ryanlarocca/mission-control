@@ -86,24 +86,44 @@ export async function GET(request: NextRequest) {
 // mailed list to link the responder to. The card only says "Unmatched" for
 // those — MFM and older drops were never loaded, so "Unmatched" there was
 // noise on every legacy card.
+//
+// And (2026-11-09, mailer credit): `campaign_source_label` (the row's
+// campaign label, e.g. NOO-Q4-2026-B — the card's main chip when the row was
+// credited by a mailing-list match) and `mail_record_arm` (arm 'none' = on
+// the list but never mailed).
 async function attachCampaignPiece(sb: SupabaseClient, rows: unknown[]): Promise<void> {
-  const leadRows = rows as { campaign_id?: string | null; campaign_piece?: string | null; campaign_mail_list?: boolean }[]
+  const leadRows = rows as { campaign_id?: string | null; campaign_piece?: string | null; campaign_mail_list?: boolean; campaign_source_label?: string | null; mail_record_id?: string | null; mail_record_arm?: string | null }[]
+  const recIds = Array.from(new Set(leadRows.map((r) => r.mail_record_id).filter((v): v is string => typeof v === "string" && v.length > 0)))
+  if (recIds.length) {
+    const armById = new Map<string, string | null>()
+    for (let i = 0; i < recIds.length; i += 200) {
+      const { data, error } = await sb.from("mail_records").select("id, arm").in("id", recIds.slice(i, i + 200))
+      if (error) { console.warn("[leads:GET] mail record arm join failed:", error.message); break }
+      for (const m of (data ?? []) as { id: string; arm: string | null }[]) armById.set(m.id, m.arm)
+    }
+    for (const r of leadRows) if (r.mail_record_id) r.mail_record_arm = armById.get(r.mail_record_id) ?? null
+  }
   const ids = Array.from(new Set(leadRows.map((r) => r.campaign_id).filter((v): v is string => typeof v === "string" && v.length > 0)))
   if (ids.length === 0) return
   const pieceById = new Map<string, string | null>()
+  const labelById = new Map<string, string | null>()
   const rootById = new Map<string, string>()
   for (let i = 0; i < ids.length; i += 200) {
-    const { data, error } = await sb.from("campaigns").select("id, piece, parent_campaign_id").in("id", ids.slice(i, i + 200))
+    const { data, error } = await sb.from("campaigns").select("id, piece, parent_campaign_id, source_label").in("id", ids.slice(i, i + 200))
     if (error) {
       console.warn("[leads:GET] campaign piece join failed:", error.message)
       return
     }
-    for (const c of (data ?? []) as { id: string; piece: string | null; parent_campaign_id: string | null }[]) {
+    for (const c of (data ?? []) as { id: string; piece: string | null; parent_campaign_id: string | null; source_label: string | null }[]) {
       pieceById.set(c.id, c.piece ?? null)
+      labelById.set(c.id, c.source_label ?? null)
       rootById.set(c.id, c.parent_campaign_id || c.id)
     }
   }
-  for (const r of leadRows) r.campaign_piece = r.campaign_id ? pieceById.get(r.campaign_id) ?? null : null
+  for (const r of leadRows) {
+    r.campaign_piece = r.campaign_id ? pieceById.get(r.campaign_id) ?? null : null
+    r.campaign_source_label = r.campaign_id ? labelById.get(r.campaign_id) ?? null : null
+  }
 
   // One existence probe per distinct campaign family — a handful of reads.
   const hasList = new Map<string, boolean>()

@@ -73,9 +73,10 @@ describe("recording pipeline re-runs the mailed-record linker", () => {
     expect(linker).toHaveBeenCalledWith(expect.anything(), "lead-3")
   })
 
-  it("does not run the linker when the analysis has neither name nor address", async () => {
+  it("still runs the linker when the analysis has neither name nor address (it also credits the mailing, 2026-11-09)", async () => {
     await applyAnalyzeCallResult("lead-4", { ...RESULT, name: null, property_address: null })
     await applyFollowupOnlyResult("lead-5", { ...RESULT, name: null, property_address: null })
-    expect(linker).not.toHaveBeenCalled()
+    expect(linker).toHaveBeenCalledWith(expect.anything(), "lead-4")
+    expect(linker).toHaveBeenCalledWith(expect.anything(), "lead-5")
   })
 })

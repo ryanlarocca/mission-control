@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server"
-import { getLeadsClient, clusterKey } from "@/lib/leads"
+import { getLeadsClient } from "@/lib/leads"
+import { computeCampaignCounts, type CampaignCounts, type Door, type PerfRow } from "@/lib/campaignPerf"
 import type { Campaign } from "../route"
 
 // Per-campaign funnel + ROI rollup. One row per campaign (parent + children
@@ -48,183 +49,63 @@ export interface CampaignPerf {
   cost_per_response: number | null
   cost_per_offer: number | null
   roi: number | null             // (deal_value_total - total_cost) / total_cost
+  // Real responses by how they first reached out (2026-11-09): the letter's
+  // own number / alias, the website form, the website number, other.
+  by_door: Record<Door, number>
+  // A/B parents only: the family counted once per person (a person who
+  // answered letter A and later letter B is one response, not two).
+  family: FamilyCounts | null
 }
+
+export type FamilyCounts = Omit<CampaignCounts, "closed_deals">
 
 export async function GET() {
   try {
     const sb = getLeadsClient()
-    // Pull attributed leads (campaign_id set) AND every cluster sibling
-    // so the funnel can resolve offer/close events that landed on the
-    // outbound-call row (no campaign_id) of an attributed cluster.
-    // Without this, Brian Metcalf's $1.8M offer on his Outbound row
-    // doesn't show up under MFM-B even though his cluster IS attributed
-    // to MFM-B — that's the common case (Ryan verbalizes offers on
-    // callbacks, attribution lives on the original inbound voicemail).
-    const [{ data: campaigns, error: cErr }, { data: attributedRaw, error: lErr }] = await Promise.all([
-      sb.from("campaigns").select("*"),
-      sb
-        .from("leads")
-        .select("id, name, campaign_id, caller_phone, email, gmail_thread_id, is_junk, is_dnc, offer_verbalized_at, deal_closed_at, deal_value, property_address")
-        .not("campaign_id", "is", null),
-    ])
+    const { data: campaigns, error: cErr } = await sb.from("campaigns").select("*")
     if (cErr) return NextResponse.json({ error: cErr.message }, { status: 500 })
-    if (lErr) return NextResponse.json({ error: lErr.message }, { status: 500 })
 
-    type AttrRow = {
-      id: string
-      name: string | null
-      campaign_id: string
-      caller_phone: string | null
-      email: string | null
-      gmail_thread_id: string | null
-      is_junk: boolean | null
-      is_dnc: boolean | null
-      offer_verbalized_at: string | null
-      deal_closed_at: string | null
-      deal_value: number | null
-      property_address: string | null
+    // Every credited row, then every row of those people (offers / closes
+    // usually sit on Ryan's outbound callback rows, which carry no
+    // campaign_id). Paginated: PostgREST caps an unpaged select at 1,000.
+    const COLS = "id, created_at, name, property_address, campaign_id, campaign_via, caller_phone, email, gmail_thread_id, twilio_number, lead_type, is_junk, is_dnc, offer_verbalized_at, offer_amount, deal_closed_at, deal_value, became_lead_at, appointment_at, pending_at"
+    const PAGE = 1000
+    const byId = new Map<string, PerfRow>()
+    type Page = { order: (c: string, o: { ascending: boolean }) => { range: (a: number, b: number) => PromiseLike<{ data: unknown[] | null; error: { message: string } | null }> } }
+    const pull = async (build: () => Page) => {
+      for (let from = 0; ; from += PAGE) {
+        const { data, error } = await build().order("id", { ascending: true }).range(from, from + PAGE - 1)
+        if (error) throw new Error(error.message)
+        for (const r of (data ?? []) as PerfRow[]) byId.set(r.id, r)
+        if (!data || data.length < PAGE) break
+      }
     }
-    const attributed = (attributedRaw ?? []) as AttrRow[]
-
-    // Second query: every lead row in a cluster that contains at least
-    // one attributed row, so we can hoist offers/closes from siblings.
-    const phones = Array.from(new Set(attributed.map(r => r.caller_phone).filter((x): x is string => !!x)))
-    const emails = Array.from(new Set(attributed.map(r => r.email).filter((x): x is string => !!x).map(e => e.toLowerCase())))
-    const threads = Array.from(new Set(attributed.map(r => r.gmail_thread_id).filter((x): x is string => !!x)))
-    type SibRow = {
-      caller_phone: string | null
-      email: string | null
-      gmail_thread_id: string | null
-      offer_verbalized_at: string | null
-      deal_closed_at: string | null
-      deal_value: number | null
-      is_dnc: boolean | null
-      became_lead_at: string | null
-      appointment_at: string | null
-      pending_at: string | null
-    }
-    // 2026-05-17 — we used to issue a single `.or()` query combining three
-    // `.in.()` filters, but PostgREST (or supabase-js's encoding of it)
-    // dropped the offer_verbalized_at column to null on rows matched via
-    // OR'd IN clauses with many values — verified by direct comparison
-    // against the same row via `.eq()`. Splitting into three separate
-    // queries dodges the bug entirely and is plenty fast at our row counts.
-    const sibResults = await Promise.all([
-      phones.length > 0
-        ? sb.from("leads")
-            .select("caller_phone, email, gmail_thread_id, offer_verbalized_at, deal_closed_at, deal_value, is_dnc, became_lead_at, appointment_at, pending_at")
-            .in("caller_phone", phones)
-        : Promise.resolve({ data: [], error: null }),
-      emails.length > 0
-        ? sb.from("leads")
-            .select("caller_phone, email, gmail_thread_id, offer_verbalized_at, deal_closed_at, deal_value, is_dnc, became_lead_at, appointment_at, pending_at")
-            .in("email", emails)
-        : Promise.resolve({ data: [], error: null }),
-      threads.length > 0
-        ? sb.from("leads")
-            .select("caller_phone, email, gmail_thread_id, offer_verbalized_at, deal_closed_at, deal_value, is_dnc, became_lead_at, appointment_at, pending_at")
-            .in("gmail_thread_id", threads)
-        : Promise.resolve({ data: [], error: null }),
-    ])
-    const sErr = sibResults.find(r => r.error)?.error
-    if (sErr) return NextResponse.json({ error: sErr.message }, { status: 500 })
-    const siblings: SibRow[] = sibResults.flatMap(r => (r.data ?? []) as SibRow[])
-
-    // Cluster-level event signals — does ANY row in this cluster have an
-    // offer / a close? Use Set/Map for O(1) lookup during the rollup.
-    const clusterOfferAt = new Map<string, string>() // earliest offer timestamp per cluster
-    const clusterClose = new Map<string, { count: number; deal_value: number }>()
-    const clusterCloseAt = new Map<string, string>()
-    // Funnel milestones + removals are cluster-level too (written cluster-
-    // wide, but a DNC can sit on one row only — any row counts).
-    const clusterDnc = new Set<string>()
-    const clusterLead = new Set<string>()
-    const clusterAppt = new Set<string>()
-    const clusterPending = new Set<string>()
-    for (const s of siblings) {
-      const k = clusterKey(s)
-      if (!k) continue
-      if (s.is_dnc) clusterDnc.add(k)
-      if (s.became_lead_at) clusterLead.add(k)
-      if (s.appointment_at) clusterAppt.add(k)
-      if (s.pending_at) clusterPending.add(k)
-      if (s.offer_verbalized_at && !clusterOfferAt.has(k)) clusterOfferAt.set(k, s.offer_verbalized_at)
-      if (s.deal_closed_at) {
-        if (!clusterCloseAt.has(k)) clusterCloseAt.set(k, s.deal_closed_at)
-        const cur = clusterClose.get(k) ?? { count: 0, deal_value: 0 }
-        // deal_value is written on every row of the person (milestone route),
-        // so one deal = the max, not the sum of the rows.
-        clusterClose.set(k, { count: cur.count + 1, deal_value: Math.max(cur.deal_value, s.deal_value ?? 0) })
+    await pull(() => sb.from("leads").select(COLS).not("campaign_id", "is", null) as unknown as Page)
+    const credited = Array.from(byId.values())
+    const phones = Array.from(new Set(credited.map(r => r.caller_phone).filter((x): x is string => !!x)))
+    const emails = Array.from(new Set(credited.map(r => r.email).filter((x): x is string => !!x).map(e => e.toLowerCase())))
+    const threads = Array.from(new Set(credited.map(r => r.gmail_thread_id).filter((x): x is string => !!x)))
+    // Separate .in() queries (an OR of IN lists dropped columns, 2026-05-17),
+    // chunked so the URL stays short.
+    const CHUNK = 150
+    for (const [col, vals] of [["caller_phone", phones], ["email", emails], ["gmail_thread_id", threads]] as const) {
+      for (let i = 0; i < vals.length; i += CHUNK) {
+        const slice = vals.slice(i, i + CHUNK)
+        await pull(() => sb.from("leads").select(COLS).in(col, slice) as unknown as Page)
       }
     }
 
-    // Bucket attributed rows by campaign, deduping to one cluster per
-    // campaign so a 3-row cluster doesn't count as 3 responses.
-    const byCampaign = new Map<string, AttrRow[]>()
-    for (const r of attributed) {
-      if (!byCampaign.has(r.campaign_id)) byCampaign.set(r.campaign_id, [])
-      byCampaign.get(r.campaign_id)!.push(r)
-    }
+    const camps = (campaigns ?? []) as (Campaign & { legacy?: boolean; order_number?: string | null })[]
+    const parentOf = new Map(camps.map(c => [c.id, c.parent_campaign_id ?? c.id]))
+    const familyOf = (id: string) => parentOf.get(id) ?? id
+    const hasChildren = new Set(camps.filter(c => c.parent_campaign_id).map(c => c.parent_campaign_id as string))
+    const { byCampaign, byFamily, offers: offerList } = computeCampaignCounts(Array.from(byId.values()), familyOf)
 
-    const result: CampaignPerf[] = ((campaigns ?? []) as Campaign[]).map((c) => {
-      const rows = byCampaign.get(c.id) ?? []
-      // Dedupe by cluster key — same caller appearing on multiple
-      // attributed rows is one response, not many.
-      const seen = new Set<string>()
-      const clusters: AttrRow[] = []
-      for (const r of rows) {
-        const k = clusterKey(r) ?? `id:${r.id}`
-        if (seen.has(k)) continue
-        seen.add(k)
-        clusters.push(r)
-      }
-      // Total = every person. Removals = anyone in the cluster DNC'd.
-      // Junk = every attributed row junked (and not a removal). Real = the
-      // rest. Junk / removals are never counted further down the funnel.
-      const keyOf = (r: AttrRow) => clusterKey(r) ?? `id:${r.id}`
-      const isRemoval = (r: AttrRow) => clusterDnc.has(keyOf(r)) || rows.some(o => keyOf(o) === keyOf(r) && !!o.is_dnc)
-      const isJunk = (r: AttrRow) => !rows.some(o => keyOf(o) === keyOf(r) && !o.is_junk)
-      const totalResponses = clusters.length
-      const removals = clusters.filter(isRemoval).length
-      const junk = clusters.filter(r => !isRemoval(r) && isJunk(r)).length
-      const real = clusters.filter(r => !isRemoval(r) && !isJunk(r))
-      const responses = real.length
-      const leads = real.filter(r => clusterLead.has(keyOf(r))).length
-      const appointments = real.filter(r => clusterAppt.has(keyOf(r))).length
-      const pending = real.filter(r => clusterPending.has(keyOf(r))).length
-      // Offers / closes: count clusters where the cluster has the event,
-      // not rows. This is the fix for Brian Metcalf's $1.8M landing on
-      // his Outbound row (which has no campaign_id) — the cluster IS
-      // attributed to MFM-B via his other rows, so the offer counts.
-      const offers = real.filter(r => {
-        const k = clusterKey(r) ?? `id:${r.id}`
-        return clusterOfferAt.has(k)
-      }).length
-      const closed = real.filter(r => {
-        const k = clusterKey(r) ?? `id:${r.id}`
-        return clusterClose.has(k)
-      }).length
-      const dealValueTotal = real.reduce((acc, r) => {
-        const k = clusterKey(r) ?? `id:${r.id}`
-        return acc + (clusterClose.get(k)?.deal_value ?? 0)
-      }, 0)
-
-      const responseRate = c.pieces_sent && c.pieces_sent > 0
-        ? responses / c.pieces_sent
-        : null
-      const offerRate = responses > 0 ? offers / responses : null
-      const costPerResponse = c.total_cost != null && responses > 0
-        ? c.total_cost / responses
-        : null
-      const costPerOffer = c.total_cost != null && offers > 0
-        ? c.total_cost / offers
-        : null
-      const costPerLead = c.total_cost != null && leads > 0 ? c.total_cost / leads : null
-      const costPerClosed = c.total_cost != null && closed > 0 ? c.total_cost / closed : null
-      const roi = c.total_cost != null && c.total_cost > 0 && dealValueTotal > 0
-        ? (dealValueTotal - c.total_cost) / c.total_cost
-        : null
-
+    const rate = (n: number, d: number | null | undefined) => (d && d > 0 ? n / d : null)
+    const result: CampaignPerf[] = camps.map((c) => {
+      const k = byCampaign.get(c.id) ?? emptyCounts()
+      const cost = c.total_cost
+      const fam = hasChildren.has(c.id) ? byFamily.get(c.id) ?? emptyCounts() : null
       return {
         id: c.id,
         name: c.name,
@@ -236,108 +117,49 @@ export async function GET() {
         parent_campaign_id: c.parent_campaign_id,
         notes: c.notes,
         drive_folder_id: c.drive_folder_id ?? null,
-        legacy: !!(c as Campaign & { legacy?: boolean }).legacy,
-        order_number: (c as Campaign & { order_number?: string | null }).order_number ?? null,
-        closed_deals: real
-          .filter(r => clusterClose.has(keyOf(r)))
-          .map(r => {
-            const k = keyOf(r)
-            const sib = rows.filter(o => keyOf(o) === k)
-            return {
-              name: sib.map(o => o.name).find(n => !!n) ?? null,
-              address: sib.map(o => o.property_address).find(a => !!a) ?? null,
-              closed_at: clusterCloseAt.get(k) ?? "",
-              deal_value: clusterClose.get(k)?.deal_value || null,
-            }
-          }),
-        total_responses: totalResponses,
-        total_response_rate: c.pieces_sent && c.pieces_sent > 0 ? totalResponses / c.pieces_sent : null,
-        removals,
-        junk,
-        responses,
-        response_rate: responseRate,
-        leads,
-        lead_rate: responses > 0 ? leads / responses : null,
-        appointments,
-        pending,
-        cost_per_lead: costPerLead,
-        cost_per_closed: costPerClosed,
-        offers,
-        offer_rate: offerRate,
-        closed,
-        deal_value_total: dealValueTotal,
-        cost_per_response: costPerResponse,
-        cost_per_offer: costPerOffer,
-        roi,
+        legacy: !!c.legacy,
+        order_number: c.order_number ?? null,
+        closed_deals: k.closed_deals,
+        total_responses: k.total_responses,
+        total_response_rate: rate(k.total_responses, c.pieces_sent),
+        removals: k.removals,
+        junk: k.junk,
+        responses: k.responses,
+        response_rate: rate(k.responses, c.pieces_sent),
+        leads: k.leads,
+        lead_rate: k.responses > 0 ? k.leads / k.responses : null,
+        appointments: k.appointments,
+        pending: k.pending,
+        cost_per_lead: cost != null && k.leads > 0 ? cost / k.leads : null,
+        cost_per_closed: cost != null && k.closed > 0 ? cost / k.closed : null,
+        offers: k.offers,
+        offer_rate: k.responses > 0 ? k.offers / k.responses : null,
+        closed: k.closed,
+        deal_value_total: k.deal_value_total,
+        cost_per_response: cost != null && k.responses > 0 ? cost / k.responses : null,
+        cost_per_offer: cost != null && k.offers > 0 ? cost / k.offers : null,
+        roi: cost != null && cost > 0 && k.deal_value_total > 0 ? (k.deal_value_total - cost) / cost : null,
+        by_door: k.by_door,
+        family: fam ? (({ closed_deals: _cd, ...rest }) => rest)(fam) : null,
       }
     })
 
-    // Flat list of every verbalized offer across all clusters, with the
-    // identifying lead (name/phone/email of the row that has the offer
-    // stamped) + attributed campaign. Powers the Offers section on the
-    // Campaigns tab. Sorted newest first.
-    const { data: offerRowsRaw } = await sb
-      .from("leads")
-      .select("id, name, caller_phone, email, gmail_thread_id, offer_amount, offer_verbalized_at")
-      .not("offer_verbalized_at", "is", null)
-      .order("offer_verbalized_at", { ascending: false })
-    type OfferRow = {
-      id: string
-      name: string | null
-      caller_phone: string | null
-      email: string | null
-      gmail_thread_id: string | null
-      offer_amount: number | null
-      offer_verbalized_at: string | null
-    }
-    // Build cluster → campaign map so each offer can be attributed back
-    // even when it lives on an outbound row with no campaign_id of its own.
-    const campaignByCluster = new Map<string, { id: string; name: string }>()
-    const campaignById = new Map<string, { id: string; name: string }>()
-    for (const c of (campaigns ?? [])) campaignById.set(c.id, { id: c.id, name: c.name })
-    for (const r of attributed) {
-      const k = clusterKey(r)
-      if (!k) continue
-      const c = campaignById.get(r.campaign_id)
-      if (c && !campaignByCluster.has(k)) campaignByCluster.set(k, c)
-    }
-    // Best-effort name resolution: prefer the offer row's own name, else
-    // any cluster sibling's name.
-    const nameByCluster = new Map<string, string>()
-    for (const r of (offerRowsRaw ?? []) as OfferRow[]) {
-      const k = clusterKey(r)
-      if (k && r.name && !nameByCluster.has(k)) nameByCluster.set(k, r.name)
-    }
-    // Also fall back to attributed cluster siblings if the offer row itself
-    // is anonymous (e.g. Tony's SMS row has no name on it).
-    for (const r of attributed) {
-      const k = clusterKey(r)
-      if (k && r.name && !nameByCluster.has(k)) nameByCluster.set(k, r.name)
-    }
-    // Dedupe by cluster so the same offer doesn't appear twice when stamped
-    // on two sibling rows.
-    const seenClusters = new Set<string>()
-    const offers = []
-    for (const r of (offerRowsRaw ?? []) as OfferRow[]) {
-      const k = clusterKey(r) || `id:${r.id}`
-      if (seenClusters.has(k)) continue
-      seenClusters.add(k)
-      const camp = campaignByCluster.get(k) ?? null
-      offers.push({
-        lead_id: r.id,
-        name: nameByCluster.get(k) || r.name || null,
-        caller_phone: r.caller_phone,
-        email: r.email,
-        offer_amount: r.offer_amount,
-        offer_verbalized_at: r.offer_verbalized_at,
-        campaign_id: camp?.id ?? null,
-        campaign_name: camp?.name ?? null,
-      })
-    }
+    // Flat list of every verbalized offer (one per person), newest first,
+    // with the campaign the offer counts under. Powers the Offers section.
+    const nameById = new Map(camps.map(c => [c.id, c.name]))
+    const offers = offerList.map(o => ({ ...o, campaign_name: o.campaign_id ? nameById.get(o.campaign_id) ?? null : null }))
 
     return NextResponse.json({ campaigns: result, offers })
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e)
     return NextResponse.json({ error: msg }, { status: 500 })
+  }
+}
+
+function emptyCounts(): CampaignCounts {
+  return {
+    total_responses: 0, removals: 0, junk: 0, responses: 0, leads: 0, appointments: 0, offers: 0,
+    pending: 0, closed: 0, deal_value_total: 0, closed_deals: [],
+    by_door: { letter: 0, website_form: 0, website_number: 0, other: 0 },
   }
 }

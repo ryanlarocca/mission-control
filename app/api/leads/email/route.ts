@@ -432,7 +432,7 @@ async function ingestGoogleVoice(args: {
       const campaignId = await resolveCampaignId({
         source: "Legacy DM", source_type: "direct_mail", created_at: new Date(),
       })
-      if (campaignId) await sb.from("leads").update({ campaign_id: campaignId }).eq("id", insertedId)
+      if (campaignId) await sb.from("leads").update({ campaign_id: campaignId, campaign_via: "line" }).eq("id", insertedId)
     } catch (e) {
       console.warn("[email][gv] campaign attribution failed:", e instanceof Error ? e.message : String(e))
     }
@@ -754,7 +754,7 @@ async function handleAppsScript(payload: AppsScriptPayload): Promise<NextRespons
       const { resolveCampaignId } = await import("@/lib/campaigns")
       const campaignId = await resolveCampaignId({ source: campaign.source, source_type: campaign.source_type, created_at: new Date() })
       if (campaignId) {
-        await sb.from("leads").update({ campaign_id: campaignId }).eq("id", insertedId)
+        await sb.from("leads").update({ campaign_id: campaignId, campaign_via: "line" }).eq("id", insertedId)
       }
     } catch (e) {
       console.warn("[email] campaign attribution failed:", e instanceof Error ? e.message : String(e))
@@ -1057,7 +1057,7 @@ async function processSingleMessage(args: {
       const { resolveCampaignId } = await import("@/lib/campaigns")
       const campaignId = await resolveCampaignId({ source: campaign.source, source_type: campaign.source_type, created_at: new Date() })
       if (campaignId) {
-        await sb.from("leads").update({ campaign_id: campaignId }).eq("id", insertedId)
+        await sb.from("leads").update({ campaign_id: campaignId, campaign_via: "line" }).eq("id", insertedId)
       }
     } catch (e) {
       console.warn("[email] campaign attribution failed:", e instanceof Error ? e.message : String(e))

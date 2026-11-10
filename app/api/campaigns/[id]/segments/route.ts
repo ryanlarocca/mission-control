@@ -101,7 +101,7 @@ export async function GET(_req: NextRequest, { params }: { params: { id: string 
     for (let from = 0; ; from += PAGE) {
       const { data, error } = await sb
         .from("leads")
-        .select("id, caller_phone, email, gmail_thread_id, is_junk, mail_record_id, mail_records(arm)")
+        .select("id, caller_phone, email, gmail_thread_id, is_junk, mail_record_id")
         .eq("campaign_id", params.id)
         .order("id", { ascending: true })
         .range(from, from + PAGE - 1)
@@ -110,12 +110,23 @@ export async function GET(_req: NextRequest, { params }: { params: { id: string 
         if (l.is_junk) continue
         const key = clusterKey(l) ?? `id:${l.id}`
         if (!l.mail_record_id) unmatched.add(key)
-        else {
-          const rec = l.mail_records as unknown as { arm: string } | { arm: string }[] | null
-          const arm = Array.isArray(rec) ? rec[0]?.arm : rec?.arm
-          if (arm === "none") inListNotMailed.add(l.mail_record_id)
-        }
       }
+      if (!data || data.length < PAGE) break
+    }
+    // "In the list, not mailed": people linked to an arm-'none' record of this
+    // list. Counted by link — since 2026-11-09 such a match never earns
+    // campaign credit (lib/mailCredit), so it can't come from campaign_id.
+    for (let from = 0; ; from += PAGE) {
+      let q = sb
+        .from("leads")
+        .select("mail_record_id, is_junk, mail_records!inner(arm, campaign_id, piece)")
+        .not("mail_record_id", "is", null)
+        .eq("mail_records.campaign_id", recordsCampaignId)
+        .eq("mail_records.arm", "none")
+      if (childPiece) q = q.eq("mail_records.piece", childPiece)
+      const { data, error } = await q.order("id", { ascending: true }).range(from, from + PAGE - 1)
+      if (error) return NextResponse.json({ error: error.message }, { status: 500 })
+      for (const l of data ?? []) if (!l.is_junk && l.mail_record_id) inListNotMailed.add(l.mail_record_id as string)
       if (!data || data.length < PAGE) break
     }
 

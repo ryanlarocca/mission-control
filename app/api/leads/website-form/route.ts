@@ -9,7 +9,8 @@ import {
   sendTelegramAlert,
   sendTwilioSms,
 } from "@/lib/leads"
-import { autoLinkMailRecord, creditWebsiteFormToMailCampaign } from "@/lib/mailMatch"
+import { autoLinkMailRecord } from "@/lib/mailMatch"
+import { isMailedRecord } from "@/lib/mailCredit"
 import {
   FORM_ROW_COLUMNS,
   confirmationEmail,
@@ -182,16 +183,17 @@ async function runIntake(a: IntakeArgs): Promise<void> {
   // address → surname). Never blocks the alert.
   let mailLine = "📬 Not on a mailing list"
   try {
-    const m = await autoLinkMailRecord(sb, form.id)
-    const { data: linked } = await sb.from("leads").select("mail_record_id, mail_match_candidates").eq("id", form.id).maybeSingle()
+    // The credit step inside autoLinkMailRecord counts the form under the
+    // mailing (A/B child by the record's piece); this alert names it, so the
+    // credit step's own Telegram line is skipped.
+    const m = await autoLinkMailRecord(sb, form.id, { creditAlert: false })
+    const { data: linked } = await sb.from("leads").select("mail_record_id, mail_match_candidates, campaign_id").eq("id", form.id).maybeSingle()
     const recordId = (linked?.mail_record_id as string | null) ?? m?.record?.id ?? null
     if (recordId) {
-      const { data: rec } = await sb.from("mail_records").select("owner_name, campaign_id").eq("id", recordId).maybeSingle()
-      // Count this lead under the mailer in Campaign Performance (A/B child
-      // by the record's piece) — the alert names the same campaign.
-      const credited = await creditWebsiteFormToMailCampaign(sb, form, recordId)
+      const { data: rec } = await sb.from("mail_records").select("owner_name, campaign_id, arm, is_seed").eq("id", recordId).maybeSingle()
+      const mailed = !!rec && isMailedRecord(rec as { arm: string | null; is_seed: boolean | null })
       let campaignName = ""
-      const nameId = credited ?? (rec?.campaign_id as string | undefined)
+      const nameId = (linked?.campaign_id as string | null) ?? (rec?.campaign_id as string | undefined)
       if (nameId) {
         const { data: c } = await sb.from("campaigns").select("name").eq("id", nameId).maybeSingle()
         campaignName = (c?.name as string | undefined) || ""
@@ -199,7 +201,10 @@ async function runIntake(a: IntakeArgs): Promise<void> {
       const owner = (rec?.owner_name as string | undefined) || ""
       const surname = fullName.split(/\s+/).pop()?.toUpperCase() || ""
       const ownerMatches = !owner || (surname.length >= 2 && owner.toUpperCase().includes(surname))
-      mailLine = `📬 Mailed${campaignName ? `: ${esc(campaignName)}` : ""}${owner ? ` · owner ${esc(owner)}` : ""}` +
+      mailLine = (mailed
+        ? `📬 Mailed${campaignName ? `: ${esc(campaignName)}` : ""}`
+        : `📬 On the mailing list${campaignName ? ` (${esc(campaignName)})` : ""} but never mailed`) +
+        (owner ? ` · owner ${esc(owner)}` : "") +
         (ownerMatches ? "" : `\n⚠️ The owner on title isn't ${esc(fullName)} — ask how they're connected to the property.`)
     } else if (Array.isArray(linked?.mail_match_candidates) && linked.mail_match_candidates.length) {
       mailLine = `📬 ${linked.mail_match_candidates.length} possible mailing-list matches — pick one on the card`

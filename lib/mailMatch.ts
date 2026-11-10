@@ -12,6 +12,7 @@
 // A/B piece children (2026-10-12) search their parent's list — see
 // mailSearchCampaignId.
 import type { SupabaseClient } from "@supabase/supabase-js"
+import { creditMailPerson, WEBSITE_LINE } from "./mailCredit"
 
 const SUFFIX: Record<string, string> = {
   STREET: "ST", AVENUE: "AVE", DRIVE: "DR", ROAD: "RD", BOULEVARD: "BLVD", COURT: "CT",
@@ -91,7 +92,10 @@ export function parseFreeAddress(addr: unknown): { street: string; city: string;
   return { street: st, city, zip, hasNumber: /^\d+\s+\S/.test(st) }
 }
 
-export type MailMatchMethod = "auto_address" | "auto_mail_address" | "auto_surname" | "auto_soundalike" | "manual"
+// auto_parcel (2026-11-09): the address is one of a multi-parcel owner's
+// other houses (mail_records.parcels). rejected: Ryan unlinked the match on
+// the card — never auto-link this person again.
+export type MailMatchMethod = "auto_address" | "auto_mail_address" | "auto_surname" | "auto_soundalike" | "auto_parcel" | "manual" | "rejected"
 
 export const MAIL_RECORD_LITE_COLUMNS =
   "id, campaign_id, record_id, owner_name, site_address, site_city, site_zip, mail_address, mail_city, mail_zip, county, arm, batch, is_seed, piece, tenure_bucket, imp_tercile, any_signal, estate_language, family_transfer, out_of_state, multi_parcel_personal, prior_pieces"
@@ -328,6 +332,14 @@ export async function suggestMailRecord(
     }
   }
 
+  // A multi-parcel owner's other houses live only in the `parcels` text
+  // ("342-39-031 1257 Woodview Ter, Los Altos | …"); 1,567 mailed records
+  // carry 2+ parcels (2026-11-09). Exact street (+ city) only.
+  if (addr.hasNumber) {
+    const parcelHit = await parcelMatch(sb, input.campaignId, addr)
+    if (parcelHit) return { record: parcelHit, method: "auto_parcel", candidates: [] }
+  }
+
   // Nothing at that exact street: same house number on this list, then the
   // street that sounds like what was heard (soundAlikeMatch).
   let near: MatchRow[] = []
@@ -358,6 +370,34 @@ export async function suggestMailRecord(
   return { record: null, method: null, candidates: strip(near).slice(0, SOUND_CANDIDATE_CAP) }
 }
 
+/** Split a `parcels` entry ("342-39-031 1257 Woodview Ter, Los Altos") into street / city. */
+export function parseParcelEntry(entry: string): { street: string; city: string } | null {
+  const t = entry.trim().replace(/^[0-9A-Z]+(?:-[0-9A-Z]+)+\s+/i, "")
+  const p = parseFreeAddress(t)
+  return p.hasNumber ? { street: p.street, city: p.city } : null
+}
+
+async function parcelMatch(
+  sb: SupabaseClient,
+  campaignId: string | null,
+  addr: { street: string; city: string }
+): Promise<MailRecordLite | null> {
+  const { num } = streetParts(addr.street)
+  const word = addr.street.split(" ").slice(1).filter(w => w.length >= 3 && !STREET_SUFFIXES.has(w)).sort((a, b) => b.length - a.length)[0]
+  if (!num || !word) return null
+  let q = sb.from("mail_records").select(`${MAIL_RECORD_LITE_COLUMNS}, parcels`).ilike("parcels", `%${num} %${word}%`).limit(50)
+  if (campaignId) q = q.eq("campaign_id", campaignId)
+  const { data } = await q
+  const hits = ((data ?? []) as (MailRecordLite & { parcels: string | null })[]).filter(r =>
+    String(r.parcels ?? "").split("|").some(e => {
+      const pe = parseParcelEntry(e)
+      return !!pe && pe.street === addr.street && (!addr.city || !pe.city || pe.city === addr.city)
+    }))
+  if (hits.length !== 1) return null
+  const { parcels: _p, ...rest } = hits[0]
+  return rest
+}
+
 export interface ClusterIdentityLite {
   id: string
   caller_phone: string | null
@@ -384,7 +424,7 @@ export async function linkMailRecordToCluster(
   if (lead.email) ors.push(`email.eq.${lead.email.toLowerCase()}`)
   const patch: Record<string, unknown> = {
     mail_record_id: recordId,
-    mail_match_method: recordId ? method : null,
+    mail_match_method: recordId ? method : method === "rejected" ? "rejected" : null,
     mail_match_candidates: recordId ? null : candidates && candidates.length ? candidates : null,
   }
   if (recordId && typeof priorPieces === "number") patch.mail_pieces_before = priorPieces + 1
@@ -435,30 +475,52 @@ export function pieceMismatchLabel(campaignPiece: string | null | undefined, rec
 }
 
 /**
- * Auto-suggest after triage or a manual edit fills name / property_address.
- * Best-effort: callers wrap it in try/catch. Skips manual links and already
- * linked clusters.
+ * Auto-suggest after triage or a manual edit fills name / property_address,
+ * and at every intake. Best-effort: callers wrap it in try/catch. Skips
+ * manual links, rejected links (Ryan unlinked it on the card) and already
+ * linked clusters — and on every path ends with the mailer-credit step
+ * (lib/mailCredit), so a link that landed on any row of the person credits
+ * their inbound rows to the mailing.
  *
  * Search scope: the lead's campaign, or its parent when the campaign is an
  * A/B piece child (the records are on the parent). When the matched
  * record's `piece` disagrees with the child campaign's `piece`, the link is
  * kept as-is (the line/alias decides attribution; the record is the
  * cross-check) and a `[mail-match] piece mismatch` warning is logged.
+ *
+ * Other doors (2026-11-09 — the website number, the callback number, Legacy
+ * DM, or a campaign whose list was never loaded such as MFM): every list is
+ * searched with exact matches only. A sound-alike / wrong-city guess, a
+ * mailing-address-only or surname-only hit becomes a candidate for Ryan's
+ * pick on the card, never a link, and the card's address is never rewritten.
+ * The address the card already carries is used when the new row has none,
+ * so a known caller on an old line meets the newest list.
  */
 export async function autoLinkMailRecord(
   sb: SupabaseClient,
   leadId: string,
   // `alert: false` — the opt-out path runs its own looser match right after
-  // and must not announce a miss it is about to resolve.
-  opts: { alert?: boolean } = {}
+  // and must not announce a miss it is about to resolve. `creditAlert: false`
+  // — the caller's own alert already names the mailing (website form).
+  opts: { alert?: boolean; creditAlert?: boolean } = {}
 ): Promise<MailMatchResult | null> {
+  const result = await autoLinkInner(sb, leadId, opts)
+  try {
+    await creditMailPerson(sb, leadId, { alert: opts.creditAlert !== false && opts.alert !== false })
+  } catch (e) {
+    console.warn("[mail-credit] credit failed:", e instanceof Error ? e.message : String(e))
+  }
+  return result
+}
+
+async function autoLinkInner(sb: SupabaseClient, leadId: string, opts: { alert?: boolean }): Promise<MailMatchResult | null> {
   const { data: lead } = await sb
     .from("leads")
-    .select("id, caller_phone, email, gmail_thread_id, name, property_address, campaign_id, mail_record_id, mail_match_method, mail_match_candidates, source, source_type")
+    .select("id, caller_phone, email, gmail_thread_id, name, property_address, campaign_id, mail_record_id, mail_match_method, mail_match_candidates, source, source_type, twilio_number, lead_type")
     .eq("id", leadId)
     .maybeSingle()
   if (!lead) return null
-  if (lead.mail_record_id || lead.mail_match_method === "manual") return null
+  if (lead.mail_record_id || lead.mail_match_method === "manual" || lead.mail_match_method === "rejected") return null
   // Any sibling already linked (manual or auto) → inherit instead of re-matching.
   // Runs before the name/address check so a fresh event row from a returning
   // caller picks up the cluster's link at intake, like source/status do.
@@ -477,8 +539,24 @@ export async function autoLinkMailRecord(
       await linkMailRecordToCluster(sb, lead, sib[0].mail_record_id, (sib[0].mail_match_method as MailMatchMethod) ?? "manual")
       return null
     }
+    // Ryan unlinked this person by hand: don't match them again.
+    const { data: rejected } = await sb.from("leads").select("id").or(ors.join(",")).eq("mail_match_method", "rejected").limit(1)
+    if (rejected && rejected.length) return null
   }
-  if (!lead.property_address && !lead.name) return null
+  // A returning caller's new row usually has no address yet — use the one
+  // the card already carries (newest first).
+  let address: string | null = lead.property_address
+  if (!address && ors.length) {
+    const { data: known } = await sb
+      .from("leads")
+      .select("property_address")
+      .or(ors.join(","))
+      .not("property_address", "is", null)
+      .order("created_at", { ascending: false })
+      .limit(1)
+    address = (known?.[0]?.property_address as string | undefined) ?? null
+  }
+  if (!address && !lead.name) return null
   let campaign: CampaignScopeLite | null = null
   if (lead.campaign_id) {
     const { data: c } = await sb
@@ -488,46 +566,82 @@ export async function autoLinkMailRecord(
       .maybeSingle()
     campaign = (c as CampaignScopeLite | null) ?? null
   }
-  const scope = mailSearchCampaignId(campaign, lead.campaign_id ?? null)
-  const result = await suggestMailRecord(sb, {
-    campaignId: scope,
-    propertyAddress: lead.property_address,
-    name: lead.name,
-  })
-  if (result.record) {
-    if (isPieceMismatch(campaign?.piece, result.record.piece)) {
+  const ownScope = mailSearchCampaignId(campaign, lead.campaign_id ?? null)
+  // A campaign whose list was never loaded (MFM, older drops) can't place the
+  // house: search every list instead, exact matches only.
+  let scope = ownScope
+  if (ownScope) {
+    const { data: any } = await sb.from("mail_records").select("id").eq("campaign_id", ownScope).limit(1)
+    if (!any?.length) scope = null
+  }
+  const letterDoor = scope !== null
+  const raw = await suggestMailRecord(sb, { campaignId: scope, propertyAddress: address, name: lead.name })
+  const strongOpen = raw.method === "auto_address" || raw.method === "auto_parcel"
+  if (raw.record && (letterDoor || strongOpen)) {
+    if (isPieceMismatch(campaign?.piece, raw.record.piece)) {
       console.warn(
         `[mail-match] piece mismatch: lead ${lead.id} campaign ${campaign?.id} piece ${campaign?.piece} ` +
-          `matched record ${result.record.record_id} (${result.record.id}) piece ${result.record.piece} via ${result.method}`
+          `matched record ${raw.record.record_id} (${raw.record.id}) piece ${raw.record.piece} via ${raw.method}`
       )
     }
-    await linkMailRecordToCluster(sb, lead, result.record.id, result.method, null, result.record.prior_pieces ?? null)
-    if (result.cityCorrected || result.soundCorrected) await correctLeadFromRecord(sb, lead, ors, result.record, !!result.soundCorrected)
-  } else {
-    // A mailer caller gave an address the list can't place — Ryan clears it
-    // up from Telegram (2026-11-04). Once per contact: the candidates column
-    // doubles as the "already told him" mark ([] when nothing came close).
-    const unplaced = lead.source_type === "direct_mail" && !!lead.campaign_id && parseFreeAddress(lead.property_address).hasNumber
-    let told = lead.mail_match_candidates != null
-    if (unplaced && !told && ors.length) {
-      const { data: sib } = await sb.from("leads").select("id").or(ors.join(",")).not("mail_match_candidates", "is", null).limit(1)
-      told = !!sib?.length
+    await linkMailRecordToCluster(sb, lead, raw.record.id, raw.method, null, raw.record.prior_pieces ?? null)
+    if (letterDoor && (raw.cityCorrected || raw.soundCorrected)) {
+      await correctLeadFromRecord(sb, { ...lead, property_address: address }, ors, raw.record, !!raw.soundCorrected)
     }
-    let tell = unplaced && !told && opts.alert !== false
-    // Mailers from before the lists were imported have nothing to match against.
-    if (tell) {
-      const { data: any } = await sb.from("mail_records").select("id").eq("campaign_id", scope).limit(1)
-      tell = !!any?.length
-    }
-    if (result.candidates.length) {
-      await linkMailRecordToCluster(sb, lead, null, null, result.candidates.map(c => c.id))
-    } else if (tell) {
-      const q = sb.from("leads").update({ mail_match_candidates: [] })
-      await (ors.length ? q.or(`id.eq.${lead.id},${ors.join(",")}`) : q.eq("id", lead.id))
-    }
-    if (tell) await alertUnplacedAddress(lead, result.candidates)
+    return raw
   }
+
+  // Not linked. A weak hit on another door, or a guess against the lists,
+  // becomes a candidate for the card's picker.
+  const hasNumber = parseFreeAddress(address).hasNumber
+  let candidates = raw.record ? [raw.record] : raw.candidates
+  if (!letterDoor && !candidates.length && hasNumber && address) candidates = await guessAcrossLists(sb, address, lead.name)
+  const result: MailMatchResult = { record: null, method: null, candidates }
+
+  // Ryan clears it up from Telegram (2026-11-04): a mailer caller on a letter
+  // line, or a caller on the website number (2026-11-09), gave an address the
+  // lists can't place. Once per contact: the candidates column doubles as the
+  // "already told him" mark ([] when nothing came close). Website form rows
+  // are left to the form's own alert.
+  const unplaced = hasNumber && (
+    (letterDoor && lead.source_type === "direct_mail" && !!lead.campaign_id) ||
+    (lead.twilio_number === WEBSITE_LINE && lead.lead_type !== "form")
+  )
+  let told = lead.mail_match_candidates != null
+  if (unplaced && !told && ors.length) {
+    const { data: sib } = await sb.from("leads").select("id").or(ors.join(",")).not("mail_match_candidates", "is", null).limit(1)
+    told = !!sib?.length
+  }
+  const tell = unplaced && !told && opts.alert !== false
+  if (candidates.length) {
+    await linkMailRecordToCluster(sb, lead, null, null, candidates.map(c => c.id))
+  } else if (tell) {
+    const q = sb.from("leads").update({ mail_match_candidates: [] })
+    await (ors.length ? q.or(`id.eq.${lead.id},${ors.join(",")}`) : q.eq("id", lead.id))
+  }
+  if (tell) await alertUnplacedAddress({ ...lead, property_address: address }, candidates)
   return result
+}
+
+/**
+ * The guesses (wrong city, sound-alike street, surname) need one list to
+ * search. For a door that isn't a letter line, try each list whose mailing
+ * has started, newest first; anything found is a candidate, never a link.
+ */
+async function guessAcrossLists(sb: SupabaseClient, address: string, name: string | null): Promise<MailRecordLite[]> {
+  const { data: lists } = await sb
+    .from("campaigns")
+    .select("id")
+    .not("first_drop_date", "is", null)
+    .is("parent_campaign_id", null)
+    .order("first_drop_date", { ascending: false })
+    .limit(5)
+  for (const l of (Array.isArray(lists) ? lists : []) as { id: string }[]) {
+    const r = await suggestMailRecord(sb, { campaignId: l.id, propertyAddress: address, name })
+    if (r.record) return [r.record]
+    if (r.candidates.length) return r.candidates
+  }
+  return []
 }
 
 /**
@@ -618,53 +732,8 @@ async function correctLeadFromRecord(
   }
 }
 
-/**
- * Website form leads carry no campaign_id — the form isn't a mailer line —
- * so Campaign Performance never counted a mailer recipient who answered on
- * lrghomes.com (Maryam Norton, NOO Q4 B, 2026-11-02). Once the cluster is
- * linked to a mailed record, credit its website form rows to that record's
- * campaign: the A/B piece child when the list is split (record.piece), else
- * the list's own campaign. Only website FORM rows are written — a call or
- * text to a mailer line keeps that line's attribution on its own row — so a
- * re-link moves the credit and an unlink (null) clears it. Returns the
- * campaign id written, or null.
- */
-export async function creditWebsiteFormToMailCampaign(
-  sb: SupabaseClient,
-  lead: ClusterIdentityLite,
-  recordId: string | null
-): Promise<string | null> {
-  const ors: string[] = []
-  if (lead.caller_phone && !ANON.has(lead.caller_phone.trim().toLowerCase())) ors.push(`caller_phone.eq.${lead.caller_phone}`)
-  if (lead.email) ors.push(`email.eq.${lead.email.toLowerCase()}`)
-  const scope = ors.length ? `id.eq.${lead.id},${ors.join(",")}` : `id.eq.${lead.id}`
-
-  if (!recordId) {
-    // Unlink: drop the campaign credit from website form rows (they never
-    // have one of their own).
-    const { error } = await sb.from("leads").update({ campaign_id: null })
-      .or(scope).eq("lead_type", "form").eq("source_type", "website")
-    if (error) throw new Error(`website campaign clear failed: ${error.message}`)
-    return null
-  }
-
-  const { data: rec } = await sb.from("mail_records").select("campaign_id, piece").eq("id", recordId).maybeSingle()
-  if (!rec?.campaign_id) return null
-  let campaignId = rec.campaign_id as string
-  if (rec.piece) {
-    const { data: child } = await sb
-      .from("campaigns")
-      .select("id")
-      .eq("parent_campaign_id", rec.campaign_id)
-      .eq("piece", rec.piece)
-      .limit(1)
-    if (child?.[0]?.id) campaignId = child[0].id as string
-  }
-  const { error } = await sb.from("leads").update({ campaign_id: campaignId })
-    .or(scope).eq("lead_type", "form").eq("source_type", "website")
-  if (error) throw new Error(`website campaign credit failed: ${error.message}`)
-  return campaignId
-}
+// Website form credit moved to lib/mailCredit (creditMailPerson, 2026-11-09):
+// every door, every row of the person, mailed records only.
 
 // ─── DNC mail scrub helpers (scripts/dnc-mail-scrub.mjs, 2026-11-03) ───────
 // Append-only: the keys stored on mail_records (normStreet) are unchanged.

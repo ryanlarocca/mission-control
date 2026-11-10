@@ -3356,7 +3356,10 @@ export async function applyFollowupOnlyResult(
   // voicemail must get the link even if the row already held the address
   // from an earlier pass. autoLinkMailRecord returns at once when the row
   // is already linked, so the re-run is cheap.
-  if (!error && (update.name || update.property_address || result.name || result.property_address)) {
+  // Runs even when this analysis carried neither (2026-11-09): the step also
+  // credits the person to their mailing (lib/mailCredit), and a link made on
+  // another row of theirs must reach this row too.
+  if (!error) {
     try {
       await autoLinkMailRecord(sb, leadId)
     } catch (e) {
@@ -3505,7 +3508,10 @@ export async function applyAnalyzeCallResult(
   // voicemail must get the link even if the row already held the address
   // from an earlier pass. autoLinkMailRecord returns at once when the row
   // is already linked, so the re-run is cheap.
-  if (!error && (update.name || update.property_address || result.name || result.property_address)) {
+  // Runs even when this analysis carried neither (2026-11-09): the step also
+  // credits the person to their mailing (lib/mailCredit), and a link made on
+  // another row of theirs must reach this row too.
+  if (!error) {
     try {
       await autoLinkMailRecord(sb, leadId)
     } catch (e) {
@@ -3633,7 +3639,7 @@ export async function applyColdNoSignalDefault(leadId: string): Promise<void> {
   const { error } = await sb.from("leads").update(update).eq("id", leadId)
   // Mailed-record auto-link once triage has a name / address to match on
   // (direct-mail tracking, 2026-10-08). Best-effort, never fails the write.
-  if (!error && (update.name || update.property_address)) {
+  if (!error) {
     try {
       await autoLinkMailRecord(sb, leadId)
     } catch (e) {

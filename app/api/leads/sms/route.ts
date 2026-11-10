@@ -182,7 +182,7 @@ export async function POST(request: Request) {
           try {
             const { resolveCampaignId } = await import("@/lib/campaigns")
             const campaignId = await resolveCampaignId({ source, source_type: "direct_mail", created_at: new Date() })
-            if (campaignId) await sb.from("leads").update({ campaign_id: campaignId }).eq("id", optId)
+            if (campaignId) await sb.from("leads").update({ campaign_id: campaignId, campaign_via: "line" }).eq("id", optId)
           } catch (e) {
             console.warn("[sms] campaign attribution failed:", e instanceof Error ? e.message : String(e))
           }
@@ -355,7 +355,10 @@ export async function POST(request: Request) {
             created_at: new Date(),
           })
           if (campaignId) {
-            await sb.from("leads").update({ campaign_id: campaignId }).eq("id", insertedRow.id)
+            // "line" = the dialed number's own label; "inherited" = carried
+            // over from the caller's earlier rows (lib/mailCredit).
+            const via = insertRow.source === source ? "line" : "inherited"
+            await sb.from("leads").update({ campaign_id: campaignId, campaign_via: via }).eq("id", insertedRow.id)
           }
         } catch (e) {
           console.warn("[sms] campaign attribution failed:", e instanceof Error ? e.message : String(e))

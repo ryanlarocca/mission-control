@@ -59,6 +59,7 @@ function fakeSb(rows: Record<string, unknown>[]): SupabaseClient {
       limit: () => q,
       eq: (col: string, v: unknown) => { filters.push([col, v]); return q },
       like: (col: string, pattern: string) => { prefixes.push([col, pattern.replace(/%$/, "")]); return q },
+      ilike: () => { filters.push(["parcels", "__never__"]); return q }, // parcel search: no multi-parcel rows here
       then: (res: (v: { data: unknown[] }) => unknown) => res({
         data: rows.filter(r => filters.every(([c, v]) => r[c] === v) && prefixes.every(([c, p]) => String(r[c] ?? "").startsWith(p))),
       }),
