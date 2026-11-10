@@ -112,7 +112,7 @@ export function formatThreadForPrompt(thread: ThreadMessage[], limit = 8): strin
   if (recent.length === 0) return ""
   return recent
     .map((m) => {
-      const date = new Date(m.at).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })
+      const date = new Date(m.at).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric", timeZone: "America/Los_Angeles" })
       const who = m.fromMe ? "Ryan" : "Them"
       const text = m.text.replace(/\s+/g, " ").slice(0, 400)
       // The drafter should know which number the thread is on.

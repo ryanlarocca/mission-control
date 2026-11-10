@@ -180,8 +180,10 @@ export async function settleNewRelationship(sb: SupabaseClient, newId: string, p
   return keep
 }
 
+// Pacific day, not the server's (Vercel runs in UTC — an evening touch read
+// as the next day on the card until 2026-11-10).
 function humanDate(d: Date): string {
-  return d.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })
+  return d.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric", timeZone: "America/Los_Angeles" })
 }
 
 // Map a DB row → the UI contact shape, computing cadence-derived fields.
