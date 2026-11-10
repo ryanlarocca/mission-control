@@ -11,7 +11,7 @@
 
 import type { SupabaseClient } from "@supabase/supabase-js"
 import { OFFICE_NUMBERS } from "./leads"
-import { relationshipsByAnyPhone } from "./relationships"
+import { relationshipsByAnyPhone, settleNewRelationship } from "./relationships"
 
 export type OfficeCaller =
   | { kind: "lead" }
@@ -124,6 +124,9 @@ async function createRelationshipForCaller(sb: SupabaseClient, phone: string): P
     console.error("[office-inbound] relationships insert failed:", error?.message)
     return { kind: "lead" }
   }
+  // A simultaneous webhook may have created this caller's card — use that one.
+  const keepId = await settleNewRelationship(sb, data.id as string, e164)
+  if (keepId !== data.id) return resolveOfficeCaller(sb, phone)
   return {
     kind: "relationship",
     id: data.id as string,

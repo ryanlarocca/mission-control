@@ -155,6 +155,31 @@ export async function relationshipsByAnyPhone<T = Record<string, unknown>>(
   return (data ?? []) as unknown as T[]
 }
 
+// Two webhooks for one person at the same instant (an agent's deal text +
+// its photo link, 2026-11-09) both miss the lookup and both insert a card.
+// Call right after inserting `newId`: the oldest card for the number wins,
+// a newer one deletes itself. Every interleaving ends with one card, since
+// each insert lands before its own re-check. Returns the surviving id.
+export async function settleNewRelationship(sb: SupabaseClient, newId: string, phone10: string): Promise<string> {
+  const d = to10Digit(phone10)
+  if (d.length !== 10) return newId
+  const { data, error } = await sb
+    .from("relationships")
+    .select("id, created_at")
+    .like("phone", `%${d}`)
+    .order("created_at", { ascending: true })
+    .order("id", { ascending: true })
+    .limit(1)
+  const keep = data?.[0]?.id as string | undefined
+  if (error || !keep || keep === newId) return newId
+  const { error: delErr } = await sb.from("relationships").delete().eq("id", newId)
+  if (delErr) {
+    console.error("[relationships] duplicate card cleanup failed:", delErr.message)
+    return newId
+  }
+  return keep
+}
+
 function humanDate(d: Date): string {
   return d.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })
 }

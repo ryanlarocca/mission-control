@@ -1,6 +1,6 @@
 import type { SupabaseClient } from "@supabase/supabase-js"
 import { formatUsPhone, isPlaceholderName, last10, toE164, type OfficeCaller } from "./office-inbound"
-import { relationshipsByAnyPhone } from "./relationships"
+import { relationshipsByAnyPhone, settleNewRelationship } from "./relationships"
 
 // Agents line (650) 910-4007 + agent email-campaign replies → Relationships.
 //
@@ -150,8 +150,12 @@ export async function resolveAgentContact(
     // 5. Nobody has them — create the card.
     const created = await createAgentRelationship(sb, { phone, email, campaign, channel: args.channel, source: args.source })
     if (!created) return { kind: "lead" }
-    await linkCampaignContact(sb, campaign, created.id)
-    return toContact(created, phone, campaign, true)
+    // A simultaneous webhook may have created the same person's card.
+    const keepId = created.phone ? await settleNewRelationship(sb, created.id, created.phone) : created.id
+    const kept = keepId === created.id ? created : await relById(sb, keepId)
+    if (!kept) return { kind: "lead" }
+    await linkCampaignContact(sb, campaign, kept.id)
+    return toContact(kept, phone, campaign, kept === created)
   } catch (e) {
     console.error("[agents-inbound] resolve failed, falling back to campaign-only path:", e instanceof Error ? e.message : String(e))
     return { kind: "lead" }
