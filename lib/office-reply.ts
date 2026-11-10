@@ -3,6 +3,7 @@ import { CARD_LINE, OFFICE_NUMBERS, normalizeE164, sendTwilioSms } from "./leads
 import { relationshipsByAnyPhone } from "./relationships"
 import { displayLine } from "./card-line"
 import { PROD_BASE } from "./relationship-calls"
+import { markDraftSent } from "./reply/record"
 
 // Telegram reply to a "💬 Office line text — …" alert (2026-10-26). The
 // contact texted the business-card line, so the reply goes back out on the
@@ -19,7 +20,7 @@ export type OfficeReplyResult =
   | { handled: true; ok: true; name: string; from: string; logWarning: boolean }
   | { handled: true; ok: false; error: string }
 
-type Rel = { id: string; name: string | null; status: string | null; tier: string | null; category: string | null }
+export type Rel = { id: string; name: string | null; status: string | null; tier: string | null; category: string | null }
 
 export async function replyToOfficeLineText(sb: SupabaseClient, repliedText: string, body: string): Promise<OfficeReplyResult> {
   if (!/Office line text/i.test(repliedText)) return { handled: false }
@@ -36,8 +37,33 @@ export async function replyToOfficeLineText(sb: SupabaseClient, repliedText: str
     return { handled: true, ok: false, error: `couldn't look up the contact (${e instanceof Error ? e.message : String(e)})` }
   }
   if (!rel) return { handled: false }
-  if (rel.status === "do_not_contact") return { handled: true, ok: false, error: `${rel.name ?? to} is marked do-not-contact` }
+  const out = await sendOfficeText(sb, rel, to, body)
+  return out.ok ? { handled: true, ok: true, name: rel.name ?? to, from: out.from, logWarning: out.logWarning } : { handled: true, ok: false, error: out.error }
+}
 
+// The contact on a "💬 Office line text" alert: the first +1… in it (their
+// main number when the card was matched by a signed number) and the card.
+export async function officeAlertContact(sb: SupabaseClient, repliedText: string): Promise<{ to: string; rel: Rel } | null> {
+  if (!/Office line text/i.test(repliedText)) return null
+  const raw = repliedText.match(/\+\d{10,15}/)?.[0]
+  const to = raw ? normalizeE164(raw) : null
+  if (!to) return null
+  const rel = (await relationshipsByAnyPhone<Rel>(sb, to, "id, name, status, tier, category"))[0]
+  return rel ? { to, rel } : null
+}
+
+// Text a Relationships contact from the office line they last texted (else
+// the card line) and log it as a sent touch — the same writes /api/crms/log
+// does, so last_contacted_at restarts their cadence. Shared by a typed
+// reply and the ✅ on a Draft: to an office-line alert.
+export async function sendOfficeText(
+  sb: SupabaseClient,
+  rel: Rel,
+  to: string,
+  body: string,
+  draftId?: string | null,
+): Promise<{ ok: true; from: string; logWarning: boolean } | { ok: false; error: string }> {
+  if (rel.status === "do_not_contact") return { ok: false, error: `${rel.name ?? to} is marked do-not-contact` }
   const from = await lastOfficeLine(sb, rel.id)
   try {
     await sendTwilioSms({
@@ -48,10 +74,9 @@ export async function replyToOfficeLineText(sb: SupabaseClient, repliedText: str
       statusCallback: `${PROD_BASE}/api/crms/sms-status?rid=${encodeURIComponent(rel.id)}`,
     })
   } catch (e) {
-    return { handled: true, ok: false, error: `${e instanceof Error ? e.message : String(e)} (from ${displayLine(from)})` }
+    return { ok: false, error: `${e instanceof Error ? e.message : String(e)} (from ${displayLine(from)})` }
   }
 
-  // The same writes /api/crms/log does for a sent text.
   const ins = await sb.from("relationship_touches").insert({
     relationship_id: rel.id,
     modality: "sms",
@@ -62,10 +87,11 @@ export async function replyToOfficeLineText(sb: SupabaseClient, repliedText: str
     category_at_touch: rel.category,
   })
   if (ins.error) console.error("[office-reply] touch insert failed:", ins.error.message)
+  if (draftId) await markDraftSent(draftId, { subject: null, body })
   const upd = await sb.from("relationships").update({ last_contacted_at: new Date().toISOString() }).eq("id", rel.id)
   if (upd.error) console.error("[office-reply] last_contacted_at update failed:", upd.error.message)
 
-  return { handled: true, ok: true, name: rel.name ?? to, from, logWarning: !!ins.error || !!upd.error }
+  return { ok: true, from, logWarning: !!ins.error || !!upd.error }
 }
 
 // The office line this contact last texted — newest inbound sms touch whose

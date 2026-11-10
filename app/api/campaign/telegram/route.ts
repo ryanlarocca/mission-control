@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server"
-import { coachDraftFromTelegram, findPlannerDraftByTgMessage, redraftFromTelegram, sendPlannerDraft, dismissPlannerDraft } from "@/lib/reply/telegram"
+import { coachDraftFromTelegram, coachDraftForRelationship, findPlannerDraftByTgMessage, redraftFromTelegram, sendPlannerDraft, dismissPlannerDraft } from "@/lib/reply/telegram"
 import { getLeadsClient, lookupLeadName, normalizeE164, sendLeadSms } from "@/lib/leads"
 import { approveBatch, setPaused, campaignStatusLine } from "@/lib/campaignBatch"
 import { resolveSender, setSenderPaused, recordCanaryVerdict, recordPostmaster } from "@/lib/campaignSenders"
@@ -1264,6 +1264,25 @@ export async function POST(request: Request) {
   // BEFORE the phone branch so guidance is never blasted out as a raw SMS.
   const draftMatch = /^draft:\s*([\s\S]+)$/i.exec(body)
   if (draftMatch) {
+    // Office-line text from a Relationships contact (2026-11-10): coach
+    // draft from the card, ✅ texts from the office line + logs the touch.
+    if (/Office line text/i.test(repliedText)) {
+      const { officeAlertContact } = await import("@/lib/office-reply")
+      const contact = await officeAlertContact(getLeadsClient(), repliedText).catch((e) => {
+        console.error("[campaign-tg] office draft lookup:", e instanceof Error ? e.message : String(e))
+        return null
+      })
+      if (contact) {
+        await tg("sendMessage", { chat_id: chatId, text: "✍️ Drafting…", reply_to_message_id: msg.message_id })
+        waitUntil((async () => {
+          const out = await coachDraftForRelationship(contact.rel.id, contact.to, draftMatch[1].trim(), msg.message_id)
+          if (!out.ok) await tg("sendMessage", { chat_id: chatId, text: `⚠️ Couldn't draft — ${out.error}`, reply_to_message_id: msg.message_id })
+        })().catch(async (e) => {
+          await tg("sendMessage", { chat_id: chatId, text: `⚠️ Couldn't draft — ${e instanceof Error ? e.message : String(e)}`, reply_to_message_id: msg.message_id })
+        }))
+        return NextResponse.json({ ok: true })
+      }
+    }
     const nameMatch = /AGENT REPLY[^—]*—\s*(.+?)\s*\(after T/i.exec(repliedText)
     // Lead alert (text / call / voicemail / email lead): the coach writer
     // drafts from his gist and posts it with ✅/🔁/❌ — never sent as-is.

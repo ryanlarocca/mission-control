@@ -7,12 +7,14 @@
 
 import { getLeadsClient, leadAlertBotToken, sendLeadSms } from "@/lib/leads"
 import { sendThreadedEmailReply } from "@/lib/emailReply"
-import { buildLeadContext } from "./context"
+import { buildLeadContext, buildRelationshipContext } from "./context"
 import { proposePlan, stampLeadMoment, type Plan } from "./plan"
 import { draftReply, type DraftChannel } from "./draft"
 import { coachDraft } from "./coach"
 import { executePlanServer } from "./execute"
 import { MOMENT_LABELS, NEXT_ACTION_LABELS } from "@/lib/reply-client"
+import { sendOfficeText, type Rel } from "@/lib/office-reply"
+import { displayLine } from "@/lib/card-line"
 
 const CHAT_ID = () => process.env.TELEGRAM_CHAT_ID
 
@@ -40,23 +42,30 @@ function planLine(plan: Plan): string {
 interface DraftRow {
   id: string
   lead_id: string | null
+  relationship_id: string | null
   channel: string | null
   draft_subject: string | null
   draft_body: string
   plan_json: Plan | null
   sent_at: string | null
   tg_message_id: number | null
+  gist: string | null
+  parent_draft_id: string | null
 }
+
+// Office-line drafts carry the number the alert named (the reply target)
+// on the plan, so ✅ and 🔁 text the same number a typed reply would.
+type OfficePlan = Plan & { send_to?: string | null }
 
 async function loadDraft(draftId: string): Promise<DraftRow | null> {
   const sb = getLeadsClient()
-  const { data } = await sb.from("reply_drafts").select("id, lead_id, channel, draft_subject, draft_body, plan_json, sent_at, tg_message_id").eq("id", draftId).maybeSingle<DraftRow>()
+  const { data } = await sb.from("reply_drafts").select("id, lead_id, relationship_id, channel, draft_subject, draft_body, plan_json, sent_at, tg_message_id, gist, parent_draft_id").eq("id", draftId).maybeSingle<DraftRow>()
   return data ?? null
 }
 
 export async function findPlannerDraftByTgMessage(tgMessageId: number): Promise<DraftRow | null> {
   const sb = getLeadsClient()
-  const { data } = await sb.from("reply_drafts").select("id, lead_id, channel, draft_subject, draft_body, plan_json, sent_at, tg_message_id").eq("tg_message_id", tgMessageId).order("created_at", { ascending: false }).limit(1).maybeSingle<DraftRow>()
+  const { data } = await sb.from("reply_drafts").select("id, lead_id, relationship_id, channel, draft_subject, draft_body, plan_json, sent_at, tg_message_id, gist, parent_draft_id").eq("tg_message_id", tgMessageId).order("created_at", { ascending: false }).limit(1).maybeSingle<DraftRow>()
   return data ?? null
 }
 
@@ -158,6 +167,7 @@ export async function coachDraftFromTelegram(phone: string, gist: string, replyT
 /** Reply-to-draft text or the 🔁 button: redraft (with the why when given) and post v2. */
 export async function redraftFromTelegram(draftId: string, why: string | null, replyTo?: number | null): Promise<{ ok: boolean; error?: string }> {
   const row = await loadDraft(draftId)
+  if (row && !row.lead_id && row.relationship_id) return redraftRelationship(row, why, replyTo)
   if (!row || !row.lead_id) return { ok: false, error: "draft not found" }
   if (row.sent_at) return { ok: false, error: "that draft was already sent" }
   const ctx = await buildLeadContext(row.lead_id)
@@ -182,6 +192,7 @@ export async function redraftFromTelegram(draftId: string, why: string | null, r
 /** ✅ on a planner draft: send it the way the card would, then execute the plan. */
 export async function sendPlannerDraft(draftId: string): Promise<{ ok: boolean; error?: string; label?: string; planNote?: string | null }> {
   const row = await loadDraft(draftId)
+  if (row && !row.lead_id && row.relationship_id) return sendRelationshipDraft(row)
   if (!row || !row.lead_id) return { ok: false, error: "draft not found" }
   if (row.sent_at) return { ok: false, error: "already sent" }
   const ctx = await buildLeadContext(row.lead_id, { live: false })
@@ -208,6 +219,66 @@ export async function sendPlannerDraft(draftId: string): Promise<{ ok: boolean; 
     planNote = `sent, but the plan step failed: ${e instanceof Error ? e.message : String(e)}`
   }
   return { ok: true, label, planNote }
+}
+
+/** "Draft: <gist>" replied to a "💬 Office line text" alert for a
+ *  Relationships contact (2026-11-10 — a pass on a wholesaler's deal text
+ *  got "no lead on file"). Same coach writer and ✅/🔁/❌ buttons as a lead;
+ *  ✅ texts from the office line and logs a touch, which restarts the
+ *  contact's cadence. */
+export async function coachDraftForRelationship(relationshipId: string, sendTo: string, gist: string, replyTo?: number | null): Promise<{ ok: boolean; error?: string }> {
+  const ctx = await buildRelationshipContext(relationshipId)
+  if (!ctx) return { ok: false, error: "contact not found" }
+  const proposed = await proposePlan(ctx)
+  if (!proposed) return { ok: false, error: "plan unavailable" }
+  const plan: OfficePlan = { ...proposed, next_action: "reply_only", send_to: sendTo }
+  const out = await coachDraft({ ctx, channel: "sms", surface: "telegram", gist, plan, notes: ctx.notes })
+  if (!out || !out.draftId) return { ok: false, error: "draft unavailable" }
+  await postDraftMessage({
+    draftId: out.draftId, name: ctx.name || sendTo, plan: out.plan, body: out.body, subject: null, channel: "sms",
+    replyTo, note: out.read ? `🧠 ${out.read}` : null,
+  })
+  return { ok: true }
+}
+
+async function sendRelationshipDraft(row: DraftRow): Promise<{ ok: boolean; error?: string; label?: string; planNote?: string | null }> {
+  if (row.sent_at) return { ok: false, error: "already sent" }
+  const sb = getLeadsClient()
+  const { data: rel } = await sb.from("relationships").select("id, name, phone, status, tier, category").eq("id", row.relationship_id!).maybeSingle<Rel & { phone: string | null }>()
+  if (!rel) return { ok: false, error: "contact not found" }
+  const to = (row.plan_json as OfficePlan | null)?.send_to || rel.phone
+  if (!to) return { ok: false, error: "no phone on the card" }
+  const out = await sendOfficeText(sb, rel, to, row.draft_body, row.id)
+  if (!out.ok) return { ok: false, error: out.error }
+  return { ok: true, label: `${rel.name ?? to} from ${displayLine(out.from)}`, planNote: out.logWarning ? "⚠️ logged with a warning" : null }
+}
+
+// Redraft a Relationships coach draft: the chain's gists + drafts are the
+// turns (oldest first), the reply (or "another version") is this turn.
+async function redraftRelationship(row: DraftRow, why: string | null, replyTo?: number | null): Promise<{ ok: boolean; error?: string }> {
+  if (row.sent_at) return { ok: false, error: "that draft was already sent" }
+  const ctx = await buildRelationshipContext(row.relationship_id!)
+  if (!ctx) return { ok: false, error: "contact not found" }
+  const chain: DraftRow[] = [row]
+  while (chain.length < 6 && chain[0].parent_draft_id) {
+    const parent = await loadDraft(chain[0].parent_draft_id)
+    if (!parent) break
+    chain.unshift(parent)
+  }
+  const turns = chain.map((d) => ({ gist: d.gist ?? "", body: d.draft_body }))
+  const plan = row.plan_json as OfficePlan | null
+  const out = await coachDraft({
+    ctx, channel: "sms", surface: "telegram", gist: why?.trim() || "Give me a different version.", turns, plan, notes: ctx.notes, parentDraftId: row.id,
+  })
+  if (!out || !out.draftId) return { ok: false, error: "draft unavailable" }
+  if (typeof row.tg_message_id === "number" && CHAT_ID()) {
+    await tg("editMessageReplyMarkup", { chat_id: CHAT_ID(), message_id: row.tg_message_id, reply_markup: { inline_keyboard: [] } })
+  }
+  await postDraftMessage({
+    draftId: out.draftId, name: ctx.name || ctx.phone || "contact", plan: out.plan, body: out.body, subject: null, channel: "sms",
+    replyTo: replyTo ?? row.tg_message_id, note: why ? `↩︎ redrafted from: "${why}"` : "↩︎ redrafted",
+  })
+  return { ok: true }
 }
 
 export async function dismissPlannerDraft(draftId: string): Promise<void> {

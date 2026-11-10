@@ -10,8 +10,8 @@
 // Check order: Relationships → Leads → create a Relationship.
 
 import type { SupabaseClient } from "@supabase/supabase-js"
-import { OFFICE_NUMBERS } from "./leads"
-import { relationshipsByAnyPhone, settleNewRelationship } from "./relationships"
+import { OFFICE_NUMBERS, isOwnedNumber } from "./leads"
+import { normalizeAltPhones, relationshipsByAnyPhone, settleNewRelationship } from "./relationships"
 
 export type OfficeCaller =
   | { kind: "lead" }
@@ -24,6 +24,9 @@ export type OfficeCaller =
       isNew: boolean
       /** true when the stored name is still the phone-number placeholder */
       placeholderName: boolean
+      /** Matched by the number signed in the text, not the sender: the
+       * card's main number (E.164) — what replies go to. */
+      signedAs?: string
     }
 
 export const NEW_CONTACT_CATEGORY = "Agent"
@@ -60,10 +63,27 @@ function stampDay(): string {
   return new Date().toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric", timeZone: "America/Los_Angeles" })
 }
 
+// US numbers written in a text ("Fernando | (408) 309-2868"), as 10 digits,
+// minus the sender's own and ours. Order kept, de-duplicated.
+export function signedPhones(body: string, sender: string): string[] {
+  const own = last10(sender)
+  const out: string[] = []
+  for (const m of Array.from(body.matchAll(/(?<!\d)(?:\+?1[\s.-]?)?\(?([2-9]\d{2})\)?[\s.-]?(\d{3})[\s.-]?(\d{4})(?!\d)/g))) {
+    const d = `${m[1]}${m[2]}${m[3]}`
+    if (d === own || out.includes(d) || isOwnedNumber(d)) continue
+    out.push(d)
+  }
+  return out
+}
+
 // Resolve who's calling/texting an office line. Never throws — a lookup
 // failure resolves to "lead" so the caller falls through to the intake
 // path that already exists (we'd rather log a lead than drop a call).
-export async function resolveOfficeCaller(sb: SupabaseClient, phone: string): Promise<OfficeCaller> {
+// `body` (texts only): before a new card is made, a number signed in the
+// message that's already on a card claims the sender — a wholesaler's
+// blast comes from a bulk line but signs with his cell (2026-11-10, a
+// known agent's Union Ave blast made a second card).
+export async function resolveOfficeCaller(sb: SupabaseClient, phone: string, body?: string | null): Promise<OfficeCaller> {
   const norm = last10(phone)
   if (norm.length < 10) return { kind: "lead" }
   try {
@@ -93,12 +113,49 @@ export async function resolveOfficeCaller(sb: SupabaseClient, phone: string): Pr
       .not("twilio_number", "is", null)
       .limit(1)
     if (leads && leads.length > 0) return { kind: "lead" }
-    // 3. Nobody — create the Relationships contact.
+    // 3. A number signed in the text that's on a card → that card.
+    if (body) {
+      const signed = await relationshipBySignedPhone(sb, phone, body)
+      if (signed) return signed
+    }
+    // 4. Nobody — create the Relationships contact.
     return await createRelationshipForCaller(sb, phone)
   } catch (e) {
     console.error("[office-inbound] resolve failed, falling back to lead path:", e instanceof Error ? e.message : String(e))
     return { kind: "lead" }
   }
+}
+
+// Exactly one card must know the signed number (two = ambiguous, leave it).
+// The sender's number is added to that card as an extra, so the next text
+// from the bulk line lands there directly.
+async function relationshipBySignedPhone(sb: SupabaseClient, phone: string, body: string): Promise<OfficeCaller | null> {
+  const sender = toE164(phone)
+  if (!sender) return null
+  type Row = { id: string; name: string | null; phone: string | null; alt_phones: string[] | null; category: string | null; tier: string | null; notes: string | null; status: string | null }
+  for (const d of signedPhones(body, phone).slice(0, 3)) {
+    const rows = await relationshipsByAnyPhone<Row>(sb, d, "id, name, phone, alt_phones, category, tier, notes, status")
+    if (rows.length !== 1) continue
+    const r = rows[0]
+    const line = `${formatUsPhone(phone)} added as an extra number ${stampDay()} — texted the office line signed with ${formatUsPhone(d)}.`
+    const prev = (r.notes ?? "").trim()
+    const { error } = await sb
+      .from("relationships")
+      .update({ alt_phones: normalizeAltPhones([...(r.alt_phones ?? []), sender], r.phone), notes: prev ? `${prev}\n\n${line}` : line })
+      .eq("id", r.id)
+    if (error) console.error("[office-inbound] signed-number alt phone add failed:", error.message)
+    return {
+      kind: "relationship",
+      id: r.id,
+      name: r.name || formatUsPhone(d),
+      category: r.category ?? null,
+      tier: r.tier ?? null,
+      isNew: false,
+      placeholderName: isPlaceholderName(r.name, d),
+      signedAs: toE164(r.phone ?? d) ?? `+1${d}`,
+    }
+  }
+  return null
 }
 
 async function createRelationshipForCaller(sb: SupabaseClient, phone: string): Promise<OfficeCaller> {

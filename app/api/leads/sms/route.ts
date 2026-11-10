@@ -21,7 +21,7 @@ import {
 } from "@/lib/leads"
 import { scoreLeadSpam, spamAlertLines, spamReviewColumns, type SpamScore } from "@/lib/lead-spam"
 import { isAnonymousCaller } from "@/lib/anonymous"
-import { describeContact, isOfficeLine, logInboundTextTouch, resolveOfficeCaller } from "@/lib/office-inbound"
+import { describeContact, formatUsPhone, isOfficeLine, logInboundTextTouch, resolveOfficeCaller } from "@/lib/office-inbound"
 import { escapeTelegramHtml, handleInboundVendorText } from "@/lib/vendorMarketing"
 import { isKnownVendorPitch, screenVendorPitch, vendorPitchAlert, vendorPitchColumns, type VendorPitch } from "@/lib/vendorPitch"
 import { correctOptOutAddress, explicitOptOutPhrase, inheritContactDnc, isCourtesyReply, isTwilioStopKeyword, markContactDnc, optOutAddressLine } from "@/lib/dnc"
@@ -91,12 +91,17 @@ export async function POST(request: Request) {
   if (from && to && isOfficeLine(to) && !isAnonymousCaller(from)) {
     try {
       const sb = getLeadsClient()
-      const who = await resolveOfficeCaller(sb, from)
+      const who = await resolveOfficeCaller(sb, from, bodyText)
       if (who.kind === "relationship") {
         await logInboundTextTouch(sb, who, bodyText, to)
         const preview = bodyText.length > 300 ? bodyText.slice(0, 300) + "…" : bodyText
         const escaped = preview.replace(/[<>&]/g, c => c === "<" ? "&lt;" : c === ">" ? "&gt;" : "&amp;")
-        await sendTelegramAlert(`💬 Office line text — ${describeContact(who)} — ${from}\n"${escaped}"`)
+        // Matched by the number they signed with: that number leads the
+        // alert (a reply goes to the first +1… in it), the bulk line after.
+        const header = who.signedAs
+          ? `${describeContact(who)} — ${who.signedAs}\n(texted from ${formatUsPhone(from)} — the number they signed with is on this card, so I added this one to it)`
+          : `${describeContact(who)} — ${from}`
+        await sendTelegramAlert(`💬 Office line text — ${header}\n"${escaped}"`)
         return new NextResponse(EMPTY_TWIML, { headers: { "Content-Type": "text/xml" } })
       }
     } catch (e) {
