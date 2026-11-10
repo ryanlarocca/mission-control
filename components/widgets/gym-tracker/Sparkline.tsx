@@ -21,7 +21,7 @@ export function Sparkline({
           y1={height / 2}
           x2={width - pad}
           y2={height / 2}
-          stroke="#3f3f46"
+          stroke="#2a3757"
           strokeWidth={1.5}
           strokeDasharray="3 3"
         />

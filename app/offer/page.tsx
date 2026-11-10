@@ -88,8 +88,8 @@ export default function OfferFormPage() {
     try {
       wa.ready()
       wa.expand()
-      wa.setHeaderColor?.("#09090b")
-      wa.setBackgroundColor?.("#09090b")
+      wa.setHeaderColor?.("#0a0f1e")
+      wa.setBackgroundColor?.("#0a0f1e")
     } catch {
       /* older clients */
     }

@@ -10,6 +10,33 @@ const config: Config = {
   theme: {
     extend: {
       colors: {
+        // Navy "Signal" skin (2026-11-10). The app's greys are hand-written
+        // zinc-* classes; remapping the scale here re-skins every one of them.
+        zinc: {
+          50: "#f4f7fc",
+          100: "#e6edf7",
+          200: "#d9e0ef",
+          300: "#c3cce0",
+          400: "#9aa6c0",
+          500: "#7d8aa6",
+          600: "#5a698d",
+          700: "#2a3757",
+          800: "#1d2840",
+          900: "#101829",
+          950: "#0a0f1e",
+        },
+        // Named tokens for new screens (Today, nav, Hopper).
+        signal: {
+          bg: "#0a0f1e",
+          card: "#101829",
+          card2: "#131d33",
+          border: "#1d2840",
+          ink: "#e6edf7",
+          muted: "#7d8aa6",
+          accent: "#2dd4bf",
+          warn: "#fab219",
+          bad: "#f05252",
+        },
         border: "hsl(var(--border))",
         input: "hsl(var(--input))",
         ring: "hsl(var(--ring))",
@@ -43,6 +70,10 @@ const config: Config = {
           DEFAULT: "hsl(var(--card))",
           foreground: "hsl(var(--card-foreground))",
         },
+      },
+      fontFamily: {
+        // Numbers: monospace, use with `tabular-nums`.
+        num: ["ui-monospace", '"SF Mono"', "Menlo", "monospace"],
       },
       borderRadius: {
         lg: "var(--radius)",

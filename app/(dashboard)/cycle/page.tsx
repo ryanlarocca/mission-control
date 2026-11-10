@@ -20,7 +20,7 @@ export const dynamic = "force-dynamic"
 export const revalidate = 0
 
 const HUE: Record<Scenario, string> = { bear: "#f59e0b", base: "#8b5cf6", bull: "#3b82f6" }
-const TONE: Record<Tone, string> = { good: "#4ade80", bad: "#f87171", flat: "#a1a1aa" }
+const TONE: Record<Tone, string> = { good: "#4ade80", bad: "#f87171", flat: "#9aa6c0" }
 const SC: Scenario[] = ["bear", "base", "bull"]
 const cap = (s: string) => s.charAt(0).toUpperCase() + s.slice(1)
 const MON = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
@@ -112,9 +112,9 @@ function Spark({ slots }: { slots: MonthSlot[] }) {
   return (
     <svg width={W} height={H + 12} viewBox={`0 0 ${W} ${H + 12}`} className="shrink-0" role="img" aria-label="last 12 months">
       <polyline points={pts.map((p) => `${X(p.i).toFixed(1)},${Y(p.v).toFixed(1)}`).join(" ")} fill="none" stroke="#818cf8" strokeWidth={1.6} strokeLinejoin="round" />
-      <circle cx={X(last.i)} cy={Y(last.v)} r={2.4} fill="#e4e4e7" />
+      <circle cx={X(last.i)} cy={Y(last.v)} r={2.4} fill="#e6edf7" />
       {slots.map((s, i) => (
-        <text key={s.ym} x={X(i)} y={H + 10} textAnchor="middle" fontSize={8} fill="#71717a">
+        <text key={s.ym} x={X(i)} y={H + 10} textAnchor="middle" fontSize={8} fill="#7d8aa6">
           {s.letter}
         </text>
       ))}
@@ -166,8 +166,8 @@ function Timeline({ bet, weights }: { bet: BetDef; weights: Weights }) {
     <svg viewBox={`0 0 ${W} ${ROW * 3 + 22}`} className="mt-2 w-full max-w-[420px]" role="img" aria-label="when the low lands and when the rebound starts">
       {ticks.map((t) => (
         <g key={t}>
-          <line x1={X(t, "start")} y1={0} x2={X(t, "start")} y2={ROW * 3} stroke="#27272a" />
-          <text x={X(t, "start")} y={ROW * 3 + 14} fontSize={8.5} fill="#71717a" textAnchor="middle">
+          <line x1={X(t, "start")} y1={0} x2={X(t, "start")} y2={ROW * 3} stroke="#1d2840" />
+          <text x={X(t, "start")} y={ROW * 3 + 14} fontSize={8.5} fill="#7d8aa6" textAnchor="middle">
             {monthWord(t)}
           </text>
         </g>
@@ -177,14 +177,14 @@ function Timeline({ bet, weights }: { bet: BetDef; weights: Weights }) {
         const y = i * ROW + ROW / 2
         return (
           <g key={s}>
-            <text x={0} y={y + 3.5} fontSize={10.5} fontWeight={600} fill="#e4e4e7">
+            <text x={0} y={y + 3.5} fontSize={10.5} fontWeight={600} fill="#e6edf7">
               {cap(s)} {weights[s]}%
             </text>
             <rect x={X(t.low[0], "start")} y={y - 4} width={X(t.low[1], "end") - X(t.low[0], "start")} height={8} rx={4} fill={HUE[s]} />
             {t.rebound ? (
               <rect x={X(t.rebound[0], "start")} y={y - 4} width={Math.min(X(t.rebound[1], "end"), R) - X(t.rebound[0], "start")} height={8} rx={4} fill="none" stroke={HUE[s]} strokeWidth={1.4} />
             ) : (
-              <text x={(X(t.low[0], "start") + X(t.low[1], "end")) / 2} y={y + 3} fontSize={8} fontWeight={700} fill="#18181b" textAnchor="middle">
+              <text x={(X(t.low[0], "start") + X(t.low[1], "end")) / 2} y={y + 3} fontSize={8} fontWeight={700} fill="#101829" textAnchor="middle">
                 rebound after 2028 →
               </text>
             )}

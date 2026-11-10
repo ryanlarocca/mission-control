@@ -102,8 +102,8 @@ export function ExerciseChart({ points }: { points: SessionPoint[] }) {
         <svg viewBox={`0 0 ${W} ${H}`} className="w-full h-auto">
           {ticks.map(t => (
             <g key={t}>
-              <line x1={padL} y1={y(t)} x2={W - padR} y2={y(t)} stroke="#27272a" strokeWidth={1} />
-              <text x={padL - 5} y={y(t) + 3} textAnchor="end" fontSize={9} fill="#71717a">
+              <line x1={padL} y1={y(t)} x2={W - padR} y2={y(t)} stroke="#1d2840" strokeWidth={1} />
+              <text x={padL - 5} y={y(t) + 3} textAnchor="end" fontSize={9} fill="#7d8aa6">
                 {Math.round(t)}
               </text>
             </g>
@@ -112,7 +112,7 @@ export function ExerciseChart({ points }: { points: SessionPoint[] }) {
           {hover !== null && (
             <line
               x1={x(hover)} y1={padT} x2={x(hover)} y2={padT + plotH}
-              stroke="#52525b" strokeWidth={1} strokeDasharray="3 3"
+              stroke="#47557a" strokeWidth={1} strokeDasharray="3 3"
             />
           )}
 
@@ -127,7 +127,7 @@ export function ExerciseChart({ points }: { points: SessionPoint[] }) {
           ))}
 
           {/* PR ring — surface-colored gap so it reads over either line */}
-          <circle cx={x(prIdx)} cy={y(e1s[prIdx])} r={6} fill="none" stroke="#18181b" strokeWidth={3.5} />
+          <circle cx={x(prIdx)} cy={y(e1s[prIdx])} r={6} fill="none" stroke="#101829" strokeWidth={3.5} />
           <circle cx={x(prIdx)} cy={y(e1s[prIdx])} r={6} fill="none" stroke={E1RM_COLOR} strokeWidth={1.5} />
 
           {xTickIdx.map(i => (
@@ -137,7 +137,7 @@ export function ExerciseChart({ points }: { points: SessionPoint[] }) {
               y={H - 4}
               textAnchor={i === 0 ? "start" : i === n - 1 ? "end" : "middle"}
               fontSize={9}
-              fill="#71717a"
+              fill="#7d8aa6"
             >
               {formatShortDate(points[i].date)}
             </text>

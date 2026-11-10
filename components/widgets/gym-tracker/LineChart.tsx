@@ -77,7 +77,7 @@ export function LineChart({
       </div>
       <svg viewBox={`0 0 ${W} ${H}`} className="w-full" style={{ height: "auto" }} preserveAspectRatio="none">
         {/* baseline */}
-        <line x1={padL} y1={padT + plotH} x2={W - padR} y2={padT + plotH} stroke="#27272a" strokeWidth={1} />
+        <line x1={padL} y1={padT + plotH} x2={W - padR} y2={padT + plotH} stroke="#1d2840" strokeWidth={1} />
         <path d={L.d} fill="none" stroke={left.color} strokeWidth={2} strokeLinejoin="round" strokeLinecap="round" />
         <circle cx={L.lastX} cy={L.lastY} r={2.5} fill={left.color} />
         {R && (

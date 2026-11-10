@@ -72,13 +72,13 @@ export function VolumeChart({ points }: { points: SessionPoint[] }) {
       <svg viewBox={`0 0 ${W} ${H}`} className="w-full h-auto">
         {ticks.map(t => (
           <g key={t}>
-            <line x1={padL} y1={y(t)} x2={W - padR} y2={y(t)} stroke="#27272a" strokeWidth={1} />
-            <text x={padL - 5} y={y(t) + 3} textAnchor="end" fontSize={9} fill="#71717a">
+            <line x1={padL} y1={y(t)} x2={W - padR} y2={y(t)} stroke="#1d2840" strokeWidth={1} />
+            <text x={padL - 5} y={y(t) + 3} textAnchor="end" fontSize={9} fill="#7d8aa6">
               {fmtVol(t)}
             </text>
           </g>
         ))}
-        <line x1={padL} y1={padT + plotH} x2={W - padR} y2={padT + plotH} stroke="#3f3f46" strokeWidth={1} />
+        <line x1={padL} y1={padT + plotH} x2={W - padR} y2={padT + plotH} stroke="#2a3757" strokeWidth={1} />
 
         {points.map((p, i) => (
           <rect
@@ -100,7 +100,7 @@ export function VolumeChart({ points }: { points: SessionPoint[] }) {
             y={H - 4}
             textAnchor={i === 0 ? "start" : i === n - 1 ? "end" : "middle"}
             fontSize={9}
-            fill="#71717a"
+            fill="#7d8aa6"
           >
             {formatShortDate(points[i].date)}
           </text>
