@@ -62,9 +62,9 @@ function sources() {
     skip: /\/(work|\.cache|sheets)\//,
     filter: (f) => /\.(json|md|py|ya?ml|txt|srt|ass|sh|csv)$/i.test(f),
   })
-  // The old Thadius workspace: the bridge launcher and the CRMS sidecar still
-  // start from it (~/.openclaw/workspace/PROJECTS is a symlink). Its git
-  // history goes in as a bundle (gitArtifacts).
+  // The retired Thadius workspace. Nothing starts from it since 2026-11-10;
+  // backed up until the folder is deleted (add() skips a missing path). Its
+  // git history goes in as a bundle (gitArtifacts).
   add("openclaw-workspace", path.join(HOME, ".openclaw/workspace"), { dir: true, skip: /\/\.git\/|node_modules/ })
   // gitignored runtime state in mission-control
   for (const f of fs.readdirSync(path.join(MC_ROOT, "scripts")).filter((f) => /^\..*\.json$/.test(f))) add(`state/mission-control/scripts/${f}`, path.join(MC_ROOT, "scripts", f))

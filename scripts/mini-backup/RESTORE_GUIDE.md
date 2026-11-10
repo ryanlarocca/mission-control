@@ -43,7 +43,7 @@ Work top to bottom. Verify each step before the next. The old machine's exact st
   - Apply `repos/projects.uncommitted.patch` and unpack `repos/projects.untracked.tar.gz` into `~/Projects`; same for the mission-control pair into the mission-control clone. These hold whatever wasn't committed the night before.
 - `git clone https://github.com/ryanlarocca/lrghomes-landing.git ~/Projects/PROJECTS/lrghomes-landing`.
 - `git clone https://github.com/ryanlarocca/video-editor.git ~/Projects/video-editor`; copy `video-editor/working-text/` back to `~/Movies/VideoEditor/` (cut lists, shotlogs, shoot reports, the vault manifest and clip-library catalogue). The footage itself is in Drive `Marketing/Videos/Library/Footage/` — restore a video's footage with the editor's restore command (see its `CLAUDE.md`).
-- **The bridge launcher starts in `~/.openclaw/workspace/PROJECTS/mission-control`** (`~/bin/claude-remote-spawn.sh` PROJECT_DIR), and the CRMS sidecar + merge job read paths through it. Recreate it: `git clone repos/openclaw-workspace.bundle ~/.openclaw/workspace`, copy `openclaw-workspace/` over it, then `ln -s ~/Projects/PROJECTS ~/.openclaw/workspace/PROJECTS` and `ln -s ~/Projects/lrg-homes-website ~/.openclaw/workspace/lrg-homes-website`.
+- **Nothing starts from `~/.openclaw` any more (2026-11-10).** The bridge launcher (`~/bin/claude-remote-spawn.sh` PROJECT_DIR) starts in `~/Projects/PROJECTS/mission-control`, and the CRMS sidecar + merge job read `~/Projects/PROJECTS` directly. `openclaw-workspace/` and `repos/openclaw-workspace.bundle` in older backups are the retired Thadius workspace: archive only, no need to restore. The sidecar's `scripts/node_modules` is a relative link to `../phase2/node_modules`.
 - `repos/worktrees.uncommitted.tar.gz`: unsaved files from chat-session worktrees (`<worktree>/<path>`); unpack somewhere and copy what's still needed into the main checkout.
 - `npm install` in mission-control and in `mission-control/esign`. `next build` in mission-control (the local Mission Control on port 3001 serves a production build).
 - Symlink `node_modules` from mission-control into `~/Projects/PROJECTS/the-pile/scratch` and any other scratch folder that had one (inventory shows them).
@@ -75,7 +75,7 @@ Known trap: `.env.local` values are single-quoted; scripts that read it strip th
 - `launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/<each>.plist`. They all depend on a logged-in GUI session, so **auto-login must be on** (`sysadminctl -autologin set -userName ryanlarocca -password …` is Ryan's click, or System Settings → Users & Groups → Automatically log in).
 - `pmset -a sleep 0 autorestart 1` so the mini never sleeps and comes back after power loss.
 - `com.lrghomes.mini-tidy` (Sundays 04:20, `scripts/mini-tidy.mjs`) clears old chat worktrees, build output and npm's cache — the drive is only 256 GB. The heartbeat also reports free space; `/api/mini/watch` alerts below 25 GB / 10 GB.
-- The sidecar's public address changes on every start; `com.openclaw.crms.update-sidecar-url` pushes the new one to Vercel every 5 minutes. Confirm Vercel's `SIDECAR_URL` updated within 10 minutes of the tunnel coming up.
+- The sidecar's public address changes on every start; `com.lrghomes.crms-update-sidecar-url` pushes the new one to Vercel every 5 minutes. Confirm Vercel's `SIDECAR_URL` updated within 10 minutes of the tunnel coming up.
 
 ### 5. Clicks only Ryan can do (ask for them one at a time, in this order)
 1. **Full Disk Access** for `/opt/homebrew/bin/node` and for Terminal: System Settings → Privacy & Security → Full Disk Access → + → press Cmd-Shift-G → paste the path. Without this the sidecar can't read texts, call log, or contacts.
@@ -88,7 +88,7 @@ Known trap: `.env.local` values are single-quoted; scripts that read it strip th
 
 ### 6. Verify (all must pass before calling it done)
 - `curl localhost:5799/health` → ok. `curl localhost:3001` → Mission Control login page.
-- `launchctl list | grep -E 'lrghomes|openclaw'` → every label from the inventory present, no non-zero last-exit.
+- `launchctl list | grep lrghomes` → every label from the inventory present, no non-zero last-exit.
 - Cloudflare: `sign.lrghomes.com` loads; the sidecar quick tunnel is up and Vercel's `SIDECAR_URL` points at it (Relationships tab → open a card → the text thread loads).
 - Telegram: a test alert arrives. Inbox agent `--status` runs clean. Drip engine runs once with `--dry-run`.
 - Run this backup once: `node scripts/mini-backup/backup.mjs --notify` and confirm the 🟢 line arrives. Then `--restore-drill` into /tmp to prove the loop closes.

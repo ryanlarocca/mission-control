@@ -7,7 +7,7 @@
 # isn't currently loaded errors with "Could not find specified service"
 # — we swallow that so a partial state still reloads cleanly.
 #
-# Scope: matches `com.lrghomes.*.plist` and `com.openclaw.crms.*.plist`
+# Scope: matches `com.lrghomes.*.plist` and `com.lrghomes.crms-*.plist` (renamed from com.openclaw.crms.* 2026-11-10)
 # in ~/Library/LaunchAgents/. Anything outside those prefixes (chatdb
 # oneshot, nightly-bug-sweep, etc.) is intentionally left alone.
 #
@@ -21,7 +21,7 @@
 set -u
 
 LAUNCH_AGENTS_DIR="$HOME/Library/LaunchAgents"
-PREFIXES=( "com.lrghomes." "com.openclaw.crms." )
+PREFIXES=( "com.lrghomes." )
 
 # ANSI colors — disabled when stdout isn't a TTY so logs/cron output
 # stay clean. Bash on macOS supports `[[ -t 1 ]]`.
@@ -179,7 +179,7 @@ health_curl              "sidecar"            "http://localhost:5799/health"
 health_curl              "mission-control"    "http://localhost:3001"
 
 # Long-running daemons we just need to confirm are alive.
-health_launchctl_pid     "cloudflare-tunnel"  "com.openclaw.crms.cloudflare-tunnel"
+health_launchctl_pid     "cloudflare-tunnel"  "com.lrghomes.crms-cloudflare-tunnel"
 health_launchctl_pid     "ngrok"              "com.lrghomes.ngrok"
 health_launchctl_pid     "lead-webhook"       "com.lrghomes.lead-webhook"
 
@@ -187,8 +187,8 @@ health_launchctl_pid     "lead-webhook"       "com.lrghomes.lead-webhook"
 health_launchctl_loaded  "drip-engine"        "com.lrghomes.drip-engine"
 health_launchctl_loaded  "gmail-watch-renewal" "com.lrghomes.gmail-watch-renewal"
 health_launchctl_loaded  "inbox-agent"        "com.lrghomes.inbox-agent"
-health_launchctl_loaded  "crms-merge"         "com.openclaw.crms.merge"
-health_launchctl_loaded  "lastcontacted-sync" "com.openclaw.crms.lastcontacted-sync"
+health_launchctl_loaded  "crms-merge"         "com.lrghomes.crms-merge"
+health_launchctl_loaded  "lastcontacted-sync" "com.lrghomes.crms-lastcontacted-sync"
 
 # Side effect: confirm Gmail watch is renewing daily.
 health_log_mtime         "gmail-watch-log"    "$GMAIL_WATCH_LOG" "$GMAIL_WATCH_MAX_AGE_SEC"
