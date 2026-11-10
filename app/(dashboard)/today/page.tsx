@@ -308,17 +308,18 @@ function HealthPills({ today, fu }: { today: Source<TodayPayload>; fu: Source<Fo
   return (
     <div className="flex flex-wrap gap-1.5 md:justify-end md:shrink-0">
       {pills.map(p => (
-        <span
+        <Link
           key={p.key}
+          href="/health"
           className={cn(
-            "inline-flex items-center gap-[5px] font-num text-[11px] font-semibold px-2 py-[3px] rounded border bg-signal-card2 whitespace-nowrap",
+            "inline-flex items-center gap-[5px] font-num text-[11px] font-semibold px-2 py-[3px] rounded border bg-signal-card2 whitespace-nowrap hover:bg-signal-card transition-colors",
             p.state === "ok" && "text-signal-accent border-signal-accent/35",
             p.state === "warn" && "text-signal-warn border-[#5a4210]",
             p.state === "unknown" && "text-signal-muted border-signal-border",
           )}
         >
           {p.state === "ok" ? "✓" : p.state === "warn" ? "!" : "?"} {p.text}
-        </span>
+        </Link>
       ))}
     </div>
   )

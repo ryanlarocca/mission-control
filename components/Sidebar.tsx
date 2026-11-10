@@ -5,7 +5,7 @@ import Link from "next/link"
 import { usePathname } from "next/navigation"
 import { cn } from "@/lib/utils"
 import {
-  Home, Phone, Users, Megaphone, Zap, Gauge, Folder, Lightbulb, Dumbbell, MoreHorizontal, X,
+  Home, Phone, Users, Megaphone, Zap, Gauge, Folder, HeartPulse, Lightbulb, Dumbbell, MoreHorizontal, X,
   type LucideIcon,
 } from "lucide-react"
 
@@ -35,6 +35,7 @@ const navGroups: { label: string; items: NavItem[] }[] = [
     label: "Ops",
     items: [
       { href: "/projects", label: "Projects", icon: Folder },
+      { href: "/health", label: "Health", icon: HeartPulse },
       { href: "/hopper", label: "The Hopper", icon: Lightbulb },
     ],
   },
@@ -51,6 +52,7 @@ const moreItems: NavItem[] = [
   { href: "/email-campaign", label: "Email Drip", icon: Zap },
   { href: "/cycle", label: "Market Cycle", icon: Gauge },
   { href: "/projects", label: "Projects", icon: Folder },
+  { href: "/health", label: "Health", icon: HeartPulse },
   { href: "/hopper", label: "The Hopper", icon: Lightbulb },
   { href: "/physiq/gym-tracker", label: "Gym tracker", icon: Dumbbell },
 ]
