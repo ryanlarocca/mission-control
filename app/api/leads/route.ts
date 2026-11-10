@@ -14,6 +14,17 @@ import {
   type LeadFlagField,
 } from "@/lib/leads"
 
+// Columns no screen reads from the list (2026-11-10) — the coach, Jackie and
+// ladder bookkeeping is used server-side or through its own endpoint. Dropped
+// from the response only; a new column still shows up by default.
+const LIST_OMITTED_COLUMNS = [
+  "coach_script", "coach_rating", "history_line", "jackie_call",
+  "call_conversation", "call_duration_sec", "call_arm",
+  "website_ladder", "ladder_pings", "sms_consent",
+  "status_set_at", "status_set_by", "moment_at", "gmail_message_id",
+  "ryan_picked_up_at", "autopilot_since", "autopilot_done_at", "followup_generated_at",
+] as const
+
 export async function GET(request: NextRequest) {
   const url = request.nextUrl
   const status = url.searchParams.get("status")
@@ -32,13 +43,12 @@ export async function GET(request: NextRequest) {
   try {
     const sb = getLeadsClient()
     const PAGE = 1000
-    const rows: unknown[] = []
     // Promoted contacts live in Relationships now — keep them out of the tab
     // regardless of what status their lead rows carry (see
     // fetchRelationshipContactKeys for the two ways status alone failed).
-    const relKeys = await fetchRelationshipContactKeys(sb)
-    for (let from = 0; from < limit; from += PAGE) {
-      const to = Math.min(from + PAGE, limit) - 1
+    // Started here and awaited after the lead pages so the two run together.
+    const relKeysP = fetchRelationshipContactKeys(sb)
+    const pageQuery = (from: number, to: number) => {
       let q = sb.from("leads").select("*")
 
       if (status && VALID_LEAD_STATUSES.includes(status as LeadStatus)) q = q.eq("status", status)
@@ -54,15 +64,34 @@ export async function GET(request: NextRequest) {
       // Business ordering above is on non-unique columns; `id` as the final
       // key makes page boundaries stable (PostgREST range paging without a
       // total order returns overlapping pages past ~1,000 rows).
-      const { data, error } = await q.order("id", { ascending: true }).range(from, to)
-      if (error) {
-        console.error("[leads:GET] Query failed:", error)
-        return NextResponse.json({ error: error.message }, { status: 500 })
+      return q.order("id", { ascending: true }).range(from, to)
+    }
+    // Pages go out two at a time (2026-11-10): the table is past 1,000 rows,
+    // so the common case is one round trip instead of two. A page past the
+    // end comes back empty and is ignored.
+    const WAVE = 2
+    const fetched: Record<string, unknown>[] = []
+    let done = false
+    for (let from = 0; from < limit && !done; from += PAGE * WAVE) {
+      const spans: [number, number][] = []
+      for (let f = from; f < limit && spans.length < WAVE; f += PAGE) spans.push([f, Math.min(f + PAGE, limit) - 1])
+      const results = await Promise.all(spans.map(([f, t]) => pageQuery(f, t)))
+      for (let i = 0; i < results.length; i++) {
+        const { data, error } = results[i]
+        if (error) {
+          console.error("[leads:GET] Query failed:", error)
+          return NextResponse.json({ error: error.message }, { status: 500 })
+        }
+        fetched.push(...((data ?? []) as Record<string, unknown>[]))
+        if (!data || data.length < spans[i][1] - spans[i][0] + 1) { done = true; break } // short page = done
       }
-      for (const row of (data ?? []) as { caller_phone?: string | null; email?: string | null }[]) {
-        if (!isRelationshipContact(relKeys, row)) rows.push(row)
-      }
-      if (!data || data.length < to - from + 1) break // short page = done
+    }
+    const relKeys = await relKeysP
+    const rows: unknown[] = []
+    for (const row of fetched) {
+      if (isRelationshipContact(relKeys, row as { caller_phone?: string | null; email?: string | null })) continue
+      for (const col of LIST_OMITTED_COLUMNS) delete row[col]
+      rows.push(row)
     }
     await attachCampaignPiece(sb, rows)
     return NextResponse.json({ leads: rows })
@@ -93,23 +122,28 @@ export async function GET(request: NextRequest) {
 // the list but never mailed).
 async function attachCampaignPiece(sb: SupabaseClient, rows: unknown[]): Promise<void> {
   const leadRows = rows as { campaign_id?: string | null; campaign_piece?: string | null; campaign_mail_list?: boolean; campaign_source_label?: string | null; mail_record_id?: string | null; mail_record_arm?: string | null }[]
+  const chunks = <T,>(xs: T[], n: number): T[][] => { const out: T[][] = []; for (let i = 0; i < xs.length; i += n) out.push(xs.slice(i, i + n)); return out }
   const recIds = Array.from(new Set(leadRows.map((r) => r.mail_record_id).filter((v): v is string => typeof v === "string" && v.length > 0)))
+  const ids = Array.from(new Set(leadRows.map((r) => r.campaign_id).filter((v): v is string => typeof v === "string" && v.length > 0)))
+  // The arm join and the campaign join are independent — run them together,
+  // each as parallel 200-id chunks (2026-11-10; they used to run one by one).
+  const [armResults, campaignResults] = await Promise.all([
+    Promise.all(chunks(recIds, 200).map((c) => sb.from("mail_records").select("id, arm").in("id", c))),
+    Promise.all(chunks(ids, 200).map((c) => sb.from("campaigns").select("id, piece, parent_campaign_id, source_label").in("id", c))),
+  ])
   if (recIds.length) {
     const armById = new Map<string, string | null>()
-    for (let i = 0; i < recIds.length; i += 200) {
-      const { data, error } = await sb.from("mail_records").select("id, arm").in("id", recIds.slice(i, i + 200))
+    for (const { data, error } of armResults) {
       if (error) { console.warn("[leads:GET] mail record arm join failed:", error.message); break }
       for (const m of (data ?? []) as { id: string; arm: string | null }[]) armById.set(m.id, m.arm)
     }
     for (const r of leadRows) if (r.mail_record_id) r.mail_record_arm = armById.get(r.mail_record_id) ?? null
   }
-  const ids = Array.from(new Set(leadRows.map((r) => r.campaign_id).filter((v): v is string => typeof v === "string" && v.length > 0)))
   if (ids.length === 0) return
   const pieceById = new Map<string, string | null>()
   const labelById = new Map<string, string | null>()
   const rootById = new Map<string, string>()
-  for (let i = 0; i < ids.length; i += 200) {
-    const { data, error } = await sb.from("campaigns").select("id, piece, parent_campaign_id, source_label").in("id", ids.slice(i, i + 200))
+  for (const { data, error } of campaignResults) {
     if (error) {
       console.warn("[leads:GET] campaign piece join failed:", error.message)
       return
@@ -125,15 +159,17 @@ async function attachCampaignPiece(sb: SupabaseClient, rows: unknown[]): Promise
     r.campaign_source_label = r.campaign_id ? labelById.get(r.campaign_id) ?? null : null
   }
 
-  // One existence probe per distinct campaign family — a handful of reads.
+  // One existence probe per distinct campaign family — a handful of reads, in parallel.
   const hasList = new Map<string, boolean>()
-  for (const root of Array.from(new Set(rootById.values()))) {
-    const { data, error } = await sb.from("mail_records").select("id").eq("campaign_id", root).limit(1)
+  const roots = Array.from(new Set(rootById.values()))
+  const probes = await Promise.all(roots.map((root) => sb.from("mail_records").select("id").eq("campaign_id", root).limit(1)))
+  for (let i = 0; i < roots.length; i++) {
+    const { data, error } = probes[i]
     if (error) {
       console.warn("[leads:GET] mail list probe failed:", error.message)
       return
     }
-    hasList.set(root, (data ?? []).length > 0)
+    hasList.set(roots[i], (data ?? []).length > 0)
   }
   for (const r of leadRows) {
     const root = r.campaign_id ? rootById.get(r.campaign_id) : undefined

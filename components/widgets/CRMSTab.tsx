@@ -493,6 +493,10 @@ function CRMSTabInner() {
         category: coerceType(c.type ?? c.category),
       }))
       setContacts(loaded)
+      // The queue is ready — show it now. The first card's touch summary
+      // loads behind it, the same way it does when a card is picked by hand
+      // (the spinner used to wait for that second request too).
+      setLoadingContacts(false)
 
       // Auto-select first contact not already sent/skipped
       const firstDue = loaded.find(c => !sent.has(c.id) && !skipped.has(c.id))

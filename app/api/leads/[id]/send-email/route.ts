@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server"
 import { markDraftSent } from "@/lib/reply/record"
-import { getGmailClient, getLeadsClient, getMailboxForSource, encodeEmailHeader, detectOfferFromText, applyDetectedOfferToCluster, registerManualTouch, resolveMailbox } from "@/lib/leads"
+import { getLeadsClient, getMailboxForSource, encodeEmailHeader, detectOfferFromText, applyDetectedOfferToCluster, registerManualTouch, resolveMailbox } from "@/lib/leads"
+import { getGmailClient } from "@/lib/gmail"
 
 // Phase 7C — Part 6: send a manual email to a lead from the lead card.
 //

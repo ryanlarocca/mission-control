@@ -1,6 +1,7 @@
 import type { gmail_v1 } from "googleapis"
 import type { SupabaseClient } from "@supabase/supabase-js"
-import { getGmailClient, getLeadsClient } from "@/lib/leads"
+import { getLeadsClient } from "@/lib/leads"
+import { getGmailClient } from "@/lib/gmail"
 import { sendCampaignAlert, sendCampaignDocument } from "@/lib/campaignAlerts"
 import { buildEmailMime, toGmailRaw } from "@/lib/emailMime"
 import { addSuppression } from "@/lib/suppression"

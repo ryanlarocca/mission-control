@@ -25,12 +25,12 @@ import { completeText, hasLlmKey, SONNET } from "@/lib/llm"
 import {
   WEBSITE_NUMBER,
   clusterHasDnc,
-  getGmailClient,
   encodeEmailHeader,
   sendTelegramAlert,
   sendTwilioSms,
   type TelegramButton,
 } from "@/lib/leads"
+import { getGmailClient } from "@/lib/gmail"
 
 export const LEAD_CALL_CB_PREFIX = "lcall:"
 export const WEBSITE_LINE_DISPLAY = "(650) 670-3914"

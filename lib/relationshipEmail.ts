@@ -19,7 +19,8 @@
 // text sent from the card.
 
 import type { SupabaseClient } from "@supabase/supabase-js"
-import { getGmailClient, getLeadsClient } from "@/lib/leads"
+import { getLeadsClient } from "@/lib/leads"
+import { getGmailClient } from "@/lib/gmail"
 import { buildEmailMime, toGmailRaw } from "@/lib/emailMime"
 import { markDraftSent } from "@/lib/reply/record"
 

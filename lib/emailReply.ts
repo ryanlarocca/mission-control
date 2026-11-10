@@ -8,7 +8,8 @@
 // Threading: threadId on the Gmail send + real RFC 2822 In-Reply-To /
 // References headers pulled from the existing thread (metadata-only call).
 
-import { getGmailClient, getLeadsClient, encodeEmailHeader, registerManualTouch, resolveMailbox } from "@/lib/leads"
+import { getLeadsClient, encodeEmailHeader, registerManualTouch, resolveMailbox } from "@/lib/leads"
+import { getGmailClient } from "@/lib/gmail"
 import { markDraftSent } from "@/lib/reply/record"
 
 export interface EmailReplyResult {

@@ -20,7 +20,6 @@ import {
   getEmailCampaign,
   addressesForMailbox,
   resolveRecipientCampaign,
-  getGmailClient,
   getLeadsClient,
   isMobileHome,
   isOwnedNumber,
@@ -29,6 +28,7 @@ import {
   sendTelegramAlert,
   triageEmailLead,
 } from "@/lib/leads"
+import { getGmailClient } from "@/lib/gmail"
 import { scoreLeadSpam, spamAlertLines, spamReviewColumns } from "@/lib/lead-spam"
 import { isBounceEmail, parseBounce } from "@/lib/emailBounce"
 import { appsScriptMessageId, insertEmailLead } from "@/lib/emailDedupe"

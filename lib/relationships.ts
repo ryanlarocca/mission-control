@@ -249,17 +249,25 @@ export async function fetchAllRelationships(
   supabase: SupabaseClient,
 ): Promise<RelationshipRow[]> {
   const PAGE = 1000
+  // Three pages per round trip (2026-11-10): ~2,100 rows used to be three
+  // requests one after another. A page past the end comes back empty.
+  const WAVE = 3
+  const page = (from: number) => supabase
+    .from("relationships")
+    .select(REL_COLUMNS)
+    .order("id", { ascending: true })
+    .range(from, from + PAGE - 1)
   const out: RelationshipRow[] = []
-  for (let from = 0; ; from += PAGE) {
-    const { data, error } = await supabase
-      .from("relationships")
-      .select(REL_COLUMNS)
-      .order("id", { ascending: true })
-      .range(from, from + PAGE - 1)
-    if (error) throw error
-    const rows = (data ?? []) as unknown as RelationshipRow[]
-    out.push(...rows)
-    if (rows.length < PAGE) break
+  for (let from = 0; ; from += PAGE * WAVE) {
+    const results = await Promise.all(Array.from({ length: WAVE }, (_, i) => page(from + i * PAGE)))
+    let short = false
+    for (const { data, error } of results) {
+      if (error) throw error
+      const rows = (data ?? []) as unknown as RelationshipRow[]
+      out.push(...rows)
+      if (rows.length < PAGE) { short = true; break }
+    }
+    if (short) break
   }
   return out
 }

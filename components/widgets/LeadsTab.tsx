@@ -693,10 +693,15 @@ export function LeadsTab() {
     }
   }, [])
 
+  // 30s refresh only while the tab is on screen; coming back refreshes at
+  // once (same rule as Follow Ups). A hidden tab used to keep downloading
+  // the whole list every 30 seconds.
   useEffect(() => {
     fetchLeads()
-    const id = setInterval(() => fetchLeads(true), 30000)
-    return () => clearInterval(id)
+    const id = setInterval(() => { if (document.visibilityState === "visible") fetchLeads(true) }, 30000)
+    function onVisible() { if (document.visibilityState === "visible") fetchLeads(true) }
+    document.addEventListener("visibilitychange", onVisible)
+    return () => { clearInterval(id); document.removeEventListener("visibilitychange", onVisible) }
   }, [fetchLeads])
 
   // Deep-link: /leads?phone=+15551234567 pre-expands the matching card and

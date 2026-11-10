@@ -1,5 +1,5 @@
 import type { gmail_v1 } from "googleapis"
-import { getGmailClient } from "@/lib/leads"
+import { getGmailClient } from "@/lib/gmail"
 
 // Inbox Agent — Gmail reads from Vercel (typed Telegram commands and
 // questions need the thread right now, not on the worker's next pass).

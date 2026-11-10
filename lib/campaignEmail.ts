@@ -1,4 +1,5 @@
-import { getGmailClient, getLeadsClient } from "@/lib/leads"
+import { getLeadsClient } from "@/lib/leads"
+import { getGmailClient } from "@/lib/gmail"
 import { buildEmailMime, toGmailRaw } from "@/lib/emailMime"
 import { emailTouchMessage } from "@/lib/relationshipEmail"
 import type { SupabaseClient } from "@supabase/supabase-js"

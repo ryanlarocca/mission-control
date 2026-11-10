@@ -1,7 +1,6 @@
 import type { AlertSubject } from "./alertSubject"
 import { createClient, type SupabaseClient } from "@supabase/supabase-js"
 import { sidecarHeaders } from "./sidecar"
-import { google, gmail_v1 } from "googleapis"
 import emailCampaigns from "@/config/email-campaigns.json"
 import { isAnonymousCaller } from "./anonymous"
 import { CARD_LINE } from "./card-line"
@@ -449,31 +448,9 @@ export function encodeEmailHeader(value: string): string {
   return `=?UTF-8?B?${Buffer.from(value, "utf8").toString("base64")}?=`
 }
 
-// Build a Gmail API client that impersonates the given mailbox owner via
-// Google Workspace domain-wide delegation. DWD on the lrghomes Workspace
-// tenant is authorized for gmail.modify only — gmail.readonly returns 401
-// `unauthorized_client`, gmail.send is also unauthorized. gmail.modify
-// includes the read AND send perms we need (see Phase 7.4 in the CRMS memo).
-// The grant is per Workspace customer, so the secondary sending domains
-// (lrghomesbuys.com, lrghomesoffers.com) inherit it — verified 2026-09-03
-// with scripts/check-dwd-scopes.mjs (re-run it before trusting a new domain).
-// Used by both /api/leads/email (for inbound thread fetch) and
-// /api/leads/email-reply (for outbound send).
-// DWD only: the consumer-Gmail OAuth branch (ryan.lrghomes@gmail.com,
-// 2026-08-21) was retired 2026-09-01 and removed 2026-09-06 — that mailbox
-// never sends again and its CAMPAIGN_GMAIL_OAUTH_* env vars are gone.
-export function getGmailClient(userEmail: string): gmail_v1.Gmail {
-  const key = process.env.GOOGLE_SERVICE_ACCOUNT_KEY
-  if (!key) throw new Error("GOOGLE_SERVICE_ACCOUNT_KEY not set")
-  const credentials = JSON.parse(key)
-  const auth = new google.auth.JWT({
-    email: credentials.client_email,
-    key: credentials.private_key,
-    scopes: ["https://www.googleapis.com/auth/gmail.modify"],
-    subject: userEmail,
-  })
-  return google.gmail({ version: "v1", auth })
-}
+// getGmailClient lives in lib/gmail.ts (2026-11-10): keeping the googleapis
+// import out of this file spares every route that imports lib/leads its
+// cold-start cost. Do not re-export it from here.
 
 // Normalize a free-form phone string to E.164. Inputs like "(555) 123-4567",
 // "555.123.4567", "5551234567", "+1 555-123-4567", and "1 555 123 4567" all
@@ -848,23 +825,31 @@ export async function fetchRelationshipContactKeys(sb: SupabaseClient): Promise<
   const phones = new Set<string>()
   const emails = new Set<string>()
   const PAGE = 1000
-  for (let from = 0; ; from += PAGE) {
-    const { data, error } = await sb
-      .from("relationships")
-      .select("phone, email")
-      .order("id", { ascending: true })
-      .range(from, from + PAGE - 1)
-    if (error) {
-      console.error("[relationship-keys] query failed:", error.message)
-      break
+  // Three pages per round trip (2026-11-10): the table is ~2,100 rows, so the
+  // whole read is one wave. A page past the end comes back empty.
+  const WAVE = 3
+  const page = (from: number) => sb
+    .from("relationships")
+    .select("phone, email")
+    .order("id", { ascending: true })
+    .range(from, from + PAGE - 1)
+  let done = false
+  for (let from = 0; !done; from += PAGE * WAVE) {
+    const results = await Promise.all(Array.from({ length: WAVE }, (_, i) => page(from + i * PAGE)))
+    for (const { data, error } of results) {
+      if (error) {
+        console.error("[relationship-keys] query failed:", error.message)
+        done = true
+        break
+      }
+      for (const r of (data ?? []) as { phone: string | null; email: string | null }[]) {
+        const p = r.phone ? normalizePhone(r.phone) : ""
+        if (p) phones.add(p)
+        const e = (r.email ?? "").trim().toLowerCase()
+        if (e) emails.add(e)
+      }
+      if (!data || data.length < PAGE) { done = true; break }
     }
-    for (const r of (data ?? []) as { phone: string | null; email: string | null }[]) {
-      const p = r.phone ? normalizePhone(r.phone) : ""
-      if (p) phones.add(p)
-      const e = (r.email ?? "").trim().toLowerCase()
-      if (e) emails.add(e)
-    }
-    if (!data || data.length < PAGE) break
   }
   return { phones, emails }
 }
