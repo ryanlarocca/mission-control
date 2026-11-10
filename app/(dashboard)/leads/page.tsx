@@ -16,11 +16,15 @@ function LeadsPageBody() {
   // ?embed=1 — page is rendered inside a lead-card iframe overlay. Hide the
   // sub-nav so the modal shows just the LeadsTab content.
   const embedMode = searchParams.get("embed") === "1"
-  const [view, setView] = useState<View>("leads")
+  // ?view=followups — the Today page's Follow-ups tile / "N more" link opens
+  // the Follow Ups worklist directly.
+  const viewParam = searchParams.get("view")
+  const [view, setView] = useState<View>(viewParam === "followups" && !phoneParam ? "followups" : "leads")
 
   useEffect(() => {
     if (phoneParam) setView("leads")
-  }, [phoneParam])
+    else if (viewParam === "followups") setView("followups")
+  }, [phoneParam, viewParam])
 
   return (
     <div className="max-w-3xl">

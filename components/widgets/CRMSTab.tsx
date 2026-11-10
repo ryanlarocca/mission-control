@@ -1329,7 +1329,7 @@ function CRMSTabInner() {
         </div>
         <CleanupMode onToast={showSendToast} />
         {sendToast && (
-          <div className="fixed bottom-4 right-4 z-50 bg-red-500/15 border border-red-500/40 text-red-300 text-xs px-3 py-2 rounded shadow-lg flex items-center gap-2 max-w-xs">
+          <div className="fixed bottom-24 md:bottom-4 right-4 z-50 bg-red-500/15 border border-red-500/40 text-red-300 text-xs px-3 py-2 rounded shadow-lg flex items-center gap-2 max-w-xs">
             <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
             <span className="flex-1">{sendToast}</span>
             <button onClick={() => setSendToast(null)} className="text-red-400 hover:text-red-200 shrink-0" aria-label="Dismiss">
@@ -1995,7 +1995,7 @@ function CRMSTabInner() {
       )}
 
       {removeUndo && (
-        <div className="fixed bottom-16 right-4 z-50 bg-zinc-900 border border-red-500/40 text-zinc-200 text-xs px-3 py-2.5 rounded shadow-lg flex items-center gap-2 max-w-xs">
+        <div className="fixed bottom-36 md:bottom-16 right-4 z-50 bg-zinc-900 border border-red-500/40 text-zinc-200 text-xs px-3 py-2.5 rounded shadow-lg flex items-center gap-2 max-w-xs">
           <X className="w-3.5 h-3.5 text-red-400 shrink-0" />
           <span className="flex-1"><span className="font-medium">{removeUndo.name}</span> removed from rotation</span>
           <button
@@ -2009,7 +2009,7 @@ function CRMSTabInner() {
       )}
 
       {sendToast && (
-        <div className="fixed bottom-4 right-4 z-50 bg-red-500/15 border border-red-500/40 text-red-300 text-xs px-3 py-2 rounded shadow-lg flex items-center gap-2 max-w-xs">
+        <div className="fixed bottom-24 md:bottom-4 right-4 z-50 bg-red-500/15 border border-red-500/40 text-red-300 text-xs px-3 py-2 rounded shadow-lg flex items-center gap-2 max-w-xs">
           <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
           <span className="flex-1">{sendToast}</span>
           <button

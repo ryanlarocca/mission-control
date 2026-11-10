@@ -826,7 +826,7 @@ export function EmailCampaignTab() {
       )}
 
       {toast && (
-        <div className="fixed bottom-6 left-1/2 z-50 -translate-x-1/2 rounded-lg bg-zinc-100 px-4 py-2 text-sm font-medium text-zinc-900 shadow-lg">
+        <div className="fixed bottom-24 md:bottom-6 left-1/2 z-50 -translate-x-1/2 rounded-lg bg-zinc-100 px-4 py-2 text-sm font-medium text-zinc-900 shadow-lg">
           {toast}
         </div>
       )}

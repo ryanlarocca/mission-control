@@ -124,7 +124,7 @@ export function GymTrackerWidget() {
       )}
 
       {toast && (
-        <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-[60] bg-amber-500 text-zinc-950 font-semibold text-sm px-4 py-2 rounded-full shadow-lg">
+        <div className="fixed bottom-24 md:bottom-6 left-1/2 -translate-x-1/2 z-[60] bg-amber-500 text-zinc-950 font-semibold text-sm px-4 py-2 rounded-full shadow-lg">
           {toast}
         </div>
       )}

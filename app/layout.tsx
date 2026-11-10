@@ -12,6 +12,9 @@ export const viewport: Viewport = {
   width: "device-width",
   initialScale: 1,
   maximumScale: 1,
+  // Lets env(safe-area-inset-*) report the home-indicator gap so the phone
+  // tab bar (components/Sidebar.tsx) sits above it.
+  viewportFit: "cover",
 }
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
