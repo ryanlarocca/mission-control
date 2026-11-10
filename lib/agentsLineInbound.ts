@@ -1,6 +1,7 @@
 import type { SupabaseClient } from "@supabase/supabase-js"
 import { formatUsPhone, isPlaceholderName, last10, toE164, type OfficeCaller } from "./office-inbound"
 import { relationshipsByAnyPhone, settleNewRelationship } from "./relationships"
+import type { AlertSubject } from "./alertSubject"
 
 // Agents line (650) 910-4007 + agent email-campaign replies → Relationships.
 //
@@ -271,4 +272,19 @@ export function describeAgent(rel: Extract<AgentContact, { kind: "relationship" 
   else who += " (not in campaign list)"
   if (rel.isNew) who += ` — new contact, added to Relationships (tier ${AGENT_CONTACT_TIER})`
   return who
+}
+
+/** Alert subject for an agents-line alert where only the number is at hand
+ * (missed call, voicemail, transcript): the Relationships card that knows
+ * it, so a reply or "Draft:" reaches them (lib/alertSubject). Null when no
+ * card does — the reply handler then falls back to the number in the text. */
+export async function agentsLineAbout(sb: SupabaseClient, phone: string | null | undefined): Promise<AlertSubject | null> {
+  const d = last10(phone ?? "")
+  if (d.length !== 10) return null
+  try {
+    const rel = (await relationshipsByAnyPhone<{ id: string }>(sb, d, "id", 1))[0]
+    return rel ? { kind: "relationship", relationshipId: rel.id, phone: `+1${d}`, line: "agents" } : null
+  } catch {
+    return null
+  }
 }

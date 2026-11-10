@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server"
 import { getLeadsClient } from "@/lib/leads"
 import { sendCampaignAlert } from "@/lib/campaignAlerts"
+import { agentsLineAbout } from "@/lib/agentsLineInbound"
 
 // Agents line — voicemail transcription callback (Twilio <Record
 // transcribe>). Fires a minute or so after the recording callback with the
@@ -59,6 +60,6 @@ export async function POST(request: NextRequest) {
       .update({ raw: { ...((full?.raw ?? {}) as Record<string, unknown>), transcript: text } })
       .eq("id", vm.id)
   }
-  await sendCampaignAlert(sb, `📝 <b>Voicemail transcript</b> — ${esc(who)}:\n"${esc(text.slice(0, 3200))}"`)
+  await sendCampaignAlert(sb, `📝 <b>Voicemail transcript</b> — ${esc(who)}:\n"${esc(text.slice(0, 3200))}"`, { about: await agentsLineAbout(sb, vm?.caller_number) })
   return NextResponse.json({ ok: true })
 }

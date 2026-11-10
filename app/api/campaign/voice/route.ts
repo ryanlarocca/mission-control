@@ -103,7 +103,9 @@ export async function POST(request: NextRequest) {
       : { kind: "lead" as const }
     if (who.kind === "relationship") {
       const touchId = await openInboundCallTouch(sb, who, callSid, "agents line")
-      await sendCampaignAlert(sb, `📞 <b>Agents line ringing</b> — ${describeAgent(who)} ${fmtPhone(digits)} — relaying to your cell`)
+      await sendCampaignAlert(sb, `📞 <b>Agents line ringing</b> — ${describeAgent(who)} ${fmtPhone(digits)} — relaying to your cell`, {
+        about: { kind: "relationship", relationshipId: who.id, phone: `+1${digits}`, line: "agents" },
+      })
       if (touchId) return xml(cardDialTwiml(touchId, campaign?.id ?? null))
       console.error(`[campaign-voice] touch insert failed for ${from}; dialing without a card`)
       return xml(plainDialTwiml())

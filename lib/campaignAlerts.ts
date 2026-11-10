@@ -1,4 +1,5 @@
 import type { SupabaseClient } from "@supabase/supabase-js"
+import { messageIdOf, rememberAlertSubject, type AlertSubject } from "./alertSubject"
 
 // Campaign Telegram alerts — the NO-SILENT-FAILURE version (2026-07-21).
 //
@@ -21,7 +22,7 @@ export interface AlertButton {
 export async function sendCampaignAlert(
   sb: SupabaseClient,
   text: string,
-  opts?: { buttons?: AlertButton[] }
+  opts?: { buttons?: AlertButton[]; about?: AlertSubject | null }
 ): Promise<number | null> {
   // Dedicated campaign bot when configured (zero-token button actions);
   // falls back to the shared Thadius bot until Ryan creates it.
@@ -62,13 +63,15 @@ export async function sendCampaignAlert(
   try {
     const res = await post({ chat_id: chatId, text, parse_mode: "HTML", ...markup })
     if (res.ok) {
-      const json = (await res.json().catch(() => null)) as { result?: { message_id?: number } } | null
-      return json?.result?.message_id ?? null
+      const id = messageIdOf(await res.json().catch(() => null))
+      await rememberAlertSubject(id, opts?.about)
+      return id
     }
     const detail = await res.text()
     // Formatting rejection → strip tags, resend plain. Degraded > lost.
     const plain = await post({ chat_id: chatId, text: text.replace(/<[^>]+>/g, ""), ...markup })
     if (plain.ok) {
+      await rememberAlertSubject(messageIdOf(await plain.json().catch(() => null)), opts?.about)
       await recordFailure(`HTML rejected (${res.status}: ${detail.slice(0, 200)}) — delivered as plain text instead`)
       return null
     }

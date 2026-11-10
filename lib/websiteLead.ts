@@ -315,8 +315,12 @@ export function callButton(phone: string | null, label = "📞 Call"): TelegramB
   return digits.length === 10 ? [[{ text: label, data: `${LEAD_CALL_CB_PREFIX}${digits}` }]] : undefined
 }
 
+// Every website ping is about the lead at `phone`: recorded so a reply or
+// "Draft:" to it finds them (lib/alertSubject).
 export async function pingTelegram(text: string, phone: string | null): Promise<boolean> {
-  return sendTelegramAlert(text, { buttons: callButton(phone) })
+  const digits = (phone || "").replace(/\D/g, "").slice(-10)
+  const about = digits.length === 10 ? { kind: "lead" as const, phone: `+1${digits}` } : null
+  return sendTelegramAlert(text, { buttons: callButton(phone), about })
 }
 
 // ─── Ladder side effects ─────────────────────────────────────────────────────

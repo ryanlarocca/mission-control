@@ -101,7 +101,9 @@ export async function POST(request: Request) {
         const header = who.signedAs
           ? `${describeContact(who)} — ${who.signedAs}\n(texted from ${formatUsPhone(from)} — the number they signed with is on this card, so I added this one to it)`
           : `${describeContact(who)} — ${from}`
-        await sendTelegramAlert(`💬 Office line text — ${header}\n"${escaped}"`)
+        await sendTelegramAlert(`💬 Office line text — ${header}\n"${escaped}"`, {
+          about: { kind: "relationship", relationshipId: who.id, phone: who.signedAs ?? from, line: "office" },
+        })
         return new NextResponse(EMPTY_TWIML, { headers: { "Content-Type": "text/xml" } })
       }
     } catch (e) {
@@ -160,6 +162,9 @@ export async function POST(request: Request) {
     let history: CallerHistory | null = null
     let hasPriorRow = false
     let newLeadId: string | null = null
+    // The row this text made, kept even when newLeadId is cleared (DNC) —
+    // the alert records it so a reply finds the person (lib/alertSubject).
+    let alertLeadId: string | null = null
     // §6 (2026-10-21): a returning texter on a NOO Q4 line was reset to New —
     // read again at the Telegram alert below.
     let resetToNew = false
@@ -210,7 +215,7 @@ export async function POST(request: Request) {
           `🚫 Lead DNC'd — <b>${source}</b> — ${dncWho}`,
           `"${esc}"`,
           addressLine ? `🏠 Off the mailing list: ${addressLine}` : "⚠️ No mailed address matched — texts blocked, mail NOT blocked until we know the address",
-        ].join("\n"))
+        ].join("\n"), { about: { kind: "lead", leadId: optId, phone: from } })
         // Confirmation draft ("you're off my list") for Ryan's ✅ — except a
         // bare Twilio keyword (STOP/UNSUBSCRIBE…): Twilio already replied and
         // blocks the number.
@@ -343,6 +348,7 @@ export async function POST(request: Request) {
         await alertWriteFailure("lead insert", from, source, error)
       }
       newLeadId = insertedRow?.id ?? null
+      alertLeadId = newLeadId
 
       if (pitch || knownPitch) {
         await sendTelegramAlert(vendorPitchAlert({ where: "website line", who: from, pitch, message: bodyText, esc: escapeTelegramHtml }))
@@ -437,10 +443,10 @@ export async function POST(request: Request) {
       : { known: hasPriorRow, name: leadName, address: null, dnc: !!dncReply, dncSince: null }
     if (dncReply) {
       if (dncReply.kind === "corrected") {
-        await sendTelegramAlert(`📍 Do-not-contact address corrected — ${from}\n"${escaped}"\n🏠 Now off the mailing list: ${dncReply.line ?? "(address updated)"}`)
+        await sendTelegramAlert(`📍 Do-not-contact address corrected — ${from}\n"${escaped}"\n🏠 Now off the mailing list: ${dncReply.line ?? "(address updated)"}`, { about: { kind: "lead", leadId: alertLeadId, phone: from } })
       } else if (dncReply.kind === "other") {
         const head = contactAlertLines({ kind: "text", source, phone: from, contact: { ...alertContact, known: true, dnc: true } })
-        await sendTelegramAlert([...head.slice(0, -1), `${head[head.length - 1]} · no reply drafted`, `"${escaped}"`].join("\n"))
+        await sendTelegramAlert([...head.slice(0, -1), `${head[head.length - 1]} · no reply drafted`, `"${escaped}"`].join("\n"), { about: { kind: "lead", leadId: alertLeadId, phone: from } })
       }
       return new NextResponse(EMPTY_TWIML, { headers: { "Content-Type": "text/xml" } })
     }
@@ -453,7 +459,7 @@ export async function POST(request: Request) {
     ]
     // Append the fake-lead warning to the same note — no-op when clean.
     if (spam) smsAlert.push(...spamAlertLines(spam))
-    await sendTelegramAlert(smsAlert.join("\n"))
+    await sendTelegramAlert(smsAlert.join("\n"), { about: { kind: "lead", leadId: alertLeadId, phone: from } })
     // Reply Planner: plan + draft as a second message (non-blocking).
     if (newLeadId && !(spam && spam.suspicious)) await triggerTelegramDraft(newLeadId)
     // Read the text like a call (name / address / follow-up / offer → card,

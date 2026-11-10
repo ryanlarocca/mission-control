@@ -14,6 +14,7 @@ import { getLeadsClient, fetchTwilioAudio, transcribeAudio, sendTelegramAlert, F
 import { completeText, hasLlmKey, SONNET } from "./llm"
 import { isPlaceholderName } from "./office-inbound"
 import { sendCampaignAlert } from "./campaignAlerts"
+import type { AlertSubject } from "./alertSubject"
 import { isValidCategory } from "./crms"
 
 export const PROD_BASE = "https://mission-control-three-chi.vercel.app"
@@ -148,7 +149,10 @@ export async function processRelationshipRecording(args: {
   const kind: RelationshipCallKind = args.kind ?? "outbound"
   const line: CallLine = args.line ?? "office"
   const sb = getLeadsClient()
-  const alert = line === "agents" ? (text: string) => sendCampaignAlert(sb, text) : sendTelegramAlert
+  // Every alert here is about this card: recorded so a reply or "Draft:"
+  // reaches them on the line the call was on (lib/alertSubject).
+  const about = (): AlertSubject => ({ kind: "relationship", relationshipId, phone, line: line === "agents" ? "agents" : "office" })
+  const alert = (text: string) => (line === "agents" ? sendCampaignAlert(sb, text, { about: about() }) : sendTelegramAlert(text, { about: about() }))
   const mirror = async (summary: string) => {
     if (line !== "agents" || !args.campaign) return
     try {

@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server"
 import { getLeadsClient, parseTwilioBody } from "@/lib/leads"
 import { sendCampaignAlert } from "@/lib/campaignAlerts"
+import { agentsLineAbout } from "@/lib/agentsLineInbound"
 import { PROD_BASE, callOutcomeMessage, twimlAttr } from "@/lib/relationship-calls"
 
 // Agents line — post-<Dial> action.
@@ -109,7 +110,8 @@ export async function POST(request: NextRequest) {
       raw: { from, dial_status: dialStatus, call_sid: callSid, touch_id: touchId },
     })
     await sendCampaignAlert(sb,
-      `📞 Talked to <b>${who}</b> — ${Math.floor(duration / 60)}m${duration % 60}s on the agents line.${touchId ? " Summary lands on their Relationships card + here in a minute." : " Timeline updated;"} Drip continues as scheduled.`
+      `📞 Talked to <b>${who}</b> — ${Math.floor(duration / 60)}m${duration % 60}s on the agents line.${touchId ? " Summary lands on their Relationships card + here in a minute." : " Timeline updated;"} Drip continues as scheduled.`,
+      { about: await agentsLineAbout(sb, digits) }
     )
     return xml(EMPTY)
   }
@@ -125,7 +127,7 @@ export async function POST(request: NextRequest) {
   })
   await sendCampaignAlert(sb,
     `📵 <b>Missed call on the agents line</b> — <b>${who}</b>${contact ? ` (after T${contact.touch_number})` : ""} — sent to voicemail; recording will follow if they leave one. Call back: ${fmt}`,
-    { buttons: digits.length === 10 ? [{ text: "📞 Call back", data: `call:${digits}` }] : undefined }
+    { buttons: digits.length === 10 ? [{ text: "📞 Call back", data: `call:${digits}` }] : undefined, about: await agentsLineAbout(sb, digits) }
   )
   return xml(touchId ? cardVoicemailTwiml(touchId, contactId) : legacyVoicemailTwiml())
 }

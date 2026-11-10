@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server"
 import { getLeadsClient } from "@/lib/leads"
 import { sendCampaignAlert } from "@/lib/campaignAlerts"
+import { agentsLineAbout } from "@/lib/agentsLineInbound"
 
 // Agents line — voicemail recording callback. Logs the voicemail on the
 // contact timeline + Telegram alert with the recording link. (Whisper
@@ -58,7 +59,7 @@ export async function POST(request: NextRequest) {
   })
   await sendCampaignAlert(sb,
     `🎙 <b>Voicemail on the agents line</b> — ${who} (${duration}s)\n▶️ Listen: ${playUrl}\nTranscript follows in ~1 min.`,
-    { buttons: num.length === 10 ? [{ text: "📞 Call back", data: `call:${num}` }] : undefined }
+    { buttons: num.length === 10 ? [{ text: "📞 Call back", data: `call:${num}` }] : undefined, about: await agentsLineAbout(sb, num) }
   )
   return NextResponse.json({ ok: true })
 }

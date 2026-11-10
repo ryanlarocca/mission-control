@@ -1,3 +1,4 @@
+import type { AlertSubject } from "./alertSubject"
 import { createClient, type SupabaseClient } from "@supabase/supabase-js"
 import { sidecarHeaders } from "./sidecar"
 import { google, gmail_v1 } from "googleapis"
@@ -1709,9 +1710,11 @@ function inlineKeyboard(buttons: TelegramButton[][]) {
 
 // Returns whether Telegram accepted the message — callers that must not
 // fail silently (the website-lead alert) check it; the rest ignore it.
+// `about` = who the alert is for (lib/alertSubject): a reply or "Draft:" to
+// it finds the person by message id instead of parsing the text.
 export async function sendTelegramAlert(
   text: string,
-  opts?: { buttons?: TelegramButton[][] }
+  opts?: { buttons?: TelegramButton[][]; about?: AlertSubject | null }
 ): Promise<boolean> {
   const token = leadAlertBotToken()
   const chatId = process.env.TELEGRAM_CHAT_ID
@@ -1731,11 +1734,18 @@ export async function sendTelegramAlert(
       console.error(`[telegram] sendMessage failed ${res.status}: ${await res.text()}`)
       return false
     }
+    if (opts?.about) await rememberAbout(res, opts.about)
     return true
   } catch (e) {
     console.error("[telegram] Alert failed:", e)
     return false
   }
+}
+
+async function rememberAbout(res: Response, about: AlertSubject): Promise<void> {
+  const { messageIdOf, rememberAlertSubject } = await import("./alertSubject")
+  const json = await res.json().catch(() => null)
+  await rememberAlertSubject(messageIdOf(json), about)
 }
 
 // Send an audio buffer to Telegram as a playable voice note. Falls back to
@@ -1744,7 +1754,7 @@ export async function sendTelegramVoice(
   audioBuffer: Buffer,
   caption: string,
   filename: string = "voicemail.mp3",
-  opts?: { buttons?: TelegramButton[][] }
+  opts?: { buttons?: TelegramButton[][]; about?: AlertSubject | null }
 ): Promise<void> {
   const token = leadAlertBotToken()
   const chatId = process.env.TELEGRAM_CHAT_ID
@@ -1769,7 +1779,9 @@ export async function sendTelegramVoice(
       console.error(`[telegram] sendVoice failed ${res.status}: ${errText}`)
       // Fall back to text-only so Ryan still gets the alert
       await sendTelegramAlert(caption, opts)
+      return
     }
+    if (opts?.about) await rememberAbout(res, opts.about)
   } catch (e) {
     console.error("[telegram] sendVoice threw:", e)
     await sendTelegramAlert(caption, opts)
@@ -2302,10 +2314,11 @@ export async function processRecordingBackground(args: {
     // DNC numbers are refused in startLeadCall).
     const { callButton } = await import("@/lib/websiteLead")
     const buttons = callButton(callerPhone, "📞 Call back")
+    const about = { kind: "lead" as const, leadId, phone: callerPhone }
     if (audio) {
-      await sendTelegramVoice(audio, caption, "voicemail.mp3", { buttons })
+      await sendTelegramVoice(audio, caption, "voicemail.mp3", { buttons, about })
     } else {
-      await sendTelegramAlert(caption, { buttons })
+      await sendTelegramAlert(caption, { buttons, about })
     }
     // Reply Planner: plan + draft as a second message (non-blocking). An
     // opt-out gets one too — the "you're off my list" confirmation (one reply

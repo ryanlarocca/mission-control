@@ -174,7 +174,7 @@ export async function POST(request: Request) {
     const who = prior
       ? ` (returning caller${onFile ? `: ${onFile}` : ""})`
       : decision.arm === null ? " (test number, not scored)" : ""
-    await sendTelegramAlert(`🤖 Jackie is taking a call on <b>${line}</b> — ${callerPhone}${who}. Card + summary when she's done.`)
+    await sendTelegramAlert(`🤖 Jackie is taking a call on <b>${line}</b> — ${callerPhone}${who}. Card + summary when she's done.`, { about: { kind: "lead", leadId, phone: callerPhone } })
     const q = `leadId=${encodeURIComponent(leadId)}`
     return xml(jackieDialTwiml({
       tags: { line, leadId },

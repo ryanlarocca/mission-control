@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server"
-import { coachDraftFromTelegram, coachDraftForRelationship, findPlannerDraftByTgMessage, redraftFromTelegram, sendPlannerDraft, dismissPlannerDraft } from "@/lib/reply/telegram"
+import { coachDraftFromTelegram, findPlannerDraftByTgMessage, redraftFromTelegram, sendPlannerDraft, dismissPlannerDraft } from "@/lib/reply/telegram"
 import { getLeadsClient, lookupLeadName, normalizeE164, sendLeadSms } from "@/lib/leads"
+import { alertSubjectFor, type AlertSubject } from "@/lib/alertSubject"
 import { approveBatch, setPaused, campaignStatusLine } from "@/lib/campaignBatch"
 import { resolveSender, setSenderPaused, recordCanaryVerdict, recordPostmaster } from "@/lib/campaignSenders"
 import { autoSendStatusLine, describeAutoSend, setAutoTouch } from "@/lib/campaignAutoSend"
@@ -436,6 +437,22 @@ function leadPhoneFromAlert(text: string): string | null {
   return ten ? `+1${ten}` : null
 }
 
+// The Relationships contact on an office-line or agents-line alert that
+// predates telegram_alert_subjects, read from the alert's text.
+async function legacyRelationshipSubject(text: string): Promise<AlertSubject | null> {
+  const sb = getLeadsClient()
+  if (/Office line (text|call)/i.test(text)) {
+    const { officeAlertContact } = await import("@/lib/office-reply")
+    const c = await officeAlertContact(sb, text.replace(/Office line call/i, "Office line text"))
+    return c ? { kind: "relationship", relationshipId: c.rel.id, phone: c.to, line: "office" } : null
+  }
+  if (/Agents line/i.test(text)) {
+    const { agentsLineAbout } = await import("@/lib/agentsLineInbound")
+    return agentsLineAbout(sb, extractPhone(text))
+  }
+  return null
+}
+
 export async function POST(request: Request) {
   const secret = process.env.CAMPAIGN_TG_SECRET
   if (!secret) {
@@ -772,6 +789,15 @@ export async function POST(request: Request) {
 
   const body = (msg.text || "").trim()
   const repliedText = msg.reply_to_message?.text || msg.reply_to_message?.caption || ""
+  // Who the replied-to alert is about, when it recorded that (lib/alertSubject,
+  // 2026-11-10). Looked up once, on demand.
+  let subjectLookup: Promise<AlertSubject | null> | null = null
+  const repliedSubject = () => {
+    const mid = msg.reply_to_message?.message_id
+    if (typeof mid !== "number") return Promise.resolve(null)
+    subjectLookup ??= alertSubjectFor(mid)
+    return subjectLookup
+  }
   if (!body) return NextResponse.json({ ok: true })
 
   // "mini" / "mini status|cleanup|restart|reboot" (2026-10-30). restart = the
@@ -1008,7 +1034,7 @@ export async function POST(request: Request) {
   // would go out as an SMS to the caller from the lead line.
   const rename = parseRenameCommand(body)
   if (rename) {
-    const e164 = repliedText.match(/\+\d{10,15}/)?.[0]
+    const e164 = (await repliedSubject())?.phone ?? repliedText.match(/\+\d{10,15}/)?.[0]
     const phone10 = e164 ? e164.replace(/\D/g, "").slice(-10) : extractPhone(repliedText)
     if (!repliedText || !phone10) {
       await tg("sendMessage", {
@@ -1259,29 +1285,51 @@ export async function POST(request: Request) {
     }
   }
 
+  // The alert says who it's about (lib/alertSubject): Draft:, a typed text
+  // and "call him" all go through lib/alertReply — one path for every lead
+  // and Relationships alert, whatever its wording. Older alerts (no record)
+  // fall through to the text parsing below.
+  const subject = await repliedSubject()
+  if (subject) {
+    const { replyIntent, draftForSubject, callSubject, textSubject } = await import("@/lib/alertReply")
+    const { intent, gist } = replyIntent(body)
+    if (intent === "draft") {
+      await tg("sendMessage", { chat_id: chatId, text: "✍️ Drafting…", reply_to_message_id: msg.message_id })
+      waitUntil((async () => {
+        const err = await draftForSubject(subject, gist, msg.message_id)
+        if (err) await tg("sendMessage", { chat_id: chatId, text: err, reply_to_message_id: msg.message_id })
+      })().catch(async (e) => {
+        await tg("sendMessage", { chat_id: chatId, text: `⚠️ Couldn't draft — ${e instanceof Error ? e.message : String(e)}`, reply_to_message_id: msg.message_id })
+      }))
+      return NextResponse.json({ ok: true })
+    }
+    const text = intent === "call" ? await callSubject(subject) : await textSubject(subject, body)
+    await tg("sendMessage", { chat_id: chatId, text, parse_mode: "HTML", reply_to_message_id: msg.message_id })
+    return NextResponse.json({ ok: true })
+  }
+
   // "draft: <guidance>" → Claude composes a full email in Ryan's voice;
   // posted back with [✅ Send] [❌ Discard]. Only the ✅ tap sends. Checked
   // BEFORE the phone branch so guidance is never blasted out as a raw SMS.
   const draftMatch = /^draft:\s*([\s\S]+)$/i.exec(body)
   if (draftMatch) {
-    // Office-line text from a Relationships contact (2026-11-10): coach
-    // draft from the card, ✅ texts from the office line + logs the touch.
-    if (/Office line text/i.test(repliedText)) {
-      const { officeAlertContact } = await import("@/lib/office-reply")
-      const contact = await officeAlertContact(getLeadsClient(), repliedText).catch((e) => {
-        console.error("[campaign-tg] office draft lookup:", e instanceof Error ? e.message : String(e))
-        return null
-      })
-      if (contact) {
-        await tg("sendMessage", { chat_id: chatId, text: "✍️ Drafting…", reply_to_message_id: msg.message_id })
-        waitUntil((async () => {
-          const out = await coachDraftForRelationship(contact.rel.id, contact.to, draftMatch[1].trim(), msg.message_id)
-          if (!out.ok) await tg("sendMessage", { chat_id: chatId, text: `⚠️ Couldn't draft — ${out.error}`, reply_to_message_id: msg.message_id })
-        })().catch(async (e) => {
-          await tg("sendMessage", { chat_id: chatId, text: `⚠️ Couldn't draft — ${e instanceof Error ? e.message : String(e)}`, reply_to_message_id: msg.message_id })
-        }))
-        return NextResponse.json({ ok: true })
-      }
+    // Alerts posted before alerts recorded their person (2026-11-10): an
+    // office-line or agents-line alert for a Relationships contact is read
+    // from its text, then drafted the same way as a recorded one.
+    const legacy = await legacyRelationshipSubject(repliedText).catch((e) => {
+      console.error("[campaign-tg] legacy draft lookup:", e instanceof Error ? e.message : String(e))
+      return null
+    })
+    if (legacy) {
+      const { draftForSubject } = await import("@/lib/alertReply")
+      await tg("sendMessage", { chat_id: chatId, text: "✍️ Drafting…", reply_to_message_id: msg.message_id })
+      waitUntil((async () => {
+        const err = await draftForSubject(legacy, draftMatch[1].trim(), msg.message_id)
+        if (err) await tg("sendMessage", { chat_id: chatId, text: err, reply_to_message_id: msg.message_id })
+      })().catch(async (e) => {
+        await tg("sendMessage", { chat_id: chatId, text: `⚠️ Couldn't draft — ${e instanceof Error ? e.message : String(e)}`, reply_to_message_id: msg.message_id })
+      }))
+      return NextResponse.json({ ok: true })
     }
     const nameMatch = /AGENT REPLY[^—]*—\s*(.+?)\s*\(after T/i.exec(repliedText)
     // Lead alert (text / call / voicemail / email lead): the coach writer

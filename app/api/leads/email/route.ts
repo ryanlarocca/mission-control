@@ -467,7 +467,7 @@ async function ingestGoogleVoice(args: {
     const tempLabel = triage.is_dead ? "DEAD" : triage.temperature.toUpperCase()
     lines.push(`🤖 AI: <b>${tempLabel}</b> — ${escapeHtml(triage.summary)}`)
   }
-  await sendTelegramAlert(lines.join("\n"))
+  await sendTelegramAlert(lines.join("\n"), { about: { kind: "lead", leadId: insertedId, phone } })
   // Reply Planner: post the plan + draft as a second Telegram message,
   // without blocking the webhook (the target route keeps running).
   await draftOrOptOut(sb, insertedId, messageText, triage, false)
@@ -795,7 +795,7 @@ async function handleAppsScript(payload: AppsScriptPayload): Promise<NextRespons
   // Append the fake-lead warning to the alert Ryan already gets — one
   // note with all the context, not a second message. No-op when clean.
   if (spam) lines.push(...spamAlertLines(spam))
-  await sendTelegramAlert(lines.join("\n"))
+  await sendTelegramAlert(lines.join("\n"), { about: { kind: "lead", leadId: insertedId, email: senderEmail, phone: phone || null } })
   // Reply Planner: plan + draft as a second message (non-blocking).
   await draftOrOptOut(sb, insertedId, messageText, triage, !!(spam && spam.suspicious))
 
@@ -1099,7 +1099,7 @@ async function processSingleMessage(args: {
   }
   // Append the fake-lead warning to the alert — no-op when clean.
   if (spam) lines.push(...spamAlertLines(spam))
-  await sendTelegramAlert(lines.join("\n"))
+  await sendTelegramAlert(lines.join("\n"), { about: { kind: "lead", leadId: insertedId, email: senderEmail, phone: phone || null } })
   // Reply Planner: plan + draft as a second message (non-blocking).
   await draftOrOptOut(sb, insertedId, messageText, triage, !!(spam && spam.suspicious))
 }
@@ -1246,7 +1246,7 @@ async function handleBounce(args: {
         ? "Fix the email on the lead card (pencil next to the address), then resend."
         : "No lead carries this email — it may have been edited since the send."
     )
-    await sendTelegramAlert(lines.join("\n"))
+    await sendTelegramAlert(lines.join("\n"), { about: cluster.length ? { kind: "lead", leadId: (cluster.find((r) => r.twilio_number) ?? cluster[0]).id, phone } : null })
   } catch (e) {
     console.error("[email] handleBounce threw:", e instanceof Error ? e.message : String(e))
   }

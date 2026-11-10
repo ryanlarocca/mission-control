@@ -173,7 +173,9 @@ export async function POST(request: Request) {
       const who = await resolveOfficeCaller(sb, callerPhone)
       if (who.kind === "relationship") {
         const touchId = await openInboundCallTouch(sb, who, callSid)
-        await sendTelegramAlert(`📲 Office line call — ${describeContact(who)} — ${callerPhone}`)
+        await sendTelegramAlert(`📲 Office line call — ${describeContact(who)} — ${callerPhone}`, {
+          about: { kind: "relationship", relationshipId: who.id, phone: callerPhone, line: "office" },
+        })
         if (touchId) {
           return new NextResponse(buildRelationshipTwiml(twilioNumber, touchId), {
             headers: { "Content-Type": "text/xml" },
@@ -406,7 +408,7 @@ export async function POST(request: Request) {
     })
     // Append the fake-lead warning to the same note — no-op when clean.
     if (spam) callAlert.push(...spamAlertLines(spam))
-    await sendTelegramAlert(callAlert.join("\n"))
+    await sendTelegramAlert(callAlert.join("\n"), { about: { kind: "lead", leadId: intakeLeadId, phone: callerPhone } })
   }
 
   // Press-1 screen only on Jackie's lines, and only with a row to stamp —

@@ -1,5 +1,7 @@
 import { getLeadsClient } from "@/lib/leads"
 import { sendCampaignAlert } from "@/lib/campaignAlerts"
+import { relationshipsByAnyPhone } from "@/lib/relationships"
+import { logSentText } from "@/lib/office-reply"
 
 // Outbound texting from the agents line (650) 910-4007 — used by the
 // Telegram webhook when Ryan replies to an agents-line alert. Separate
@@ -60,7 +62,9 @@ export async function startAgentsLineRelayCall(to10: string): Promise<{ success:
 export async function sendAgentsLineText(args: {
   to10: string // 10-digit US number
   body: string
-}): Promise<{ success: boolean; error?: string; contactName?: string | null }> {
+  /** reply_drafts row this text came from (a ✅ on a Draft:), if any */
+  draftId?: string | null
+}): Promise<{ success: boolean; error?: string; contactName?: string | null; logWarning?: boolean }> {
   const { to10, body } = args
   if (!/^\d{10}$/.test(to10)) return { success: false, error: `bad number: ${to10}` }
   if (`+1${to10}` === AGENTS_LINE) return { success: false, error: "that is the agents line itself — reply to the agent's alert, not a message that quotes our own email" }
@@ -111,5 +115,22 @@ export async function sendAgentsLineText(args: {
     body: body.slice(0, 1000),
     raw: { via: "telegram_reply", from: AGENTS_LINE },
   })
-  return { success: true, contactName: contact?.name ?? null }
+
+  // The Relationships card: a sent touch + last_contacted_at, so a text from
+  // the agents line restarts their cadence like any other send (2026-11-10 —
+  // agents-line replies went out with no touch, and the card never left
+  // "never contacted").
+  let logWarning = false
+  let cardName: string | null = null
+  try {
+    const rel = (await relationshipsByAnyPhone<{ id: string; name: string | null; tier: string | null; category: string | null }>(sb, to10, "id, name, tier, category", 1))[0]
+    if (rel) {
+      cardName = rel.name
+      logWarning = !(await logSentText(sb, rel, body, AGENTS_LINE, args.draftId))
+    }
+  } catch (e) {
+    console.error("[agents-sms] card touch failed:", e instanceof Error ? e.message : String(e))
+    logWarning = true
+  }
+  return { success: true, contactName: contact?.name ?? cardName, logWarning }
 }

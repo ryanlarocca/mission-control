@@ -15,6 +15,7 @@ import { executePlanServer } from "./execute"
 import { MOMENT_LABELS, NEXT_ACTION_LABELS } from "@/lib/reply-client"
 import { sendOfficeText, type Rel } from "@/lib/office-reply"
 import { displayLine } from "@/lib/card-line"
+import { sendAgentsLineText } from "@/lib/campaignSms"
 
 const CHAT_ID = () => process.env.TELEGRAM_CHAT_ID
 
@@ -53,9 +54,10 @@ interface DraftRow {
   parent_draft_id: string | null
 }
 
-// Office-line drafts carry the number the alert named (the reply target)
-// on the plan, so ✅ and 🔁 text the same number a typed reply would.
-type OfficePlan = Plan & { send_to?: string | null }
+// Relationships drafts carry the number the alert named (the reply target)
+// and the line it goes out on, on the plan — ✅ and 🔁 text the same number
+// from the same line a typed reply would.
+type OfficePlan = Plan & { send_to?: string | null; line?: "office" | "agents" | null }
 
 async function loadDraft(draftId: string): Promise<DraftRow | null> {
   const sb = getLeadsClient()
@@ -146,7 +148,13 @@ export async function coachDraftFromTelegram(phone: string, gist: string, replyT
   const sb = getLeadsClient()
   const { data: lead } = await sb.from("leads").select("id").eq("caller_phone", phone).order("created_at", { ascending: false }).limit(1).maybeSingle<{ id: string }>()
   if (!lead) return { ok: false, error: `no lead on file for ${phone}` }
-  const ctx = await buildLeadContext(lead.id)
+  return coachDraftForLead(lead.id, gist, replyTo)
+}
+
+/** The same, for a lead the alert named by id (lib/alertSubject). Texts or
+ *  emails by the channel they reached us on. */
+export async function coachDraftForLead(leadId: string, gist: string, replyTo?: number | null): Promise<{ ok: boolean; error?: string }> {
+  const ctx = await buildLeadContext(leadId)
   if (!ctx) return { ok: false, error: "lead not found" }
   const channel: DraftChannel = ctx.inboundChannel === "email" && ctx.email ? "email" : "sms"
   if (channel === "sms" && !ctx.phone) return { ok: false, error: "no phone" }
@@ -221,21 +229,23 @@ export async function sendPlannerDraft(draftId: string): Promise<{ ok: boolean; 
   return { ok: true, label, planNote }
 }
 
-/** "Draft: <gist>" replied to a "💬 Office line text" alert for a
- *  Relationships contact (2026-11-10 — a pass on a wholesaler's deal text
- *  got "no lead on file"). Same coach writer and ✅/🔁/❌ buttons as a lead;
- *  ✅ texts from the office line and logs a touch, which restarts the
- *  contact's cadence. */
-export async function coachDraftForRelationship(relationshipId: string, sendTo: string, gist: string, replyTo?: number | null): Promise<{ ok: boolean; error?: string }> {
+/** "Draft: <gist>" replied to an alert about a Relationships contact —
+ *  office line or agents line, text, call or summary (2026-11-10 — a pass
+ *  on a wholesaler's deal text got "no lead on file"). Same coach writer and
+ *  ✅/🔁/❌ buttons as a lead; ✅ texts from `line` and logs a touch, which
+ *  restarts the contact's cadence. */
+export async function coachDraftForRelationship(relationshipId: string, sendTo: string | null, gist: string, replyTo?: number | null, line: "office" | "agents" = "office"): Promise<{ ok: boolean; error?: string }> {
   const ctx = await buildRelationshipContext(relationshipId)
   if (!ctx) return { ok: false, error: "contact not found" }
   const proposed = await proposePlan(ctx)
   if (!proposed) return { ok: false, error: "plan unavailable" }
-  const plan: OfficePlan = { ...proposed, next_action: "reply_only", send_to: sendTo }
+  const to = sendTo || ctx.phone
+  if (!to) return { ok: false, error: "no phone on the card" }
+  const plan: OfficePlan = { ...proposed, next_action: "reply_only", send_to: to, line }
   const out = await coachDraft({ ctx, channel: "sms", surface: "telegram", gist, plan, notes: ctx.notes })
   if (!out || !out.draftId) return { ok: false, error: "draft unavailable" }
   await postDraftMessage({
-    draftId: out.draftId, name: ctx.name || sendTo, plan: out.plan, body: out.body, subject: null, channel: "sms",
+    draftId: out.draftId, name: ctx.name || to, plan: out.plan, body: out.body, subject: null, channel: "sms",
     replyTo, note: out.read ? `🧠 ${out.read}` : null,
   })
   return { ok: true }
@@ -246,8 +256,17 @@ async function sendRelationshipDraft(row: DraftRow): Promise<{ ok: boolean; erro
   const sb = getLeadsClient()
   const { data: rel } = await sb.from("relationships").select("id, name, phone, status, tier, category").eq("id", row.relationship_id!).maybeSingle<Rel & { phone: string | null }>()
   if (!rel) return { ok: false, error: "contact not found" }
-  const to = (row.plan_json as OfficePlan | null)?.send_to || rel.phone
+  const plan = row.plan_json as OfficePlan | null
+  const to = plan?.send_to || rel.phone
   if (!to) return { ok: false, error: "no phone on the card" }
+  if (plan?.line === "agents") {
+    // Opt-outs are the suppression list, checked inside sendAgentsLineText —
+    // a card's do_not_contact status is the Cleanup "never" verdict, which
+    // many campaign agents carry (see lib/agentsLineInbound).
+    const out = await sendAgentsLineText({ to10: to.replace(/\D/g, "").slice(-10), body: row.draft_body, draftId: row.id })
+    if (!out.success) return { ok: false, error: out.error || "send failed" }
+    return { ok: true, label: `${rel.name ?? to} from the agents line`, planNote: out.logWarning ? "⚠️ logged with a warning" : null }
+  }
   const out = await sendOfficeText(sb, rel, to, row.draft_body, row.id)
   if (!out.ok) return { ok: false, error: out.error }
   return { ok: true, label: `${rel.name ?? to} from ${displayLine(out.from)}`, planNote: out.logWarning ? "⚠️ logged with a warning" : null }

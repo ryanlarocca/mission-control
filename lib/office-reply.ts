@@ -77,12 +77,21 @@ export async function sendOfficeText(
     return { ok: false, error: `${e instanceof Error ? e.message : String(e)} (from ${displayLine(from)})` }
   }
 
+  const logged = await logSentText(sb, rel, body, from, draftId)
+  return { ok: true, from, logWarning: !logged }
+}
+
+// A text that went out to a Relationships contact on one of our lines: the
+// sent touch + last_contacted_at (what restarts their cadence) + the
+// reply_drafts link. The same writes /api/crms/log does. false = a write
+// failed (logged, never thrown — the text already went out).
+export async function logSentText(sb: SupabaseClient, rel: Pick<Rel, "id" | "tier" | "category">, body: string, line: string, draftId?: string | null): Promise<boolean> {
   const ins = await sb.from("relationship_touches").insert({
     relationship_id: rel.id,
     modality: "sms",
     action: "sent",
     message: body,
-    twilio_number: from,
+    twilio_number: line,
     tier_at_touch: rel.tier,
     category_at_touch: rel.category,
   })
@@ -90,9 +99,9 @@ export async function sendOfficeText(
   if (draftId) await markDraftSent(draftId, { subject: null, body })
   const upd = await sb.from("relationships").update({ last_contacted_at: new Date().toISOString() }).eq("id", rel.id)
   if (upd.error) console.error("[office-reply] last_contacted_at update failed:", upd.error.message)
-
-  return { ok: true, from, logWarning: !!ins.error || !!upd.error }
+  return !ins.error && !upd.error
 }
+
 
 // The office line this contact last texted — newest inbound sms touch whose
 // twilio_number is an office line — else the business-card line.
