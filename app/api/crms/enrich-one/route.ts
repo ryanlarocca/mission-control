@@ -2,6 +2,7 @@ import { NextResponse } from "next/server"
 import { sidecarHeaders } from "@/lib/sidecar"
 import { getLeadsClient } from "@/lib/leads"
 import { to10Digit } from "@/lib/relationships"
+import { mergeEnrichedNotes } from "@/lib/relationshipNotes"
 
 // Proxies to the CRMS FDA sidecar running on localhost:5799
 // The sidecar has Full Disk Access and runs crms-enrich-one.js logic directly.
@@ -34,24 +35,32 @@ export async function POST(request: Request) {
 
       const data = await res.json()
 
-      // Persist the enriched note to Supabase. The sidecar still writes the
-      // (now-frozen) BoB sheet, so post-migration the app must own
-      // persistence — otherwise the note is lost on the next page load.
-      if (typeof data?.note === "string" && data.note.trim()) {
-        const tenDigit = to10Digit(phone)
-        if (tenDigit.length === 10) {
-          try {
-            await getLeadsClient()
-              .from("relationships")
-              .update({ notes: data.note, enriched_at: new Date().toISOString() })
-              .eq("phone", `+1${tenDigit}`)
-          } catch (e) {
-            console.error("crms/enrich-one: failed to persist note to Supabase:", e)
+      // Persist to Supabase. The sidecar still writes the (now-frozen) BoB
+      // sheet, so post-migration the app owns persistence. Since 2026-11-11
+      // the summary is merged in, not written over the field: dated notes,
+      // hand notes and intake notes stay; only the previous summary is
+      // replaced (lib/relationshipNotes). No new messages → nothing changes.
+      if (!data?.enriched || typeof data?.note !== "string" || !data.note.trim()) {
+        return NextResponse.json({ enriched: false, reason: "no message history to summarize" })
+      }
+      const tenDigit = to10Digit(phone)
+      let merged: string | null = null
+      if (tenDigit.length === 10) {
+        try {
+          const sb = getLeadsClient()
+          const { data: rows } = await sb.from("relationships").select("id, notes").eq("phone", `+1${tenDigit}`)
+          for (const r of (rows ?? []) as { id: string; notes: string | null }[]) {
+            const next = mergeEnrichedNotes(r.notes, data.note)
+            const { error } = await sb.from("relationships").update({ notes: next, enriched_at: new Date().toISOString() }).eq("id", r.id)
+            if (error) console.error("crms/enrich-one: failed to persist note to Supabase:", error.message)
+            else merged ??= next
           }
+        } catch (e) {
+          console.error("crms/enrich-one: failed to persist note to Supabase:", e)
         }
       }
 
-      return NextResponse.json({ enriched: true, note: data.note, lastContacted: data.lastContacted })
+      return NextResponse.json({ enriched: true, note: merged ?? mergeEnrichedNotes(null, data.note), lastContacted: data.lastContacted })
     } catch (fetchErr: unknown) {
       clearTimeout(timeout)
       const isAbort = fetchErr instanceof Error && fetchErr.name === "AbortError"

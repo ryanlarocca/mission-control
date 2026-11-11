@@ -12,6 +12,7 @@
 import type { SupabaseClient } from "@supabase/supabase-js"
 import { OFFICE_NUMBERS, isOwnedNumber } from "./leads"
 import { normalizeAltPhones, relationshipsByAnyPhone, settleNewRelationship } from "./relationships"
+import { queueInboundNote } from "./inboundFacts"
 
 export type OfficeCaller =
   | { kind: "lead" }
@@ -242,6 +243,7 @@ export async function logInboundTextTouch(
     ...(twilioNumber ? { twilio_number: twilioNumber } : {}),
   })
   if (error) console.error("[office-inbound] text touch insert failed:", error.message)
+  else queueInboundNote(rel.id, "text", body)
   return !error
 }
 

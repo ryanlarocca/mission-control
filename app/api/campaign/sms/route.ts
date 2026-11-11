@@ -3,6 +3,7 @@ import { getLeadsClient, isOwnedNumber, parseTwilioBody } from "@/lib/leads"
 import { sendCampaignAlert } from "@/lib/campaignAlerts"
 import { addSuppression } from "@/lib/suppression"
 import { logInboundTextTouch } from "@/lib/office-inbound"
+import { alertQuote } from "@/lib/alertText"
 import { AGENTS_LINE, describeAgent, findCampaignContactByPhone, markRelationshipDoNotContact, resolveAgentContact } from "@/lib/agentsLineInbound"
 
 // Agents line — inbound SMS webhook. Every text: campaign match (phone →
@@ -84,7 +85,7 @@ export async function POST(request: NextRequest) {
   })
   if (rel) await logInboundTextTouch(sb, rel, body, AGENTS_LINE)
   await sendCampaignAlert(sb,
-    `💬 <b>Agents line text</b> — ${label}\n"${esc(body.slice(0, 250))}"\n\nReply to this message to text back from the agents line.`,
+    `💬 <b>Agents line text</b> — ${label}\n"${alertQuote(body)}"\n\nReply to this message to text back from the agents line.`,
     {
       buttons: digits.length === 10 ? [{ text: "📞 Call them", data: `call:${digits}` }] : undefined,
       about: rel ? { kind: "relationship", relationshipId: rel.id, phone: `+1${digits}`, line: "agents" } : null,

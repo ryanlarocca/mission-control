@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server"
 import { waitUntil } from "@vercel/functions"
+import { alertQuote } from "@/lib/alertText"
 import { triggerTelegramDraft } from "@/lib/reply/telegram"
 import {
   OFFICE_NUMBERS,
@@ -97,8 +98,7 @@ export async function POST(request: Request) {
       const who = await resolveOfficeCaller(sb, from, bodyText)
       if (who.kind === "relationship") {
         await logInboundTextTouch(sb, who, bodyText, to)
-        const preview = bodyText.length > 300 ? bodyText.slice(0, 300) + "…" : bodyText
-        const escaped = preview.replace(/[<>&]/g, c => c === "<" ? "&lt;" : c === ">" ? "&gt;" : "&amp;")
+        const escaped = alertQuote(bodyText)
         // Matched by the number they signed with: that number leads the
         // alert (a reply goes to the first +1… in it), the bulk line after.
         const header = who.signedAs
@@ -212,8 +212,7 @@ export async function POST(request: Request) {
 
         const dncName = await lookupLeadName(sb, from)
         const dncWho = dncName ? `${dncName} — ${from}` : from
-        const preview = bodyText.length > 300 ? bodyText.slice(0, 300) + "…" : bodyText
-        const esc = preview.replace(/[<>&]/g, c => c === "<" ? "&lt;" : c === ">" ? "&gt;" : "&amp;")
+        const esc = alertQuote(bodyText)
         await sendTelegramAlert([
           `🚫 Lead DNC'd — <b>${source}</b> — ${dncWho}`,
           `"${esc}"`,
@@ -432,8 +431,7 @@ export async function POST(request: Request) {
       console.error("[sms] Supabase threw:", e)
     }
 
-    const preview = bodyText.length > 300 ? bodyText.slice(0, 300) + "…" : bodyText
-    const escaped = preview.replace(/[<>&]/g, c => c === "<" ? "&lt;" : c === ">" ? "&gt;" : "&amp;")
+    const escaped = alertQuote(bodyText)
     const alertContact: AlertContact = history
       ? {
           known: isKnownCaller(history),

@@ -2,6 +2,7 @@ import type { SupabaseClient } from "@supabase/supabase-js"
 import { formatUsPhone, isPlaceholderName, last10, toE164, type OfficeCaller } from "./office-inbound"
 import { relationshipsByAnyPhone, settleNewRelationship } from "./relationships"
 import type { AlertSubject } from "./alertSubject"
+import { queueInboundNote } from "./inboundFacts"
 
 // Agents line (650) 910-4007 + agent email-campaign replies → Relationships.
 //
@@ -260,6 +261,7 @@ export async function logInboundEmailTouch(
     category_at_touch: rel.category,
   })
   if (error) console.error("[agents-inbound] email touch insert failed:", error.message)
+  else queueInboundNote(rel.id, "email", text, subject)
   return !error
 }
 
