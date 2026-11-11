@@ -117,25 +117,36 @@ export function ReplyPlanner(p: {
     const Ctor = getSpeech()
     if (!Ctor) return
     const rec = new Ctor()
-    rec.lang = "en-US"; rec.interimResults = false
+    rec.lang = "en-US"
+    // Interim on (2026-11-11, Ryan: "the microphone gets turned on, but I
+    // don't see any text"): iOS Safari in continuous mode holds back final
+    // results, so finals-only showed nothing. Words now land as he speaks.
+    rec.interimResults = true
     rec.continuous = true
     let failed = false
+    // The box as it stood when this session started; every event rewrites
+    // base + everything this session has heard (finals and interims), so a
+    // re-sent or revised result never doubles up.
+    let base: string | null = null
     rec.onresult = (e) => {
-      // Only the results new in this event; a continuous session re-sends
-      // the earlier ones.
-      const from = typeof e.resultIndex === "number" ? e.resultIndex : 0
-      const parts: string[] = []
-      for (let i = from; i < e.results.length; i++) {
-        if (e.results[i].isFinal === false) continue
+      const heard: string[] = []
+      for (let i = 0; i < e.results.length; i++) {
         const t = e.results[i][0]?.transcript?.trim()
-        if (t) parts.push(t)
+        if (!t) continue
+        // iOS sometimes repeats the running phrase as a new result
+        // ("hey" then "hey Nathan") — keep the longer one.
+        const prev = heard[heard.length - 1]
+        if (prev && t.toLowerCase().startsWith(prev.toLowerCase())) heard[heard.length - 1] = t
+        else heard.push(t)
       }
-      const t = parts.join(" ")
-      if (!t) return
-      const append = (prev: string) => (prev ? `${prev} ${t}` : t)
-      if (target === "why") setWhy(append)
-      else if (target === "gist") setGist(append)
-      else setRefine(append)
+      const t = heard.join(" ")
+      const write = (prev: string) => {
+        if (base === null) base = prev.trim()
+        return base && t ? `${base} ${t}` : base || t
+      }
+      if (target === "why") setWhy(write)
+      else if (target === "gist") setGist(write)
+      else setRefine(write)
     }
     // A long silence ("no-speech") is a pause, not a failure; a denied or
     // missing mic is.
