@@ -10,6 +10,7 @@ import { autoLinkMailRecord, mailRecordSiteLine } from "./mailMatch"
 import { OWED_PREFIX } from "./next-touch"
 import { pacificDate, pacificDatePlusDays } from "@/lib/pacificDate"
 import { parseAnalyzedAppointment, type AnalyzedAppointment } from "@/lib/appointmentTime"
+import { reachNumber } from "./leadPhones"
 
 export const CAMPAIGN_MAP: Record<string, string> = {
   "+16504364279": "MFM-A",
@@ -1518,6 +1519,23 @@ export async function sendLeadSms(input: {
     return { success: false, status: 503, error: "DNC check failed — send blocked" }
   }
 
+  // Text their best number when the card has one (lib/leadPhones) — the
+  // number they called from may be someone else's line. The row, reply line
+  // and cadence stay on the card's number; only the destination changes.
+  const to = await reachNumber(getLeadsClient(), phone)
+  if (to !== phone) {
+    try {
+      const { checkContactDnc } = await import("@/lib/dnc")
+      const dncBest = await checkContactDnc(getLeadsClient(), { phone: to }, "sms")
+      if (dncBest.dnc && !input.optOutConfirmation) {
+        return { success: false, status: 409, error: dncBest.why || "lead is DNC" }
+      }
+    } catch (e) {
+      console.error("[sendLeadSms] DNC check (best number) failed:", e)
+      return { success: false, status: 503, error: "DNC check failed — send blocked" }
+    }
+  }
+
   // Pick the transport. A lead flagged use_personal_cell (any row in its
   // phone cluster) is texted from Ryan's personal cell via the iMessage
   // sidecar; everyone else goes through Twilio. The check is by phone so it
@@ -1541,7 +1559,7 @@ export async function sendLeadSms(input: {
 
   if (usePersonalCell) {
     // Personal cell → iMessage sidecar (Ryan's number, iMessage→SMS fallback).
-    const sc = await sendLeadViaSidecar(phone, message)
+    const sc = await sendLeadViaSidecar(to, message)
     if (!sc.ok) {
       return { success: false, status: sc.status, error: `personal-cell send failed: ${sc.error}` }
     }
@@ -1556,9 +1574,9 @@ export async function sendLeadSms(input: {
       console.error("[sendLeadSms] reply-line lookup threw:", e)
     }
     try {
-      const sent = await sendTwilioSms({ to: phone, body: message, preferredFrom })
+      const sent = await sendTwilioSms({ to, body: message, preferredFrom })
       messageSid = sent.sid
-      console.log(`[sendLeadSms] → ${phone} from ${sent.from}${sent.fellBack ? " (fallback)" : ""}`)
+      console.log(`[sendLeadSms] → ${to} from ${sent.from}${sent.fellBack ? " (fallback)" : ""}`)
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e)
       console.error("[sendLeadSms] Twilio message create failed:", msg)

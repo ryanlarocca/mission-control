@@ -1,5 +1,6 @@
 import { FORWARD_TO, getLeadsClient, getTwilioNumber, isOwnedNumber, registerManualTouch, resolveReplyLine } from "@/lib/leads"
 import { relationshipCallerId } from "@/lib/relationship-calls"
+import { reachNumber } from "@/lib/leadPhones"
 
 // Outbound call relay (moved out of app/api/leads/call/route.ts 2026-11-02 so
 // the Telegram website-lead alert's 📞 Call button places the exact same
@@ -51,6 +52,8 @@ export interface LeadCallResult {
   leadId?: string | null
   from?: string
   callerId?: string
+  /** The number actually rung — the lead's best number when the card has one (lib/leadPhones). */
+  dialed?: string
 }
 
 // The line a lead's call rings out from and the number they see. Shared by
@@ -109,12 +112,24 @@ export async function startLeadCall(body: { phone?: unknown; source?: string | n
           `the real contact number is in the message body. Not dialing.`, }
   }
 
+  // Ring their best number when the card has one (a seller who called from
+  // someone else's line and gave her own cell — lib/leadPhones). Everything
+  // else — the row, caller ID, DNC, cadence — stays on the card's number.
+  const dialPhone = await reachNumber(getLeadsClient(), leadPhone)
+  if (isOwnedNumber(dialPhone)) {
+    return { ok: false, status: 400, error: `${dialPhone} is one of our own Twilio numbers. Not dialing.` }
+  }
+
   // Do-not-contact (any lead row with this phone, or the master list).
   // Fail safe: a failed check blocks the dial.
   try {
     const { checkContactDnc } = await import("@/lib/dnc")
     const dnc = await checkContactDnc(getLeadsClient(), { phone: leadPhone }, "call")
     if (dnc.dnc) return { ok: false, status: 409, error: `Not calling — ${dnc.why} (they asked off the list)` }
+    if (dialPhone !== leadPhone) {
+      const dncBest = await checkContactDnc(getLeadsClient(), { phone: dialPhone }, "call")
+      if (dncBest.dnc) return { ok: false, status: 409, error: `Not calling — ${dncBest.why} (they asked off the list)` }
+    }
   } catch (e) {
     return { ok: false, status: 503, error: `DNC check failed — call blocked (${e instanceof Error ? e.message : String(e)})` }
   }
@@ -167,7 +182,7 @@ export async function startLeadCall(body: { phone?: unknown; source?: string | n
 
   const bridgeUrl =
     `${PROD_BASE}/api/leads/call/bridge` +
-    `?leadPhone=${encodeURIComponent(leadPhone)}` +
+    `?leadPhone=${encodeURIComponent(dialPhone)}` +
     `&leadId=${encodeURIComponent(leadId)}` +
     `&callerId=${encodeURIComponent(callerId)}`
 
@@ -259,5 +274,5 @@ export async function startLeadCall(body: { phone?: unknown; source?: string | n
     console.error("[leads/call] manual-touch cadence reset threw:", e)
   }
 
-  return { ok: true, status: 200, callSid, leadId, from: fromNumber, callerId }
+  return { ok: true, status: 200, callSid, leadId, from: fromNumber, callerId, dialed: dialPhone }
 }

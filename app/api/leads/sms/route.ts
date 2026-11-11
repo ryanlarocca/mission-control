@@ -21,6 +21,7 @@ import {
 } from "@/lib/leads"
 import { scoreLeadSpam, spamAlertLines, spamReviewColumns, type SpamScore } from "@/lib/lead-spam"
 import { isAnonymousCaller } from "@/lib/anonymous"
+import { personPhoneFor } from "@/lib/leadPhones"
 import { describeContact, formatUsPhone, isOfficeLine, logInboundTextTouch, resolveOfficeCaller } from "@/lib/office-inbound"
 import { escapeTelegramHtml, handleInboundVendorText } from "@/lib/vendorMarketing"
 import { isKnownVendorPitch, screenVendorPitch, vendorPitchAlert, vendorPitchColumns, type VendorPitch } from "@/lib/vendorPitch"
@@ -70,6 +71,8 @@ export async function POST(request: Request) {
   } catch (e) {
     console.error("[sms] Failed to parse Twilio body:", e)
   }
+  // A text from a lead's best number (lib/leadPhones) lands on their card.
+  if (from) from = await personPhoneFor(getLeadsClient, from)
 
   // Our own infrastructure texting itself is never a lead. The landing page
   // sends its "🔔 NEW LEAD" alert SMS from the Google Ads number to the

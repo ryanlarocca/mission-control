@@ -57,6 +57,10 @@ interface Lead {
   source_type: string | null
   twilio_number: string | null
   caller_phone: string | null
+  // The number they asked to be reached at when it isn't the one they called
+  // from (lib/leadPhones.ts) — stamped on every row of the card by the list API.
+  best_phone?: string | null
+  best_phone_source?: string | null
   lead_type: LeadType | null
   message: string | null
   recording_url: string | null
@@ -174,6 +178,8 @@ function isOutbound(l: Lead): boolean {
 interface LeadGroup {
   phone: string                     // grouping key — phone if present, else "email:<addr>"
   contactPhone: string | null       // actual phone (null for email-only leads)
+  bestPhone: string | null          // where calls + texts really go when they gave a different number
+  bestPhoneSource: string | null    // judge (heard on a call / in a text) | ryan (typed in)
   source: string | null
   sourceType: string | null
   // Every distinct inbound source in the cluster, newest first. A returning
@@ -369,6 +375,83 @@ function relativeTime(iso: string): string {
   return new Date(iso).toLocaleDateString([], { month: "short", day: "numeric", year: "numeric" })
 }
 
+// The line under the Call button. With a best number: says which number the
+// button rings and keeps the one they called from a tap away. Without one:
+// "Add another number" for the rare caller who rang from someone else's line.
+function BestNumberLine({ group, onSave }: { group: LeadGroup; onSave: (raw: string | null) => Promise<string | null> }) {
+  const [open, setOpen] = useState(false)
+  const [draft, setDraft] = useState("")
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  if (!group.contactPhone || isAnonymousCaller(group.contactPhone)) return null
+  const run = async (raw: string | null) => {
+    setSaving(true)
+    setError(null)
+    const err = await onSave(raw)
+    setSaving(false)
+    if (err) { setError(err); return }
+    setOpen(false)
+    setDraft("")
+  }
+  if (group.bestPhone) {
+    return (
+      <div className="basis-full text-xs text-zinc-500 flex items-center gap-x-2 gap-y-1 flex-wrap">
+        <span className="text-zinc-400">
+          {group.bestPhoneSource === "judge" ? "Best number — they gave it to us" : "Best number — you added it"}
+        </span>
+        <span>·</span>
+        <span>
+          Called from{" "}
+          <a href={`tel:${group.contactPhone}`} className="text-zinc-300 underline underline-offset-2">
+            {formatPhone(group.contactPhone) ?? group.contactPhone}
+          </a>
+        </span>
+        <button onClick={() => run(null)} disabled={saving} className="underline underline-offset-2 hover:text-zinc-300 disabled:opacity-50">
+          {saving ? "Removing…" : "Remove"}
+        </button>
+        {error && <span className="text-red-300 basis-full">{error}</span>}
+      </div>
+    )
+  }
+  if (!open) {
+    return (
+      <button onClick={() => setOpen(true)} className="basis-full text-left text-xs text-zinc-500 underline underline-offset-2 hover:text-zinc-300">
+        Add another number
+      </button>
+    )
+  }
+  return (
+    <div className="basis-full flex items-center gap-2 flex-wrap">
+      <input
+        type="tel"
+        inputMode="tel"
+        autoComplete="off"
+        autoFocus
+        value={draft}
+        onChange={e => setDraft(e.target.value)}
+        onKeyDown={e => { if (e.key === "Enter" && draft.trim() && !saving) void run(draft.trim()) }}
+        placeholder="Their best number"
+        disabled={saving}
+        className="flex-1 min-w-[160px] bg-zinc-900 border border-zinc-800 rounded px-3 py-1.5 text-sm text-zinc-100 placeholder-zinc-600 focus:outline-none focus:border-zinc-700 disabled:opacity-50"
+        style={{ fontSize: 16 }}
+      />
+      <button
+        onClick={() => run(draft.trim())}
+        disabled={saving || !draft.trim()}
+        className="inline-flex items-center gap-1.5 px-3 py-1.5 min-h-[36px] rounded bg-emerald-600 hover:bg-emerald-500 disabled:bg-zinc-800 disabled:text-zinc-600 text-white text-xs font-medium transition-colors"
+        title="The Call button and texts go to this number from now on"
+      >
+        {saving ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Check className="w-3.5 h-3.5" />}
+        {saving ? "Saving…" : "Save"}
+      </button>
+      <button onClick={() => { setOpen(false); setError(null) }} disabled={saving} className="text-xs text-zinc-500 hover:text-zinc-300">
+        Cancel
+      </button>
+      {error && <span className="text-red-300 text-xs basis-full">{error}</span>}
+    </div>
+  )
+}
+
 function groupLeads(leads: Lead[]): LeadGroup[] {
   const byKey = new Map<string, Lead[]>()
   for (const l of leads) {
@@ -485,9 +568,12 @@ function groupLeads(leads: Lead[]): LeadGroup[] {
     const creditRow = newestFirst.find(e =>
       !isOutbound(e) && (e.campaign_via === "match" || e.campaign_via === "manual") && !!e.campaign_source_label) ?? null
     const candidateRow = newestFirst.find(e => Array.isArray(e.mail_match_candidates) && e.mail_match_candidates.length > 0)
+    const bestRow = evs.find(e => e.best_phone && e.best_phone !== contactPhone) ?? null
     groups.push({
       phone: key,
       contactPhone,
+      bestPhone: bestRow?.best_phone ?? null,
+      bestPhoneSource: bestRow?.best_phone_source ?? null,
       source: (mostRecentInbound?.source) || mostRecent.source,
       sourceType: (mostRecentInbound?.source_type) || mostRecent.source_type,
       sources: Array.from(
@@ -1092,6 +1178,33 @@ export function LeadsTab() {
       setSummaries(prev => ({ ...prev, [key]: { text: prev[key]?.text || "", loading: false, error: e instanceof Error ? e.message : String(e) } }))
     }
   }, [applyLeadEdit])
+
+  // "Add another number" on a card that already has one (lib/leadPhones.ts):
+  // the Call button and texts go to the best number from then on. Returns an
+  // error line for the card, or null when it saved.
+  async function saveBestNumber(group: LeadGroup, raw: string | null): Promise<string | null> {
+    if (!group.contactPhone) return "This card has no phone number yet."
+    try {
+      const res = raw === null
+        ? await fetch(`/api/leads/best-number?phone=${encodeURIComponent(group.contactPhone)}`, { method: "DELETE" })
+        : await fetch("/api/leads/best-number", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ phone: group.contactPhone, best: raw }),
+          })
+      const body = await res.json().catch(() => ({}))
+      if (!res.ok) return body.error || `HTTP ${res.status}`
+      const best: string | null = raw === null ? null : body.best?.best_phone ?? null
+      applyLeadEdit(prev => prev.map(l =>
+        l.caller_phone && l.caller_phone === group.contactPhone
+          ? { ...l, best_phone: best, best_phone_source: best ? "ryan" : null }
+          : l
+      ))
+      return null
+    } catch (e) {
+      return e instanceof Error ? e.message : String(e)
+    }
+  }
 
   async function addPhone(group: LeadGroup, raw: string) {
     const trimmed = raw.trim()
@@ -2022,6 +2135,7 @@ export function LeadsTab() {
               onEditPhoneDraft={(v) => setPhoneDraft(prev => ({ ...prev, [group.phone]: v }))}
               onSavePhone={() => addPhone(group, phoneDraft[group.phone] ?? "")}
               savingPhone={savingPhoneFor === group.phone}
+              onSaveBestNumber={(raw) => saveBestNumber(group, raw)}
               phoneError={savingPhoneFor === null && phoneError && expandedPhone === group.phone ? phoneError : null}
               emailDraft={emailDraft[group.phone] ?? group.suggestedReply ?? ""}
               onEditEmailDraft={(v) => setEmailDraft(prev => ({ ...prev, [group.phone]: v }))}
@@ -2104,6 +2218,8 @@ interface LeadCardProps {
   onSavePhone: () => void
   savingPhone: boolean
   phoneError: string | null
+  // Set (a number) or remove (null) the card's best number; resolves to an error line or null.
+  onSaveBestNumber: (raw: string | null) => Promise<string | null>
   emailDraft: string
   onEditEmailDraft: (v: string) => void
   emailSubject: string
@@ -2288,7 +2404,10 @@ function LeadCard(p: LeadCardProps) {
       )}
     </>
   )
-  const phoneDisplay = group.contactPhone ? formatPhone(group.contactPhone) : null
+  // Calls and texts go to the best number when the card has one; the server
+  // makes the same swap (lib/leadPhones.ts), this is what the card shows.
+  const reachPhone = group.bestPhone || group.contactPhone
+  const phoneDisplay = reachPhone ? formatPhone(reachPhone) : null
   const onDrip = !!group.events.find(e => e.drip_campaign_type)?.drip_campaign_type
   const canApplyDrip = !onDrip && !group.isDnc && !group.isJunk && (group.contactPhone || group.email)
   // Email composer gating. `hasInboundEmail` = the lead actually emailed in,
@@ -2575,7 +2694,7 @@ function LeadCard(p: LeadCardProps) {
             {group.contactPhone ? (
               <>
                 <a
-                  href={`tel:${group.contactPhone}`}
+                  href={`tel:${reachPhone}`}
                   className="inline-flex items-center gap-1.5 text-emerald-400 hover:text-emerald-300 underline-offset-2 hover:underline"
                 >
                   <Phone className="w-3.5 h-3.5" />
@@ -2607,6 +2726,7 @@ function LeadCard(p: LeadCardProps) {
                 {p.callError && (
                   <span className="text-red-300 text-xs">{p.callError}</span>
                 )}
+                <BestNumberLine group={group} onSave={p.onSaveBestNumber} />
               </>
             ) : (
               <div className="flex items-center gap-2 flex-wrap w-full">

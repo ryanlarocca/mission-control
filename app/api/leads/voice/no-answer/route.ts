@@ -9,6 +9,7 @@ import {
   sendTelegramAlert,
 } from "@/lib/leads"
 import { isAnonymousCaller } from "@/lib/anonymous"
+import { personPhoneFor } from "@/lib/leadPhones"
 import { PROD_BASE } from "@/lib/relationship-calls"
 import {
   NO_HISTORY,
@@ -61,6 +62,8 @@ export async function POST(request: Request) {
   } catch (e) {
     console.error("[no-answer] Failed to parse Twilio body:", e)
   }
+  // Same card the voice route filed it under (lib/leadPhones).
+  if (callerPhone) callerPhone = await personPhoneFor(getLeadsClient, callerPhone)
   // Press-1 screen (NOO Q4 lines, /api/leads/voice/screen): the voice route
   // passes the intake row. Twilio says "completed" whenever anything picked
   // up Ryan's leg — his carrier voicemail included — so a screened call only

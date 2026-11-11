@@ -8,6 +8,7 @@ import {
   isOwnedNumber,
   sendTelegramAlert,
 } from "@/lib/leads"
+import { personPhoneFor } from "@/lib/leadPhones"
 
 // Recording handler — fires for both voicemails (<Record action="...">) and
 // live-call recordings (<Dial recordingStatusCallback="...">). Flow:
@@ -124,6 +125,9 @@ export async function POST(request: Request) {
       twilioNumber = twilioNumber || parties.to
     }
   }
+
+  // Same card the voice route filed it under (lib/leadPhones).
+  if (callerPhone) callerPhone = await personPhoneFor(getLeadsClient, callerPhone)
 
   if (!recordingUrl || !callerPhone) {
     console.warn(`[recording] Missing fields — url:${!!recordingUrl} from:${!!callerPhone}`)

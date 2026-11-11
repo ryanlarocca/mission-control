@@ -654,7 +654,9 @@ export function FollowUpsTab() {
       const from: string | null = body.callerId || body.from || null
       const leadId: string | null = typeof body.leadId === "string" ? body.leadId : null
       updateOnCall(prev => ({ ...prev, [row.clusterKey]: { row, from, at: Date.now(), leadId } }))
-      showToast(from ? `Calling from ${formatPhone(from) ?? from}` : "Calling — ringing your cell")
+      // The server rings their best number when the card has one (lib/leadPhones.ts).
+      const dialed: string | null = typeof body.dialed === "string" && body.dialed !== row.phone ? body.dialed : null
+      showToast(dialed ? `Calling their best number, ${formatPhone(dialed) ?? dialed}` : from ? `Calling from ${formatPhone(from) ?? from}` : "Calling — ringing your cell")
     } catch (e) {
       setErr(`Call failed: ${e instanceof Error ? e.message : String(e)}`)
     } finally {

@@ -13,6 +13,7 @@ import {
   type LeadStatus,
   type LeadFlagField,
 } from "@/lib/leads"
+import { bestNumbersFor } from "@/lib/leadPhones"
 
 // Columns no screen reads from the list (2026-11-10) — the coach, Jackie and
 // ladder bookkeeping is used server-side or through its own endpoint. Dropped
@@ -93,12 +94,31 @@ export async function GET(request: NextRequest) {
       for (const col of LIST_OMITTED_COLUMNS) delete row[col]
       rows.push(row)
     }
-    await attachCampaignPiece(sb, rows)
+    await Promise.all([attachCampaignPiece(sb, rows), attachBestNumbers(sb, rows)])
     return NextResponse.json({ leads: rows })
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e)
     console.error("[leads:GET] Threw:", msg)
     return NextResponse.json({ error: msg }, { status: 500 })
+  }
+}
+
+// A lead's best number (2026-11-10, lib/leadPhones.ts): the number they asked
+// to be reached at when it isn't the one they called from. Stamped on every
+// row of the card as `best_phone` / `best_phone_source` so the card can show
+// both numbers. Best-effort: a failed read leaves the card as it was.
+async function attachBestNumbers(sb: SupabaseClient, rows: unknown[]): Promise<void> {
+  const leadRows = rows as { caller_phone?: string | null; best_phone?: string | null; best_phone_source?: string | null }[]
+  try {
+    const phones = Array.from(new Set(leadRows.map((r) => r.caller_phone).filter((v): v is string => typeof v === "string" && v.length > 0)))
+    const best = await bestNumbersFor(sb, phones)
+    if (!best.size) return
+    for (const r of leadRows) {
+      const b = r.caller_phone ? best.get(r.caller_phone) : undefined
+      if (b) { r.best_phone = b.best_phone; r.best_phone_source = b.source }
+    }
+  } catch (e) {
+    console.warn("[leads:GET] best number join failed:", e instanceof Error ? e.message : String(e))
   }
 }
 

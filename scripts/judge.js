@@ -38,6 +38,13 @@
  *   node scripts/judge.js --preview [--days 30]   # before/after for everyone with activity, no writes
  *   node scripts/judge.js --phone +1408… [--apply]  # one person; --apply writes regardless of JUDGE_LIVE
  *
+ * Also (2026-11-10): the judge hears a different number to reach them at
+ * ("this is my daughter's office, my cell is…") and saves it as the card's
+ * best number — lead_best_numbers, lib/leadPhones.ts. The Call button and
+ * texts go there from then on. Only a clean 10-digit number is saved; a
+ * garbled one is flagged for Ryan to check the recording. A number Ryan
+ * typed in himself is never overwritten.
+ *
  * State: lead_verdicts (supabase/migrations/2026-11-06_lead_verdicts.sql).
  * Schedule: infrastructure/launchd/com.lrghomes.judge.plist (every 15 min).
  */
@@ -211,13 +218,29 @@ Today is ${today}. If a standing verdict or a date Ryan set by hand is given and
 
 Separately from the state: does Ryan OWE them something from the newest real conversation — anything he said he'd send or do ("I'll shoot you a text", "I'll send you my info", "let me get you a number", "I'll call you back this afternoon") with no later message from Ryan showing he did it? Look at how the conversation ENDED; a promise at the end of a call counts even if a longer timeline was discussed earlier. If so, put it in "owed" in a few words, written TO Ryan ("text her your name and number…"); otherwise null.
 
+Also separately: did THEY give a different phone number to reach them at than the one they are calling / texting from ("this is my daughter's office, my cell is…", "call me back at…", "my real number is…")? Only a number that is theirs to be reached at — never Ryan's or LRG Homes' numbers, never a number Jackie or Ryan read out, never the number they are already calling from, never somebody else's number they merely mention. If they gave more than one, the newest. Put its 10 digits in "callback_number" only if all ten digits are clear in the transcript; if they gave one but the digits are incomplete or unclear, leave "callback_number" null and set "callback_unclear" true. "callback_note" = a few words on whose number it is and where it came from ("her own cell — the number she called from is her daughter's office"). Nothing given → null, false, null.
+
 Respond with ONLY JSON:
-{"state": "<one of the states>", "date": "YYYY-MM-DD" or null, "owed": "<what Ryan promised, e.g. text her his name/number with Vine Street on it for her attorney>" or null, "reason": "<one plain sentence for Ryan's screen, under 140 characters, naming the fact — e.g. Bill said call in January ahead of his end-of-March sale>", "connected": true|false}`
+{"state": "<one of the states>", "date": "YYYY-MM-DD" or null, "owed": "<what Ryan promised, e.g. text her his name/number with Vine Street on it for her attorney>" or null, "reason": "<one plain sentence for Ryan's screen, under 140 characters, naming the fact — e.g. Bill said call in January ahead of his end-of-March sale>", "connected": true|false, "callback_number": "<10 digits>" or null, "callback_unclear": true|false, "callback_note": "<a few words>" or null}`
+}
+
+// "(408) 555-0142" / "4085550142" / "1-408-555-0142" → +14085550142; anything
+// that isn't a real 10-digit US number → null (a misheard digit must not
+// become the number the Call button rings).
+function cleanCallback(raw) {
+  let d = String(raw || "").replace(/\D/g, "")
+  if (d.length === 11 && d[0] === "1") d = d.slice(1)
+  if (d.length !== 10 || /^[01]/.test(d) || /^...[01]/.test(d)) return null
+  return `+1${d}`
+}
+function prettyPhone(e164) {
+  const d = String(e164 || "").replace(/\D/g, "").slice(-10)
+  return d.length === 10 ? `(${d.slice(0, 3)}) ${d.slice(3, 6)}-${d.slice(6)}` : String(e164 || "")
 }
 
 async function askModel(anthropic, ctx) {
   const user = [
-    `Person: ${ctx.name || "(no name)"}${ctx.address ? ` · ${ctx.address}` : ""}${ctx.source ? ` · source: ${ctx.source}` : ""}`,
+    `Person: ${ctx.name || "(no name)"}${ctx.address ? ` · ${ctx.address}` : ""}${ctx.source ? ` · source: ${ctx.source}` : ""}${ctx.phone ? ` · calling / texting from ${ctx.phone}` : ""}`,
     ctx.standing ? `Standing verdict (${ctx.standing.source === "ryan" ? "set by Ryan by hand" : "the judge"}, ${pacificStamp(ctx.standing.judged_at)}): ${ctx.standing.state}${ctx.standing.due_date ? ` on ${ctx.standing.due_date}` : ""} — ${ctx.standing.reason || ""}` : "Standing verdict: none",
     ctx.hint ? `Note: ${ctx.hint}` : null,
     "",
@@ -237,7 +260,7 @@ async function askModel(anthropic, ctx) {
     try {
       const json = JSON.parse(out.slice(out.indexOf("{"), out.lastIndexOf("}") + 1))
       if (!STATES.includes(json.state)) throw new Error(`bad state ${json.state}`)
-      return { state: json.state, date: /^\d{4}-\d{2}-\d{2}$/.test(json.date || "") ? json.date : null, owed: typeof json.owed === "string" && json.owed.trim() ? json.owed.trim().slice(0, 120) : null, reason: String(json.reason || "").slice(0, 160), connected: !!json.connected, usage: res.usage }
+      return { state: json.state, date: /^\d{4}-\d{2}-\d{2}$/.test(json.date || "") ? json.date : null, owed: typeof json.owed === "string" && json.owed.trim() ? json.owed.trim().slice(0, 120) : null, reason: String(json.reason || "").slice(0, 160), connected: !!json.connected, callback: cleanCallback(json.callback_number), callbackUnclear: json.callback_unclear === true, callbackNote: typeof json.callback_note === "string" && json.callback_note.trim() ? json.callback_note.trim().slice(0, 200) : null, usage: res.usage }
     } catch (e) {
       lastErr = new Error(`${e.message} — stop=${res.stop_reason} blocks=${(res.content || []).map((b) => b.type).join(",") || "none"} said: ${out.slice(0, 200).replace(/\s+/g, " ")}`)
     }
@@ -426,9 +449,32 @@ async function saveVerdict(sb, phone, rows, v, llm) {
   const { error } = await sb.from("lead_verdicts").upsert({
     phone, state: v.state, due_date: v.date, reason: v.reason,
     through_at: rows[rows.length - 1].created_at, judged_at: new Date().toISOString(),
-    source: "judge", model: MODEL, raw: llm ? { state: llm.state, date: llm.date, reason: llm.reason, connected: llm.connected, usage: llm.usage } : null,
+    source: "judge", model: MODEL, raw: llm ? { state: llm.state, date: llm.date, reason: llm.reason, connected: llm.connected, callback: llm.callback || null, callback_unclear: !!llm.callbackUnclear, usage: llm.usage } : null,
   })
   if (error) throw new Error(`verdict: ${error.message}`)
+}
+
+// A number they asked to be reached at → the card's best number
+// (lead_best_numbers, lib/leadPhones.ts). Returns what happened, for the log.
+async function saveCallback(sb, phone, rows, f, llm, deps) {
+  if (!llm || (!llm.callback && !llm.callbackUnclear)) return null
+  const label = `${f.name || phone}${f.address ? ` (${f.address})` : ""}`
+  const { data: standing } = await sb.from("lead_best_numbers").select("best_phone, source").eq("person_phone", phone).maybeSingle()
+  if (!llm.callback) {
+    // Heard one, couldn't make out the digits: don't touch the button.
+    if (!standing) await deps.telegram(`Judge: ${label} gave a different number to reach them at, but I couldn't make out all the digits — check the recording and add it on their card.${llm.callbackNote ? `\n${llm.callbackNote}` : ""}`)
+    return "unclear"
+  }
+  // Our own lines (the ones on the thread) and the number already on the card are not news.
+  const ours = new Set(rows.map((r) => String(r.twilio_number || "").replace(/\D/g, "").slice(-10)).filter((d) => d.length === 10))
+  if (llm.callback === phone || ours.has(llm.callback.slice(-10))) return null
+  if (standing && (standing.source === "ryan" || standing.best_phone === llm.callback)) return null
+  const { data: taken } = await sb.from("lead_best_numbers").select("person_phone").eq("best_phone", llm.callback).neq("person_phone", phone).maybeSingle()
+  if (taken) return null
+  const { error } = await sb.from("lead_best_numbers").upsert({ person_phone: phone, best_phone: llm.callback, source: "judge", heard: llm.callbackNote, created_at: new Date().toISOString() })
+  if (error) throw new Error(`best number: ${error.message}`)
+  await deps.telegram(`Judge: ${label} gave a different number to reach them at: ${prettyPhone(llm.callback)}. The Call button and texts on their card now go there (they called from ${prettyPhone(phone)}).${llm.callbackNote ? `\n${llm.callbackNote}` : ""}`)
+  return llm.callback
 }
 
 // ─── one person ─────────────────────────────────────────────────────────────
@@ -454,9 +500,12 @@ async function judgePhone(sb, deps, phone, opts = {}) {
     // On autopilot and they haven't replied: autopilot owns them. Nothing to rule on.
     llm = { state: "none", date: null, reason: "On autopilot, no reply yet.", connected: false, usage: null }
   } else {
-    const personal = await fetchPersonalTexts(phone, rows[0].created_at)
+    let personal = await fetchPersonalTexts(phone, rows[0].created_at)
+    // Texts with their best number (lib/leadPhones) are the same conversation.
+    const { data: bestRow } = await sb.from("lead_best_numbers").select("best_phone").eq("person_phone", phone).maybeSingle()
+    if (bestRow && bestRow.best_phone) personal = personal.concat(await fetchPersonalTexts(bestRow.best_phone, rows[0].created_at))
     const dealHint = f.underContract ? `They are UNDER CONTRACT with Ryan — ${underContractReason(f)}. Only decide whether their newest message asks Ryan for something (ryan_today) or he owes them something (owed); don't chase a decision they already made.` : null
-    const ctx = { name: f.name, address: f.address, source: f.source, standing, hint: [opts.hint, dealHint].filter(Boolean).join(" ") || null, today, thread: buildThread(rows, personal) }
+    const ctx = { name: f.name, address: f.address, source: f.source, phone, standing, hint: [opts.hint, dealHint].filter(Boolean).join(" ") || null, today, thread: buildThread(rows, personal) }
     llm = await askModel(deps.anthropic, ctx)
   }
   const v = decide(llm, f, today)
@@ -465,6 +514,11 @@ async function judgePhone(sb, deps, phone, opts = {}) {
   if (opts.write) {
     await apply(sb, phone, rows, f, v, deps)
     await saveVerdict(sb, phone, rows, v, llm)
+    // After the verdict, and never able to undo it: a best-number hiccup is an alert, not a failed ruling.
+    if (v.state !== "dnc" && v.state !== "dead") {
+      try { result.bestNumber = await saveCallback(sb, phone, rows, f, llm, deps) }
+      catch (e) { await deps.telegram(`Judge: couldn't save the number ${f.name || phone} asked to be reached at — ${e.message}`).catch(() => {}) }
+    }
   }
   return result
 }
@@ -560,6 +614,7 @@ if (require.main === module) {
     console.log(`\n## ${r.name || "(no name)"} ${r.phone}${r.address ? ` · ${r.address}` : ""}`)
     console.log(`  before: ${r.before ? `${fmtDay(r.before.date)} — ${r.before.reason || ""}` : "no date"}${r.autopilotBefore ? " · on autopilot" : ""}`)
     console.log(`  after:  ${r.verdict.state}${r.verdict.date ? ` ${fmtDay(r.verdict.date)}` : ""} — ${r.verdict.reason}${r.verdict.enrolAutopilot ? " · → autopilot" : ""}`)
+    if (r.llm && (r.llm.callback || r.llm.callbackUnclear)) console.log(`  number: ${r.llm.callback ? prettyPhone(r.llm.callback) : "gave one, digits unclear"}${r.llm.callbackNote ? ` — ${r.llm.callbackNote}` : ""}`)
   }
 
   ;(async () => {

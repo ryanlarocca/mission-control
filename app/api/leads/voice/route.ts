@@ -18,6 +18,7 @@ import {
   sendTelegramAlert,
 } from "@/lib/leads"
 import { isAnonymousCaller } from "@/lib/anonymous"
+import { personPhoneFor } from "@/lib/leadPhones"
 import { describeContact, isOfficeLine, openInboundCallTouch, resolveOfficeCaller } from "@/lib/office-inbound"
 import { PROD_BASE, twimlAttr } from "@/lib/relationship-calls"
 import { callerHistory, getJackieFlip, isKnownCaller, jackieDialTwiml, type CallerHistory } from "@/lib/jackie"
@@ -110,6 +111,8 @@ export async function POST(request: Request) {
   } catch (e) {
     console.error("[voice] Failed to parse Twilio body:", e)
   }
+  // A call from a lead's best number (lib/leadPhones) lands on their card.
+  if (callerPhone) callerPhone = await personPhoneFor(getLeadsClient, callerPhone)
 
   // A call whose caller ID is one of OUR OWN Twilio numbers is the system
   // dialing itself — most often the outbound caller-ID leg reaching another

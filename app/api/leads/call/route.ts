@@ -14,5 +14,5 @@ export async function POST(request: NextRequest) {
   }
   const out = await startLeadCall(body)
   if (!out.ok) return NextResponse.json({ error: out.error }, { status: out.status })
-  return NextResponse.json({ success: true, callSid: out.callSid, leadId: out.leadId, from: out.from, callerId: out.callerId })
+  return NextResponse.json({ success: true, callSid: out.callSid, leadId: out.leadId, from: out.from, callerId: out.callerId, dialed: out.dialed })
 }
