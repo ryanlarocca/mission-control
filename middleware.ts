@@ -16,6 +16,9 @@ const PUBLIC_PATHS = [
   // The drip engine (Mac mini) asks this route to write a queued touch with
   // the Opus writer; same shared-secret header as telegram-draft.
   "/api/reply/drip-draft",
+  // The inbox agent (Mac mini) posts ryan@ email with Relationships contacts
+  // so their cards learn about it; same shared-secret header as drip-draft.
+  "/api/crms/email-sync",
   // The e-sign service (Mac mini) reports sent / signed purchase agreements
   // (lib/deals); same shared-secret header.
   "/api/leads/contract",

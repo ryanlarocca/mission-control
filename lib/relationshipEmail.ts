@@ -13,10 +13,16 @@
 // RELATIONSHIP_EMAIL_FROM (ryan@ by default — his real inbox, where the Inbox
 // Agent already watches for the answer).
 //
+// Since 2026-11-11 the card also answers in a ryan@ conversation: the inbox
+// agent's email sync (lib/relationshipEmailSync.ts) logs the contact's emails
+// to ryan@ as inbound touches with their Gmail thread id, and whichever is
+// newer — that thread or the campaign one — is the one a reply goes into.
+//
 // Every send logs a relationship_touches row (modality "email", action
 // "sent", message = "<subject>\n<body>" to mirror the inbound format written
 // by lib/agentsLineInbound.ts) and advances last_contacted_at, exactly like a
-// text sent from the card.
+// text sent from the card. The touch carries the sent message's Gmail ids so
+// the email sync recognises it and doesn't log the same email twice.
 
 import type { SupabaseClient } from "@supabase/supabase-js"
 import { getLeadsClient } from "@/lib/leads"
@@ -66,7 +72,8 @@ export function splitEmailTouch(message: string): { subject: string; body: strin
 }
 
 export interface EmailThreadRef {
-  campaignContactId: string
+  /** The campaign contact for a campaign thread; null for a ryan@ conversation. */
+  campaignContactId: string | null
   mailbox: string
   threadId: string
   gmailId: string | null
@@ -75,14 +82,30 @@ export interface EmailThreadRef {
 
 type EventRaw = { gmail_id?: string; thread_id?: string; subject?: string; mailbox?: string }
 
+/** A thread we could reply in, with the time of their message in it. */
+export interface DatedThread {
+  ref: EmailThreadRef
+  at: string | null
+}
+
+/** The thread with their newer message; a tie or an unparseable time keeps the campaign one. */
+export function pickNewerThread(campaign: DatedThread | null, card: DatedThread | null): EmailThreadRef | null {
+  if (!campaign || !card) return (campaign ?? card)?.ref ?? null
+  const c = Date.parse(campaign.at ?? "")
+  const r = Date.parse(card.at ?? "")
+  if (!Number.isFinite(r)) return campaign.ref
+  if (!Number.isFinite(c)) return card.ref
+  return r > c ? card.ref : campaign.ref
+}
+
 /** Newest campaign email reply from this relationship that we can answer in-thread. */
-export async function findLatestEmailThread(sb: SupabaseClient, relationshipId: string): Promise<EmailThreadRef | null> {
+async function latestCampaignThread(sb: SupabaseClient, relationshipId: string): Promise<DatedThread | null> {
   const { data: cc } = await sb.from("campaign_contacts").select("id").eq("relationship_id", relationshipId).limit(10)
   const ids = (cc ?? []).map((c) => c.id as string)
   if (!ids.length) return null
   const { data: events } = await sb
     .from("campaign_events")
-    .select("contact_id, raw")
+    .select("contact_id, raw, occurred_at")
     .in("contact_id", ids)
     .eq("kind", "email_reply")
     .order("occurred_at", { ascending: false })
@@ -92,7 +115,44 @@ export async function findLatestEmailThread(sb: SupabaseClient, relationshipId: 
   const raw = (ev.raw ?? {}) as EventRaw
   const mailbox = (raw.mailbox ?? "").toLowerCase()
   if (!raw.thread_id || !isOwnMailbox(mailbox)) return null
-  return { campaignContactId: ev.contact_id as string, mailbox, threadId: raw.thread_id, gmailId: raw.gmail_id ?? null, subject: raw.subject ?? null }
+  return {
+    ref: { campaignContactId: ev.contact_id as string, mailbox, threadId: raw.thread_id, gmailId: raw.gmail_id ?? null, subject: raw.subject ?? null },
+    at: (ev.occurred_at as string | null) ?? null,
+  }
+}
+
+/** Newest email they sent Ryan at ryan@, as logged by the email sync (lib/relationshipEmailSync). */
+async function latestCardThread(sb: SupabaseClient, relationshipId: string): Promise<DatedThread | null> {
+  const { data, error } = await sb
+    .from("relationship_touches")
+    .select("occurred_at, message, gmail_message_id, gmail_thread_id")
+    .eq("relationship_id", relationshipId)
+    .eq("modality", "email")
+    .eq("action", "inbound")
+    .not("gmail_thread_id", "is", null)
+    .order("occurred_at", { ascending: false })
+    .limit(1)
+  if (error) {
+    // Never block a reply: the campaign thread (or a fresh email) still works.
+    console.warn("[relationship-email] card thread lookup failed:", error.message)
+    return null
+  }
+  const t = data?.[0] as { occurred_at: string | null; message: string | null; gmail_message_id: string | null; gmail_thread_id: string | null } | undefined
+  if (!t?.gmail_thread_id) return null
+  const subject = splitEmailTouch(t.message ?? "").subject || null
+  return {
+    ref: { campaignContactId: null, mailbox: DEFAULT_RELATIONSHIP_MAILBOX, threadId: t.gmail_thread_id, gmailId: t.gmail_message_id ?? null, subject },
+    at: t.occurred_at ?? null,
+  }
+}
+
+/** The thread a card reply goes into: their newest campaign reply or their newest email to ryan@, whichever is newer. */
+export async function findLatestEmailThread(sb: SupabaseClient, relationshipId: string): Promise<EmailThreadRef | null> {
+  const [campaign, card] = await Promise.all([
+    latestCampaignThread(sb, relationshipId),
+    latestCardThread(sb, relationshipId).catch(() => null),
+  ])
+  return pickNewerThread(campaign, card)
 }
 
 export interface SendRelationshipEmailArgs {
@@ -182,12 +242,14 @@ export async function sendRelationshipEmail(args: SendRelationshipEmailArgs): Pr
   })
 
   let sentMessageId: string | null = null
+  let sentThreadId: string | null = null
   try {
     const { data } = await gmail.users.messages.send({
       userId: "me",
       requestBody: { raw: toGmailRaw(mime), ...(thread ? { threadId: thread.threadId } : {}) },
     })
     sentMessageId = data.id ?? null
+    sentThreadId = data.threadId ?? null
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e)
     console.error("[relationship-email] Gmail send failed:", msg)
@@ -204,6 +266,9 @@ export async function sendRelationshipEmail(args: SendRelationshipEmailArgs): Pr
     was_edited: args.wasEdited === true ? true : args.wasEdited === false ? false : null,
     tier_at_touch: rel.tier,
     category_at_touch: rel.category,
+    // So the ryan@ email sync sees this send as already logged (2026-11-11).
+    gmail_message_id: sentMessageId,
+    gmail_thread_id: sentThreadId,
   })
   if (ins.error) console.error("[relationship-email] touch insert failed:", ins.error.message)
 
@@ -212,7 +277,8 @@ export async function sendRelationshipEmail(args: SendRelationshipEmailArgs): Pr
 
   if (args.draftId) await markDraftSent(args.draftId, { subject, body })
 
-  if (thread) {
+  // Campaign threads only — a ryan@ conversation has no campaign contact.
+  if (thread?.campaignContactId) {
     await sb.from("campaign_events").insert({
       contact_id: thread.campaignContactId,
       kind: "email_out",

@@ -322,6 +322,8 @@ async function fetchRelationshipEmails(sb: ReturnType<typeof getLeadsClient>, re
     .select("occurred_at, action, message")
     .eq("relationship_id", relationshipId)
     .eq("modality", "email")
+    // Not "bounced" rows (the ryan@ email sync, 2026-11-11) — that fact is on the card's notes.
+    .in("action", ["inbound", "sent"])
     .order("occurred_at", { ascending: false })
     .limit(12)
   return (data ?? [])

@@ -15,16 +15,23 @@
 // for email replies), so every caller gets it. Runs under waitUntil after the
 // webhook has answered, and never throws — a missed note must not cost an
 // alert or a touch.
+//
+// Personal contacts (category Personal) never get automatic notes — their
+// texts and emails are still logged as touches, but nothing reads them for
+// the card (Ryan 2026-11-11: "not everybody belongs in the relationships
+// tab"). Same for do-not-contact cards. The check lives here so every path —
+// Twilio lines, the ryan@ email sync, cell texts on card open — gets it.
 
 import { waitUntil } from "@vercel/functions"
 import { completeText, extractJsonObject, hasLlmKey, SONNET } from "@/lib/llm"
 import { getLeadsClient } from "@/lib/leads"
+import { normalizeCategory } from "@/lib/crms"
 import { appendNoteBlock, noteStampDay } from "@/lib/relationshipNotes"
 
 export type InboundKind = "text" | "email"
 
 // iMessage reactions arrive as plain texts: Loved “…”, Liked “…”, etc.
-const TAPBACK_RE = /^(loved|liked|disliked|laughed at|emphasi[sz]ed|questioned)\s+[“"]/i
+export const TAPBACK_RE = /^(loved|liked|disliked|laughed at|emphasi[sz]ed|questioned)\s+[“"]/i
 const STOP_RE = /^\s*(stop|unsubscribe|cancel|end|quit|stopall)\s*$/i
 // Short enough that it can't carry a fact worth a note ("Thanks!", "Sounds good").
 export const MIN_NOTE_CHARS = 25
@@ -33,6 +40,12 @@ export const MIN_NOTE_CHARS = 25
 export function skipForNotes(text: string): boolean {
   const t = text.trim()
   return t.length < MIN_NOTE_CHARS || TAPBACK_RE.test(t) || STOP_RE.test(t)
+}
+
+/** Cards whose messages may be read for notes: not do-not-contact, not Personal. */
+export function notesAllowed(rel: { status: string | null; category: string | null }): boolean {
+  if (rel.status === "do_not_contact") return false
+  return !rel.category || normalizeCategory(rel.category) !== "Personal"
 }
 
 /** `[Nov 11, 2026 text] Buys land with a dev partner; pays referral fees.` */
@@ -90,7 +103,7 @@ export async function landInboundNote(relationshipId: string, kind: InboundKind,
     if (!relationshipId || skipForNotes(text)) return null
     const sb = getLeadsClient()
     const { data: rel } = await sb.from("relationships").select("id, name, category, notes, status").eq("id", relationshipId).maybeSingle<NoteRel>()
-    if (!rel || rel.status === "do_not_contact") return null
+    if (!rel || !notesAllowed(rel)) return null
     const note = await extractInboundNote({ name: rel.name, category: rel.category, kind, text, subject, existingNotes: rel.notes })
     if (!note) return null
     // Re-read right before writing: the model call takes seconds, and another

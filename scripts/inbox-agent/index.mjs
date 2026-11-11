@@ -28,6 +28,12 @@
 //   2c. scanEvents     — networking-event watcher: new mail on ryan@ + the personal
 //                        Gmail (IMAP) → one inbox_events row per real event; surfaced
 //                        only in the brief + cards (briefs/BRIEF_EVENT_WATCHER_2026-10-15.md).
+//   2d. syncCards      — (runs right after pollInbox) Relationships email sync: inbound mail from a card contact, mail
+//                        Ryan sent to one, and bounces → POST /api/crms/email-sync, which
+//                        writes the touch + notes on the card. Never adds people; silent
+//                        unless it stays broken (3 failed passes → one Telegram a day);
+//                        bounces ride the morning brief (cards.mjs;
+//                        briefs/BRIEF_RELATIONSHIP_EMAIL_SYNC_2026-11-11.md).
 //   3. resolveLoops    — close loops Ryan answered (sent mail) or that expired.
 //   4. interviewStep   — before any filing: ask Ryan one document at a time
 //                        where it goes, then write + approve the convention.
@@ -44,6 +50,8 @@
 //   node scripts/inbox-agent/index.mjs --status       # counts
 //   node scripts/inbox-agent/index.mjs --pause | --resume
 //   node scripts/inbox-agent/index.mjs --events-only --events-backfill=60d --dry-run  # event watcher preview, writes nothing
+//   node scripts/inbox-agent/index.mjs --cards-only --cards-since=2d --dry-run   # card email sync preview: prints what it would POST, writes nothing
+//   node scripts/inbox-agent/index.mjs --cards-only --cards-since=2026-11-10 --cards-emails=a@b.com,c@d.com   # hand catch-up for chosen cards
 //   flags: --dry-run (no Telegram, no Drive writes, no DB writes for new rows; link fetches
 //          still run in the browser and land in /tmp/inbox-fetch), --limit=N, --message=<gmail id>
 import crypto from "node:crypto"
@@ -67,6 +75,7 @@ import { invoiceDiffLines, isPaidName, matchVendor, money, paidName, parentCampa
 import { DUP_STATUSES, gmailLink, photoDedupeVerdict, propertyFolderFromReply, propertyLabelFromSubject, suffixedFilename } from "./photos.mjs"
 import { LOOP_ACTIVE_STATUSES, LOOP_KEY_WINDOW_MS, SENT_LOOKBACK_DAYS, answeredBy, completionCloses, completionDismisses, completionEvent, envelopeMatches, isLooseEnd, loopEligible, loopKey, loopKeyMatch, mergeLoop, normalizeEnvelope, owedBy, reportFiledEvent, resolutionKind, splitLoops } from "./loops.mjs"
 import { applyEventDecisions, eventBrief, postEventCards, scanEvents } from "./events-run.mjs"
+import { bounceBriefLines, clearBounceQueue, syncCards } from "./cards.mjs"
 import { applyRegistryEvent, closingDateFor, cycleRegistryOn, isListingAgreementName, shortAddress, zipFrom } from "../market-cycle/registry.mjs"
 
 // ------------------------------------------------------------------ args
@@ -85,6 +94,8 @@ const MESSAGE = opt("message", null) // one gmail id, for testing
 const EVENTS_BACKFILL = opt("events-backfill", null) // e.g. "30d" — widen the event watcher's window (first run / testing)
 const EVENTS_SOURCES = opt("events-source", "all") // all | gmail | personal (testing)
 const EVENTS_MESSAGE = opt("events-message", null) // one ryan@ gmail id through the event watcher (pair with --dry-run)
+const CARDS_SINCE = opt("cards-since", null) // e.g. "2d" or "2026-11-10" — hand-run catch-up for the card email sync (beats the 8-day cap)
+const CARDS_EMAILS = opt("cards-emails", null) // a@b.com,c@d.com — only these card addresses are considered
 
 // The interview set — real emails from the 2026-09-24 survey of ryan@'s inbox,
 // one per document type Ryan sees every week. Re-seeding is idempotent.
@@ -2575,6 +2586,9 @@ async function maybeDigest(ctx, force = false) {
   // Networking events (briefs/BRIEF_EVENT_WATCHER_2026-10-15.md): new ones only, then one card each after the brief.
   const events = await eventBrief({ dry: DRY }).catch((e) => (warn("digest: event section failed:", e.message), { lines: [], newRows: [] }))
   if (events.lines.length) lines.push("", ...events.lines)
+  // Relationships email sync: a bounce on a card contact's address is one line here, never a ping (cards.mjs).
+  const cardBounces = await bounceBriefLines().catch((e) => (warn("digest: card bounce section failed:", e.message), { lines: [], keys: [] }))
+  if (cardBounces.lines.length) lines.push("", ...cardBounces.lines)
   if (rules.status !== "approved") {
     if (interview.count) lines.push(`\n🗂 A filing setup question is waiting on your answer above.`)
     else if (rules.status === "draft") lines.push(`\n📐 The filing convention is waiting for your 👍 (or changes).`)
@@ -2584,6 +2598,7 @@ async function maybeDigest(ctx, force = false) {
   const briefRows = looseEnds.length ? [[{ text: "🧹 Clear unanswered", data: `ix:uc:${date}` }]] : []
   await tgSend(lines.join("\n"), { rows: briefRows, dryRun: DRY })
   await postEventCards(events.newRows, DRY).catch((e) => warn("digest: event cards failed:", e.message))
+  if (!DRY) await clearBounceQueue(cardBounces.keys).catch((e) => warn("digest: card bounce queue not cleared:", e.message))
   if (!DRY) {
     await setSetting("agent", { last_digest_date: date, last_unanswered_threads: looseEnds.slice(0, 8).map((m) => m.thread_id), last_unanswered_date: date })
     // Ryan 2026-09-27: "the same thing over and over every day … a way to check
@@ -2702,6 +2717,7 @@ async function main() {
     console.log("---- BRIEF SECTION (preview, from rows already in inbox_events) ----\n" + (preview.lines.join("\n") || "(nothing new)"))
     return
   }
+  if (flag("cards-only")) return syncCards(ctx, { dry: DRY, since: CARDS_SINCE, emails: CARDS_EMAILS })
   const t0 = Date.now()
   QUIET = { ...QUIET, ...((agent.quiet_hours && typeof agent.quiet_hours === "object") ? agent.quiet_hours : {}) }
   await alertDriveOnce(ctx)
@@ -2712,6 +2728,7 @@ async function main() {
   await postDeferred(ctx)
   if (flag("interview")) await seedInterview(ctx)
   if (!flag("no-poll")) await pollInbox(ctx)
+  if (!flag("no-cards")) await syncCards(ctx, { dry: DRY, since: CARDS_SINCE, emails: CARDS_EMAILS })
   if (!flag("no-events")) await scanEvents(ctx, { dry: DRY, backfillDays: EVENTS_BACKFILL ? parseDays(EVENTS_BACKFILL) : null })
   await runFetches(ctx)
   await resolveLoops(ctx)

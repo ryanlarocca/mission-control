@@ -34,7 +34,8 @@ export async function GET(request: Request) {
 
     // The campaign Gmail thread a "Reply in thread" email would land in
     // (null when they've never emailed us) — the card shows it next to the
-    // New thread option (2026-10-09).
+    // New thread option (2026-10-09). Since 2026-11-11 it can also be their
+    // newest email to ryan@, logged by the email sync — whichever is newer.
     const [{ data: rows, error }, emailThread] = await Promise.all([
       sb
       .from("relationship_touches")

@@ -185,8 +185,9 @@ function parseSenderEmail(fromHeader: string): string {
  * "Subject:", "To:"). Gmail mobile's forward of our own email (Grail,
  * 2026-10-02) arrived with the From: line mangled to a bare "<addr>" tail,
  * so the Date:/Subject: lines are cut points too, and a dangling address
- * fragment just above the cut is dropped. */
-function stripQuoted(body: string): string {
+ * fragment just above the cut is dropped. Exported 2026-11-11: the ryan@
+ * email sync (lib/relationshipEmailSync) logs card emails with the same cut. */
+export function stripQuoted(body: string): string {
   const lines = body.split(/\r?\n/)
   const out: string[] = []
   for (const line of lines) {
