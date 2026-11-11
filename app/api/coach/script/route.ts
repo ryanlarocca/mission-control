@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server"
 import { getLeadsClient } from "@/lib/leads"
 import { resolveLeadCallerId } from "@/lib/leadCall"
 import { gatherLeadContext, gatherRyanVoiceSamples } from "@/lib/coach/context"
-import { generateCallScript, type CallScript } from "@/lib/coach/script"
+import { generateCallScript, pinCallbackNumber, type CallScript } from "@/lib/coach/script"
 import { formatPhone } from "@/lib/utils"
 
 // Pre-call script for a lead (Sales Coach, 2026-11-02). The card calls this
@@ -61,7 +61,9 @@ export async function POST(request: NextRequest) {
     && (!ctx.lastFromThem || ctx.lastFromThem <= ctx.lastScriptAt.slice(0, 10))
     // A contract signed (or a deal closed) after the script was written.
     && !(ctx.deal && [ctx.deal.recordedAt, ctx.deal.signedAt, ctx.deal.pendingAt, ctx.deal.closedAt].some((t) => t && t > ctx.lastScriptAt!))
-  let script: CallScript | null = fresh ? cached : null
+  // Reused copies get the number pinned too, so a script cached before the
+  // 2026-11-11 fix can't read out a different line than he's dialing from.
+  let script: CallScript | null = fresh ? pinCallbackNumber(cached, callerId) : null
   let reused = !!script
   if (!script) {
     const voice = await gatherRyanVoiceSamples(sb)

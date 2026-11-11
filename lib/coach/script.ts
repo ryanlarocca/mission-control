@@ -38,7 +38,7 @@ Rules that come from his own coaching reviews:
 - Ryan prices on the fly, on the phone. Never tell him to work out a number, run comps or look anything up before dialing, and never write the script as if a number is already computed. "I can give you a number on the call" is the promise; "I have a number ready based on X" is not.
 - Say what he does in one plain clause, the way he says it (see his voice samples). No template lines: never "I buy directly, no agents, and close on your timeline" or any sentence that sounds like a sales script. If a sentence would make a stranger think "who talks like that", cut it.
 - No hedges. Ban: "I guess", "just", "checking in", "if you were", "I was wondering", "any interest".
-- The voicemail says the callback number exactly twice: once right after his name, once at the end. Say it as digits with pauses, e.g. "650, 204, 3247". Use the number given below, never another.
+- The voicemail says the callback number exactly twice: once right after his name, once at the end. Never write the digits — write the token [NUMBER] where it goes ("this is Ryan with LRG Homes, [NUMBER]"). The code fills in the line he is calling from. If his voice samples below show [NUMBER], that is the same token.
 - Voicemail length: 4 to 6 spoken lines, 25 seconds max.
 - Live: the opener is two sentences at most (name, hook, why he's calling). Three discovery questions that fit THIS person (timeline, who decides, condition, what they'd need to make it work, what happened since last time). The single most likely objection from them given the history, and a one-breath answer to it.
 - Use facts only from the context. Never invent prior conversations, letters or offers. If the history is thin, say so in the hook ("we traded messages a while back about Birch Avenue") rather than inventing detail.
@@ -49,14 +49,47 @@ Rules that come from his own coaching reviews:
 Reply with ONLY a JSON object:
 {"hook": string, "voicemail": [string, ...], "live": {"opener": string, "questions": [string, string, string], "objection": string, "answer": string}, "watch_out": string | null}`
 
+// A US phone number however it's written: "650, 204, 3247", "(650) 204-3247",
+// "650-204-3247", "+1 650 204 3247", "6502043247".
+const PHONE_RE = /(?:\+?1[\s,.-]*)?\(?\b(\d{3})\)?[\s,.-]*(\d{3})[\s,.-]*(\d{4})\b/g
+
+// Every callback number in the script becomes the line Ryan is calling
+// from, spoken as digits with pauses ("650, 436, 4279"). Covers the
+// [NUMBER] token, any digits the model wrote anyway, and scripts cached
+// before this fix — the route runs it on reused copies too. Only Ryan's
+// own number ever belongs in what he reads, so every number is his line.
+export function pinCallbackNumber(script: CallScript, callerId: string): CallScript {
+  const d = callerId.replace(/\D/g, "").slice(-10)
+  const spoken = d.length === 10 ? `${d.slice(0, 3)}, ${d.slice(3, 6)}, ${d.slice(6)}` : callerId
+  const fix = (t: string) => t.replace(/\[NUMBER\]/gi, spoken).replace(PHONE_RE, spoken)
+  return {
+    ...script,
+    hook: fix(script.hook),
+    voicemail: script.voicemail.map(fix),
+    live: {
+      opener: fix(script.live.opener),
+      questions: script.live.questions.map(fix),
+      objection: fix(script.live.objection),
+      answer: fix(script.live.answer),
+    },
+    watchOut: script.watchOut ? fix(script.watchOut) : null,
+    numberToSay: formatPhone(callerId) ?? callerId,
+  }
+}
+
 export async function generateCallScript(ctx: LeadCoachContext, callerId: string, voiceSamples: string[] = []): Promise<CallScript | null> {
   if (!hasLlmKey()) return null
   const numberToSay = formatPhone(callerId) ?? callerId
+  // Ryan, 2026-11-11 (Russel): the voicemail said 650-204-3247 while he was
+  // calling from 436-4279 — the model copied the number from his old
+  // voicemails. It now writes [NUMBER] and pinCallbackNumber fills it in;
+  // the samples go in with their numbers masked.
+  voiceSamples = voiceSamples.map((v) => v.replace(PHONE_RE, "[NUMBER]"))
   const today = new Intl.DateTimeFormat("en-CA", { timeZone: "America/Los_Angeles" }).format(new Date())
   const voice = voiceSamples.length
     ? `RYAN'S VOICE — real voicemails he left recently (match this, don't copy it):\n${voiceSamples.map((v, i) => `${i + 1}. ${v}`).join("\n")}`
     : "RYAN'S VOICE: no samples on file — plain, friendly, direct, first name only, no sales phrasing."
-  const prompt = `Today is ${today}. Ryan is about to call this person. The number they will see on caller ID, and the number the voicemail must say twice, is ${numberToSay}.
+  const prompt = `Today is ${today}. Ryan is about to call this person. Write [NUMBER] wherever the callback number goes.
 
 CONTEXT
 ${describeLeadContext(ctx)}
@@ -87,7 +120,7 @@ Write the script.`
       generatedAt: new Date().toISOString(),
     }
     if (!script.voicemail.length || !script.live.opener) throw new Error("script missing voicemail or opener")
-    return script
+    return pinCallbackNumber(script, callerId)
   } catch (e) {
     console.error("[coach/script] failed:", e instanceof Error ? e.message : String(e))
     return null
