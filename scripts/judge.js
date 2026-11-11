@@ -25,6 +25,11 @@
  *      day 3, 7, 14 after each attempt, then autopilot
  *  10. nothing new                              → leave the last verdict alone
  *
+ * Timing (2026-11-11): Ryan calls a little early, never late — "call me in
+ * four months" lands ~2 weeks early; a named month lands early in that month,
+ * never the month before. The judge also sets the card's hot / warm / cold
+ * from the whole thread, so one unrated call can't leave a stale chip.
+ *
  * Above all of them (2026-11-09, lib/deals.ts): a signed contract. Under
  * contract → no chasing, no drips, no autopilot; one date, the close-by day.
  * If they reach out, the model still reads it, and "they want something
@@ -205,7 +210,7 @@ Pick exactly one state. Highest rule that fits wins:
 2. "dead" — they sold it, don't own it, wrong number / wrong person, or it isn't a seller at all (a vendor or agent pitching Ryan).
 3. "appointment" — a specific meeting, walkthrough or visit was agreed. date = that day.
 4. "ryan_owes" — in the newest real conversation Ryan promised to send or do something specific (a number / an offer, a text with his info, a document, a call back "later today") and there's no sign he did it yet. Ryan's turn, now.
-5. "call_on" — in the newest REAL conversation, they or Ryan set a time to reconnect ("call me in January", "after the holidays", "end of March", "give me a couple of weeks"). date = that day (a month alone → the 15th; "after X" → about a week after X; "a couple of weeks" → 14 days). This stands even if later there were hang-ups, voicemails, Jackie logs or auto-texts — those don't move it. If a real conversation happened and nothing was promised or scheduled, this is still the state: pick a sensible date from what was said (a week for an open thread; "nothing moves for two months" → two months).
+5. "call_on" — in the newest REAL conversation, they or Ryan set a time to reconnect ("call me in January", "after the holidays", "end of March", "give me a couple of weeks"). Ryan calls a little EARLY, never late — a good salesperson beats the date they gave, but never calls before a month they named. date: a stretch of time from today ("in four months", "six months", "a year") → count it, then come back early: about two weeks early for three months or more, about a week early for one to three months, on the day for under a month ("a couple of weeks" → 14 days). A month they named ("call me in January") → the first weekday on or after the 4th of that month. "End of March" → about the 20th. "After X" → about a week after X. A specific day → that day. When you came in early, the reason says what they asked for ("said call in about four months — calling a little early"). This stands even if later there were hang-ups, voicemails, Jackie logs or auto-texts — those don't move it. If a real conversation happened and nothing was promised or scheduled, this is still the state: pick a sensible date from what was said (a week for an open thread; "nothing moves for two months" → two months).
 6. "waiting_on_them" — the last substantive message is a QUESTION FROM RYAN they have not answered yet (e.g. they texted "No", Ryan asked "not the owner anymore, or not for sale?").
 7. "ryan_today" — their newest message asks Ryan for something (a number / an offer, a call, an answer) or they clearly want to talk now.
 8. "quiet_until" — they said not interested / not selling / not now, with no date, without asking to be removed. Ryan may have closed politely ("no problem, you have my number") and they may have acknowledged (👍, "thanks") — that is still quiet_until.
@@ -218,10 +223,15 @@ Today is ${today}. If a standing verdict or a date Ryan set by hand is given and
 
 Separately from the state: does Ryan OWE them something from the newest real conversation — anything he said he'd send or do ("I'll shoot you a text", "I'll send you my info", "let me get you a number", "I'll call you back this afternoon") with no later message from Ryan showing he did it? Look at how the conversation ENDED; a promise at the end of a call counts even if a longer timeline was discussed earlier. If so, put it in "owed" in a few words, written TO Ryan ("text her your name and number…"); otherwise null.
 
+Also separately: how warm are they, reading the WHOLE thread as it stands now (not just the last call)? "temperature" is one of:
+  hot  — ready to transact now: asked for an offer / a number, wants to sell within ~2 months, negotiating, or urgent.
+  warm — a real owner engaged in a conversation who means to sell but isn't asking to transact yet: open to Ryan, a 3–12 month timeline, "call me in four months", thinking about Ryan's offer to buy as-is / with tenants.
+  cold — no urgency and no engagement now: not interested / not now with no plan, "maybe someday", never reached, or a price gap that stalled.
+
 Also separately: did THEY give a different phone number to reach them at than the one they are calling / texting from ("this is my daughter's office, my cell is…", "call me back at…", "my real number is…")? Only a number that is theirs to be reached at — never Ryan's or LRG Homes' numbers, never a number Jackie or Ryan read out, never the number they are already calling from, never somebody else's number they merely mention. If they gave more than one, the newest. Put its 10 digits in "callback_number" only if all ten digits are clear in the transcript; if they gave one but the digits are incomplete or unclear, leave "callback_number" null and set "callback_unclear" true. "callback_note" = a few words on whose number it is and where it came from ("her own cell — the number she called from is her daughter's office"). Nothing given → null, false, null.
 
 Respond with ONLY JSON:
-{"state": "<one of the states>", "date": "YYYY-MM-DD" or null, "owed": "<what Ryan promised, e.g. text her his name/number with Vine Street on it for her attorney>" or null, "reason": "<one plain sentence for Ryan's screen, under 140 characters, naming the fact — e.g. Bill said call in January ahead of his end-of-March sale>", "connected": true|false, "callback_number": "<10 digits>" or null, "callback_unclear": true|false, "callback_note": "<a few words>" or null}`
+{"state": "<one of the states>", "date": "YYYY-MM-DD" or null, "owed": "<what Ryan promised, e.g. text her his name/number with Vine Street on it for her attorney>" or null, "reason": "<one plain sentence for Ryan's screen, under 140 characters, naming the fact — e.g. Bill said call in January ahead of his end-of-March sale>", "connected": true|false, "temperature": "hot"|"warm"|"cold", "callback_number": "<10 digits>" or null, "callback_unclear": true|false, "callback_note": "<a few words>" or null}`
 }
 
 // "(408) 555-0142" / "4085550142" / "1-408-555-0142" → +14085550142; anything
@@ -260,7 +270,7 @@ async function askModel(anthropic, ctx) {
     try {
       const json = JSON.parse(out.slice(out.indexOf("{"), out.lastIndexOf("}") + 1))
       if (!STATES.includes(json.state)) throw new Error(`bad state ${json.state}`)
-      return { state: json.state, date: /^\d{4}-\d{2}-\d{2}$/.test(json.date || "") ? json.date : null, owed: typeof json.owed === "string" && json.owed.trim() ? json.owed.trim().slice(0, 120) : null, reason: String(json.reason || "").slice(0, 160), connected: !!json.connected, callback: cleanCallback(json.callback_number), callbackUnclear: json.callback_unclear === true, callbackNote: typeof json.callback_note === "string" && json.callback_note.trim() ? json.callback_note.trim().slice(0, 200) : null, usage: res.usage }
+      return { state: json.state, date: /^\d{4}-\d{2}-\d{2}$/.test(json.date || "") ? json.date : null, owed: typeof json.owed === "string" && json.owed.trim() ? json.owed.trim().slice(0, 120) : null, reason: String(json.reason || "").slice(0, 160), connected: !!json.connected, temperature: ["hot", "warm", "cold"].includes(json.temperature) ? json.temperature : null, callback: cleanCallback(json.callback_number), callbackUnclear: json.callback_unclear === true, callbackNote: typeof json.callback_note === "string" && json.callback_note.trim() ? json.callback_note.trim().slice(0, 200) : null, usage: res.usage }
     } catch (e) {
       lastErr = new Error(`${e.message} — stop=${res.stop_reason} blocks=${(res.content || []).map((b) => b.type).join(",") || "none"} said: ${out.slice(0, 200).replace(/\s+/g, " ")}`)
     }
@@ -362,7 +372,7 @@ function decide(llm, f, today) {
     default:
       date = null
   }
-  return { state, date, reason: reason.slice(0, 200), enrolAutopilot: state === "chase" && date === null }
+  return { state, date, reason: reason.slice(0, 200), enrolAutopilot: state === "chase" && date === null, temperature: llm.temperature || null }
 }
 
 // ─── writes ─────────────────────────────────────────────────────────────────
@@ -392,6 +402,14 @@ async function apply(sb, phone, rows, f, v, deps) {
 
   // Everyone else: one date on the newest row, none anywhere else.
   await upd({ recommended_followup_date: null, followup_reason: null })
+
+  // The judge's hot / warm / cold goes on the newest real event — the card's
+  // chip reads the newest row that has one, so this is what it shows
+  // (2026-11-11: an old Cold call kept showing after a warm conversation).
+  if (v.temperature) {
+    const tempRow = [...rows].reverse().find((r) => !String(r.lead_type || "").startsWith("drip_")) || f.newest
+    await upd({ temperature: v.temperature }, [tempRow.id])
+  }
 
   if (v.state === "under_contract" || v.state === "closed") {
     // Nobody texts a seller who signed: every drip / autopilot stamp off.
@@ -449,7 +467,7 @@ async function saveVerdict(sb, phone, rows, v, llm) {
   const { error } = await sb.from("lead_verdicts").upsert({
     phone, state: v.state, due_date: v.date, reason: v.reason,
     through_at: rows[rows.length - 1].created_at, judged_at: new Date().toISOString(),
-    source: "judge", model: MODEL, raw: llm ? { state: llm.state, date: llm.date, reason: llm.reason, connected: llm.connected, callback: llm.callback || null, callback_unclear: !!llm.callbackUnclear, usage: llm.usage } : null,
+    source: "judge", model: MODEL, raw: llm ? { state: llm.state, date: llm.date, reason: llm.reason, connected: llm.connected, temperature: llm.temperature || null, callback: llm.callback || null, callback_unclear: !!llm.callbackUnclear, usage: llm.usage } : null,
   })
   if (error) throw new Error(`verdict: ${error.message}`)
 }
@@ -613,7 +631,7 @@ if (require.main === module) {
     if (r.skipped) { console.log(`\n## ${r.phone} — skipped (${r.skipped})`); return }
     console.log(`\n## ${r.name || "(no name)"} ${r.phone}${r.address ? ` · ${r.address}` : ""}`)
     console.log(`  before: ${r.before ? `${fmtDay(r.before.date)} — ${r.before.reason || ""}` : "no date"}${r.autopilotBefore ? " · on autopilot" : ""}`)
-    console.log(`  after:  ${r.verdict.state}${r.verdict.date ? ` ${fmtDay(r.verdict.date)}` : ""} — ${r.verdict.reason}${r.verdict.enrolAutopilot ? " · → autopilot" : ""}`)
+    console.log(`  after:  ${r.verdict.state}${r.verdict.date ? ` ${fmtDay(r.verdict.date)}` : ""} — ${r.verdict.reason}${r.verdict.enrolAutopilot ? " · → autopilot" : ""}${r.verdict.temperature ? ` · ${r.verdict.temperature}` : ""}`)
     if (r.llm && (r.llm.callback || r.llm.callbackUnclear)) console.log(`  number: ${r.llm.callback ? prettyPhone(r.llm.callback) : "gave one, digits unclear"}${r.llm.callbackNote ? ` — ${r.llm.callbackNote}` : ""}`)
   }
 

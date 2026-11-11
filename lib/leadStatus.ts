@@ -211,7 +211,10 @@ export async function applyStatusChange(
     // the newest row that has a temperature, which can be an older "hot" call
     // from before the no (Mary, 2026-11-11: Ryan passed on the house and the
     // card still said Hot). Undo restores the status, not the temperature.
-    if (args.source === "auto" && (args.to === "nurture" || args.to === "dead")) {
+    // Nurture is left to the judge (scripts/judge.js), which rates hot / warm /
+    // cold from the whole thread — "call me in four months" is a Warm nurture,
+    // and cooling it here would undo that the next morning.
+    if (args.source === "auto" && args.to === "dead") {
       const { error: tErr } = await sb.from("leads").update({ temperature: "cold" }).eq("id", args.anchor.id)
       if (tErr) console.error("[lead-status] temperature write failed:", tErr.message)
     }
