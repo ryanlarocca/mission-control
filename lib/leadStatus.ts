@@ -154,7 +154,7 @@ TODAY IS ${today}.
 Decide where this person stands RIGHT NOW, judged mostly by the latest exchanges:
 
 - "lead": they own a property (the mailed one or another) and want to sell soon enough to work on now — roughly within 12 months — and they are open to Ryan's kind of offer (as-is cash, or willing to hear a number / talk numbers). Asking for an offer, inviting a call to discuss selling, or actively negotiating all count. A first message like "I own 123 Main and I'm interested in selling, call me" is a lead.
-- "not_now": a real owner who isn't a seller for Ryan right now — "maybe in a few years", "not interested right now", "just curious what it's worth", wants full retail and won't budge, someone else decides, or they went cold after earlier interest and said so. A polite or rude "no" without asking to be removed is also not_now.
+- "not_now": a real owner who isn't a seller for Ryan right now — "maybe in a few years", "not interested right now", "just curious what it's worth", wants full retail and won't budge, someone else decides, or they went cold after earlier interest and said so. A polite or rude "no" without asking to be removed is also not_now. Ryan passing counts too: if, after hearing about the property, Ryan tells them it isn't a fit for him (too nice / already updated, not what he buys, the numbers don't work for him) and doesn't keep talking price on it, the person is not_now even if they still wanted an offer.
 - "sold": they no longer own the property (sold it, lost it, transferred it) and mention nothing else they own.
 - "wrong_person": not the owner and not connected to the property — a tenant, wrong number, someone who got the letter by mistake. An agent or relative ACTING FOR the owner is not wrong_person; judge the owner's intent instead.
 - "unclear": not enough to tell (a hang-up, a one-word message, only Ryan's side, a voicemail greeting).
@@ -207,6 +207,14 @@ export async function applyStatusChange(
       .eq("id", args.anchor.id)
     if (error) throw new Error(`status write failed: ${error.message}`)
     if (args.to === "active") await stampBecameLead(sb, args.rows)
+    // An automatic move to Nurture / Dead also cools the card's chip: it reads
+    // the newest row that has a temperature, which can be an older "hot" call
+    // from before the no (Mary, 2026-11-11: Ryan passed on the house and the
+    // card still said Hot). Undo restores the status, not the temperature.
+    if (args.source === "auto" && (args.to === "nurture" || args.to === "dead")) {
+      const { error: tErr } = await sb.from("leads").update({ temperature: "cold" }).eq("id", args.anchor.id)
+      if (tErr) console.error("[lead-status] temperature write failed:", tErr.message)
+    }
     if (args.to === "dead") {
       await haltOutreachForCluster(sb, { id: args.anchor.id, caller_phone: args.anchor.caller_phone, email: args.anchor.email, status: "dead" })
     }
