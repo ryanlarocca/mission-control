@@ -11,6 +11,7 @@ import type { LucideIcon } from "lucide-react"
 import { ContactDetailModal } from "./ContactDetailModal"
 import type { TouchesSummary } from "./ContactDetailModal"
 import { RelationshipThread, invalidateRelationshipThread } from "./RelationshipThread"
+import { RelationshipField } from "./RelationshipField"
 import { RelationshipPhone } from "./RelationshipPhone"
 import { useRelationshipCall, CallButton, CallStatusLine } from "./RelationshipCall"
 import { CardLineButton } from "./RelationshipCardLine"
@@ -857,6 +858,14 @@ function CRMSTabInner() {
     fetchTouches(phone, true)
   }
 
+  // ── Name / email edit (2026-11-11): the route already saved it; patch
+  // both lists so the queue card, search and the modal agree.
+  function handleDetailsChanged(id: string, patch: { name?: string; email?: string | null }) {
+    const apply = (c: CRMSContact) => c.id === id ? { ...c, ...patch } : c
+    setContacts(prev => prev.map(apply))
+    setAllContacts(prev => prev.map(apply))
+  }
+
   // ── Card # toggle (2026-10-26): optimistic flip on both lists (so the
   // queue card and the modal agree), revert + toast if the write fails.
   async function handleCardLineToggle(id: string, on: boolean) {
@@ -1537,14 +1546,22 @@ function CRMSTabInner() {
                   ← All contacts
                 </button>
                 <div className="flex items-center gap-2 flex-wrap mb-2">
-                  <button
-                    type="button"
-                    onClick={() => setDetailId(selectedContact.id)}
-                    className="text-sm font-semibold text-zinc-100 hover:text-emerald-400 hover:underline underline-offset-2"
-                    title="Open full contact detail"
-                  >
-                    {selectedContact.name}
-                  </button>
+                  <RelationshipField
+                    id={selectedContact.id}
+                    field="name"
+                    value={selectedContact.name}
+                    onChanged={name => handleDetailsChanged(selectedContact.id, { name })}
+                    display={
+                      <button
+                        type="button"
+                        onClick={() => setDetailId(selectedContact.id)}
+                        className="text-sm font-semibold text-zinc-100 hover:text-emerald-400 hover:underline underline-offset-2 truncate"
+                        title="Open full contact detail"
+                      >
+                        {selectedContact.name}
+                      </button>
+                    }
+                  />
                   <div className="relative" ref={categoryPickerRef}>
                     <button
                       type="button"
@@ -1624,6 +1641,15 @@ function CRMSTabInner() {
                       phone={selectedContact.phone}
                       altPhones={selectedContact.altPhones ?? []}
                       onChanged={(phone, altPhones) => handlePhoneChanged(selectedContact.id, selectedContact.phone, phone, altPhones)}
+                    />
+                  </div>
+                  <span className="text-zinc-600">Email</span>
+                  <div className="text-zinc-300 min-w-0">
+                    <RelationshipField
+                      id={selectedContact.id}
+                      field="email"
+                      value={selectedContact.email ?? ""}
+                      onChanged={email => handleDetailsChanged(selectedContact.id, { email: email || null })}
                     />
                   </div>
                   <span className="text-zinc-600">Last contacted</span>
@@ -2039,6 +2065,7 @@ function CRMSTabInner() {
             const cur = contacts.find(c => c.id === id) ?? allContacts.find(c => c.id === id)
             handlePhoneChanged(id, cur?.phone ?? "", phone, altPhones)
           }}
+          onDetailsChanged={handleDetailsChanged}
           onCategoryChanged={(id, newCategory) => {
             const next = coerceType(newCategory)
             const patch = (c: CRMSContact) =>

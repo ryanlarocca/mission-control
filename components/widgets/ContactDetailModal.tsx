@@ -7,6 +7,7 @@ import {
 } from "lucide-react"
 import type { LucideIcon } from "lucide-react"
 import { RelationshipThread, invalidateRelationshipThread } from "./RelationshipThread"
+import { RelationshipField } from "./RelationshipField"
 import { RelationshipPhone } from "./RelationshipPhone"
 import { useRelationshipCall, CallButton, CallStatusLine } from "./RelationshipCall"
 import { CardLineButton } from "./RelationshipCardLine"
@@ -64,6 +65,7 @@ interface Props {
   // The parent owns the contact + the phone-keyed caches; it patches the
   // contact so this modal re-renders (and refetches history) under the new number.
   onPhoneChanged?: (id: string, phone: string, altPhones: string[]) => void
+  onDetailsChanged?: (id: string, patch: { name?: string; email?: string | null }) => void
   // The parent owns the Card # flag (optimistic flip + revert), so the queue
   // card and this modal stay in sync.
   onCardLineToggle?: (id: string, on: boolean) => void
@@ -130,7 +132,7 @@ function formatDateTime(iso: string): string {
   })
 }
 
-export function ContactDetailModal({ contact, onClose, onSendToast, onNotesSaved, onCategoryChanged, onTierChanged, onPhoneChanged, onCardLineToggle }: Props) {
+export function ContactDetailModal({ contact, onClose, onSendToast, onNotesSaved, onCategoryChanged, onTierChanged, onPhoneChanged, onDetailsChanged, onCardLineToggle }: Props) {
   const [history, setHistory] = useState<InteractionEntry[]>([])
   const [loadingHistory, setLoadingHistory] = useState(true)
   const [notes, setNotes] = useState(contact.notes)
@@ -465,7 +467,14 @@ export function ContactDetailModal({ contact, onClose, onSendToast, onNotesSaved
       >
         <div className="flex items-center justify-between px-4 py-3 border-b border-zinc-800 sticky top-0 bg-zinc-950 z-10">
           <div className="min-w-0">
-            <p className="text-sm font-semibold text-zinc-100 truncate">{contact.name}</p>
+            <div className="text-sm font-semibold text-zinc-100">
+              <RelationshipField
+                id={contact.id}
+                field="name"
+                value={contact.name}
+                onChanged={name => onDetailsChanged?.(contact.id, { name })}
+              />
+            </div>
             <div className="flex flex-wrap items-center gap-1.5 mt-0.5">
               <div className="relative" ref={categoryPickerRef}>
                 <button
@@ -562,9 +571,15 @@ export function ContactDetailModal({ contact, onClose, onSendToast, onNotesSaved
               <span className="text-zinc-600">Email</span>
               <span className="text-zinc-300 font-mono flex items-center gap-1.5 min-w-0">
                 <Mail className="w-3 h-3 text-zinc-600 shrink-0" />
-                {contact.email
-                  ? <a href={`mailto:${contact.email}`} className="truncate hover:text-emerald-400 hover:underline underline-offset-2" title="Open in your mail app">{contact.email}</a>
-                  : <span className="text-zinc-600">—</span>}
+                <RelationshipField
+                  id={contact.id}
+                  field="email"
+                  value={contact.email ?? ""}
+                  onChanged={email => onDetailsChanged?.(contact.id, { email: email || null })}
+                  display={contact.email
+                    ? <a href={`mailto:${contact.email}`} className="truncate hover:text-emerald-400 hover:underline underline-offset-2" title="Open in your mail app">{contact.email}</a>
+                    : <span className="text-zinc-600">—</span>}
+                />
               </span>
               <span className="text-zinc-600">Last contacted</span>
               <span className="text-zinc-300">{contact.lastContacted || "—"}</span>
