@@ -6,7 +6,8 @@ import { sendCampaignAlert, sendCampaignDocument } from "@/lib/campaignAlerts"
 import { buildEmailMime, toGmailRaw } from "@/lib/emailMime"
 import { addSuppression } from "@/lib/suppression"
 import { completeText, extractJsonObject, hasLlmKey, SONNET } from "@/lib/llm"
-import { normalizeAltPhones, parseUsPhone10, to10Digit } from "@/lib/relationships"
+import { normalizeAltPhones, parseUsPhone10, to10Digit, toE164Phone } from "@/lib/relationships"
+import type { AlertSubject } from "@/lib/alertSubject"
 import {
   type AgentContact,
   type CampaignContactLite,
@@ -576,10 +577,31 @@ async function handleContactMessage(
   const headline = [tag && `${tag}${triage?.address ? ` — ${esc(triage.address)}` : ""}`, cardLine].filter(Boolean).join("  ")
   const phonesLine = card?.phonesLine ? esc(card.phonesLine) : ""
   const files = listAttachments(payload)
+  // The alert records its card (2026-11-11), so Draft: and a typed reply find
+  // the campaign contact through it instead of by the name in the text.
+  const about = card ? agentReplyAbout(card.id, await cardPhone(sb, card.id), contact.phone) : null
   const alertId = await sendCampaignAlert(sb,
-    `✉️ <b>AGENT REPLY</b> — <b>${esc(contact.name ?? contact.email ?? "")}</b> (after T${contact.touch_number})${headline ? `\n${headline}` : ""}${phonesLine ? `\n${phonesLine}` : ""}\n"${esc(alertBody)}"${truncated ? "\n… [message truncated — full email in Gmail]" : ""}${files.length ? `\n📎 ${files.length} attachment${files.length === 1 ? "" : "s"} below` : ""}\n\nDrip continues as scheduled. Reply to this message to send it as a threaded email from ${esc(mailbox)}, or "draft: your guidance" for a Claude draft first.`
+    `✉️ <b>AGENT REPLY</b> — <b>${esc(contact.name ?? contact.email ?? "")}</b> (after T${contact.touch_number})${headline ? `\n${headline}` : ""}${phonesLine ? `\n${phonesLine}` : ""}\n"${esc(alertBody)}"${truncated ? "\n… [message truncated — full email in Gmail]" : ""}${files.length ? `\n📎 ${files.length} attachment${files.length === 1 ? "" : "s"} below` : ""}\n\nDrip continues as scheduled. Reply to this message to send it as a threaded email from ${esc(mailbox)}, or "draft: your guidance" for a Claude draft first.`,
+    { about }
   )
   if (files.length) await forwardAttachments(sb, gmail, { gmailId, payload, who: contact.name ?? contact.email ?? "agent", replyTo: alertId })
+}
+
+/** Who an AGENT REPLY alert is about: the card, its number (the card's, else
+ * the campaign row's) in E.164, answered on the campaign line. */
+export function agentReplyAbout(relationshipId: string, cardPhone: string | null, contactPhone: string | null): AlertSubject {
+  return { kind: "relationship", relationshipId, phone: toE164Phone(cardPhone) ?? toE164Phone(contactPhone), line: "campaign" }
+}
+
+// The card's main number for the alert record; null on any failure — the
+// alert goes out regardless.
+async function cardPhone(sb: SupabaseClient, relationshipId: string): Promise<string | null> {
+  try {
+    const { data } = await sb.from("relationships").select("phone").eq("id", relationshipId).maybeSingle<{ phone: string | null }>()
+    return data?.phone ?? null
+  } catch {
+    return null
+  }
 }
 
 const TRIAGE_TAGS: Record<string, string> = {

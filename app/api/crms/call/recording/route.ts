@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from "next/server"
 import { waitUntil } from "@vercel/functions"
 import { getLeadsClient, parseTwilioBody } from "@/lib/leads"
-import { processRelationshipRecording, type CallLine, type RelationshipCallKind } from "@/lib/relationship-calls"
+import { processRelationshipRecording, MIN_VOICEMAIL_TRANSCRIBE_SEC, type CallLine, type RelationshipCallKind } from "@/lib/relationship-calls"
+import { alertMissedOfficeCall, isEmptyVoicemail } from "@/lib/office-inbound"
 
 // Recording callback for Relationships calls. Attaches the recording to the
 // touch, then transcribes + summarizes in the background (see
@@ -22,6 +23,10 @@ export async function POST(request: NextRequest) {
   // the campaign timeline. Office lines send neither.
   const line: CallLine = request.nextUrl.searchParams.get("line") === "agents" ? "agents" : "office"
   const campaignContactId = request.nextUrl.searchParams.get("campaignContactId")
+  // The caller's number, threaded by /api/crms/call/inbound (the recording
+  // callback itself carries no From). Display only.
+  const fromRaw = (request.nextUrl.searchParams.get("from") || "").trim()
+  const callerPhone = /^\+?\d{7,15}$/.test(fromRaw) ? fromRaw : null
   if (!touchId) return ok(voicemail)
   let recordingUrl = ""
   let durationSec: number | null = null
@@ -36,7 +41,19 @@ export async function POST(request: NextRequest) {
     console.error("[crms/call/recording] parse failed:", e)
     return ok(voicemail)
   }
-  if (!recordingUrl) return ok(voicemail)
+  if (!recordingUrl) {
+    // An office-line voicemail <Record action> with nothing recorded: the
+    // caller reached the beep and left nothing — "Missed call, no voicemail"
+    // (2026-11-11). Once-only via the touch claim; the agents line has its
+    // own missed-call alert at dial time.
+    if (voicemail && line === "office" && isEmptyVoicemail({ hasRecording: false, durationSec, floorSec: MIN_VOICEMAIL_TRANSCRIBE_SEC })) {
+      waitUntil(alertMissedOfficeCall(getLeadsClient(), touchId, {
+        callerPhone,
+        patch: { message: "📵 Voicemail — nothing recorded (hang-up)", call_duration_sec: durationSec },
+      }).then(() => undefined, e => console.error("[crms/call/recording] missed-call alert threw:", e)))
+    }
+    return ok(voicemail)
+  }
   const fullUrl = `${recordingUrl}.mp3`
 
   const sb = getLeadsClient()
@@ -62,6 +79,7 @@ export async function POST(request: NextRequest) {
     recordingDurationSec: durationSec,
     kind,
     line,
+    callerPhone,
     ...(line === "agents" ? { campaign: { contactId: campaignContactId, callSid } } : {}),
   }))
   return ok(voicemail)

@@ -12,7 +12,7 @@
 
 import { getLeadsClient, fetchTwilioAudio, transcribeAudio, sendTelegramAlert, FORWARD_TO } from "./leads"
 import { completeText, hasLlmKey, SONNET } from "./llm"
-import { isPlaceholderName } from "./office-inbound"
+import { alertMissedOfficeCall, isEmptyVoicemail, isPlaceholderName } from "./office-inbound"
 import { sendCampaignAlert } from "./campaignAlerts"
 import type { AlertSubject } from "./alertSubject"
 import { isValidCategory } from "./crms"
@@ -141,6 +141,9 @@ export async function processRelationshipRecording(args: {
   recordingDurationSec: number | null
   kind?: RelationshipCallKind
   line?: CallLine
+  // The number the caller dialed from (office-line voicemail), for the
+  // "Missed call" alert; the card's main number when absent.
+  callerPhone?: string | null
   // Agents line only: mirror the summary onto the campaign timeline
   // (campaign_events) so the Email Drip contact card tells the same story.
   campaign?: { contactId: string | null; callSid: string | null }
@@ -174,7 +177,7 @@ export async function processRelationshipRecording(args: {
   // greeting, a wrong-number hang-up, a test call. Not worth a Whisper +
   // model round trip; stamp the touch and leave notes alone (Ryan, 2026-09-23).
   const floor = kind === "voicemail" ? MIN_VOICEMAIL_TRANSCRIBE_SEC : MIN_TRANSCRIBE_SEC
-  if (recordingDurationSec !== null && recordingDurationSec < floor) {
+  if (isEmptyVoicemail({ hasRecording: true, durationSec: recordingDurationSec, floorSec: floor })) {
     const short = kind === "voicemail"
       ? `${CALL_OUTCOME_PREFIX}Voicemail ${recordingDurationSec}s — too short to transcribe (hang-up)`
       : `${CALL_OUTCOME_PREFIX}Connected ${recordingDurationSec}s — too short to transcribe (voicemail or hang-up)`
@@ -183,7 +186,16 @@ export async function processRelationshipRecording(args: {
       .update({ message: short })
       .eq("id", touchId)
     if (error) console.error("[crms/call] short-call stamp failed:", error.message)
-    if (kind !== "outbound") await alert(`📵 ${label} ${name}: ${recordingDurationSec}s, nothing to transcribe.`)
+    // An office-line voicemail this short is a hang-up, not a message: ONE
+    // "Missed call … No voicemail." alert in place of the old "nothing to
+    // transcribe" line (2026-11-11). Falls back to the old line when the
+    // touch isn't claimable, so nothing ever goes silent; "already" = a
+    // Twilio retry, stay quiet.
+    let missed: "alerted" | "already" | "ineligible" = "ineligible"
+    if (kind === "voicemail" && line === "office") {
+      missed = await alertMissedOfficeCall(sb, touchId, { callerPhone: args.callerPhone ?? null })
+    }
+    if (kind !== "outbound" && missed === "ineligible") await alert(`📵 ${label} ${name}: ${recordingDurationSec}s, nothing to transcribe.`)
     await mirror(short.replace(CALL_OUTCOME_PREFIX, ""))
     return
   }

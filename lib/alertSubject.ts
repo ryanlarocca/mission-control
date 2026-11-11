@@ -10,7 +10,19 @@
 
 import { getLeadsClient } from "./leads"
 
-export type AlertLine = "office" | "agents"
+// office / agents = a text on that Twilio line. Since 2026-11-11
+// (briefs/BRIEF_RELATIONSHIP_EMAIL_ALERTS_2026-11-11.md): email = a
+// conversation on ryan@ (answered from ryan@, in their thread); campaign = an
+// agent-campaign reply (answered from the campaign mailbox it arrived in).
+export type AlertLine = "office" | "agents" | "email" | "campaign"
+
+const ALERT_LINES: readonly AlertLine[] = ["office", "agents", "email", "campaign"]
+
+/** The stored line → a known one. Anything else (null, a typo, a line a
+ * newer deploy wrote) reads as "office", as it always has. */
+export function parseAlertLine(raw: string | null | undefined): AlertLine {
+  return (ALERT_LINES as readonly string[]).includes(raw ?? "") ? (raw as AlertLine) : "office"
+}
 
 export type AlertSubject =
   | { kind: "lead"; leadId?: string | null; phone?: string | null; email?: string | null }
@@ -64,7 +76,7 @@ export async function alertSubjectFor(messageId: number): Promise<AlertSubject |
 
 export function subjectFromRow(r: Row): AlertSubject | null {
   if (r.kind === "relationship" && r.relationship_id) {
-    return { kind: "relationship", relationshipId: r.relationship_id, phone: r.phone, line: r.line === "agents" ? "agents" : "office" }
+    return { kind: "relationship", relationshipId: r.relationship_id, phone: r.phone, line: parseAlertLine(r.line) }
   }
   if (r.kind === "lead" && (r.lead_id || r.phone || r.email)) {
     return { kind: "lead", leadId: r.lead_id, phone: r.phone, email: r.email }

@@ -14,6 +14,7 @@ import {
   discardPendingDraft,
   draftCampaignEmail,
   findDraftByTgMessage,
+  postCampaignDraft,
   reviseCampaignDraft,
   sendPendingDraft,
   type DraftResult,
@@ -124,26 +125,10 @@ async function tg(
 
 /** Post a draft (new or revised) with its action buttons and link the
  * Telegram message back to the draft row so reply-to-draft revising works. */
+// Lives in lib/campaignDraft since 2026-11-11 so lib/alertReply posts a
+// card-found AGENT REPLY draft the same way.
 async function postDraft(chatId: number, replyToMessageId: number | undefined, out: DraftResult): Promise<void> {
-  const payload = {
-    chat_id: chatId,
-    text: `📝 Draft for ${out.label}:\n\n${out.draft}\n\nReply to THIS message with changes and I'll revise. Nothing sends until you tap ✅.`,
-    reply_markup: {
-      inline_keyboard: [[
-        { text: "✅ Send", callback_data: `dsend:${out.eventId}` },
-        { text: "❌ Discard", callback_data: `ddisc:${out.eventId}` },
-      ]],
-    },
-  }
-  // allow_sending_without_reply: a dead reply target (deleted message, or a
-  // synthetic test update) must never eat the draft — post it standalone.
-  let sent = await tg("sendMessage", {
-    ...payload,
-    ...(replyToMessageId ? { reply_to_message_id: replyToMessageId, allow_sending_without_reply: true } : {}),
-  })
-  if (!sent?.ok) sent = await tg("sendMessage", payload) // belt-and-suspenders retry without the reply link
-  const tgId = sent?.result?.message_id
-  if (out.eventId && typeof tgId === "number") await attachDraftMessageId(out.eventId, tgId)
+  await postCampaignDraft(out, replyToMessageId, chatId)
 }
 
 /** Post a template-copy preview with Apply/Discard buttons. */
@@ -1289,12 +1274,24 @@ export async function POST(request: Request) {
   // and "call him" all go through lib/alertReply — one path for every lead
   // and Relationships alert, whatever its wording. Older alerts (no record)
   // fall through to the text parsing below.
-  const subject = await repliedSubject()
+  let subject = await repliedSubject()
+  // An AGENT REPLY alert (line "campaign", 2026-11-11): Draft: and a typed
+  // reply go to the campaign drafter / sender with the contact found through
+  // the card. "call her", and a card no campaign contact links to, keep the
+  // AGENT REPLY branch below (by the name in the alert), as before.
+  const campaignAlert = subject?.kind === "relationship" && subject.line === "campaign"
+  if (subject?.kind === "relationship" && campaignAlert) {
+    const { replyIntent, campaignContactForCard, usesLegacyCampaignPath } = await import("@/lib/alertReply")
+    const { intent } = replyIntent(body)
+    const contact = intent === "call" ? null : await campaignContactForCard(subject.relationshipId)
+    if (usesLegacyCampaignPath(intent, !!contact)) subject = null
+  }
   if (subject) {
     const { replyIntent, draftForSubject, callSubject, textSubject } = await import("@/lib/alertReply")
     const { intent, gist } = replyIntent(body)
     if (intent === "draft") {
-      await tg("sendMessage", { chat_id: chatId, text: "✍️ Drafting…", reply_to_message_id: msg.message_id })
+      // The campaign drafter never said "Drafting…" — its draft is the reply.
+      if (!campaignAlert) await tg("sendMessage", { chat_id: chatId, text: "✍️ Drafting…", reply_to_message_id: msg.message_id })
       waitUntil((async () => {
         const err = await draftForSubject(subject, gist, msg.message_id)
         if (err) await tg("sendMessage", { chat_id: chatId, text: err, reply_to_message_id: msg.message_id })

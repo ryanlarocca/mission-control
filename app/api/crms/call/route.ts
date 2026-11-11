@@ -1,28 +1,15 @@
 import { NextRequest, NextResponse } from "next/server"
-import { getLeadsClient, getTwilioNumber, isOwnedNumber, CARD_LINE, FORWARD_TO } from "@/lib/leads"
-import { PROD_BASE, relationshipCallerId } from "@/lib/relationship-calls"
-import { getCardLineFlag } from "@/lib/card-line"
+import { getLeadsClient } from "@/lib/leads"
+import { normalizeDialE164, startOfficeRelayCall } from "@/lib/officeCall"
 
 // Relationships-tab click-to-call. Mirrors /api/leads/call but the record is a
-// `relationship_touches` row (modality='call') instead of a lead:
-//   1. Insert the touch (call_status='dialing') so its id can thread through
-//      Twilio's callbacks.
-//   2. Ask Twilio to ring Ryan's cell from one of our lines; when he answers,
-//      Twilio fetches /api/crms/call/bridge, which dials the contact showing
-//      Ryan's own cell (a Twilio Verified Caller ID) and records from answer.
+// `relationship_touches` row (modality='call') instead of a lead. The call
+// itself — touch insert, ringing Ryan's cell, the bridge to the contact — is
+// lib/officeCall.startOfficeRelayCall (2026-11-11), shared with "call him" in
+// Telegram; this route keeps the body validation and the response shape.
 // GET ?touchId= lets the card poll the outcome while the call is in flight.
 // Card # ON (relationships.use_card_line, 2026-10-26): the contact sees the
-// business-card line instead — the bridge gets `line=card` (never a raw
-// number; it's public) and the touch is stamped with twilio_number.
-
-function normalizeE164(raw: string): string | null {
-  const trimmed = raw.trim()
-  if (trimmed.startsWith("+") && /^\+\d{10,15}$/.test(trimmed)) return trimmed
-  const digits = trimmed.replace(/\D/g, "")
-  if (digits.length === 10) return `+1${digits}`
-  if (digits.length === 11 && digits.startsWith("1")) return `+${digits}`
-  return null
-}
+// business-card line instead — see lib/officeCall.
 
 export async function POST(request: NextRequest) {
   let body: { id?: string; phone?: string; tier?: string; category?: string } = {}
@@ -32,91 +19,13 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 })
   }
   const relationshipId = body.id
-  const to = body.phone ? normalizeE164(body.phone) : null
+  const to = body.phone ? normalizeDialE164(body.phone) : null
   if (!relationshipId || !to) {
     return NextResponse.json({ error: "id and a valid phone are required" }, { status: 400 })
   }
-  if (isOwnedNumber(to) || to === FORWARD_TO) {
-    return NextResponse.json({ error: `${to} is one of our own numbers — not dialing` }, { status: 400 })
-  }
-  try {
-    const { checkContactDnc } = await import("@/lib/dnc")
-    const { getLeadsClient } = await import("@/lib/leads")
-    const dnc = await checkContactDnc(getLeadsClient(), { phone: to }, "call")
-    if (dnc.dnc) return NextResponse.json({ error: `Not calling — ${dnc.why}` }, { status: 409 })
-  } catch (e) {
-    return NextResponse.json({ error: `DNC check failed — call blocked (${e instanceof Error ? e.message : String(e)})` }, { status: 503 })
-  }
-
-  const sid = process.env.TWILIO_ACCOUNT_SID
-  const token = process.env.TWILIO_AUTH_TOKEN
-  if (!sid || !token) {
-    return NextResponse.json({ error: "TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN must be set" }, { status: 500 })
-  }
-  let fromNumber: string
-  try {
-    fromNumber = getTwilioNumber()
-  } catch (e) {
-    return NextResponse.json({ error: e instanceof Error ? e.message : String(e) }, { status: 500 })
-  }
-
-  const sb = getLeadsClient()
-  const cardLine = await getCardLineFlag(sb, relationshipId)
-  const { data: touch, error: insErr } = await sb
-    .from("relationship_touches")
-    .insert({
-      relationship_id: relationshipId,
-      modality: "call",
-      action: "call",
-      call_status: "dialing",
-      tier_at_touch: body.tier ?? null,
-      category_at_touch: body.category ?? null,
-      ...(cardLine ? { twilio_number: CARD_LINE } : {}),
-    })
-    .select("id")
-    .single()
-  if (insErr || !touch?.id) {
-    console.error("[crms/call] touch insert failed:", insErr?.message)
-    return NextResponse.json({ error: insErr?.message || "touch insert failed" }, { status: 500 })
-  }
-  const touchId = touch.id as string
-
-  const bridgeUrl =
-    `${PROD_BASE}/api/crms/call/bridge` +
-    `?touchId=${encodeURIComponent(touchId)}` +
-    `&to=${encodeURIComponent(to)}` +
-    (cardLine ? "&line=card" : "")
-
-  const auth = Buffer.from(`${sid}:${token}`).toString("base64")
-  // StatusCallback covers the first leg: if Ryan's cell never picks up, the
-  // bridge never runs and nothing else would ever stamp the touch.
-  const form = new URLSearchParams({
-    To: FORWARD_TO, From: fromNumber, Url: bridgeUrl, Method: "POST",
-    StatusCallback: `${PROD_BASE}/api/crms/call/status?touchId=${encodeURIComponent(touchId)}&leg=ryan`,
-    StatusCallbackMethod: "POST",
-    StatusCallbackEvent: "completed",
-  })
-
-  try {
-    const res = await fetch(`https://api.twilio.com/2010-04-01/Accounts/${sid}/Calls.json`, {
-      method: "POST",
-      headers: { Authorization: `Basic ${auth}`, "Content-Type": "application/x-www-form-urlencoded" },
-      body: form.toString(),
-    })
-    const json = (await res.json().catch(() => ({}))) as { sid?: string; message?: string }
-    if (!res.ok) {
-      console.error("[crms/call] Twilio call create failed:", json?.message, json)
-      await sb.from("relationship_touches").delete().eq("id", touchId)
-      return NextResponse.json({ error: json?.message || `HTTP ${res.status}` }, { status: 502 })
-    }
-    await sb.from("relationship_touches").update({ call_sid: json.sid ?? null }).eq("id", touchId)
-    return NextResponse.json({ success: true, touchId, callSid: json.sid ?? null, callerId: cardLine ? CARD_LINE : relationshipCallerId() })
-  } catch (e) {
-    const msg = e instanceof Error ? e.message : String(e)
-    console.error("[crms/call] Twilio fetch threw:", msg)
-    await sb.from("relationship_touches").delete().eq("id", touchId)
-    return NextResponse.json({ error: msg }, { status: 502 })
-  }
+  const out = await startOfficeRelayCall({ relationshipId, phone: to, tier: body.tier ?? null, category: body.category ?? null })
+  if (!out.ok) return NextResponse.json({ error: out.error ?? "call failed" }, { status: out.status ?? 500 })
+  return NextResponse.json({ success: true, touchId: out.touchId, callSid: out.callSid ?? null, callerId: out.callerId })
 }
 
 export async function GET(request: NextRequest) {

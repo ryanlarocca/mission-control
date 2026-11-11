@@ -16,6 +16,7 @@ import { MOMENT_LABELS, NEXT_ACTION_LABELS } from "@/lib/reply-client"
 import { sendOfficeText, type Rel } from "@/lib/office-reply"
 import { displayLine } from "@/lib/card-line"
 import { sendAgentsLineText } from "@/lib/campaignSms"
+import { findLatestEmailThread, newThreadSubject, replySubject, sendRelationshipEmail, type EmailThreadRef } from "@/lib/relationshipEmail"
 
 const CHAT_ID = () => process.env.TELEGRAM_CHAT_ID
 
@@ -56,8 +57,23 @@ interface DraftRow {
 
 // Relationships drafts carry the number the alert named (the reply target)
 // and the line it goes out on, on the plan — ✅ and 🔁 text the same number
-// from the same line a typed reply would.
-type OfficePlan = Plan & { send_to?: string | null; line?: "office" | "agents" | null }
+// from the same line a typed reply would. An email draft (line "email",
+// 2026-11-11) carries whether it was drafted into an existing thread, so ✅
+// sends under the subject the draft message showed.
+export type RelationshipDraftLine = "office" | "agents" | "email"
+type OfficePlan = Plan & { send_to?: string | null; line?: RelationshipDraftLine | null; email_threaded?: boolean | null }
+
+/** The subject an email draft goes out under, as sendRelationshipEmail will
+ * pick it: in their thread → "Re: <thread subject>"; no thread → the
+ * drafter's subject as a fresh one (Re:/Fwd: dropped, empty → "Checking in"). */
+export function emailDraftSubject(thread: Pick<EmailThreadRef, "subject"> | null, drafted: string | null | undefined): string {
+  return thread ? replySubject(thread.subject) : newThreadSubject(drafted)
+}
+
+/** The ✅ confirmation's "who" for an email that went out. */
+export function emailSentLabel(name: string, out: { threaded?: boolean; mailbox?: string }): string {
+  return `${name} by email — ${out.threaded ? "same thread" : "new email"}${out.mailbox ? `, from ${out.mailbox}` : ""}`
+}
 
 async function loadDraft(draftId: string): Promise<DraftRow | null> {
   const sb = getLeadsClient()
@@ -233,8 +249,11 @@ export async function sendPlannerDraft(draftId: string): Promise<{ ok: boolean; 
  *  office line or agents line, text, call or summary (2026-11-10 — a pass
  *  on a wholesaler's deal text got "no lead on file"). Same coach writer and
  *  ✅/🔁/❌ buttons as a lead; ✅ texts from `line` and logs a touch, which
- *  restarts the contact's cadence. */
-export async function coachDraftForRelationship(relationshipId: string, sendTo: string | null, gist: string, replyTo?: number | null, line: "office" | "agents" = "office"): Promise<{ ok: boolean; error?: string }> {
+ *  restarts the contact's cadence. `line` "email" (2026-11-11, an email to
+ *  ryan@): drafted as an email, no phone needed, ✅ emails it in their
+ *  thread from ryan@ (sendRelationshipEmail). */
+export async function coachDraftForRelationship(relationshipId: string, sendTo: string | null, gist: string, replyTo?: number | null, line: RelationshipDraftLine = "office"): Promise<{ ok: boolean; error?: string }> {
+  if (line === "email") return coachEmailDraftForRelationship(relationshipId, gist, replyTo)
   const ctx = await buildRelationshipContext(relationshipId)
   if (!ctx) return { ok: false, error: "contact not found" }
   const proposed = await proposePlan(ctx)
@@ -251,8 +270,43 @@ export async function coachDraftForRelationship(relationshipId: string, sendTo: 
   return { ok: true }
 }
 
+// The email half of coachDraftForRelationship. Mirrors the lead path's
+// email drafts (coachDraftForLead): the coach writes with channel "email"
+// and the draft message shows a subject — here the one it will really go
+// out under, since the thread decides it, not the drafter.
+async function coachEmailDraftForRelationship(relationshipId: string, gist: string, replyTo?: number | null): Promise<{ ok: boolean; error?: string }> {
+  const ctx = await buildRelationshipContext(relationshipId)
+  if (!ctx) return { ok: false, error: "contact not found" }
+  if (!ctx.email?.includes("@")) return { ok: false, error: "no email address on the card" }
+  const [proposed, thread] = await Promise.all([
+    proposePlan(ctx),
+    findLatestEmailThread(getLeadsClient(), relationshipId).catch(() => null),
+  ])
+  if (!proposed) return { ok: false, error: "plan unavailable" }
+  const plan: OfficePlan = { ...proposed, next_action: "reply_only", send_to: null, line: "email", email_threaded: !!thread }
+  const out = await coachDraft({ ctx, channel: "email", surface: "telegram", gist, plan, notes: ctx.notes })
+  if (!out || !out.draftId) return { ok: false, error: "draft unavailable" }
+  await postDraftMessage({
+    draftId: out.draftId, name: ctx.name || ctx.email || "contact", plan: out.plan, body: out.body, subject: emailDraftSubject(thread, out.subject), channel: "email",
+    replyTo, note: out.read ? `🧠 ${out.read}` : null,
+  })
+  return { ok: true }
+}
+
 async function sendRelationshipDraft(row: DraftRow): Promise<{ ok: boolean; error?: string; label?: string; planNote?: string | null }> {
   if (row.sent_at) return { ok: false, error: "already sent" }
+  if (row.channel === "email") {
+    // sendRelationshipEmail threads it into their newest conversation, logs
+    // the touch with its Gmail ids, restarts the clock and marks the draft
+    // sent. A threaded draft keeps the thread's subject; a fresh one goes
+    // out under the drafter's.
+    const plan = row.plan_json as OfficePlan | null
+    const out = await sendRelationshipEmail({ relationshipId: row.relationship_id!, body: row.draft_body, draftId: row.id, subject: plan?.email_threaded ? null : row.draft_subject })
+    if (!out.ok) return { ok: false, error: out.error || "send failed" }
+    const sb = getLeadsClient()
+    const { data: rel } = await sb.from("relationships").select("name").eq("id", row.relationship_id!).maybeSingle<{ name: string | null }>()
+    return { ok: true, label: emailSentLabel(rel?.name || out.to || "contact", out), planNote: out.touchLogged === false ? "⚠️ logged with a warning" : null }
+  }
   const sb = getLeadsClient()
   const { data: rel } = await sb.from("relationships").select("id, name, phone, status, tier, category").eq("id", row.relationship_id!).maybeSingle<Rel & { phone: string | null }>()
   if (!rel) return { ok: false, error: "contact not found" }
@@ -285,16 +339,22 @@ async function redraftRelationship(row: DraftRow, why: string | null, replyTo?: 
     chain.unshift(parent)
   }
   const turns = chain.map((d) => ({ gist: d.gist ?? "", body: d.draft_body }))
-  const plan = row.plan_json as OfficePlan | null
+  // The draft keeps its channel (an email draft redrafts as an email); the
+  // thread is looked up again so the shown subject is the one ✅ will use.
+  const channel: DraftChannel = row.channel === "email" ? "email" : "sms"
+  const thread = channel === "email" ? await findLatestEmailThread(getLeadsClient(), row.relationship_id!).catch(() => null) : null
+  const prior = row.plan_json as OfficePlan | null
+  const plan: OfficePlan | null = channel === "email" && prior ? { ...prior, email_threaded: !!thread } : prior
   const out = await coachDraft({
-    ctx, channel: "sms", surface: "telegram", gist: why?.trim() || "Give me a different version.", turns, plan, notes: ctx.notes, parentDraftId: row.id,
+    ctx, channel, surface: "telegram", gist: why?.trim() || "Give me a different version.", turns, plan, notes: ctx.notes, parentDraftId: row.id,
   })
   if (!out || !out.draftId) return { ok: false, error: "draft unavailable" }
   if (typeof row.tg_message_id === "number" && CHAT_ID()) {
     await tg("editMessageReplyMarkup", { chat_id: CHAT_ID(), message_id: row.tg_message_id, reply_markup: { inline_keyboard: [] } })
   }
   await postDraftMessage({
-    draftId: out.draftId, name: ctx.name || ctx.phone || "contact", plan: out.plan, body: out.body, subject: null, channel: "sms",
+    draftId: out.draftId, name: ctx.name || ctx.phone || ctx.email || "contact", plan: out.plan, body: out.body,
+    subject: channel === "email" ? emailDraftSubject(thread, out.subject) : null, channel,
     replyTo: replyTo ?? row.tg_message_id, note: why ? `↩︎ redrafted from: "${why}"` : "↩︎ redrafted",
   })
   return { ok: true }

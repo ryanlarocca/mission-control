@@ -22,22 +22,46 @@ const LEGACY_SEND_AS = "info@lrghomes.com"
 const OWN_DOMAINS = ["lrghomes.com", "lrghomesbuys.com", "lrghomesoffers.com"]
 const isOwnMailbox = (m: string) => OWN_DOMAINS.some((d) => m.toLowerCase().endsWith(`@${d}`))
 
-export async function sendCampaignEmailReply(args: {
-  contactName: string
-  body: string
-}): Promise<{ success: boolean; error?: string; label?: string; mailbox?: string }> {
-  const { contactName, body } = args
-  if (!body.trim()) return { success: false, error: "empty message" }
-  const sb = getLeadsClient()
+type ContactRow = { id: string; name: string | null; email: string | null; gmail_thread_id: string | null; relationship_id: string | null }
 
+/** The campaign contact to answer: by id when the alert recorded its card
+ * (2026-11-11 — two contacts sharing a name made the name lookup refuse),
+ * else by the name in the alert's text, as before. */
+async function findReplyContact(
+  sb: SupabaseClient,
+  args: { contactName?: string | null; contactId?: string | null },
+): Promise<{ contact: ContactRow } | { error: string }> {
+  if (args.contactId) {
+    const { data, error } = await sb.from("campaign_contacts").select("id, name, email, gmail_thread_id, relationship_id").eq("id", args.contactId).limit(1)
+    if (error) return { error: `contact lookup failed: ${error.message}` }
+    const contact = (data?.[0] as ContactRow | undefined) ?? null
+    return contact ? { contact } : { error: "that campaign contact no longer exists" }
+  }
+  const contactName = (args.contactName ?? "").trim()
+  if (!contactName) return { error: "no contact on this alert" }
   const { data: contacts } = await sb
     .from("campaign_contacts")
     .select("id, name, email, gmail_thread_id, relationship_id")
     .ilike("name", contactName)
     .limit(2)
-  if (!contacts?.length) return { success: false, error: `no contact named "${contactName}"` }
-  if (contacts.length > 1) return { success: false, error: `two contacts named "${contactName}" — reply from Gmail` }
-  const contact = contacts[0]
+  if (!contacts?.length) return { error: `no contact named "${contactName}"` }
+  if (contacts.length > 1) return { error: `two contacts named "${contactName}" — reply from Gmail` }
+  return { contact: contacts[0] as ContactRow }
+}
+
+export async function sendCampaignEmailReply(args: {
+  contactName?: string | null
+  /** campaign_contacts.id — wins over the name when given. */
+  contactId?: string | null
+  body: string
+}): Promise<{ success: boolean; error?: string; label?: string; mailbox?: string }> {
+  const { body } = args
+  if (!body.trim()) return { success: false, error: "empty message" }
+  const sb = getLeadsClient()
+
+  const found = await findReplyContact(sb, args)
+  if ("error" in found) return { success: false, error: found.error }
+  const contact = found.contact
 
   // Their latest inbound email → the thread + message we're replying to.
   const { data: events } = await sb
@@ -118,7 +142,7 @@ export async function sendCampaignEmailReply(args: {
     subject,
     body,
   })
-  return { success: true, label: `${contact.name} <${toAddr}>`, mailbox: sendAs }
+  return { success: true, label: `${contact.name ?? args.contactName ?? toAddr} <${toAddr}>`, mailbox: sendAs }
 }
 
 /** The Telegram send lands on the agent's Relationships card too

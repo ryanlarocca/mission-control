@@ -186,7 +186,7 @@ export function inboundCandidates(rows, { cardEmails, sinceIso, mailbox = MAILBO
     if (!CARD_KINDS.includes(r.kind)) continue
     if (!r.internal_date || r.internal_date < sinceIso) continue
     if (!cardEmails.has(sender) || isOwnAddress(sender, mailbox)) continue
-    out.push({ gmailId: r.gmail_id, threadId: r.thread_id || null, direction: "inbound", at: r.internal_date, from: sender, subject: r.subject || "" })
+    out.push({ gmailId: r.gmail_id, threadId: r.thread_id || null, direction: "inbound", at: r.internal_date, from: sender, subject: r.subject || "", kind: r.kind })
   }
   return out.sort((a, b) => (a.at < b.at ? -1 : 1))
 }
@@ -229,7 +229,7 @@ export function dropDone(cands, { done = new Set(), touched = new Set(), skipped
 
 // ------------------------------------------------------------------ pure: payload + results
 /** One message in the contract's shape. `msg` is gmail.mjs getMessage(); `extra` carries the recipients override / failedRecipient. */
-export function buildPayload(msg, direction, { failedRecipient = null, mailbox = MAILBOX } = {}) {
+export function buildPayload(msg, direction, { failedRecipient = null, kind = null, mailbox = MAILBOX } = {}) {
   const at = msg.internalDate ? new Date(msg.internalDate).toISOString().replace(/\.\d{3}Z$/, "Z") : null
   return {
     gmailId: msg.id,
@@ -241,6 +241,9 @@ export function buildPayload(msg, direction, { failedRecipient = null, mailbox =
     subject: msg.subject || "",
     text: String(msg.text || "").slice(0, MAX_TEXT_CHARS),
     failedRecipient: direction === "bounce" ? failedRecipient : null,
+    // Inbound only: how the poll classified it. Mission Control alerts Telegram for a card
+    // contact's email, except a deal_lead — that one already got its deal card (2026-11-11).
+    kind: direction === "inbound" ? kind || null : null,
   }
 }
 
@@ -380,14 +383,15 @@ async function bounceHeader(gmail, id) {
 
 const gmailGone = (e) => e?.code === 404 || e?.response?.status === 404
 
-async function postBatch(messages) {
+/** `quiet` = a hand-run catch-up: Mission Control logs the emails but sends no Telegram alert for them. */
+async function postBatch(messages, quiet = false) {
   const secret = (process.env.REPLY_INTERNAL_SECRET || process.env.MC_PASSWORD || "").trim()
   if (!secret) return { ok: false, reason: "no shared secret in env (REPLY_INTERNAL_SECRET / MC_PASSWORD)" }
   try {
     const res = await fetch(`${MC_BASE_URL}/api/crms/email-sync`, {
       method: "POST",
       headers: { "Content-Type": "application/json", "x-reply-secret": secret },
-      body: JSON.stringify({ messages }),
+      body: JSON.stringify({ messages, quiet }),
       signal: AbortSignal.timeout(POST_TIMEOUT_MS),
     })
     const data = await res.json().catch(() => ({}))
@@ -485,7 +489,7 @@ async function runPass(ctx, { dry, since, emails }) {
         }
         payloads.push(buildPayload(msg, "bounce", { failedRecipient: failed }))
       } else {
-        payloads.push(buildPayload(msg, c.direction))
+        payloads.push(buildPayload(msg, c.direction, { kind: c.kind }))
       }
     } catch (e) {
       if (gmailGone(e)) {
@@ -510,7 +514,7 @@ async function runPass(ctx, { dry, since, emails }) {
   const queued = []
   for (const batch of chunk(payloads)) {
     const sent = batch.map((p) => ({ gmailId: p.gmailId, direction: p.direction, failedRecipient: p.failedRecipient }))
-    const r = await postBatch(batch)
+    const r = await postBatch(batch, handRun)
     if (!r.ok) {
       reasons.push(r.reason)
       break // the endpoint is down or rejecting us — later batches would fail the same way

@@ -187,6 +187,11 @@ describe("buildPayload", () => {
     const p = buildPayload({ ...msg, from: { email: "mailer-daemon@googlemail.com" } }, "bounce", { failedRecipient: "bob@example.com" })
     expect(p).toMatchObject({ direction: "bounce", to: [], failedRecipient: "bob@example.com" })
   })
+  it("an inbound message carries how the poll classified it; sent mail never does", () => {
+    expect(buildPayload(msg, "inbound", { kind: "deal_lead" }).kind).toBe("deal_lead")
+    expect(buildPayload(msg, "inbound").kind).toBeNull()
+    expect(buildPayload(msg, "sent", { kind: "human" }).kind).toBeNull()
+  })
 })
 
 describe("batching and the done-list", () => {

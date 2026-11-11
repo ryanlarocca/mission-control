@@ -15,7 +15,15 @@
 //     do-not-contact and Personal cards, which are recorded as history only;
 //   - sent → last_contacted_at moves forward, never back;
 //   - bounce → a "bounced" touch + one dated note line, no ping.
-// Silent: nothing here alerts. The mini alerts when the POST keeps failing.
+// Quiet except for one thing (2026-11-11, briefs/BRIEF_RELATIONSHIP_EMAIL_ALERTS_2026-11-11.md,
+// Ryan: "if somebody in the relationships tab sends me an email, then I would
+// like a Telegram response … the same plumbing that we have with agent
+// emails"): an inbound email newly logged on a card posts ONE alert that
+// records the card (line "email"), so Draft: and a typed reply answer it
+// from ryan@ in their thread. Never for sent or bounce, a hand catch-up
+// (`quiet`), a deal lead (the inbox agent posts its own deal card), or a
+// stamped / duplicate / skipped result. An alert failing never fails the
+// sync. The mini alerts when the POST keeps failing.
 //
 // Idempotency: a touch carries its Gmail message id, unique per card
 // (supabase/migrations/2026-11-11_relationship_email_sync.sql). A hand-logged
@@ -26,7 +34,10 @@ import type { SupabaseClient } from "@supabase/supabase-js"
 import { stripQuoted } from "@/lib/campaignInbox"
 import { isUniqueViolation } from "@/lib/emailDedupe"
 import { landInboundNote, notesAllowed } from "@/lib/inboundFacts"
+import { alertQuote } from "@/lib/alertText"
+import type { AlertSubject } from "@/lib/alertSubject"
 import { pacificDate } from "@/lib/pacificDate"
+import { toE164Phone } from "@/lib/relationships"
 import { emailTouchMessage, isOwnMailbox, splitEmailTouch } from "@/lib/relationshipEmail"
 import { appendNoteBlock, noteStampDay } from "@/lib/relationshipNotes"
 
@@ -55,7 +66,12 @@ export interface SyncMessage {
   subject: string
   text: string
   failedRecipient: string | null
+  /** The inbox agent's classification ("deal_lead", …), when it sent one. */
+  kind?: string
 }
+
+/** The inbox agent's classification for a deal lead: it posts its own deal card with a Reply button. */
+export const DEAL_LEAD_KIND = "deal_lead"
 
 export type CardStatus = "logged" | "stamped" | "duplicate" | "skipped"
 
@@ -82,9 +98,11 @@ export interface SyncCard {
   tier: string | null
   category: string | null
   last_contacted_at: string | null
+  /** For the email alert's record (a card on the email line may have none). */
+  phone?: string | null
 }
 
-const CARD_COLS = "id, name, email, status, tier, category, last_contacted_at"
+const CARD_COLS = "id, name, email, phone, status, tier, category, last_contacted_at"
 
 // ── Pure helpers ─────────────────────────────────────────────────────────
 
@@ -109,6 +127,7 @@ export function parseSyncMessage(raw: unknown): ParsedSyncMessage {
   const atMs = typeof r.at === "string" ? Date.parse(r.at) : NaN
   if (!Number.isFinite(atMs)) return { ok: false, gmailId, why: "bad at" }
   const to = Array.isArray(r.to) ? r.to.map(normalEmail).filter(Boolean) : []
+  const kind = typeof r.kind === "string" ? r.kind.trim() : ""
   return {
     ok: true,
     msg: {
@@ -121,8 +140,46 @@ export function parseSyncMessage(raw: unknown): ParsedSyncMessage {
       subject: typeof r.subject === "string" ? r.subject.trim() : "",
       text: typeof r.text === "string" ? r.text : "",
       failedRecipient: normalEmail(r.failedRecipient) || null,
+      ...(kind ? { kind } : {}),
     },
   }
+}
+
+/** The request's top-level `quiet` (a hand catch-up — never alert). Anything
+ * but an explicit no counts as quiet: a missed alert costs less than a
+ * flood of them. */
+export function isQuietRequest(raw: unknown): boolean {
+  return raw !== undefined && raw !== null && raw !== false && raw !== "false" && raw !== 0
+}
+
+/** The one card an email alerts for, or null: an inbound message, not quiet,
+ * not a deal lead, newly logged (not stamped / duplicate / skipped). One
+ * alert per email — if the sender's address is on two cards, the first
+ * logged one. */
+export function emailAlertCard(msg: SyncMessage, cards: readonly CardResult[], quiet: boolean): string | null {
+  if (quiet || msg.direction !== "inbound" || msg.kind === DEAL_LEAD_KIND) return null
+  return cards.find((c) => c.status === "logged")?.relationshipId ?? null
+}
+
+/**
+ * The Telegram alert (HTML):
+ *   ✉️ <b>Email</b> — <b>Ashley Cao</b> (Investor · B)
+ *   <b>Re: Great meeting you at the Mega Meetup</b>
+ *   "Likewise! What are you working on currently?"
+ * A do-not-contact card says so on the first line.
+ */
+export function emailAlertText(card: Pick<SyncCard, "name" | "email" | "category" | "tier" | "status">, subject: string, body: string): string {
+  const esc = (t: string) => t.replace(/[<>&]/g, (c) => (c === "<" ? "&lt;" : c === ">" ? "&gt;" : "&amp;"))
+  const meta = [card.category, card.tier].map((x) => (x ?? "").trim()).filter(Boolean).join(" · ")
+  const dnc = card.status === "do_not_contact" ? " · do-not-contact" : ""
+  const who = esc(card.name?.trim() || card.email?.trim() || "a contact")
+  const head = `✉️ <b>Email</b> — <b>${who}</b>${meta ? ` (${esc(meta)})` : ""}${dnc}`
+  return [head, `<b>${esc(subject.trim() || "(no subject)")}</b>`, `"${alertQuote(body.trim())}"`].join("\n")
+}
+
+/** Who the email alert is about: the card, on the email line. */
+export function emailAlertAbout(card: Pick<SyncCard, "id" | "phone">): AlertSubject {
+  return { kind: "relationship", relationshipId: card.id, phone: toE164Phone(card.phone ?? null), line: "email" }
 }
 
 /** Every card's email, lower-cased → the cards that carry it. A field holding two addresses indexes both. */
@@ -339,7 +396,9 @@ async function syncCard(sb: SupabaseClient, msg: SyncMessage, card: SyncCard, qu
   return result
 }
 
-async function syncMessage(sb: SupabaseClient, msg: SyncMessage, byEmail: ReadonlyMap<string, readonly SyncCard[]>, queueNote: (cardId: string, job: NoteJob) => void): Promise<SyncResult> {
+type AlertJob = { msg: SyncMessage; card: SyncCard }
+
+async function syncMessage(sb: SupabaseClient, msg: SyncMessage, byEmail: ReadonlyMap<string, readonly SyncCard[]>, queueNote: (cardId: string, job: NoteJob) => void, queueAlert: (job: AlertJob) => void, quiet: boolean): Promise<SyncResult> {
   const { cards, blast } = cardsForMessage(msg, byEmail)
   if (blast !== null) {
     return { gmailId: msg.gmailId, cards: cards.map((c) => ({ relationshipId: c.id, name: c.name, status: "skipped", reason: `sent to ${blast} people — a blast`, note: null })), done: true }
@@ -356,19 +415,39 @@ async function syncMessage(sb: SupabaseClient, msg: SyncMessage, byEmail: Readon
       done = false
     }
   }
+  const alertId = emailAlertCard(msg, out, quiet)
+  const alertFor = alertId ? cards.find((c) => c.id === alertId) : null
+  if (alertFor) queueAlert({ msg, card: alertFor })
   return { gmailId: msg.gmailId, cards: out, done }
+}
+
+// One alert. sendTelegramAlert reports failure as false rather than
+// throwing; the catch is for anything else — either way the sync's answer
+// to the mini doesn't change.
+async function sendEmailAlert(job: AlertJob): Promise<void> {
+  try {
+    const { sendTelegramAlert } = await import("@/lib/leads")
+    const ok = await sendTelegramAlert(emailAlertText(job.card, job.msg.subject, touchBody(job.msg)), { about: emailAlertAbout(job.card) })
+    if (!ok) console.error(`[email-sync] alert for ${job.msg.gmailId} → ${job.card.name ?? job.card.id} did not send`)
+  } catch (e) {
+    console.error(`[email-sync] alert for ${job.msg.gmailId} threw:`, e instanceof Error ? e.message : String(e))
+  }
 }
 
 /**
  * One POST from the mini. Each message is handled on its own — one failing
  * doesn't stop the others. Inbound notes run after every touch is written,
  * one card at a time per card (so two emails can't race on its notes field),
- * cards in parallel. Throws only when the card list itself can't load.
+ * cards in parallel. Alerts (not on a `quiet` request) go out alongside
+ * the notes. Throws only when the card list itself can't load.
  */
-export async function syncRelationshipEmails(sb: SupabaseClient, raw: readonly unknown[]): Promise<SyncResult[]> {
+export async function syncRelationshipEmails(sb: SupabaseClient, raw: readonly unknown[], opts: { quiet?: boolean } = {}): Promise<SyncResult[]> {
   const byEmail = await loadCardsByEmail(sb)
   const jobs = new Map<string, NoteJob[]>()
   const queueNote = (cardId: string, job: NoteJob) => jobs.set(cardId, [...(jobs.get(cardId) ?? []), job])
+  const alerts: AlertJob[] = []
+  const queueAlert = (job: AlertJob) => alerts.push(job)
+  const quiet = opts.quiet === true
 
   const results: SyncResult[] = []
   for (const entry of raw) {
@@ -379,7 +458,7 @@ export async function syncRelationshipEmails(sb: SupabaseClient, raw: readonly u
       continue
     }
     try {
-      results.push(await syncMessage(sb, parsed.msg, byEmail, queueNote))
+      results.push(await syncMessage(sb, parsed.msg, byEmail, queueNote, queueAlert, quiet))
     } catch (e) {
       console.error(`[email-sync] ${parsed.msg.gmailId} threw:`, e instanceof Error ? e.message : String(e))
       results.push({ gmailId: parsed.msg.gmailId, cards: [], done: false })
@@ -387,8 +466,12 @@ export async function syncRelationshipEmails(sb: SupabaseClient, raw: readonly u
   }
 
   // landInboundNote never throws; a missed note costs nothing but the note.
-  await Promise.all(Array.from(jobs.values()).map(async (list) => {
-    for (const job of list) await job()
-  }))
+  // sendEmailAlert never throws either.
+  await Promise.all([
+    ...Array.from(jobs.values()).map(async (list) => {
+      for (const job of list) await job()
+    }),
+    ...alerts.map(sendEmailAlert),
+  ])
   return results
 }

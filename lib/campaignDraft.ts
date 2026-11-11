@@ -91,21 +91,34 @@ export interface DraftResult {
 }
 
 export async function draftCampaignEmail(args: {
-  contactName: string
+  contactName?: string | null
+  /** campaign_contacts.id, found through the alert's card (2026-11-11) —
+   * wins over the name, which two contacts can share. The draft row
+   * remembers it so ✅ sends to the same contact. */
+  contactId?: string | null
   guidance: string
 }): Promise<DraftResult> {
-  const { contactName, guidance } = args
+  const { guidance } = args
+  const contactName = (args.contactName ?? "").trim()
   if (!guidance.trim()) return { success: false, error: "empty guidance — say what the email should do" }
   const sb = getLeadsClient()
 
-  const { data: contacts } = await sb
-    .from("campaign_contacts")
-    .select("id, name, email")
-    .ilike("name", contactName)
-    .limit(2)
-  if (!contacts?.length) return { success: false, error: `no contact named "${contactName}"` }
-  if (contacts.length > 1) return { success: false, error: `two contacts named "${contactName}" — reply from Gmail` }
-  const contact = contacts[0]
+  let contact: { id: string; name: string; email: string | null }
+  if (args.contactId) {
+    const { data, error } = await sb.from("campaign_contacts").select("id, name, email").eq("id", args.contactId).limit(1)
+    if (error) return { success: false, error: `contact lookup failed: ${error.message}` }
+    if (!data?.length) return { success: false, error: "that campaign contact no longer exists" }
+    contact = { ...data[0], name: data[0].name ?? (contactName || data[0].email || "agent") }
+  } else {
+    const { data: contacts } = await sb
+      .from("campaign_contacts")
+      .select("id, name, email")
+      .ilike("name", contactName)
+      .limit(2)
+    if (!contacts?.length) return { success: false, error: `no contact named "${contactName}"` }
+    if (contacts.length > 1) return { success: false, error: `two contacts named "${contactName}" — reply from Gmail` }
+    contact = contacts[0]
+  }
 
   const thread = await buildThread(sb, contact.id, contact.name)
   const { draft, error } = await composeWithClaude(
@@ -120,13 +133,57 @@ export async function draftCampaignEmail(args: {
       kind: "note",
       triage: "pending_draft",
       body: `AI draft awaiting approval (guidance: ${guidance.trim().slice(0, 300)})`,
-      raw: { via: "telegram_draft", contact_name: contact.name, guidance: guidance.trim(), draft },
+      raw: { via: "telegram_draft", contact_name: contact.name, ...(args.contactId ? { contact_id: contact.id } : {}), guidance: guidance.trim(), draft },
     })
     .select("id")
     .single()
   if (insErr || !row?.id) return { success: false, error: `draft save failed: ${insErr?.message ?? "no id returned"}` }
 
   return { success: true, draft, label: contact.name, eventId: String(row.id) }
+}
+
+/** The Telegram message for a draft (new or revised): the text Ryan has
+ * seen since 2026-07-29, with [✅ Send] [❌ Discard]. Pure. */
+export function campaignDraftMessage(out: Pick<DraftResult, "label" | "draft" | "eventId">): { text: string; reply_markup: { inline_keyboard: { text: string; callback_data: string }[][] } } {
+  return {
+    text: `📝 Draft for ${out.label}:\n\n${out.draft}\n\nReply to THIS message with changes and I'll revise. Nothing sends until you tap ✅.`,
+    reply_markup: {
+      inline_keyboard: [[
+        { text: "✅ Send", callback_data: `dsend:${out.eventId}` },
+        { text: "❌ Discard", callback_data: `ddisc:${out.eventId}` },
+      ]],
+    },
+  }
+}
+
+/** Post a draft with its action buttons and link the Telegram message back
+ * to the draft row so reply-to-draft revising works. Moved here from the
+ * Telegram route (2026-11-11) so lib/alertReply posts a card-found AGENT
+ * REPLY draft exactly the way the route posts a name-found one. */
+export async function postCampaignDraft(out: DraftResult, replyToMessageId?: number | null, chatId: number | string | undefined = process.env.TELEGRAM_CHAT_ID): Promise<void> {
+  const token = process.env.CAMPAIGN_BOT_TOKEN || process.env.TELEGRAM_BOT_TOKEN
+  if (!token || !chatId) return
+  const send = async (body: Record<string, unknown>): Promise<{ ok?: boolean; result?: { message_id?: number } } | null> => {
+    try {
+      const res = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+      })
+      return (await res.json()) as { ok?: boolean; result?: { message_id?: number } }
+    } catch (e) {
+      console.error("[campaign-draft] sendMessage failed:", e instanceof Error ? e.message : String(e))
+      return null
+    }
+  }
+  const payload = { chat_id: chatId, ...campaignDraftMessage(out) }
+  // allow_sending_without_reply: a dead reply target (deleted message, or a
+  // synthetic test update) must never eat the draft — post it standalone.
+  let sent = await send({
+    ...payload,
+    ...(replyToMessageId ? { reply_to_message_id: replyToMessageId, allow_sending_without_reply: true } : {}),
+  })
+  if (!sent?.ok) sent = await send(payload) // belt-and-suspenders retry without the reply link
+  const tgId = sent?.result?.message_id
+  if (out.eventId && typeof tgId === "number") await attachDraftMessageId(out.eventId, tgId)
 }
 
 /** Link the posted Telegram message to its draft so reply-to-draft can find it. */
@@ -185,7 +242,7 @@ export async function reviseCampaignDraft(args: {
   if (ev.triage === "draft_discarded") return { success: false, error: "that draft was discarded — start fresh with draft: on the agent's alert" }
   if (ev.triage === "draft_superseded") return { success: false, error: "that draft was already revised — reply to the newest version" }
   if (ev.triage !== "pending_draft") return { success: false, error: `unexpected draft state (${ev.triage})` }
-  const raw = (ev.raw ?? {}) as { contact_name?: string; guidance?: string; draft?: string; tg_message_id?: number }
+  const raw = (ev.raw ?? {}) as { contact_name?: string; contact_id?: string; guidance?: string; draft?: string; tg_message_id?: number }
   if (!raw.contact_name || !raw.draft || !ev.contact_id) return { success: false, error: "draft record is incomplete" }
 
   const thread = await buildThread(sb, String(ev.contact_id), raw.contact_name)
@@ -205,6 +262,8 @@ export async function reviseCampaignDraft(args: {
       raw: {
         via: "telegram_draft",
         contact_name: raw.contact_name,
+        // A card-found draft stays card-found through every revision.
+        ...(raw.contact_id ? { contact_id: raw.contact_id } : {}),
         guidance: raw.guidance ?? "",
         feedback: feedbackClean,
         draft,
@@ -232,10 +291,11 @@ export async function sendPendingDraft(eventId: string): Promise<{ success: bool
     if (ev.triage === "draft_superseded") return { success: false, error: "this version was revised — use the newest draft's buttons" }
     return { success: false, error: "draft was discarded" }
   }
-  const raw = (ev.raw ?? {}) as { contact_name?: string; draft?: string }
+  const raw = (ev.raw ?? {}) as { contact_name?: string; contact_id?: string; draft?: string }
   if (!raw.contact_name || !raw.draft) return { success: false, error: "draft record is incomplete" }
 
-  const out = await sendCampaignEmailReply({ contactName: raw.contact_name, body: raw.draft })
+  // Drafts from before 2026-11-11 (or from an alert with no card) carry only the name.
+  const out = await sendCampaignEmailReply({ contactName: raw.contact_name, contactId: raw.contact_id ?? null, body: raw.draft })
   if (!out.success) return { success: false, error: out.error }
 
   await sb.from("campaign_events").update({ triage: "draft_sent" }).eq("id", eventId)

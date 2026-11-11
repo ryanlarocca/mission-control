@@ -44,6 +44,7 @@ vi.mock("@/lib/office-reply", () => ({
 }))
 vi.mock("@/lib/card-line", () => ({ displayLine: () => "the office line" }))
 vi.mock("@/lib/leadCall", () => ({ startLeadCall: rec("startLeadCall", { ok: true }) }))
+vi.mock("@/lib/officeCall", () => ({ startOfficeRelayCall: rec("startOfficeRelayCall", { ok: true, label: "Ashley Cao" }) }))
 
 import { replyIntent, draftForSubject, textSubject, callSubject } from "@/lib/alertReply"
 import { subjectFromRow, messageIdOf } from "@/lib/alertSubject"
@@ -96,10 +97,14 @@ describe("textSubject", () => {
 })
 
 describe("callSubject", () => {
-  it("never texts 'call him' to an office contact", async () => {
+  it("'call him' on an office alert places the card's click-to-call — never a text", async () => {
     const out = await callSubject({ kind: "relationship", relationshipId: "rel-1", phone: "+14083092868", line: "office" })
-    expect(calls).toEqual([])
-    expect(out).toContain("Nothing sent")
+    expect(calls).toEqual([{ fn: "startOfficeRelayCall", args: [{ relationshipId: "rel-1", phone: "+14083092868" }] }])
+    expect(out).toContain("connected to Ashley Cao")
+  })
+  it("'call him' on an email alert calls the card's main number (the alert may carry none)", async () => {
+    await callSubject({ kind: "relationship", relationshipId: "rel-1", phone: null, line: "email" })
+    expect(calls).toEqual([{ fn: "startOfficeRelayCall", args: [{ relationshipId: "rel-1", phone: null }] }])
   })
   it("agents line → relay call", async () => {
     await callSubject({ kind: "relationship", relationshipId: "rel-1", phone: "+16506900515", line: "agents" })
