@@ -45,7 +45,7 @@ Work top to bottom. Verify each step before the next. The old machine's exact st
 - `git clone https://github.com/ryanlarocca/video-editor.git ~/Projects/video-editor`; copy `video-editor/working-text/` back to `~/Movies/VideoEditor/` (cut lists, shotlogs, shoot reports, the vault manifest and clip-library catalogue). The footage itself is in Drive `Marketing/Videos/Library/Footage/` — restore a video's footage with the editor's restore command (see its `CLAUDE.md`).
 - **Nothing starts from `~/.openclaw` any more (2026-11-10).** The bridge launcher (`~/bin/claude-remote-spawn.sh` PROJECT_DIR) starts in `~/Projects/PROJECTS/mission-control`, and the CRMS sidecar + merge job read `~/Projects/PROJECTS` directly. `openclaw-workspace/` and `repos/openclaw-workspace.bundle` in older backups are the retired Thadius workspace: archive only, no need to restore. The sidecar's `scripts/node_modules` is a relative link to `../phase2/node_modules`.
 - `repos/worktrees.uncommitted.tar.gz`: unsaved files from chat-session worktrees (`<worktree>/<path>`); unpack somewhere and copy what's still needed into the main checkout.
-- `npm install` in mission-control and in `mission-control/esign`. `next build` in mission-control (the local Mission Control on port 3001 serves a production build).
+- `npm install` in mission-control and in `mission-control/esign`. No `next build` is needed: the local Mission Control on port 3001 was retired 2026-11-11 (nobody opened it; the site runs on Vercel). Its job file is kept as `com.lrghomes.mission-control.plist.disabled-20261111` — do not restore it.
 - Symlink `node_modules` from mission-control into `~/Projects/PROJECTS/the-pile/scratch` and any other scratch folder that had one (inventory shows them).
 
 ### 3. Secrets and configs — copy back exactly
@@ -87,7 +87,7 @@ Known trap: `.env.local` values are single-quoted; scripts that read it strip th
 7. **Telegram**: nothing. Bot tokens are in the secrets file. Send a test alert and confirm it arrives on his phone.
 
 ### 6. Verify (all must pass before calling it done)
-- `curl localhost:5799/health` → ok. `curl localhost:3001` → Mission Control login page.
+- `curl localhost:5799/health` → ok.
 - `launchctl list | grep lrghomes` → every label from the inventory present, no non-zero last-exit.
 - Cloudflare: `sign.lrghomes.com` loads; the sidecar quick tunnel is up and Vercel's `SIDECAR_URL` points at it (Relationships tab → open a card → the text thread loads).
 - Telegram: a test alert arrives. Inbox agent `--status` runs clean. Drip engine runs once with `--dry-run`.

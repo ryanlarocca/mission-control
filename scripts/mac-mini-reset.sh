@@ -176,7 +176,6 @@ sleep 2
 
 # Keep-alive HTTP services.
 health_curl              "sidecar"            "http://localhost:5799/health"
-health_curl              "mission-control"    "http://localhost:3001"
 
 # Long-running daemons we just need to confirm are alive.
 health_launchctl_pid     "cloudflare-tunnel"  "com.lrghomes.crms-cloudflare-tunnel"
