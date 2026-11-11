@@ -38,6 +38,12 @@ export type MonitorState = {
    * state handed over by a watcher built before this field existed.
    */
   delegations?: number[]
+  /**
+   * She picks up with just "Hello?" (11-10). True once the caller has been
+   * silent after it and she's been prompted to say who she is. Optional for
+   * the same reason as delegations.
+   */
+  introNudged?: boolean
 }
 
 export const WRAP_AT_MS = 10 * 60_000
@@ -45,6 +51,8 @@ export const CAP_AT_MS = 11 * 60_000
 const GOODBYE_GRACE_MS = 2_500 // caller silence after her goodbye before we hang up
 const GOODBYE_MAX_WAIT_MS = 8_000 // noisy line: hang up anyway
 const LOUD_INPUT_HOLD_MS = 1_200 // caller audio this recent = they may be talking
+const INTRO_AFTER_MS = 3_000 // caller silent after her "Hello?" → she says who she is
+const INTRO_NUDGE = `The caller hasn't said anything since you picked up. Say now: "This is Jackie with LRG Homes, how can I help you?" Then listen. That counts as your introduction; don't give it again.`
 const CHECK_IN_AFTER_MS = 20_000
 const GOODBYE_AFTER_CHECK_IN_MS = 15_000
 const DEAD_AIR_HANGUP_MS = 15_000 // after the dead-air goodbye prompt
@@ -235,6 +243,10 @@ export class CallMonitor {
       // up on someone mid-sentence).
       const lastActivity = Math.max(s.lastInputTextAt, s.lastOutputLoudAt, s.playbackEndAt)
       const quiet = now - lastActivity
+      if (!s.introNudged && s.lastInputTextAt === 0 && quiet >= INTRO_AFTER_MS && now - s.lastLoudInputAt >= LOUD_INPUT_HOLD_MS) {
+        s.introNudged = true
+        actions.push({ type: "commentary", content: INTRO_NUDGE })
+      }
       if (s.quietStage === 0 && quiet >= CHECK_IN_AFTER_MS) {
         s.quietStage = 1
         s.quietStageAt = now

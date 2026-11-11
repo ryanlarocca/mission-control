@@ -123,3 +123,34 @@ describe("script (11-05)", () => {
     expect(VOICE_TEST_INSTRUCTIONS).not.toContain(`"That's a great question for Ryan. I'll make sure he covers it when he calls."`)
   })
 })
+
+// 11-10 (Cornwallis call): "Hello?" pickup, no spelling, concede fast.
+describe("opener + wrap-up (11-10)", () => {
+  const pickedUp = () => {
+    const m = new CallMonitor(0)
+    m.onEvent({ type: "session.output_transcript.delta", delta: "Hello?" }, 1_000)
+    m.onEvent({ type: "session.output_audio.delta" }, 1_000)
+    return m
+  }
+  const nudges = (m: CallMonitor, now: number) => m.tick(now).filter((a) => a.type === "commentary")
+
+  it("prompts her to say who she is once when the caller stays silent after Hello", () => {
+    const m = pickedUp()
+    expect(nudges(m, 3_000)).toHaveLength(0)
+    const out = nudges(m, 4_500)
+    expect(out).toHaveLength(1)
+    expect(out[0].type === "commentary" && out[0].content).toContain("This is Jackie with LRG Homes")
+    expect(nudges(m, 8_000)).toHaveLength(0)
+  })
+  it("stays out of the way when the caller answers", () => {
+    const m = pickedUp()
+    m.onEvent({ type: "session.input_transcript.delta", delta: "Hi, I got your letter" }, 2_500)
+    expect(nudges(m, 6_000)).toHaveLength(0)
+  })
+  it("never asks anyone to spell, and drops the address at the wrap-up", () => {
+    expect(VOICE_TEST_INSTRUCTIONS).toContain("Never ask anyone to spell anything")
+    expect(VOICE_TEST_INSTRUCTIONS).not.toContain("spell the street name")
+    expect(VOICE_TEST_INSTRUCTIONS).toContain("Drop every question you still had, including the address")
+    expect(VOICE_TEST_INSTRUCTIONS).not.toContain("even when they're short with you or trying to get off the phone")
+  })
+})

@@ -281,7 +281,7 @@ This number has been in touch with Ryan before. On file: ${onFile}.
 - Someone else could be calling from this phone, so don't greet them by name or assume who it is. Once they tell you their name, use it.
 - ${addr
     ? "Check the property with a quick question in your own words (whether this is about the house on that street). If they say yes, you have the address; don't ask for it again. If it's a different property, get that address."
-    : "Getting the property address is still your top priority."}
+    : "Ask for the property address once, naturally; if they skip it, let it go."}
 - Skip the rest of the intake (no questions about why they're selling, the condition, and so on) unless they bring it up. Ask what they'd like Ryan to know, when's a good time for him to call, and check the callback number.
 - If they say Ryan called them or they're calling him back, tell them he's tied up right now and you'll let him know they called back.`
 }

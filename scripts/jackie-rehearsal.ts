@@ -80,6 +80,26 @@ const SCENARIOS: Scenario[] = [
       "No thanks. Bye.",
     ],
   },
+  {
+    id: "call-my-cell",
+    about: "11-10 Cornwallis call: gives the address up front, asks the price, then says to call her cell",
+    lines: [
+      "Yeah, you send me one letter. My address is 616 Cornwallis Lane, Foster City. Are you the realtor?",
+      "How much you want to offer?",
+      "Okay, call my cell phone. 650 343 9999. This one is my daughter's office.",
+      "So you are the real estate office, or what kind of job?",
+      "Okay. Bye.",
+    ],
+  },
+  {
+    id: "just-call-me",
+    about: "might sell, gives no address, wants off the phone",
+    lines: [
+      "Hello?",
+      "Yeah, I got your letter. I might be interested in selling. Just have Ryan call me.",
+      "Okay, thanks. Bye.",
+    ],
+  },
 ]
 
 const RATE = 24_000
@@ -89,7 +109,7 @@ const NO_REPLY_GIVE_UP_MS = 9_000 // she never started: move on and log it
 // She's finished when no new words have come for this long. Her words
 // arrive as she generates them, so a shorter wait cuts her off mid-thought.
 // Only decides when the caller speaks next; reply times aren't affected.
-const QUIET_AFTER_HER_MS = 2_500
+const QUIET_AFTER_HER_MS = Number(process.env.REHEARSAL_QUIET_MS) || 2_500
 const CALLER_PHONE = "+14085550142"
 
 function arg(name: string): string | null {
