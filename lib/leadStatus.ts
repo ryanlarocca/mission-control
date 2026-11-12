@@ -5,6 +5,7 @@ import {
   haltOutreachForCluster,
   isOutbound,
   type LeadStatus,
+  type Temperature,
 } from "@/lib/leads"
 import { isAnonymousCaller } from "@/lib/anonymous"
 import { completeText, extractJsonObject, hasLlmKey, SONNET } from "@/lib/llm"
@@ -62,10 +63,11 @@ export interface ClusterRow {
   pending_at?: string | null
   deal_closed_at?: string | null
   offer_verbalized_at?: string | null
+  temperature?: Temperature | null
 }
 
 const CLUSTER_COLS =
-  "id, created_at, twilio_number, caller_phone, email, gmail_thread_id, name, status, is_dnc, is_junk, status_set_by, status_set_at, became_lead_at, appointment_at, pending_at, deal_closed_at, offer_verbalized_at"
+  "id, created_at, twilio_number, caller_phone, email, gmail_thread_id, name, status, is_dnc, is_junk, status_set_by, status_set_at, became_lead_at, appointment_at, pending_at, deal_closed_at, offer_verbalized_at, temperature"
 
 /** Every row of the person `row` belongs to — same keying as the card. */
 export async function fetchClusterRows(sb: SupabaseClient, row: { id: string; caller_phone: string | null; email: string | null; gmail_thread_id?: string | null }): Promise<ClusterRow[]> {
@@ -343,4 +345,102 @@ export async function undoStatusEvent(sb: SupabaseClient, eventId: string): Prom
   await sb.from("lead_status_events").update({ undone_at: new Date().toISOString() }).eq("id", eventId)
   const name = rows.map((r) => r.name).reverse().find((n) => n && n.trim()) ?? row.caller_phone ?? row.email ?? "lead"
   return { ok: true, label: `${name} back to ${ev.from_status}` }
+}
+
+// ─── Cooling (Ryan 2026-11-11) ──────────────────────────────────────────────
+// Hot / warm is the AI's read of what they said at the time, and nothing
+// re-rated a person who then went silent: a test voicemail from May still
+// said Warm in November, and 25 cards sat Warm / Hot after 2½–6½ months of
+// nothing. Silence = nothing FROM them (call, text, email, voicemail, a text
+// to Ryan's personal cell); Ryan's calls and the auto texts don't count.
+//   Hot  → Warm after 30 days of silence
+//   Warm → Cold after 60 days (Hot goes straight to Cold at 60)
+// The moment they reach out, the new row is rated fresh and the chip reads it.
+// Kept as rated: someone who named when to call ("call me in January" —
+// judge state call_on), an appointment, a deal under contract / closed.
+// scripts/judge.js applies the same cap so a re-judge can't warm them back up.
+
+export const COOL_HOT_DAYS = 30
+export const COOL_WARM_DAYS = 60
+const KEEP_RATING_STATES = new Set(["call_on", "appointment", "under_contract", "closed"])
+
+/** Pure: the chip after `silentDays` with nothing from them. */
+export function cooledTemperature(t: Temperature, silentDays: number): Temperature {
+  if (t !== "cold" && silentDays >= COOL_WARM_DAYS) return "cold"
+  if (t === "hot" && silentDays >= COOL_HOT_DAYS) return "warm"
+  return t
+}
+
+/** Pure: should this person's chip cool? `verdictState` = their lead_verdicts
+ *  state, if any. null = leave it. */
+export function decideCooling(
+  rows: ClusterRow[],
+  now: number,
+  personal?: PersonalTexts | null,
+  verdictState?: string | null,
+): { rowId: string; from: Temperature; to: Temperature; silentDays: number } | null {
+  if (rows.length === 0) return null
+  if (verdictState && KEEP_RATING_STATES.has(verdictState)) return null
+  if (rows.some((r) => r.is_dnc || r.is_junk || r.pending_at || r.deal_closed_at)) return null
+  if (rows.some((r) => r.appointment_at && Date.parse(r.appointment_at) > now)) return null
+  if (statusAnchor(rows)?.status === "dead") return null
+  const newestFirst = [...rows].sort((a, b) => Date.parse(b.created_at) - Date.parse(a.created_at))
+  const chip = newestFirst.find((r) => r.temperature) // the row the card's chip reads
+  if (!chip || (chip.temperature !== "hot" && chip.temperature !== "warm")) return null
+  const heard = [...rows.filter((r) => !isOutbound(r)).map((r) => Date.parse(r.created_at)), ...(personal?.inbound ?? [])]
+  const since = heard.length ? Math.max(...heard) : Date.parse(newestFirst[newestFirst.length - 1].created_at)
+  const silentDays = Math.floor((now - since) / 86_400_000)
+  const to = cooledTemperature(chip.temperature, silentDays)
+  return to === chip.temperature ? null : { rowId: chip.id, from: chip.temperature, to, silentDays }
+}
+
+/** Daily (with the quiet sweep): cool every Hot / Warm person who went
+ *  silent. A phone whose personal-cell texts weren't sent is skipped — they
+ *  may have texted Ryan's own phone (Candace, 2026-10-24). */
+export async function runTemperatureCooling(
+  sb: SupabaseClient,
+  opts: { now?: number; apply?: boolean; personalByPhone?: Record<string, PersonalTexts> } = {},
+): Promise<{ leadId: string; name: string | null; from: Temperature; to: Temperature; days: number }[]> {
+  const now = opts.now ?? Date.now()
+  const apply = opts.apply ?? autoStatusEnabled()
+  const rated: { id: string; caller_phone: string | null; email: string | null; gmail_thread_id: string | null }[] = []
+  for (let from = 0; ; from += 1000) {
+    const { data, error } = await sb
+      .from("leads")
+      .select("id, caller_phone, email, gmail_thread_id")
+      .in("temperature", ["hot", "warm"])
+      .order("id", { ascending: true })
+      .range(from, from + 999)
+    if (error) throw new Error(error.message)
+    rated.push(...(data ?? []))
+    if (!data || data.length < 1000) break
+  }
+  const phones = Array.from(new Set(rated.map((r) => r.caller_phone).filter((p): p is string => !!p && !isAnonymousCaller(p))))
+  const verdicts = new Map<string, string>()
+  for (let i = 0; i < phones.length; i += 200) {
+    const { data, error } = await sb.from("lead_verdicts").select("phone, state").in("phone", phones.slice(i, i + 200))
+    if (error) throw new Error(`verdicts: ${error.message}`)
+    for (const v of data ?? []) verdicts.set(v.phone as string, v.state as string)
+  }
+  const seen = new Set<string>()
+  const cooled: { leadId: string; name: string | null; from: Temperature; to: Temperature; days: number }[] = []
+  for (const r of rated) {
+    const rows = await fetchClusterRows(sb, r)
+    const key = rows.map((x) => x.id).sort().join(",")
+    if (seen.has(key)) continue
+    seen.add(key)
+    const phone = r.caller_phone && !isAnonymousCaller(r.caller_phone) ? r.caller_phone : null
+    const p10 = phone ? phone.replace(/\D/g, "").slice(-10) : ""
+    const personal = p10 ? opts.personalByPhone?.[p10] : null
+    if (p10 && !personal) continue
+    const move = decideCooling(rows, now, personal, phone ? verdicts.get(phone) : null)
+    if (!move) continue
+    if (apply) {
+      const { error } = await sb.from("leads").update({ temperature: move.to }).eq("id", move.rowId)
+      if (error) throw new Error(`temperature write failed: ${error.message}`)
+    }
+    const name = rows.map((x) => x.name).reverse().find((n) => n && n.trim()) ?? null
+    cooled.push({ leadId: move.rowId, name, from: move.from, to: move.to, days: move.silentDays })
+  }
+  return cooled
 }

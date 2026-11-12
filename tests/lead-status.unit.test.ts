@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { clusterFacts, decideQuietMove, decideStageMove, statusAnchor, type ClusterRow } from "@/lib/leadStatus"
+import { clusterFacts, cooledTemperature, decideCooling, decideQuietMove, decideStageMove, statusAnchor, type ClusterRow } from "@/lib/leadStatus"
 import { buildDigest, latestPerPerson } from "@/lib/leadStatusDigest"
 import { pacificDate, pacificDatePlusDays } from "@/lib/pacificDate"
 
@@ -149,5 +149,41 @@ describe("pacificDate", () => {
   it("crosses month ends and DST", () => {
     expect(pacificDatePlusDays(1, new Date("2026-03-01T07:30:00Z"))).toBe("2026-03-01") // Feb 28 11:30pm PST
     expect(pacificDatePlusDays(180, new Date("2026-11-05T18:00:00Z"))).toBe("2027-05-04")
+  })
+})
+
+describe("cooling (hot / warm fades with their silence)", () => {
+  it("Hot → Warm at 30 days, anything → Cold at 60", () => {
+    expect(cooledTemperature("hot", 29)).toBe("hot")
+    expect(cooledTemperature("hot", 30)).toBe("warm")
+    expect(cooledTemperature("warm", 59)).toBe("warm")
+    expect(cooledTemperature("warm", 60)).toBe("cold")
+    expect(cooledTemperature("hot", 61)).toBe("cold")
+    expect(cooledTemperature("cold", 400)).toBe("cold")
+  })
+  it("a one-voicemail Warm from six months ago cools to Cold on the chip row", () => {
+    const rows = [inbound("vm", 185 * DAY, { status: "active", temperature: "warm" }), outbound("call", 185 * DAY - 90_000, { temperature: "warm" }), outbound("auto", 0)]
+    expect(decideCooling(rows, NOW)).toEqual({ rowId: "call", from: "warm", to: "cold", silentDays: 185 })
+  })
+  it("Ryan's calls and auto texts don't count as hearing from them", () => {
+    const rows = [inbound("a", 40 * DAY, { temperature: "hot" }), outbound("b", 2 * DAY), outbound("c", 1 * DAY)]
+    expect(decideCooling(rows, NOW)?.to).toBe("warm")
+  })
+  it("a text to Ryan's personal cell counts", () => {
+    const rows = [inbound("a", 90 * DAY, { temperature: "warm" })]
+    expect(decideCooling(rows, NOW, { inbound: [NOW - 5 * DAY], outbound: [] })).toBeNull()
+  })
+  it("they reached out recently → leave it", () => {
+    expect(decideCooling([inbound("a", 10 * DAY, { temperature: "hot" })], NOW)).toBeNull()
+  })
+  it("keeps the rating for call-me-in-January, appointments, deals, DNC / junk / dead", () => {
+    const old = (extra: Partial<ClusterRow> = {}) => [inbound("a", 100 * DAY, { temperature: "warm", ...extra })]
+    expect(decideCooling(old(), NOW, null, "call_on")).toBeNull()
+    expect(decideCooling(old(), NOW, null, "appointment")).toBeNull()
+    expect(decideCooling(old({ appointment_at: new Date(NOW + DAY).toISOString() }), NOW)).toBeNull()
+    expect(decideCooling(old({ pending_at: iso(DAY) }), NOW)).toBeNull()
+    expect(decideCooling(old({ is_junk: true }), NOW)).toBeNull()
+    expect(decideCooling(old({ status: "dead" }), NOW)).toBeNull()
+    expect(decideCooling(old(), NOW, null, "quiet_until")?.to).toBe("cold")
   })
 })

@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server"
 import { getLeadsClient, sendTelegramAlert } from "@/lib/leads"
-import { autoStatusEnabled, runQuietSweep, type PersonalTexts } from "@/lib/leadStatus"
+import { autoStatusEnabled, runQuietSweep, runTemperatureCooling, type PersonalTexts } from "@/lib/leadStatus"
 import { sendStatusDigest } from "@/lib/leadStatusDigest"
 
 // Daily lead-status pass (launchd com.lrghomes.lead-status-sweep on the Mac
@@ -9,12 +9,14 @@ import { sendStatusDigest } from "@/lib/leadStatusDigest"
 //   1. 30-day quiet rule: Active people who never answered Ryan → Nurture.
 //   2. One Telegram summary of every automatic move since the last one
 //      (none on a day nothing moved), each with an undo button.
-// With LEAD_AUTO_STATUS off both steps are shadow / skipped.
+//   3. Cooling (2026-11-11): Hot → Warm after 30 silent days, Warm → Cold
+//      after 60 (lib/leadStatus runTemperatureCooling). Quiet — no message.
+// With LEAD_AUTO_STATUS off all three are shadow / skipped.
 export const dynamic = "force-dynamic"
 export const maxDuration = 300
 
 // Body (optional): { personal: { "<last10>": { inbound: [iso], outbound: [iso] } } }
-// — Ryan's personal-cell texts per Active person, read from The Pile by the
+// — Ryan's personal-cell texts per Active or Hot / Warm person, read from The Pile by the
 // mini script, so a seller he texts from his own phone is never "quiet".
 export async function POST(request: Request) {
   const sb = getLeadsClient()
@@ -34,7 +36,17 @@ export async function POST(request: Request) {
     }
     const quiet = await runQuietSweep(sb, { personalByPhone })
     const digest = autoStatusEnabled() ? await sendStatusDigest(sb) : { sent: false, count: 0 }
-    return NextResponse.json({ enabled: autoStatusEnabled(), quiet, digest })
+    // Its own try: a cooling failure alerts but doesn't undo the status pass.
+    let cooled: Awaited<ReturnType<typeof runTemperatureCooling>> | { error: string }
+    try {
+      cooled = await runTemperatureCooling(sb, { personalByPhone })
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e)
+      console.error("[status-sweep] cooling failed:", msg)
+      await sendTelegramAlert(`⚠️ Daily hot/warm cooling didn't run — ${msg.slice(0, 200)}`).catch(() => {})
+      cooled = { error: msg }
+    }
+    return NextResponse.json({ enabled: autoStatusEnabled(), quiet, digest, cooled })
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e)
     console.error("[status-sweep] failed:", msg)

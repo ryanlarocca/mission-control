@@ -6,6 +6,7 @@
 //      Ryan's personal-cell texts (The Pile, sidecar :5799) count as contact.
 //   2. One Telegram summary of every automatic move since yesterday (none on
 //      a day nothing moved), each with a ↩️ Undo button.
+//   3. Hot / Warm chips cool after 30 / 60 days with nothing from the person.
 // Logs in with MC_PASSWORD from .env.local (same as the rescue sweep's
 // Phase C). A failure posts ⚠️ to Telegram so it never fails silently.
 //
@@ -41,14 +42,14 @@ try {
   const cookie = (lr.headers.get("set-cookie") || "").split(";")[0]
   if (!lr.ok || !cookie) throw new Error(`login failed (HTTP ${lr.status})`)
   // Ryan's personal-cell texts never reach `leads` — read them from The Pile
-  // (sidecar on this mini) for every Active person so the 30-day quiet rule
-  // sees them. A sidecar outage → send nothing for that phone and alert:
+  // (sidecar on this mini) for every Active or Hot / Warm person so the
+  // 30-day quiet rule and the cooling see them. A sidecar outage → send nothing for that phone and alert:
   // the rule then runs on Supabase rows only, like before 10-24.
   const personal = {}
   let pileErr = null
   try {
     const h = { apikey: process.env.LRG_SUPABASE_SERVICE_KEY, Authorization: `Bearer ${process.env.LRG_SUPABASE_SERVICE_KEY}` }
-    const ar = await fetch(`${process.env.LRG_SUPABASE_URL}/rest/v1/leads?select=caller_phone&status=eq.active&caller_phone=not.is.null&limit=1000`, { headers: h })
+    const ar = await fetch(`${process.env.LRG_SUPABASE_URL}/rest/v1/leads?select=caller_phone&or=(status.eq.active,temperature.in.(hot,warm))&caller_phone=not.is.null&limit=1000`, { headers: h })
     const phones = [...new Set((await ar.json()).map((r) => String(r.caller_phone).replace(/\D/g, "").slice(-10)).filter((p) => p.length === 10))]
     for (const p of phones) {
       const u = new URL("http://localhost:5799/pile/texts")
@@ -60,7 +61,7 @@ try {
     }
   } catch (e) {
     pileErr = e instanceof Error ? e.message : String(e)
-    await alert(`⚠️ Lead-status pass couldn't read The Pile (${pileErr}) — today's 30-day quiet check ran without your personal-cell texts.`)
+    await alert(`⚠️ Lead-status pass couldn't read The Pile (${pileErr}) — today's 30-day quiet check ran without your personal-cell texts (cooling skipped those people).`)
   }
   const r = await fetch(`${prodBase}/api/leads/status-sweep`, { method: "POST", headers: { Cookie: cookie, "Content-Type": "application/json" }, body: JSON.stringify({ personal }) })
   const body = await r.json().catch(() => ({}))

@@ -28,7 +28,8 @@
  * Timing (2026-11-11): Ryan calls a little early, never late — "call me in
  * four months" lands ~2 weeks early; a named month lands early in that month,
  * never the month before. The judge also sets the card's hot / warm / cold
- * from the whole thread, so one unrated call can't leave a stale chip.
+ * from the whole thread, so one unrated call can't leave a stale chip — capped
+ * by how long it's been since they last reached out (coolForSilence).
  *
  * Above all of them (2026-11-09, lib/deals.ts): a signed contract. Under
  * contract → no chasing, no drips, no autopilot; one date, the close-by day.
@@ -148,6 +149,7 @@ async function fetchPersonalTexts(phone, sinceIso) {
       .filter((m) => Number(m.timestamp) > since && (m.text || "").trim())
       .map((m) => ({
         created_at: new Date(Number(m.timestamp) + APPLE_EPOCH_OFFSET_MS).toISOString(),
+        inbound: !m.is_from_me,
         line: `[${pacificStamp(new Date(Number(m.timestamp) + APPLE_EPOCH_OFFSET_MS).toISOString())}] ${m.is_from_me ? "Ryan texted from his personal phone" : "They texted Ryan's personal phone"}\n  ${String(m.text).trim().slice(0, 1500)}`,
       }))
   } catch { return [] }
@@ -289,6 +291,24 @@ function underContractReason(f) {
   const parts = [`Under contract${d.price ? ` at ${money(d.price)}` : ""}${signed ? ` (signed ${signed})` : ""}`]
   if (d.close_by) parts.push(`closes by ${fmtDay(d.close_by)} — tap Closed once it records`)
   return parts.join(" — ")
+}
+
+// Cooling (2026-11-11, same rule as lib/leadStatus cooledTemperature): the
+// model reads tone, not the calendar — a "call me back" from six months ago
+// still reads Warm. Nothing from them in 30 days caps Hot at Warm; in 60, at
+// Cold. Someone who named when to call / has an appointment / a deal keeps
+// the model's rating.
+const COOL_HOT_DAYS = 30
+const COOL_WARM_DAYS = 60
+const KEEP_RATING_STATES = ["call_on", "appointment", "under_contract", "closed"]
+function coolForSilence(temp, state, rows, personal, now = Date.now()) {
+  if (!temp || temp === "cold" || KEEP_RATING_STATES.includes(state)) return temp
+  const heard = rows.filter(isInbound).map((r) => r.created_at).concat(personal.filter((p) => p.inbound).map((p) => p.created_at))
+  const since = heard.length ? Math.max(...heard.map((t) => new Date(t).getTime())) : new Date(rows[0].created_at).getTime()
+  const silentDays = Math.floor((now - since) / DAY)
+  if (silentDays >= COOL_WARM_DAYS) return "cold"
+  if (temp === "hot" && silentDays >= COOL_HOT_DAYS) return "warm"
+  return temp
 }
 
 function decide(llm, f, today) {
@@ -509,6 +529,7 @@ async function judgePhone(sb, deps, phone, opts = {}) {
   const standing = opts.fresh ? null : standingRow // --fresh: rule again from scratch
 
   let llm = null
+  let personal = []
   if (f.isDnc) llm = { state: "dnc", date: null, reason: "On the do-not-contact list.", connected: false }
   else if (f.closedAt || (f.underContract && !f.inboundSinceContract)) {
     // Signed (or closed) and nothing from them since: the deal is the plan.
@@ -518,7 +539,7 @@ async function judgePhone(sb, deps, phone, opts = {}) {
     // On autopilot and they haven't replied: autopilot owns them. Nothing to rule on.
     llm = { state: "none", date: null, reason: "On autopilot, no reply yet.", connected: false, usage: null }
   } else {
-    let personal = await fetchPersonalTexts(phone, rows[0].created_at)
+    personal = await fetchPersonalTexts(phone, rows[0].created_at)
     // Texts with their best number (lib/leadPhones) are the same conversation.
     const { data: bestRow } = await sb.from("lead_best_numbers").select("best_phone").eq("person_phone", phone).maybeSingle()
     if (bestRow && bestRow.best_phone) personal = personal.concat(await fetchPersonalTexts(bestRow.best_phone, rows[0].created_at))
@@ -527,6 +548,7 @@ async function judgePhone(sb, deps, phone, opts = {}) {
     llm = await askModel(deps.anthropic, ctx)
   }
   const v = decide(llm, f, today)
+  v.temperature = coolForSilence(v.temperature, v.state, rows, personal)
   const result = { phone, name: f.name, address: f.address, before: f.before, autopilotBefore: !!f.autopilotRow, llm, verdict: v, attempts: f.attempts.length }
 
   if (opts.write) {
@@ -598,7 +620,7 @@ async function runJudge(sb, deps, { live }) {
   return stats
 }
 
-module.exports = { runJudge, judgePhone, dueNow, decide, facts }
+module.exports = { runJudge, judgePhone, dueNow, decide, facts, coolForSilence }
 
 // ─── CLI ────────────────────────────────────────────────────────────────────
 
