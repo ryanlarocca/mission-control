@@ -196,8 +196,10 @@ SELLER_LINE_Y = 200.8             # seller signature line
 SIG_X0, SIG_X1 = 309.0, 558.0     # signature lines
 LABEL_X, VALUE_X = 269.0, 309.0   # Name:/Tel:/Email: labels and values
 ROW = 16.2                        # label row spacing in the signature blocks
-CHECKBOX_RECT = (54.0, 124.0, 64.0, 134.0)
-ADDENDUM_TEXT_Y = 128.0           # baseline of the checkbox sentence (wraps to a second line at 128 - LEAD2)
+SELLER2_BLOCK_Y = 126.0           # second seller block (2026-11-13: two sellers sign on the agreement itself)
+SELLER2_LINE_Y = 123.0            # second seller signature line
+CHECKBOX_RECT = (54.0, 48.0, 64.0, 58.0)
+ADDENDUM_TEXT_Y = 52.0            # baseline of the checkbox sentence (wraps to a second line at 52 - LEAD2)
 
 
 # ---------------------------------------------------------------- layout
@@ -364,21 +366,24 @@ def build_pages():
         p.text(VALUE_X, yy, value)
         yy -= ROW
 
-    # Seller block
-    p.text(LEFT, SELLER_BLOCK_Y, "Dated:")
-    r = (88.0, SELLER_BLOCK_Y - FIELD_DROP, 198.0, SELLER_BLOCK_Y - FIELD_DROP + FIELD_H)
-    p.field_box(r[0], r[1], r[2] - r[0], FIELD_H)
-    p.fields.append({"name": "seller_date", "rect": r, "multiline": False})
-    p.text(LABEL_X, SELLER_BLOCK_Y, "Seller:")
-    c.line(SIG_X0, SELLER_LINE_Y, SIG_X1, SELLER_LINE_Y)
-    p.text(SIG_X0 + 2, SELLER_LINE_Y - 8.0, "Signature", ITAL, 7)
-    yy = SELLER_BLOCK_Y - 22.8
-    for label, name in (("Name:", "seller_signer_name"), ("Tel:", "seller_tel"), ("Email:", "seller_email")):
-        p.text(LABEL_X, yy, label)
-        r = (VALUE_X, yy - FIELD_DROP, SIG_X1, yy - FIELD_DROP + FIELD_H)
+    # Seller blocks: the first keeps the 2026-10-15 position (envelopes from older
+    # builds still sign there); the second sits under it. A third seller and up
+    # signs the Signature Addendum.
+    for block_y, line_y, prefix in ((SELLER_BLOCK_Y, SELLER_LINE_Y, "seller"), (SELLER2_BLOCK_Y, SELLER2_LINE_Y, "seller2")):
+        p.text(LEFT, block_y, "Dated:")
+        r = (88.0, block_y - FIELD_DROP, 198.0, block_y - FIELD_DROP + FIELD_H)
         p.field_box(r[0], r[1], r[2] - r[0], FIELD_H)
-        p.fields.append({"name": name, "rect": r, "multiline": False})
-        yy -= ROW
+        p.fields.append({"name": f"{prefix}_date", "rect": r, "multiline": False})
+        p.text(LABEL_X, block_y, "Seller:")
+        c.line(SIG_X0, line_y, SIG_X1, line_y)
+        p.text(SIG_X0 + 2, line_y - 8.0, "Signature", ITAL, 7)
+        yy = block_y - 22.8
+        for label, name in (("Name:", f"{prefix}_signer_name"), ("Tel:", f"{prefix}_tel"), ("Email:", f"{prefix}_email")):
+            p.text(LABEL_X, yy, label)
+            r = (VALUE_X, yy - FIELD_DROP, SIG_X1, yy - FIELD_DROP + FIELD_H)
+            p.field_box(r[0], r[1], r[2] - r[0], FIELD_H)
+            p.fields.append({"name": name, "rect": r, "multiline": False})
+            yy -= ROW
 
     # Additional signers line (ticked by e-sign when the envelope has addendum signers)
     x0, y0, x1, y1 = CHECKBOX_RECT
@@ -510,6 +515,7 @@ def main():
     print("\ne-sign (esign/lib/pdf.mjs TEMPLATE, page index 1 = page 2):")
     print(f"  buyer signature line   x {SIG_X0:.0f}–{SIG_X1:.0f}  y {BUYER_LINE_Y}")
     print(f"  seller signature line  x {SIG_X0:.0f}–{SIG_X1:.0f}  y {SELLER_LINE_Y}")
+    print(f"  seller2 signature line x {SIG_X0:.0f}–{SIG_X1:.0f}  y {SELLER2_LINE_Y}")
     print(f"  addendum_attached box  {CHECKBOX_RECT}")
 
 

@@ -451,8 +451,24 @@ export function finishParse(raw: Record<string, unknown>, sourceText: string, no
 
 /** The 15 template fields → their string values. seller_date stays blank; the
  *  addendum checkbox (addendum_attached) is e-sign's, left alone. */
+/**
+ * The agreement has two seller signature blocks (2026-11-13). "Alireza Hekmati
+ * and Badri Hekmati" → one name per block; anything that isn't two full names
+ * ("John and Mary Smith", a trust) stays whole on the first block.
+ */
+export function sellerSignerNames(sellerName: string | null): [string, string] {
+  const name = (sellerName ?? "").trim()
+  const parts = name.split(/\s+(?:and|&)\s+/i)
+  if (parts.length === 2 && parts.every((p) => p.trim().split(/\s+/).length >= 2 && !/,|\btrust/i.test(p))) {
+    return [parts[0].trim(), parts[1].trim()]
+  }
+  return [name, ""]
+}
+
 export function pdfFieldValues(fields: OfferFields): Record<string, string> {
   const expiration = resolveExpiration(fields)
+  const explicitSigner = fields.seller_signer_name && fields.seller_signer_name !== fields.seller_name ? fields.seller_signer_name : null
+  const [signer1, signer2] = explicitSigner ? [explicitSigner, ""] : sellerSignerNames(fields.seller_name)
   return {
     agreement_date: formatDateMMDDYYYY(fields.agreement_date),
     seller_name: fields.seller_name ?? "",
@@ -464,7 +480,8 @@ export function pdfFieldValues(fields: OfferFields): Record<string, string> {
     expiration_date: formatDateMMDDYYYY(expiration.date), // "on 10/22/2026 (the "Expiration Date")"
     special_stipulations: fields.special_stipulations.join("\n"),
     governing_state: GOVERNING_STATE,
-    seller_signer_name: fields.seller_signer_name ?? fields.seller_name ?? "",
+    seller_signer_name: signer1,
+    seller2_signer_name: signer2,
     seller_tel: fields.seller_tel ?? "",
     seller_email: fields.seller_email ?? "",
     buyer_date: formatDateMMDDYYYY(fields.agreement_date),

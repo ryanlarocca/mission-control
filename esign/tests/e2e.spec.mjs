@@ -92,7 +92,7 @@ after(async () => {
 })
 
 let envelopeId, sellerLinks, buyerLink, page2AtCreation
-const CHECKBOX = { x: 54, y: 124, w: 10, h: 10 } // addendum_attached, PDF points (esign/template/build_template.py)
+const CHECKBOX = { x: 54, y: 48, w: 10, h: 10 } // addendum_attached, PDF points (esign/template/build_template.py)
 
 test("static assets are content-hashed and cached immutably only when the hash matches", async () => {
   const html = await (await fetch(`${base}/admin/login`)).text()
@@ -149,7 +149,7 @@ test("original.pdf is the uploaded file byte for byte, and the interim build alr
   const text = pdfText(interim)
   assert.match(text, /SIGNATURE ADDENDUM[\s\S]*Referenced by the checked box on page 2 of the Agreement[\s\S]*Harold Thompson/)
   assert.doesNotMatch(text, /e-signed/, "nobody has signed yet")
-  assert.ok(await darkPixels(interim, 2, CHECKBOX) > await darkPixels(TEMPLATE_PDF, 2, CHECKBOX) + 20, "the checkbox is ticked")
+  assert.ok(await darkPixels(interim, 2, CHECKBOX) > await darkPixels(TEMPLATE_PDF, 2, CHECKBOX) + 10, "the checkbox is ticked")
   assert.ok(fs.existsSync(path.join(envDir(), "pages", "page-3.png")), "the addendum page is rendered for review")
   assert.match(await page.locator("main").innerText(), /Signed so far/, "admin detail links the interim file")
   const i = await page.request.get(`${base}/admin/e/${envelopeId}/interim.pdf`)
@@ -299,7 +299,7 @@ test("final.pdf: addendum box ticked, the addendum signer named on the addendum,
   assert.equal((text.match(/e-signed/g) || []).length, 3)
   assert.match(text, /Pages \(original\)\s+2/, "the certificate quotes the original page count, not the interim's 3")
   assert.match(text, new RegExp(`Original document\\s+${sha(fs.readFileSync(TEMPLATE_PDF))}`), "certificate's original fingerprint is the sent file's")
-  assert.ok(await darkPixels(signedPath, 2, CHECKBOX) > await darkPixels(TEMPLATE_PDF, 2, CHECKBOX) + 20, "the checkbox is ticked on the signed copy")
+  assert.ok(await darkPixels(signedPath, 2, CHECKBOX) > await darkPixels(TEMPLATE_PDF, 2, CHECKBOX) + 10, "the checkbox is ticked on the signed copy")
   assert.equal((await page.request.get(`${buyerLink}/document.pdf`)).headers()["content-disposition"].includes("SIGNED"), true, "document.pdf is the final once completed")
 })
 

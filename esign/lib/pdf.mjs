@@ -44,7 +44,7 @@ export const TEMPLATE = {
   buyer: { x: 309, lineY: 280.2, w: 249 },
   seller: { x: 309, lineY: 200.8, w: 249 },
   dateField: { buyer: "buyer_date", seller: "seller_date" },
-  addendum: { checkbox: "addendum_attached" }, // rect 54 124 64 134
+  addendum: { checkbox: "addendum_attached" }, // rect 54 48 64 58 (54 124 64 134 before the 2026-11-13 second seller block)
 }
 
 export async function inspectPdf(bytes) {
