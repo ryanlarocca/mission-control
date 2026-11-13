@@ -95,8 +95,8 @@ TERMS = [
     ("Purchase Price.", "The Seller agrees to convey the Property to Buyer for the sum of: $ {field:purchase_price:120} ."),
     ("Closing.", "Closing shall occur as soon as possible and no later than {field:closing_days:32} days from acceptance at a "
                  "time and place designated by Buyer's choice of escrow, title and/or Closing agent. Time is expressly declared "
-                 "to be of the essence of this Agreement except as provided in para. 6. Buyer shall pay all closing costs except "
-                 "for transfer tax (if existing). Closing to be held at: Chicago Title Company. Escrow Company's contact "
+                 "to be of the essence of this Agreement except as provided in para. 6. Buyer and Seller shall each pay closing "
+                 "costs as customary in the county where the Property is located. Closing to be held at: Chicago Title Company. Escrow Company's contact "
                  "information: Phone: (408) 354-6737."),
     ("Earnest money.", "Buyer shall deliver an earnest money deposit in the amount of $ {field:earnest_money:85} to Escrow "
                        "Company prior to Closing."),
