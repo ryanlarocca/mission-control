@@ -1254,8 +1254,49 @@ async function sweepWaitingDrafts(sb) {
 // only about what it can't:
 //   fixed   dead people still carrying a drip stamp or a future follow-up date
 //   alert   a lead row on one of our own numbers or a Personal relationship
-//           (should never happen now that intake skips them), autopilot errors
+//           (should never happen now that intake skips them), autopilot errors,
+//           people who came off autopilot and are on no list (2026-11-13)
 const SELFCHECK_STAMP = path.join(require("node:os").homedir(), ".lrg-followups-selfcheck")
+
+// Every row a query matches, 1000 at a time in id order (PostgREST caps a response at 1000).
+async function selectAll(build) {
+  const out = []
+  for (let from = 0; ; from += 1000) {
+    const { data, error } = await build().order("id").range(from, from + 999)
+    if (error) throw new Error(error.message)
+    out.push(...(data || []))
+    if (!data || data.length < 1000) return out
+  }
+}
+
+// Names (or phones) of people who were ever on autopilot and are now on no
+// list: not dead / DNC / junk, no drip campaign, no follow-up date, not
+// tagged done, not under contract or closed.
+async function offAutopilotOnNoList(sb) {
+  const ever = [
+    ...(await selectAll(() => sb.from("leads").select("caller_phone").not("autopilot_since", "is", null))),
+    ...(await selectAll(() => sb.from("leads").select("caller_phone").ilike("notes", "%[autopilot #%"))),
+  ]
+  const phones = [...new Set(ever.map((r) => r.caller_phone).filter((p) => p && /^\+\d{8,}$/.test(p)))]
+  const orphans = []
+  for (let i = 0; i < phones.length; i += 40) {
+    const rows = await selectAll(() => sb.from("leads")
+      .select("id, caller_phone, created_at, name, status, is_dnc, is_junk, drip_campaign_type, recommended_followup_date, autopilot_done_at, pending_at, deal_closed_at")
+      .in("caller_phone", phones.slice(i, i + 40)))
+    const byPhone = new Map()
+    for (const r of rows) {
+      if (!byPhone.has(r.caller_phone)) byPhone.set(r.caller_phone, [])
+      byPhone.get(r.caller_phone).push(r)
+    }
+    for (const [phone, cluster] of byPhone) {
+      if (cluster.some((r) => r.is_dnc || r.is_junk || String(r.status || "").toLowerCase() === "dead")) continue
+      if (cluster.some((r) => r.drip_campaign_type || r.recommended_followup_date || r.autopilot_done_at || r.pending_at || r.deal_closed_at)) continue
+      const named = cluster.filter((r) => r.name).sort((a, b) => String(b.created_at).localeCompare(String(a.created_at)))[0]
+      orphans.push(named ? named.name : phone)
+    }
+  }
+  return orphans
+}
 async function dailySelfCheck(sb, autopilotStats) {
   const today = new Intl.DateTimeFormat("en-CA", { timeZone: "America/Los_Angeles" }).format(new Date())
   try { if (fs.readFileSync(SELFCHECK_STAMP, "utf8").trim() === today) return } catch (_) {}
@@ -1302,6 +1343,16 @@ async function dailySelfCheck(sb, autopilotStats) {
   const { data: fresh } = await sb.from("leads").select("caller_phone").gte("created_at", since).not("caller_phone", "is", null).limit(2000)
   const bad = [...new Set((fresh || []).map((r) => r.caller_phone).filter((p) => never.has(p)))]
   if (bad.length) problems.push(`lead rows created for numbers that aren't leads: ${bad.map((p) => never.get(p)).join(", ")}`)
+
+  // Nobody lands nowhere (2026-11-13): someone who was ever on autopilot and
+  // is now on no drip, no follow-up date, not tagged done and not dead / in a
+  // deal has fallen off every list. Read-only — Ryan decides where they go.
+  try {
+    const orphans = await offAutopilotOnNoList(sb)
+    if (orphans.length) problems.push(`${orphans.length} ${orphans.length === 1 ? "person came" : "people came"} off autopilot and ${orphans.length === 1 ? "is" : "are"} on no list: ${orphans.slice(0, 10).join(", ")}${orphans.length > 10 ? ", …" : ""}`)
+  } catch (e) {
+    problems.push(`couldn't check who came off autopilot: ${e.message}`)
+  }
 
   if (autopilotStats && autopilotStats.error) problems.push(`autopilot hit ${autopilotStats.error} error(s) — see /tmp/lrg-drip-engine-err.log`)
 
@@ -2006,6 +2057,8 @@ async function main() {
         model: DRIP_MODEL,
         telegram,
         appleEpochMs: APPLE_EPOCH_OFFSET_MS,
+        // 2026-11-13: Opus edits each text to fit the card; "fixed" = the fixed texts.
+        writer: (process.env.AUTOPILOT_WRITER || "opus").trim().toLowerCase(),
       })
     } catch (e) {
       console.error("[autopilot] pass failed:", e.message)

@@ -20,6 +20,7 @@ import type { LeadStatus, PropertyDetail } from "@/lib/leads"
 import { pieceMismatchLabel } from "@/lib/mailMatch"
 import { formatPhone } from "@/lib/utils"
 import { ReplyPlanner } from "./ReplyPlanner"
+import { nextTextAt } from "@/lib/autopilotSchedule"
 import { type Plan, type CoachTurn, requestDraft, requestCoach, executePlan, sendSuffixFor, defaultNextAction } from "@/lib/reply-client"
 
 // Coach mode (2026-10-15): one coach turn from a card. Shared by the card
@@ -84,6 +85,9 @@ interface Lead {
   last_drip_sent_at?: string | null
   // Autopilot hold (scripts/judge.js): quiet until this date, then the check-ins resume.
   autopilot_hold_until?: string | null
+  // Set when someone comes BACK onto autopilot: the next text is due exactly then.
+  autopilot_next_at?: string | null
+  autopilot_holds?: number | null
   // Phase 7C
   is_dnc?: boolean | null
   is_junk?: boolean | null
@@ -1603,7 +1607,8 @@ export function LeadsTab() {
 
   // Autopilot (2026-11-05, replaces Long-term nurture): the 8 fixed
   // check-in texts in scripts/autopilot.js — off Follow Ups until they reply.
-  async function autopilotGroup(group: LeadGroup, action: "on" | "off") {
+  // Returns the line the card shows next to the pill / button.
+  async function autopilotGroup(group: LeadGroup, action: "on" | "off"): Promise<{ ok: boolean; message: string }> {
     try {
       const res = await fetch(`/api/leads/${group.mostRecentId}/autopilot`, {
         method: "POST",
@@ -1614,9 +1619,18 @@ export function LeadsTab() {
       if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`)
       notifyLeadChangedToParent(group.mostRecentId, ["drip_campaign_type", "recommended_followup_date"])
       void fetchLeads(true)
+      if (action === "off") return { ok: true, message: "Taken off autopilot — they're on today's Follow Ups." }
+      const who = group.name || formatPhone(group.contactPhone) || "This lead"
+      const next = data.next as { touch: number; at: string | null } | undefined
+      return {
+        ok: true,
+        message: next?.at
+          ? `${who} is back on autopilot — next text (#${next.touch} of 8) around ${new Date(next.at).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric", timeZone: "America/Los_Angeles" })}.`
+          : `${who} is on autopilot — first text goes out the next weekday afternoon.`,
+      }
     } catch (e) {
       console.error("autopilot failed:", e)
-      alert(`Autopilot failed: ${e instanceof Error ? e.message : String(e)}`)
+      return { ok: false, message: `Autopilot failed: ${e instanceof Error ? e.message : String(e)}` }
     }
   }
 
@@ -2237,7 +2251,7 @@ interface LeadCardProps {
   selected: boolean
   onToggleSelect: () => void
   onApplyDrip: () => void
-  onAutopilot: (action: "on" | "off") => void
+  onAutopilot: (action: "on" | "off") => Promise<{ ok: boolean; message: string }>
   onMarkBadNumber: () => void
   onMarkJunk: () => void
   onFlagDnc: () => void
@@ -2359,6 +2373,19 @@ const prefetchedScriptPhones = new Set<string>()
 
 function LeadCard(p: LeadCardProps) {
   const { group, expanded } = p
+  // Result of the last Autopilot tap, shown on the card for ~10 s.
+  const [apNote, setApNote] = useState<{ action: "on" | "off"; ok: boolean; text: string } | null>(null)
+  const apNoteTimer = useRef<number | null>(null)
+  async function runAutopilot(action: "on" | "off") {
+    const r = await p.onAutopilot(action)
+    if (apNoteTimer.current) window.clearTimeout(apNoteTimer.current)
+    setApNote({ action, ok: r.ok, text: r.message })
+    apNoteTimer.current = window.setTimeout(() => setApNote(null), 10000)
+  }
+  useEffect(() => () => { if (apNoteTimer.current) window.clearTimeout(apNoteTimer.current) }, [])
+  const apNoteEl = (show: boolean) => show && apNote ? (
+    <span className={`text-xs ${apNote.ok ? "text-sky-300" : "text-red-400"}`}>{apNote.text}</span>
+  ) : null
   const Icon = TYPE_ICON[group.mostRecentEvent.lead_type ?? "call"] || Phone
   // Display the campaign_label (Phase 7C overlay) when set, falling back to
   // the historical source. Untouched legacy rows that aren't relabeled fall
@@ -2422,6 +2449,7 @@ function LeadCard(p: LeadCardProps) {
   // soonest-first summary (see lib/next-touch). Drip metadata lives on the
   // intake row; flags / follow-up live on the group.
   const intakeRow = group.events.find(e => e.drip_campaign_type) || group.events[0]
+  const nextAutopilot = intakeRow?.drip_campaign_type === "autopilot" ? nextTextAt(intakeRow)?.at ?? null : null
   const nextTouch = resolveNextTouch({
     dripCampaignType: intakeRow?.drip_campaign_type,
     dripTouchNumber: intakeRow?.drip_touch_number,
@@ -2906,10 +2934,18 @@ function LeadCard(p: LeadCardProps) {
                   {" · "}{intakeRow.drip_touch_number ?? 0} of 8 check-in texts sent · stays off Follow Ups until they reply
                 </span>
               ) : (
-                <span>{intakeRow.drip_touch_number ?? 0} of 8 check-in texts sent · stays off Follow Ups until they reply</span>
+                <span>
+                  {intakeRow.drip_touch_number ?? 0} of 8 check-in texts sent
+                  {nextAutopilot
+                    ? nextAutopilot.getTime() <= Date.now()
+                      ? " · next text goes out the next weekday afternoon"
+                      : ` · next around ${nextAutopilot.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric", timeZone: "America/Los_Angeles" })}`
+                    : ""}
+                  {" · "}stays off Follow Ups until they reply
+                </span>
               )}
               <button
-                onClick={() => p.onAutopilot("off")}
+                onClick={() => void runAutopilot("off")}
                 className="ml-1 underline decoration-sky-700 underline-offset-2 text-sky-300 hover:text-sky-100 shrink-0"
               >
                 Take off
@@ -2918,6 +2954,7 @@ function LeadCard(p: LeadCardProps) {
           ) : (
             <NextTouchPill summary={nextTouch} />
           )}
+          {apNoteEl(!(apNote?.action === "on" && !apNote.ok))}
 
           <OfferRow
             offerAmount={group.offerAmount}
@@ -3231,7 +3268,7 @@ function LeadCard(p: LeadCardProps) {
                 )}
                 {group.contactPhone && !group.isDnc && !group.isJunk && !group.events.some(e => e.drip_campaign_type === "autopilot") && (
                   <button
-                    onClick={() => p.onAutopilot("on")}
+                    onClick={() => void runAutopilot("on")}
                     className="inline-flex items-center gap-1.5 px-3 py-1.5 min-h-[36px] rounded bg-sky-900/40 border border-sky-900 text-sky-200 hover:bg-sky-900/60 text-xs font-medium transition-colors"
                     title="Fixed check-in texts (now, +30 days, then every 90) — off Follow Ups until they reply"
                   >
@@ -3239,6 +3276,7 @@ function LeadCard(p: LeadCardProps) {
                     Autopilot
                   </button>
                 )}
+                {apNoteEl(apNote?.action === "on" && !apNote.ok)}
                 {group.contactPhone && (
                   <button
                     onClick={p.onMarkBadNumber}

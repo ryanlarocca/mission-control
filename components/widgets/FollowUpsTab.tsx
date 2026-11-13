@@ -772,6 +772,7 @@ export function FollowUpsTab() {
   // at once; an Undo bar restores the reminder + drip it had.
   async function autopilot(row: ContactRow) {
     setActingOn(row.clusterKey)
+    setErr(null)
     dropRow(row.clusterKey)
     try {
       const res = await fetch(`/api/leads/${row.leadId}/autopilot`, {
@@ -782,8 +783,12 @@ export function FollowUpsTab() {
       const body = await res.json().catch(() => ({}))
       if (!res.ok) throw new Error(body?.error || `HTTP ${res.status}`)
       const who = row.name || row.phone || "This lead"
+      const next = body.next as { touch: number; at: string | null } | undefined
+      const text = next?.at
+        ? `${who} is back on autopilot — next text (#${next.touch} of 8) around ${new Date(next.at).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric", timeZone: "America/Los_Angeles" })}.`
+        : `${who} is on autopilot — first text goes out the next weekday afternoon.`
       setUndoBar({
-        text: `${who} is on autopilot — first text goes out the next weekday afternoon.`,
+        text,
         run: async () => {
           await fetch(`/api/leads/${row.leadId}/autopilot`, {
             method: "POST",
@@ -1019,27 +1024,35 @@ export function FollowUpsTab() {
         </button>
       </div>
 
-      {err && (
-        <div className="px-3 py-2 rounded-md bg-red-900/30 border border-red-900/50 text-xs text-red-200 flex items-start gap-2">
-          <AlertTriangle className="w-4 h-4 mt-0.5 flex-shrink-0" />
-          <div className="flex-1">{err}</div>
-          <button onClick={() => setErr(null)} className="text-red-200/70 hover:text-red-100"><X className="w-3.5 h-3.5" /></button>
-        </div>
-      )}
-      {toast && (
-        <div className="px-3 py-2 rounded-md bg-emerald-900/30 border border-emerald-900/50 text-xs text-emerald-200">
-          {toast}
-        </div>
-      )}
-      {undoBar && (
-        <div className="px-3 py-2 rounded-md bg-sky-950/40 border border-sky-900/60 text-xs text-sky-200 flex items-center gap-2">
-          <span className="flex-1">{undoBar.text}</span>
-          <button
-            onClick={() => { const u = undoBar; setUndoBar(null); void u.run() }}
-            className="px-2 py-1 rounded border border-sky-800 text-sky-100 hover:bg-sky-900/50 shrink-0"
-          >
-            Undo
-          </button>
+      {/* Action feedback (error / toast / Undo) is pinned to the viewport bottom,
+          above the phone tab bar (min-h 52px + border + safe-area inset, see
+          components/Sidebar.tsx) — at the top of the list it was off-screen
+          once you'd scrolled to the card you tapped. */}
+      {(err || toast || undoBar) && (
+        <div className="fixed inset-x-4 bottom-[calc(env(safe-area-inset-bottom)+4.5rem)] md:inset-x-auto md:bottom-4 md:left-1/2 md:-translate-x-1/2 md:w-full md:max-w-lg z-40 flex flex-col gap-2 pointer-events-none">
+          {err && (
+            <div className="pointer-events-auto px-3 py-2 rounded-md bg-red-950 border border-red-900 shadow-lg text-xs text-red-200 flex items-start gap-2">
+              <AlertTriangle className="w-4 h-4 mt-0.5 flex-shrink-0" />
+              <div className="flex-1">{err}</div>
+              <button onClick={() => setErr(null)} className="text-red-200/70 hover:text-red-100"><X className="w-3.5 h-3.5" /></button>
+            </div>
+          )}
+          {toast && (
+            <div className="pointer-events-auto px-3 py-2 rounded-md bg-emerald-950 border border-emerald-900 shadow-lg text-xs text-emerald-200">
+              {toast}
+            </div>
+          )}
+          {undoBar && (
+            <div className="pointer-events-auto px-3 py-2 rounded-md bg-sky-950 border border-sky-900 shadow-lg text-xs text-sky-200 flex items-center gap-2">
+              <span className="flex-1">{undoBar.text}</span>
+              <button
+                onClick={() => { const u = undoBar; setUndoBar(null); void u.run() }}
+                className="px-2 py-1 rounded border border-sky-800 text-sky-100 hover:bg-sky-900/50 shrink-0"
+              >
+                Undo
+              </button>
+            </div>
+          )}
         </div>
       )}
 

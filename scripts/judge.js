@@ -455,6 +455,10 @@ async function apply(sb, phone, rows, f, v, deps) {
       autopilot_since: now,
       autopilot_hold_until: hold,
       autopilot_done_at: null,
+      // A date pinned by an earlier trip through the Autopilot button is stale
+      // here — the judge's enrolment runs on the normal schedule.
+      autopilot_next_at: null,
+      autopilot_holds: 0,
       name: host.name || f.name, property_address: host.property_address || f.address,
       followup_reason: v.reason, followup_generated_at: now,
     }, [host.id])
