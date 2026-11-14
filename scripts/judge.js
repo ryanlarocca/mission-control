@@ -617,7 +617,7 @@ async function runJudge(sb, deps, { live }) {
     } catch (e) {
       stats.error = (stats.error || 0) + 1
       console.error(`[judge] ${d.phone} failed: ${e.message}`)
-      await deps.telegram(`Judge couldn't rule on ${d.phone}: ${e.message}`).catch(() => {})
+      await (deps.opsTelegram || deps.telegram)(`Judge couldn't rule on ${d.phone}: ${e.message}`).catch(() => {})
     }
   }
   console.log(`[judge] done ${JSON.stringify(stats)}`)
@@ -645,13 +645,15 @@ if (require.main === module) {
   const args = process.argv.slice(2)
   const flag = (k) => { const i = args.indexOf(k); return i >= 0 ? args[i + 1] : null }
   const live = (process.env.JUDGE_LIVE || "").trim().toLowerCase() === "true"
-  const telegram = async (text) => {
-    const token = process.env.CAMPAIGN_BOT_TOKEN || process.env.TELEGRAM_BOT_TOKEN
+  const sendVia = (token) => async (text) => {
     const chat = process.env.TELEGRAM_CHAT_ID
     if (!token || !chat) return
     await fetch(`https://api.telegram.org/bot${token}/sendMessage`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ chat_id: chat, text }) }).catch(() => {})
   }
-  const deps = { anthropic, telegram }
+  const telegram = sendVia(process.env.CAMPAIGN_BOT_TOKEN || process.env.TELEGRAM_BOT_TOKEN)
+  // Machine-level errors (judge couldn't run) go to the helper bot.
+  const opsTelegram = sendVia(process.env.OPS_BOT_TOKEN || process.env.CAMPAIGN_BOT_TOKEN || process.env.TELEGRAM_BOT_TOKEN)
+  const deps = { anthropic, telegram, opsTelegram }
 
   const show = (r) => {
     if (r.skipped) { console.log(`\n## ${r.phone} — skipped (${r.skipped})`); return }

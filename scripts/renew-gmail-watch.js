@@ -126,7 +126,7 @@ async function main() {
 
 // Best-effort Telegram alert (same env the campaign engine uses).
 async function telegram(text) {
-  const token = process.env.CAMPAIGN_BOT_TOKEN || process.env.TELEGRAM_BOT_TOKEN
+  const token = process.env.OPS_BOT_TOKEN || process.env.CAMPAIGN_BOT_TOKEN || process.env.TELEGRAM_BOT_TOKEN
   const chatId = process.env.TELEGRAM_CHAT_ID
   if (!token || !chatId) return
   try {

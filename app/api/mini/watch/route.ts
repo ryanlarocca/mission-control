@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server"
-import { getLeadsClient, sendTelegramAlert } from "@/lib/leads"
+import { getLeadsClient, sendOpsAlert } from "@/lib/leads"
 import { GB_KB as GB, spaceLevel, type SpaceLevel } from "@/lib/miniSpace"
 
 // Outside watcher for the Mac mini (2026-11-06). Every other alert about the
@@ -71,7 +71,7 @@ export async function GET() {
 
   if (quiet && !row.down_alerted_at) {
     if (await claim("down_alerted_at", null, nowIso)) {
-      await sendTelegramAlert(
+      await sendOpsAlert(
         `🔴 <b>Mac mini has gone quiet</b> — no check-in for ${minutes(sinceBeat)} (last: ${pacific(row.beat_at)}).\n\n` +
           `If it's off, frozen or offline, everything that runs on it is down too (inbox agent, lead and text syncs, campaign engine, Mac mini chats).\n\n` +
           `Send “mini status”: if it answers, the mini is fine and only its check-in broke. If it doesn't, the mini or the office internet needs a look in person.`
@@ -80,7 +80,7 @@ export async function GET() {
   } else if (!quiet && row.down_alerted_at && sinceBeat <= QUIET_MS) {
     if (await claim("down_alerted_at", row.down_alerted_at, null)) {
       const downFor = Date.parse(row.beat_at) - Date.parse(row.down_alerted_at) + QUIET_MS
-      await sendTelegramAlert(`✅ <b>Mac mini is back</b> — checking in again (quiet for about ${minutes(Math.max(downFor, QUIET_MS))}).`)
+      await sendOpsAlert(`✅ <b>Mac mini is back</b> — checking in again (quiet for about ${minutes(Math.max(downFor, QUIET_MS))}).`)
     }
   }
 
@@ -89,14 +89,14 @@ export async function GET() {
     const sinceTick = now - Date.parse(row.watchdog_at)
     if (sinceTick > WATCHDOG_MS && !row.watchdog_alerted_at) {
       if (await claim("watchdog_alerted_at", null, nowIso)) {
-        await sendTelegramAlert(
+        await sendOpsAlert(
           `🟡 <b>Mac mini watchdog stopped</b> — the mini is up, but the bridge watchdog hasn't run for ${minutes(sinceTick)}. ` +
             `Idle chats aren't being cleaned up and new chats may stop opening. Send “mini status”; “mini restart” if it's red.`
         )
       }
     } else if (sinceTick <= WATCHDOG_MS && row.watchdog_alerted_at) {
       if (await claim("watchdog_alerted_at", row.watchdog_alerted_at, null)) {
-        await sendTelegramAlert("✅ Mac mini watchdog is running again.")
+        await sendOpsAlert("✅ Mac mini watchdog is running again.")
       }
     }
   }
@@ -110,11 +110,11 @@ export async function GET() {
       if (won?.length) {
         const gb = row.free_kb != null ? Math.round(row.free_kb / GB) : null
         if (next === "urgent") {
-          await sendTelegramAlert(`🔴 <b>Mac mini is almost out of space</b> — ${gb} GB free. When it fills up, texts, call recordings and Mac mini chats stop saving. Tell me “free up space on the mini” and I'll clear what can be recreated.`)
+          await sendOpsAlert(`🔴 <b>Mac mini is almost out of space</b> — ${gb} GB free. When it fills up, texts, call recordings and Mac mini chats stop saving. Tell me “free up space on the mini” and I'll clear what can be recreated.`)
         } else if (next === "warn" && row.space_level !== "urgent") {
-          await sendTelegramAlert(`🟡 <b>Mac mini is getting full</b> — ${gb} GB free. Nothing is broken yet; tell me “free up space on the mini” when you have a minute.`)
+          await sendOpsAlert(`🟡 <b>Mac mini is getting full</b> — ${gb} GB free. Nothing is broken yet; tell me “free up space on the mini” when you have a minute.`)
         } else if (next === null) {
-          await sendTelegramAlert(`✅ Mac mini has room again — ${gb} GB free.`)
+          await sendOpsAlert(`✅ Mac mini has room again — ${gb} GB free.`)
         }
       }
     }

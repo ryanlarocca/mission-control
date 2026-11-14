@@ -1696,6 +1696,13 @@ export function leadAlertBotToken(): string | undefined {
   return process.env.CAMPAIGN_BOT_TOKEN || process.env.TELEGRAM_BOT_TOKEN
 }
 
+// Machine-health alerts (Mac mini, bridge, disk) post from the helper bot
+// (@LRGHelperBot, OPS_BOT_TOKEN). Anything about a person stays on
+// sendTelegramAlert. Falls back down the chain until OPS_BOT_TOKEN is set.
+export function opsAlertBotToken(): string | undefined {
+  return process.env.OPS_BOT_TOKEN || process.env.CAMPAIGN_BOT_TOKEN || process.env.TELEGRAM_BOT_TOKEN
+}
+
 export interface TelegramButton {
   text: string
   // callback_data (handled by /api/campaign/telegram) or a URL to open.
@@ -1741,6 +1748,32 @@ export async function sendTelegramAlert(
     return true
   } catch (e) {
     console.error("[telegram] Alert failed:", e)
+    return false
+  }
+}
+
+// Plain HTML message from the helper bot — no buttons, no person attached.
+// Returns whether Telegram accepted it.
+export async function sendOpsAlert(text: string): Promise<boolean> {
+  const token = opsAlertBotToken()
+  const chatId = process.env.TELEGRAM_CHAT_ID
+  if (!token || !chatId) {
+    console.warn("[telegram] Missing OPS_BOT_TOKEN/CAMPAIGN_BOT_TOKEN/TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID")
+    return false
+  }
+  try {
+    const res = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ chat_id: chatId, text, parse_mode: "HTML" }),
+    })
+    if (!res.ok) {
+      console.error(`[telegram] ops alert failed ${res.status}: ${await res.text()}`)
+      return false
+    }
+    return true
+  } catch (e) {
+    console.error("[telegram] Ops alert failed:", e)
     return false
   }
 }

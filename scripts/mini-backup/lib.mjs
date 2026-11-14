@@ -77,7 +77,7 @@ export async function resolveFolder(drive, rootId, relPath, { create = true } = 
 
 export async function sendTelegram(text) {
   env()
-  const token = process.env.CAMPAIGN_BOT_TOKEN || process.env.TELEGRAM_BOT_TOKEN
+  const token = process.env.OPS_BOT_TOKEN || process.env.CAMPAIGN_BOT_TOKEN || process.env.TELEGRAM_BOT_TOKEN
   const chatId = process.env.TELEGRAM_CHAT_ID
   if (!token || !chatId) { console.warn("[telegram] no token/chat id"); return }
   try {

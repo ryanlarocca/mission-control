@@ -41,7 +41,7 @@ const REF = process.env.PHYSIQ_SUPABASE_PROJECT_REF || "msmlqdrfsieixudgsced"
 const stamp = () => new Date().toISOString()
 
 async function telegram(text) {
-  const token = process.env.TELEGRAM_BOT_TOKEN, chatId = process.env.TELEGRAM_CHAT_ID
+  const token = process.env.OPS_BOT_TOKEN || process.env.CAMPAIGN_BOT_TOKEN || process.env.TELEGRAM_BOT_TOKEN, chatId = process.env.TELEGRAM_CHAT_ID
   if (!token || !chatId) return
   try {
     await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {

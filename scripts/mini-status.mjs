@@ -165,7 +165,7 @@ function saveState(s) {
 
 async function telegram(text) {
   if (DRY) { log(`(dry) would send Telegram: ${text.replace(/\n/g, " | ")}`); return }
-  const token = process.env.TELEGRAM_BOT_TOKEN, chat = process.env.TELEGRAM_CHAT_ID
+  const token = process.env.OPS_BOT_TOKEN || process.env.CAMPAIGN_BOT_TOKEN || process.env.TELEGRAM_BOT_TOKEN, chat = process.env.TELEGRAM_CHAT_ID
   if (!token || !chat) { log("telegram not configured:", text); return }
   try {
     const res = await fetch("https://api.telegram.org/bot" + token + "/sendMessage", {

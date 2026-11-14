@@ -223,3 +223,25 @@ describe("alertStep — state changes only", () => {
     expect(r3.next.failingJobs).toEqual(["com.lrghomes.judge"])
   })
 })
+
+// Machine-health alerts come from the helper bot (2026-11-14): OPS_BOT_TOKEN,
+// else the Marketing bot, else Thadius. Lead alerts keep their own chain.
+describe("ops alert bot", () => {
+  it("resolves OPS_BOT_TOKEN, then CAMPAIGN_BOT_TOKEN, then TELEGRAM_BOT_TOKEN", async () => {
+    const { opsAlertBotToken, leadAlertBotToken } = await import("@/lib/leads")
+    const keep = { ...process.env }
+    try {
+      process.env.TELEGRAM_BOT_TOKEN = "thadius"
+      delete process.env.CAMPAIGN_BOT_TOKEN
+      delete process.env.OPS_BOT_TOKEN
+      expect(opsAlertBotToken()).toBe("thadius")
+      process.env.CAMPAIGN_BOT_TOKEN = "marketing"
+      expect(opsAlertBotToken()).toBe("marketing")
+      process.env.OPS_BOT_TOKEN = "helper"
+      expect(opsAlertBotToken()).toBe("helper")
+      expect(leadAlertBotToken()).toBe("marketing") // lead alerts never move
+    } finally {
+      process.env = keep
+    }
+  })
+})

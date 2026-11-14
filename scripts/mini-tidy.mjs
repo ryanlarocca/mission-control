@@ -102,7 +102,7 @@ function tryStat(p) { try { return fs.statSync(p).mtimeMs } catch { return 0 } }
 function rmrf(p) { if (!DRY) fs.rmSync(p, { recursive: true, force: true }) }
 
 async function telegram(text) {
-  const token = process.env.TELEGRAM_BOT_TOKEN, chat = process.env.TELEGRAM_CHAT_ID
+  const token = process.env.OPS_BOT_TOKEN || process.env.CAMPAIGN_BOT_TOKEN || process.env.TELEGRAM_BOT_TOKEN, chat = process.env.TELEGRAM_CHAT_ID
   if (!token || !chat || DRY) { log("telegram:", text.replace(/\n/g, " | ")); return }
   try {
     await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {

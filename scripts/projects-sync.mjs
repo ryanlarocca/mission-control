@@ -102,7 +102,7 @@ const esc = (s) => String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replac
 
 async function telegram(text) {
   if (DRY) { console.log(`--- (dry) Telegram ---\n${text}\n---`); return }
-  const token = process.env.CAMPAIGN_BOT_TOKEN || process.env.TELEGRAM_BOT_TOKEN
+  const token = process.env.OPS_BOT_TOKEN || process.env.CAMPAIGN_BOT_TOKEN || process.env.TELEGRAM_BOT_TOKEN
   const chat = process.env.TELEGRAM_CHAT_ID
   if (!token || !chat) throw new Error("Telegram not configured")
   const res = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
