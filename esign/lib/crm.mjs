@@ -17,6 +17,13 @@ export function crmEnabled() {
   return !["ESIGN_DRY_MAIL", "ESIGN_DRY_DRIVE", "ESIGN_DRY_CRM"].some((k) => process.env[k] === "1")
 }
 
+/** Ryan signed an agreement on his own (the sellers get the PDF some other way,
+ *  e.g. by email): presenting it is the Offer (Ryan's rule, 2026-11-13). The
+ *  lead is found by the property address. */
+export function isBuyerSignedOffer(envelope, signers) {
+  return envelope.kind !== "self" && !!envelope.is_template && !/^TEST\b/i.test(envelope.title || "") && signers.length > 0 && signers.every((s) => s.role === "buyer")
+}
+
 export function isSellerContract(envelope, signers) {
   return envelope.kind !== "self" && !!envelope.is_template && !/^TEST\b/i.test(envelope.title || "") && signers.some((s) => s.role === "seller")
 }

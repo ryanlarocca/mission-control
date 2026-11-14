@@ -13,7 +13,7 @@ import { sendMail, driveClient, driveDownload, driveMeta, driveResolvePath, driv
 import { inviteEmail, completedEmail, inviteText, completedText, noticeText } from "./emails.mjs"
 import { sendText, normalizePhone } from "./sms.mjs"
 import { notify, esc } from "./notify.mjs"
-import { crmEnabled, isSellerContract, reportContract } from "./crm.mjs"
+import { contractFields, crmEnabled, isBuyerSignedOffer, isSellerContract, reportContract } from "./crm.mjs"
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
 
@@ -532,6 +532,21 @@ export async function deliver(envelopeId) {
     } catch (e) {
       problems.push(`Lead card: ${e?.message || e}`)
       console.error("[esign] lead card update failed:", e)
+    }
+  } else if (crmEnabled() && isBuyerSignedOffer(envelope, signers) && !getEvents(envelopeId).some((e) => e.kind === "crm_offer")) {
+    // Ryan signed it alone to send the PDF himself: the lead gets the Offer stage + written price.
+    try {
+      const done = getEnvelope(envelopeId)
+      const out = await reportContract("sent", { ...done, created_at: done.completed_at }, signers)
+      addEvent(envelopeId, "crm_offer", { details: { status: out.status, leadId: out.leadId || null } })
+      const price = (await contractFields(done.original_path)).purchase_price
+      const where = done.property_address ? ` (${esc(done.property_address)})` : ""
+      crmLine = out.status === "recorded" ? `\n🏷️ ${esc(out.name || "The lead")}'s card: Offer${price ? ` at $${esc(String(price))}` : ""}.`
+        : out.status === "no_match" ? `\n⚠️ I couldn't tell which lead this offer is for${where}. Set Offer on their card by hand.`
+        : `\nLead card left as is (${esc(out.name || "lead")} is already under contract or closed).`
+    } catch (e) {
+      problems.push(`Lead card (Offer): ${e?.message || e}`)
+      console.error("[esign] lead card offer failed:", e)
     }
   }
 
