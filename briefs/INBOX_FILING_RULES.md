@@ -43,6 +43,7 @@ Properties/<number street>/          e.g. 5764 Halleck Dr, 2116 Quito Rd
       Buyer Contingency Removal 2026-10-30.pdf
       Buyer Closing Statement 2026-10-30.pdf
       Proof of Funds 2026-10-30.pdf
+      Pre-Approval Letter 2026-10-30.pdf   ← buyer's lender pre-approval / pre-qualification letter
       Escrow Wire Instructions 2026-10-30.pdf
       Counter Offer 2026-11-02.pdf       ← a later counter / addendum for the same buyer joins the same folder
   Construction/                      draw paperwork from any lender (DRF / draw request form, lien package, lien waivers, draw schedule, draw approvals — sender's name, every stage; since 2026-10-06); bids, invoices, permits (Ryan files these by hand)

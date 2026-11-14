@@ -34,6 +34,7 @@ const TERMITE_NOT_REPORT_RE = /invoice|receipt/i
 // Vendor paperwork (ITI Direct Mail): a print proof to approve, the CDTFA-230 /
 // Reg 1541.5 sales-tax exemption certificate. "Proof of funds" is not a proof.
 export const PROOF_FILE_RE = /proof/i
+const LOAN_LETTER_RE = /pre-?\s?(?:qualif|approv)|\b(?:loan|lender|mortgage)\s+approval/i // buyer lender letter sent with an offer
 const PROOF_OF_FUNDS_RE = /proof of\b|\bPOF\b/i // proof of funds / insurance / payment — never a print proof
 // "1541" alone would turn "1541 Foo Ave Addendum.pdf" into a tax form; the regulation is cited as 1541.5 / Reg 1541.
 export const TAX_FORM_FILE_RE = /exempt|CDTFA|\b230-?P\b|1541\.5|\breg(?:ulation)?\.?\s*1541\b/i
@@ -47,6 +48,7 @@ export function refineDocType(filename, docType, senderEmail, subject = "") {
   const insuranceContext = INSURER_RE.test(sender) || /\b(insurance|policy|dwelling|binder)\b/i.test(String(subject || ""))
   if (DOCUSIGN_SUMMARY_RE.test(f) && /docusign|^completed:/i.test(String(subject || ""))) return "other" // DocuSign's certificate of completion rides along with every envelope
   if (PROOF_OF_FUNDS_RE.test(f) && !/insurance|payment/i.test(f)) return "proof_of_funds"
+  if (LOAN_LETTER_RE.test(f)) return "loan_letter"
   if (docType === "proof" && !PROOF_FILE_RE.test(f)) docType = "other" // the classifier's "proof" is a print proof; anything else so labelled is just unknown
   if (DRAW_FILE_RE.test(f)) return "draw_request"
   if (DRAW_SUBJECT_RE.test(String(subject || "")) && !NEVER_DRAW.has(docType) && !/\b(guide|quick start|faq|how to)\b/i.test(f)) return "draw_request"
@@ -164,7 +166,7 @@ export function offerFolderMatch(existingNames, buyer) {
 
 const OFFER_DOC_LABEL = {
   purchase_agreement: "Offer RPA", counter: "Counter Offer", addendum: "Addendum", contingency_removal: "Buyer Contingency Removal",
-  closing_statement: "Buyer Closing Statement", net_sheet: "Buyer Net Sheet", emd_receipt: "EMD Receipt", proof_of_funds: "Proof of Funds", escrow_instructions: "Escrow Wire Instructions",
+  closing_statement: "Buyer Closing Statement", net_sheet: "Buyer Net Sheet", emd_receipt: "EMD Receipt", proof_of_funds: "Proof of Funds", loan_letter: "Pre-Approval Letter", escrow_instructions: "Escrow Wire Instructions",
 }
 /** Short, dated names inside the package folder (the folder already says who and how much). */
 export function offerDocName({ docType, filename, receivedAt }) {

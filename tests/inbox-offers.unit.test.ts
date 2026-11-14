@@ -57,6 +57,7 @@ describe("names", () => {
     expect(offerDocName({ docType: "contingency_removal", filename: "Buyer Contingency Removal 1 - 624pdf-52.pdf", receivedAt: RECEIVED })).toBe("Buyer Contingency Removal 2026-10-30.pdf")
     expect(offerDocName({ docType: "closing_statement", filename: "Coko Closing Statements-3.pdf", receivedAt: RECEIVED })).toBe("Buyer Closing Statement 2026-10-30.pdf")
     expect(offerDocName({ docType: "proof_of_funds", filename: "Coko LLC POF - October 2026.pdf", receivedAt: RECEIVED })).toBe("Proof of Funds 2026-10-30.pdf")
+    expect(offerDocName({ docType: "loan_letter", filename: "Kiavi-Pre-Qualification-Letter-2116 Quito Rd.pdf", receivedAt: RECEIVED })).toBe("Pre-Approval Letter 2026-10-30.pdf")
     expect(offerDocName({ docType: "escrow_instructions", filename: "Sky Escrow ABA.pdf", receivedAt: RECEIVED })).toBe("Escrow Wire Instructions 2026-10-30.pdf")
     expect(offerDocName({ docType: "addendum", filename: "Addendum 2.pdf", receivedAt: RECEIVED })).toBe("Addendum 2 2026-10-30.pdf")
     expect(offerDocName({ docType: "other", filename: "Something.pdf", receivedAt: RECEIVED })).toBe("Something.pdf")
@@ -69,6 +70,14 @@ describe("filingDecision with the offer flag", () => {
       expect(filingDecision(t, null, { offer: true })).toMatchObject({ file: true, sub: "Offers" })
     }
   })
+  it("a buyer's pre-qualification letter on an inbound offer is admitted and lands in the offer folder", () => {
+    const filename = "Kiavi-Pre-Qualification-Letter-2116 Quito Rd.pdf"
+    const docType = refineDocType(filename, "other", "agent@example.com", "Offer - 2116 Quito Rd")
+    expect(docType).toBe("loan_letter")
+    expect(filingDecision(docType, null, { offer: true })).toMatchObject({ file: true, sub: "Offers" })
+    const folder = offerPackageFolder({ buyer: "Coko LLC", price: 1500000, receivedAt: RECEIVED })
+    expect(`${folder}/${offerDocName({ docType, filename, receivedAt: RECEIVED })}`).toBe("Coko LLC $1.5M offer 2026-10-30/Pre-Approval Letter 2026-10-30.pdf")
+  })
   it("the buyer-rep agreement and other noise still stay out", () => {
     expect(filingDecision("other", null, { offer: true }).file).toBe(false)
     expect(filingDecision("flyer", null, { offer: true }).file).toBe(false)
@@ -77,6 +86,12 @@ describe("filingDecision with the offer flag", () => {
     expect(filingDecision("proof_of_funds", null).file).toBe(false)
     expect(filingDecision("escrow_instructions", null).file).toBe(false)
     expect(filingDecision("purchase_agreement", null)).toMatchObject({ file: true, sub: "Purchase & Sale" })
+  })
+  it("without the flag a loan letter is not filed either", () => {
+    expect(filingDecision("loan_letter", null).file).toBe(false)
+    expect(WHITELIST.has("loan_letter")).toBe(false)
+    expect(DOC_TYPES).toContain("loan_letter")
+    expect(OFFER_PACKAGE_TYPES.has("loan_letter")).toBe(true)
   })
   it("package membership vs the whitelist", () => {
     expect(WHITELIST.has("proof_of_funds")).toBe(false)
