@@ -44,6 +44,13 @@ export type MonitorState = {
    * the same reason as delegations.
    */
   introNudged?: boolean
+  /**
+   * Her one question about why they called (11-13): asked = she's been heard
+   * asking it; noteDue = the reminder that it's spent hasn't gone out yet.
+   * Optional for the same reason as delegations.
+   */
+  reasonAsked?: boolean
+  reasonNoteDue?: boolean
 }
 
 export const WRAP_AT_MS = 10 * 60_000
@@ -53,6 +60,16 @@ const GOODBYE_MAX_WAIT_MS = 8_000 // noisy line: hang up anyway
 const LOUD_INPUT_HOLD_MS = 1_200 // caller audio this recent = they may be talking
 const INTRO_AFTER_MS = 3_000 // caller silent after her "Hello?" → she says who she is
 const INTRO_NUDGE = `The caller hasn't said anything since you picked up. Say now: "This is Jackie with LRG Homes, how can I help you?" Then listen. That counts as your introduction; don't give it again.`
+// 11-13: the script alone still let her re-ask "what made you call" in 1 of 5
+// rehearsals (and 3 of 3 before the script change), so the moment she's heard
+// asking it, she's told it's spent. Matches her ways of asking why they
+// called, what's on their mind, what's going on with the property.
+const REASON_RE =
+  /\b(what (made|makes|brought|brings|got|has) you\b|what'?s (got|on your mind|going on with)\b|what is (on your mind|going on with)\b|why (are|were|did) you (calling|call|selling|thinking)|thinking (about|of) selling\?)/i
+export function asksReason(text: string): boolean {
+  return text.includes("?") && REASON_RE.test(text)
+}
+export const REASON_NOTE = `A note for you only: the caller can't hear this, so don't answer it or mention it, and don't say anything until the caller speaks. You've now asked your one open question (why they called). It's spent for the rest of this call. Whatever the caller says next, take it as the answer. Don't ask why they called, what's on their mind, what's going on with the property, or why they're selling again, in any wording. From here you only need their name, a good time for Ryan to call, and a callback number if you don't have one.`
 const CHECK_IN_AFTER_MS = 20_000
 const GOODBYE_AFTER_CHECK_IN_MS = 15_000
 const DEAD_AIR_HANGUP_MS = 15_000 // after the dead-air goodbye prompt
@@ -169,6 +186,11 @@ export class CallMonitor {
         if (now - s.lastOutputTextAt > TEXT_GAP_MS) s.outputText = ""
         s.outputText += text
         s.lastOutputTextAt = now
+        if (!s.reasonAsked && asksReason(s.outputText)) {
+          s.reasonAsked = true
+          s.reasonNoteDue = true
+          this.note(now, "asked why they called — reminder queued")
+        }
         // Re-judged on every fragment: "Take care! Oh, one more thing?" isn't a goodbye.
         if (isGoodbye(s.outputText)) {
           if (!s.goodbye) {
@@ -223,6 +245,11 @@ export class CallMonitor {
         content:
           "The call is close to ten minutes. Wrap up now: let them know Ryan will follow up, thank them, and say goodbye.",
       })
+    }
+
+    if (s.reasonNoteDue) {
+      s.reasonNoteDue = false
+      actions.push({ type: "commentary", content: REASON_NOTE })
     }
 
     const speakingDone = now >= s.playbackEndAt + 300 && now - s.lastOutputLoudAt >= 700

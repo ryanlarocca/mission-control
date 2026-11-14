@@ -7,12 +7,20 @@
 // her audio deltas carry no timestamps; her transcript deltas do, word by
 // word, on the same clock as the audio we stream in.)
 //
-// Touches no phone line, lead, drip or Telegram. Costs a minute or so of
-// GPT-Live per scenario.
+// Every run is also recorded as ONE mono phone-quality mp3 (caller TTS and
+// Jackie on a single timeline) so the owner can judge by ear:
+// /tmp/jackie-rehearsal-audio/<label>/<scenario>-run<N>.mp3 + .txt
+// (<label> = the --script-from ref, or "working-tree").
+//
+// Touches no phone line, lead or drip; Telegram only with --send. Costs a
+// minute or so of GPT-Live per scenario run.
 //
 //   npx tsx --tsconfig ./tsconfig.json scripts/jackie-rehearsal.ts            # every scenario, current script
 //   … scripts/jackie-rehearsal.ts --only not-selling,opt-out                  # some scenarios
 //   … scripts/jackie-rehearsal.ts --script-from <git ref>                     # her script as of a commit (A/B)
+//   … scripts/jackie-rehearsal.ts --runs 3                                    # each scenario 3 times (the voice varies)
+//   … scripts/jackie-rehearsal.ts --send                                      # post every mp3 to Telegram as a voice note
+//   … scripts/jackie-rehearsal.ts --send --send-only terse-owner,opt-out      # …only these scenarios (needs --send)
 //
 // Env (from .env.local): OPENAI_VOICE_API_KEY (or OPENAI_API_KEY), and
 // ANTHROPIC_API_KEY for the grading pass.
@@ -26,8 +34,12 @@ import {
   VOICE_TEST_MODEL, VOICE_TEST_VOICE, callbackTimingNote, callerIdNote,
 } from "../lib/voiceTest"
 import { jackieCheckLine, reviewJackieCall } from "../lib/jackie"
+import { REASON_NOTE, asksReason } from "../lib/voiceCallMonitor"
+import { sendVoice, toPhoneMp3 } from "./jackie-audio"
 
-type Scenario = { id: string; about: string; lines: string[] }
+// hiddenCallerId: the call comes in blocked, so her script gets the "number is
+// hidden, ask for the best number" note instead of a caller number.
+type Scenario = { id: string; about: string; lines: string[]; hiddenCallerId?: boolean }
 
 // Made-up callers shaped like real ones. Lines are fixed (the caller doesn't
 // adapt), so each one must make sense whatever Jackie said before it.
@@ -100,6 +112,31 @@ const SCENARIOS: Scenario[] = [
       "Okay, thanks. Bye.",
     ],
   },
+  {
+    id: "terse-owner",
+    about: "11-13 call: asks for Ryan, names the property, short answers, asks if she's a computer, then gives his number and leaves",
+    hiddenCallerId: true,
+    lines: [
+      "Speak to Ryan LaRocca, please.",
+      "I'm responding to his letter regarding 318 Alder Way in Palo Alto.",
+      "Good letter.",
+      "I'm the owner, Walter Brandt.",
+      "Are you a computer, or are you a person?",
+      "He has my address, and he can call me at 650 555 0147, as late as 9 o'clock. Thank you. Have a good day.",
+    ],
+  },
+  {
+    id: "one-word-reason",
+    about: "gives a one-word reason for calling, then cooperates",
+    lines: [
+      "Hi, I got a letter from you about my house.",
+      "Just curious.",
+      "It's 2207 Maple Court in Sunnyvale. I'm Denise.",
+      "Mornings are fine, before ten.",
+      "Yes, this number is good.",
+      "Okay, thanks. Bye.",
+    ],
+  },
 ]
 
 const RATE = 24_000
@@ -111,6 +148,7 @@ const NO_REPLY_GIVE_UP_MS = 9_000 // she never started: move on and log it
 // Only decides when the caller speaks next; reply times aren't affected.
 const QUIET_AFTER_HER_MS = Number(process.env.REHEARSAL_QUIET_MS) || 2_500
 const CALLER_PHONE = "+14085550142"
+const GUARD = !process.argv.includes("--no-guard")
 
 function arg(name: string): string | null {
   const i = process.argv.indexOf(name)
@@ -160,8 +198,47 @@ function trimTrailingSilence(pcm: Buffer): Buffer {
 }
 
 type Turn = { line: string; waitMs: number | null }
+type Rehearsal = { transcript: string; turns: Turn[]; greetingMs: number | null; handoffs: number; pcm: Buffer; audioStats: string }
 
-async function rehearse(sc: Scenario, instructions: string, key: string): Promise<{ transcript: string; turns: Turn[]; greetingMs: number | null; handoffs: number }> {
+/**
+ * The whole call as one mono track at RATE. The caller's mic stream is the
+ * timeline (every chunk we sent, silence included). Her audio deltas carry no
+ * timestamps, so each lands where it arrived but never overlaps her own
+ * previous chunk. Overlap between the two parties is summed, then clamped.
+ */
+function mixCall(mic: Buffer[], her: { atMs: number; pcm: Buffer }[]): { pcm: Buffer; stats: string } {
+  const bytesAt = (ms: number) => Math.round((ms * RATE) / 1000) * 2
+  const placed: { at: number; pcm: Buffer }[] = []
+  let cursor = 0
+  for (const h of her) {
+    const at = Math.max(bytesAt(h.atMs), cursor)
+    placed.push({ at, pcm: h.pcm })
+    cursor = at + h.pcm.length
+  }
+  const micPcm = Buffer.concat(mic)
+  const total = Math.max(micPcm.length, cursor)
+  const callerTrack = new Int32Array(total / 2), herTrack = new Int32Array(total / 2)
+  for (let i = 0; i < micPcm.length / 2; i++) callerTrack[i] = micPcm.readInt16LE(i * 2)
+  for (const p of placed) for (let i = 0; i < p.pcm.length / 2; i++) herTrack[(p.at + i * 2) / 2] = p.pcm.readInt16LE(i * 2)
+  const out = Buffer.alloc(total)
+  let clipped = 0
+  for (let i = 0; i < total / 2; i++) {
+    let v = callerTrack[i] + herTrack[i]
+    if (v > 32767) { v = 32767; clipped++ } else if (v < -32768) { v = -32768; clipped++ }
+    out.writeInt16LE(v, i * 2)
+  }
+  // Sanity numbers: RMS per second for each party (caller|Jackie), x100 of full scale.
+  const secs = Math.ceil(total / 2 / RATE)
+  const rms = (t: Int32Array, s: number) => {
+    let sum = 0, n = 0
+    for (let i = s * RATE; i < Math.min(t.length, (s + 1) * RATE); i++) { sum += t[i] * t[i]; n++ }
+    return n ? Math.sqrt(sum / n) / 327.68 : 0
+  }
+  const perSec = Array.from({ length: secs }, (_, s) => `${rms(callerTrack, s).toFixed(0)}|${rms(herTrack, s).toFixed(0)}`)
+  return { pcm: out, stats: `${(total / 2 / RATE).toFixed(1)} s, clipped samples: ${clipped}\nRMS per second (caller|Jackie, % of full scale): ${perSec.join(" ")}` }
+}
+
+async function rehearse(sc: Scenario, instructions: string, key: string): Promise<Rehearsal> {
   const lines = await Promise.all(sc.lines.map(l => speak(l, key)))
   return new Promise((resolve, reject) => {
     const ws = new WebSocket("wss://api.openai.com/v1/live/sessions", { headers: { Authorization: `Bearer ${key}` } })
@@ -177,8 +254,11 @@ async function rehearse(sc: Scenario, instructions: string, key: string): Promis
     let lineEndMs = 0
     let replyStartMs: number | null = null
     let handoffs = 0
+    let reasonNoted = false
     let done = false
     let timer: ReturnType<typeof setInterval> | null = null
+    const mic: Buffer[] = [] // everything we streamed in, one entry per chunk
+    const herAudio: { atMs: number; pcm: Buffer }[] = []
 
     const finish = () => {
       if (done) return
@@ -187,7 +267,8 @@ async function rehearse(sc: Scenario, instructions: string, key: string): Promis
       if (heard.trim()) script.push(`Jackie: ${heard.trim()}`)
       try { ws.send(JSON.stringify({ type: "session.close" })) } catch { /* closed */ }
       setTimeout(() => { try { ws.close() } catch { /* closed */ } }, 300)
-      resolve({ transcript: script.join("\n"), turns, greetingMs: firstLoudStartMs, handoffs })
+      const mixed = mixCall(mic, herAudio)
+      resolve({ transcript: script.join("\n"), turns, greetingMs: firstLoudStartMs, handoffs, pcm: mixed.pcm, audioStats: mixed.stats })
     }
     const startLine = (i: number) => {
       if (heard.trim()) script.push(`Jackie: ${heard.trim()}`)
@@ -211,6 +292,7 @@ async function rehearse(sc: Scenario, instructions: string, key: string): Promis
         if (playPos >= playing.length) { playing = null; lineEndMs = sentMs + CHUNK_MS }
       }
       ws.send(JSON.stringify({ type: "session.input_audio.append", audio: chunk.toString("base64") }))
+      mic.push(chunk)
       sentMs += CHUNK_MS
       if (playing) return
       const herQuiet = lastLoudEndMs >= 0 && sentMs - lastLoudEndMs >= QUIET_AFTER_HER_MS
@@ -256,8 +338,17 @@ async function rehearse(sc: Scenario, instructions: string, key: string): Promis
             while (!done && sentMs + CHUNK_MS <= Date.now() - streamStart) sendChunk()
           }, CHUNK_MS / 4)
           break
+        case "session.output_audio.delta":
+          if (typeof m.delta === "string") herAudio.push({ atMs: streamStart ? Date.now() - streamStart : 0, pcm: Buffer.from(m.delta, "base64") })
+          break
         case "session.output_transcript.delta": {
           if (typeof m.delta === "string") heard += m.delta
+          // The live watcher's reminder (lib/voiceCallMonitor REASON_NOTE): once
+          // she's asked why they called, tell her it's spent. --no-guard = script alone.
+          if (GUARD && !reasonNoted && asksReason(heard)) {
+            reasonNoted = true
+            ws.send(JSON.stringify({ type: "session.commentary.append", delegation_id: null, content: REASON_NOTE }))
+          }
           const start = typeof m.start_ms === "number" ? m.start_ms : null
           const end = typeof m.end_ms === "number" ? m.end_ms : null
           if (start === null || end === null || typeof m.delta !== "string" || !m.delta.trim()) break
@@ -286,27 +377,65 @@ async function rehearse(sc: Scenario, instructions: string, key: string): Promis
   })
 }
 
+function oneLine(t: string): string { return t.replace(/\s+/g, " ").trim() }
+
 async function main(): Promise<void> {
   loadEnv()
   const key = process.env.OPENAI_VOICE_API_KEY || process.env.OPENAI_API_KEY
   if (!key) throw new Error("OPENAI_VOICE_API_KEY / OPENAI_API_KEY missing")
   const ref = arg("--script-from")
   const base = ref ? instructionsAt(ref) : VOICE_TEST_INSTRUCTIONS
-  const instructions = base + callerIdNote(CALLER_PHONE) + callbackTimingNote()
   const only = arg("--only")?.split(",")
   const scenarios = only ? SCENARIOS.filter(s => only.includes(s.id)) : SCENARIOS
-  console.log(`Jackie rehearsal — script ${ref ?? "working tree"} (${base.split(/\s+/).length} words), ${scenarios.length} scenario(s)\n`)
+  const runs = Math.max(1, Math.floor(Number(arg("--runs")) || 1))
+  const send = process.argv.includes("--send")
+  const sendOnly = arg("--send-only")?.split(",") ?? null
+  if (sendOnly && !send) console.log("(--send-only only limits --send; nothing will be posted without --send)")
+  const label = ref ? ref.replace(/[^A-Za-z0-9._-]+/g, "_") : "working-tree"
+  const outDir = path.join("/tmp/jackie-rehearsal-audio", label)
+  fs.mkdirSync(outDir, { recursive: true })
+  console.log(`Jackie rehearsal — script ${ref ?? "working tree"} (${base.split(/\s+/).length} words), ${scenarios.length} scenario(s) × ${runs} run(s)\n`)
+
+  type Row = { id: string; run: number; jackieTurns: number; handoffs: number; slowest: string; check: string | null; checkJson: string; mp3: string; caption: string }
+  const rows: Row[] = []
   for (const sc of scenarios) {
-    const run = await rehearse(sc, instructions, key)
-    const waits = run.turns.map(t => (t.waitMs === null ? "no reply" : `${(t.waitMs / 1000).toFixed(1)} s`))
-    const review = await reviewJackieCall(run.transcript)
-    const slow = run.turns.reduce<{ s: number; i: number } | null>((w, t, i) => (t.waitMs !== null && (!w || t.waitMs / 1000 > w.s) ? { s: t.waitMs / 1000, i } : w), null)
-    const check = jackieCheckLine(review?.check, slow ? { slowest_s: slow.s, slowest_at_s: null } : null)
-    console.log(`── ${sc.id}: ${sc.about}`)
-    console.log(run.transcript.split("\n").map(l => `   ${l}`).join("\n"))
-    console.log(`   greeting at ${run.greetingMs === null ? "—" : `${(run.greetingMs / 1000).toFixed(1)} s`} · replies: ${waits.join(", ")} · backend hand-offs: ${run.handoffs}`)
-    console.log(`   not_selling=${review?.not_selling ?? "?"} opted_out=${review?.opted_out ?? "?"} intake_complete=${review?.intake_complete ?? "?"}`)
-    console.log(`   ${check ?? "🔎 Check: clean"}\n`)
+    const instructions = base + callerIdNote(sc.hiddenCallerId ? "Anonymous" : CALLER_PHONE) + callbackTimingNote()
+    for (let n = 1; n <= runs; n++) {
+      const run = await rehearse(sc, instructions, key)
+      const waits = run.turns.map(t => (t.waitMs === null ? "no reply" : `${(t.waitMs / 1000).toFixed(1)} s`))
+      const review = await reviewJackieCall(run.transcript)
+      const slow = run.turns.reduce<{ s: number; i: number } | null>((w, t, i) => (t.waitMs !== null && (!w || t.waitMs / 1000 > w.s) ? { s: t.waitMs / 1000, i } : w), null)
+      const check = jackieCheckLine(review?.check, slow ? { slowest_s: slow.s, slowest_at_s: null } : null)
+      console.log(`── ${sc.id} run ${n}/${runs}: ${sc.about}${sc.hiddenCallerId ? " [hidden caller ID]" : ""}`)
+      console.log(run.transcript.split("\n").map(l => `   ${l}`).join("\n"))
+      console.log(`   greeting at ${run.greetingMs === null ? "—" : `${(run.greetingMs / 1000).toFixed(1)} s`} · replies: ${waits.join(", ")} · backend hand-offs: ${run.handoffs}`)
+      console.log(`   not_selling=${review?.not_selling ?? "?"} opted_out=${review?.opted_out ?? "?"} intake_complete=${review?.intake_complete ?? "?"}`)
+      console.log(`   ${check ?? "🔎 Check: clean"}`)
+      const checkJson = JSON.stringify(review?.check ?? null)
+      console.log(`   check: ${checkJson}`)
+
+      const file = path.join(outDir, `${sc.id}-run${n}`)
+      toPhoneMp3(run.pcm, file)
+      fs.writeFileSync(`${file}.txt`, `${label} · ${sc.id} run ${n}: ${sc.about}\n\n${run.transcript}\n\n${check ?? "Check: clean"}\ncheck: ${checkJson}\n\naudio: ${run.audioStats}\n`)
+      console.log(`   audio: ${file}.mp3\n`)
+      rows.push({
+        id: sc.id, run: n, jackieTurns: run.transcript.split("\n").filter(l => l.startsWith("Jackie:")).length, handoffs: run.handoffs,
+        slowest: slow ? `${slow.s.toFixed(1)} s` : "—", check, checkJson, mp3: `${file}.mp3`,
+        caption: `${label} · ${sc.id} run ${n}${check ? `\n${check}` : ""}`,
+      })
+    }
+  }
+
+  console.log("── Summary")
+  console.log(["scenario", "run", "turns", "hand-offs", "slowest", "check", "mp3"].join("\t"))
+  for (const r of rows) console.log([r.id, r.run, r.jackieTurns, r.handoffs, r.slowest, r.check ? oneLine(r.check) : "clean", r.mp3].join("\t"))
+  for (const r of rows) console.log(`   ${r.id} run ${r.run} check json: ${r.checkJson}`)
+  console.log("Runs with a non-empty check line:")
+  for (const sc of scenarios) console.log(`   ${sc.id}: ${rows.filter(r => r.id === sc.id && r.check).length}/${runs}`)
+
+  if (send) {
+    for (const r of rows.filter(x => !sendOnly || sendOnly.includes(x.id))) await sendVoice(r.mp3, r.caption)
+    console.log("Posted to Telegram.")
   }
 }
 

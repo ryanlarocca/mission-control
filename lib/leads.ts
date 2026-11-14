@@ -2202,11 +2202,14 @@ export async function processRecordingBackground(args: {
     // Every call is also graded (check + timing) and the card says what
     // went wrong, if anything (jackieCheckLine).
     let jackieLines: string[] = []
+    // Asked Jackie to come off the list — also when there's no analysis to flag.
+    let jackieOptedOut = false
     if (args.jackie && leadId && transcription) {
       try {
         const { jackieCheckLine, mergeJackieCall, nextBusinessDay, reviewJackieCall } = await import("@/lib/jackie")
         const { OWED_PREFIX } = await import("@/lib/next-touch")
         const review = await reviewJackieCall(transcription)
+        jackieOptedOut = review?.opted_out === true
         const sb = getLeadsClient()
         await mergeJackieCall(sb, leadId, {
           ...(review
@@ -2262,6 +2265,38 @@ export async function processRecordingBackground(args: {
       }
     }
 
+    // Hidden caller ID, but they said a number to reach them at (2026-11-13):
+    // the row takes it (lib/spokenNumber — the digits must be in what the
+    // caller said), so the card and the alert's Call back can dial them.
+    // Jackie calls and plain voicemails alike; never on an opt-out.
+    let reachPhone = callerPhone
+    let numberFromCall = false
+    let spokenUnclear = false
+    if (direction === "inbound" && isAnonymousCaller(callerPhone) && transcription && leadId && !analysis?.is_dnc && !jackieOptedOut) {
+      try {
+        const { extractSpokenCallback, adoptSpokenNumber } = await import("@/lib/spokenNumber")
+        const spoken = await extractSpokenCallback(transcription)
+        if (spoken.number) {
+          const adopted = await adoptSpokenNumber(getLeadsClient(), leadId, spoken.number, {
+            ownNumbers: Array.from(OWNED_NUMBERS).concat(envOwnedLast10()),
+            // They want a call back — not spam — unless intake junked it as a mobile home.
+            unjunk: !isMobileHome(transcription),
+          })
+          if (adopted.ok) {
+            reachPhone = adopted.phone
+            numberFromCall = true
+            console.log(`[spoken-number] Lead ${leadId} took the number given on the call${adopted.joinedExistingCard ? " — joined an existing card" : ""}${adopted.viaBestNumber ? " (their best number)" : ""}`)
+          } else {
+            console.warn(`[spoken-number] Lead ${leadId} kept its placeholder: ${adopted.reason}${adopted.detail ? ` (${adopted.detail})` : ""}`)
+          }
+        } else if (spoken.unclear) {
+          spokenUnclear = true
+        }
+      } catch (e) {
+        console.error(`[spoken-number] threw for ${leadId}:`, e)
+      }
+    }
+
     // Automatic status (2026-10-24): every transcript — voicemail, answered
     // call, Ryan's callback — is a chance for the person to become a lead or
     // go to Nurture. Best-effort; runAutoStatusForLead never throws.
@@ -2288,10 +2323,12 @@ export async function processRecordingBackground(args: {
       return
     }
 
+    const shownPhone = numberFromCall ? `${reachPhone} (hidden caller ID — number given on the call)` : callerPhone
     const header = args.jackie
-      ? `🤖 Jackie took a call — <b>${source}</b> — ${callerPhone}`
-      : `🎙️ New voicemail — <b>${source}</b> — ${callerPhone}`
+      ? `🤖 Jackie took a call — <b>${source}</b> — ${shownPhone}`
+      : `🎙️ New voicemail — <b>${source}</b> — ${shownPhone}`
     const captionLines = [header, ...(jackieLines.length ? ["", ...jackieLines] : [])]
+    if (spokenUnclear) captionLines.push("", "☎️ They gave a callback number, but it couldn't be read cleanly — check the recording.")
     // A Jackie call runs minutes, and Telegram cuts captions at 1,024
     // chars — so her summary goes first and the transcript last.
     const summaryLine = analysis
@@ -2316,8 +2353,8 @@ export async function processRecordingBackground(args: {
     // (rings Ryan's cell, then dials the caller from the line they called;
     // DNC numbers are refused in startLeadCall).
     const { callButton } = await import("@/lib/websiteLead")
-    const buttons = callButton(callerPhone, "📞 Call back")
-    const about = { kind: "lead" as const, leadId, phone: callerPhone }
+    const buttons = callButton(reachPhone, "📞 Call back")
+    const about = { kind: "lead" as const, leadId, phone: reachPhone }
     if (audio) {
       await sendTelegramVoice(audio, caption, "voicemail.mp3", { buttons, about })
     } else {

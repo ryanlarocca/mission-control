@@ -311,6 +311,12 @@ export type JackieCheck = {
   asked_selling_too_early: boolean
   pushed_after_no: boolean
   offered_removal_unprompted: boolean
+  /**
+   * What she asked for more than once, reworded or not ("why they called ×3").
+   * 2026-11-13: three asks in 40 s went out with a clean card. Absent on
+   * calls graded before then.
+   */
+  repeated_question?: string | null
   /** Times she said she'd pass something along to Ryan (counted, not judged). */
   pass_along: number | null
 }
@@ -350,10 +356,11 @@ Answer in JSON only:
   "opted_out": true ONLY if the CALLER explicitly asked to be removed or not contacted again ("take me off your list", "stop sending me letters", "don't call me again", or said yes when Jackie offered to take them off the list). Jackie offering is not enough, and "not interested" / "not selling" alone is false,
   "opt_out_address": the property address the caller wanted taken off the list, as said, or null,
   "not_selling": true if the caller talked with Jackie and made clear they aren't selling or aren't interested ("why would I sell it?", "it's staying in the family", "not interested"), and didn't ask for a callback. False if they're open to selling, curious what it's worth, asked Ryan to call, or the call was too short to tell,
-  "answered_first_question": only if the caller's first words to Jackie were a question to her (e.g. "did you send me this letter?"): true if she answered it directly before moving on, false if she went past it. null if the caller opened with anything other than a question (a statement like "I'm thinking about selling" is not a question),
+  "answered_first_question": only if the caller's first words to Jackie were a question to her (e.g. "did you send me this letter?"): true if she answered it directly before moving on, false if she went past it. She says who she is in her first full reply ("This is Jackie with LRG Homes"); giving that introduction and then answering in the same reply counts as answering directly, and so does an answer that isn't a plain yes or no (asked if Ryan is a realtor, "he was licensed at one point, these days he only invests" is the answer). null if the caller opened with anything other than a question (a statement like "I'm thinking about selling" is not a question),
   "asked_selling_too_early": true if Jackie asked why they're selling, what's changed, or whether they're thinking of selling before the caller had said anything suggesting they might sell,
   "pushed_after_no": true if, after the caller said they weren't selling, Jackie kept pushing: asked about selling again, asked for their address or name more than once, or made a second offer after they declined. Her ONE low-pressure offer right after they say they're not selling ("want me to have Ryan give you a call with a number?") is expected and is not pushing,
-  "offered_removal_unprompted": true if Jackie offered to take them off the mailing list when the caller hadn't complained about the letters or asked to stop them
+  "offered_removal_unprompted": true if Jackie offered to take them off the mailing list when the caller hadn't complained about the letters or asked to stop them,
+  "repeated_question": if Jackie asked the caller for the same thing more than once, in the same or different words, a few words naming what and how many times ("why they called ×3", "the address ×2"); otherwise null. Asking what made them call, what's on their mind with the place, what's going on with the property, what's changed, and why they're selling are all ONE question (why they called): two or more of those in a call is a repeat, even when the caller's first answer was short ("the letter"). Not a repeat: asking for something once more because she plainly didn't hear it; asking for a missing piece (the city, an area code); asking for a name a second time later in the call after the caller dodged it; the callback-number check at the end
 }
 
 Transcript:
@@ -375,6 +382,7 @@ ${transcript.slice(0, 20000)}`
         asked_selling_too_early: j.asked_selling_too_early === true,
         pushed_after_no: j.pushed_after_no === true,
         offered_removal_unprompted: j.offered_removal_unprompted === true,
+        repeated_question: typeof j.repeated_question === "string" && j.repeated_question.trim() ? j.repeated_question.trim().slice(0, 80) : null,
         pass_along: countPassAlong(transcript),
       },
     }
@@ -411,6 +419,7 @@ export function jackieCheckLine(check: JackieCheck | null | undefined, timing: T
   if (check?.asked_selling_too_early) issues.push("asked about selling too early")
   if (check?.pushed_after_no) issues.push("kept asking after they said no")
   if (check?.offered_removal_unprompted) issues.push("offered removal unprompted")
+  if (check?.repeated_question) issues.push(`asked more than once: ${check.repeated_question}`)
   if ((check?.pass_along ?? 0) >= PASS_ALONG_FLAG) issues.push(`"pass along" ×${check!.pass_along}`)
   if (timing?.slowest_s != null && timing.slowest_s >= SLOW_REPLY_FLAG_S) {
     const at = timing.slowest_at_s

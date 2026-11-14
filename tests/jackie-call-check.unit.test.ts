@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest"
 import { countPassAlong, jackieCheckLine, type JackieCheck } from "@/lib/jackie"
 import { replyTimingFromSegments, speechSegments } from "@/lib/coach/transcript"
-import { CallMonitor } from "@/lib/voiceCallMonitor"
-import { VOICE_TEST_INSTRUCTIONS } from "@/lib/voiceTest"
+import { CallMonitor, REASON_NOTE, asksReason } from "@/lib/voiceCallMonitor"
+import { VOICE_TEST_INSTRUCTIONS, callerIdNote } from "@/lib/voiceTest"
 
 // Per-call grade + reply timing (2026-11-05, Ryan: "5 seconds of pause is
 // like insane"; a caller who said "why would I sell it?" got dead air).
@@ -26,6 +26,10 @@ describe("jackieCheckLine", () => {
   })
   it("doesn't flag a question the caller never asked", () => {
     expect(jackieCheckLine({ ...clean, answered_first_question: null }, null)).toBeNull()
+  })
+  it("flags a question asked more than once (11-13), and reads calls graded before the field existed", () => {
+    expect(jackieCheckLine({ ...clean, repeated_question: "why they called ×3" }, null)).toBe("🔎 Check: asked more than once: why they called ×3")
+    expect(jackieCheckLine({ ...clean, repeated_question: null }, null)).toBeNull()
   })
   it("flags a removal offer nobody asked for", () => {
     expect(jackieCheckLine({ ...clean, offered_removal_unprompted: true }, null)).toBe("🔎 Check: offered removal unprompted")
@@ -106,7 +110,7 @@ describe("call monitor hand-offs", () => {
 describe("script (11-05)", () => {
   it("answers first, asks about selling only once they might", () => {
     expect(VOICE_TEST_INSTRUCTIONS).toContain("answer it before you ask them for anything")
-    expect(VOICE_TEST_INSTRUCTIONS).toContain("never ask why they're selling, or what's changed, before that")
+    expect(VOICE_TEST_INSTRUCTIONS).toContain("never ask about selling before they've said that")
   })
   it("carries Ryan's wording for owners who aren't selling", () => {
     expect(VOICE_TEST_INSTRUCTIONS).toContain("Want me to have Ryan give you a call with a number?")
@@ -152,5 +156,58 @@ describe("opener + wrap-up (11-10)", () => {
     expect(VOICE_TEST_INSTRUCTIONS).not.toContain("spell the street name")
     expect(VOICE_TEST_INSTRUCTIONS).toContain("Drop every question you still had, including the address")
     expect(VOICE_TEST_INSTRUCTIONS).not.toContain("even when they're short with you or trying to get off the phone")
+  })
+})
+
+// 11-13 (hidden-number owner): "why did you call" asked three times, reworded.
+describe("one open question (11-13)", () => {
+  it("asks why they called once and takes any answer", () => {
+    expect(VOICE_TEST_INSTRUCTIONS).toContain("you get exactly one question per call about their reasons")
+    expect(VOICE_TEST_INSTRUCTIONS).toContain("Whatever they answer is the answer")
+    expect(VOICE_TEST_INSTRUCTIONS).toContain("rewording it doesn't make it a new question")
+  })
+  it("has no separate what's-going-on / why-selling intake item", () => {
+    expect(VOICE_TEST_INSTRUCTIONS).not.toContain("What's going on with the property, and why they're thinking about selling")
+    expect(VOICE_TEST_INSTRUCTIONS).toContain("Try for three things")
+  })
+  it("moves forward after the AI answer instead of repeating her last question", () => {
+    expect(VOICE_TEST_INSTRUCTIONS).not.toContain("pick up right where you left off")
+    expect(VOICE_TEST_INSTRUCTIONS).toContain("that question is spent: don't go back to it")
+  })
+  it("doesn't stop to note or check a spoken number, and always asks a hidden caller for one", () => {
+    expect(VOICE_TEST_INSTRUCTIONS).toContain("Ryan gets the number from the recording")
+    expect(callerIdNote("Anonymous")).toContain("don't let the call end without asking once")
+    expect(callerIdNote("+14085550142")).toContain("Don't ask them for a number")
+  })
+})
+
+// 11-13: the watcher tells her the question is spent the moment she asks it.
+describe("one-question reminder (11-13)", () => {
+  const said = (m: CallMonitor, text: string, at: number) => m.onEvent({ type: "session.output_transcript.delta", delta: text }, at)
+  const notes = (m: CallMonitor, now: number) => m.tick(now).filter((a) => a.type === "commentary" && a.content === REASON_NOTE)
+
+  it("recognises her ways of asking why they called", () => {
+    for (const q of ["What made you decide to give us a call today?", "Okay, Walter. What's on your mind with the place?", "So, what's going on with the property?", "What has you thinking about selling?"]) {
+      expect(asksReason(q)).toBe(true)
+    }
+    for (const q of ["What's your name?", "When's a good time for Ryan to reach you?", "What's the property address?", "I know what made you call."]) {
+      expect(asksReason(q)).toBe(false)
+    }
+  })
+  it("sends the reminder once, the first time she asks", () => {
+    const m = new CallMonitor(0)
+    said(m, "Hello?", 1_000)
+    expect(notes(m, 1_200)).toHaveLength(0)
+    said(m, "Okay. What made you decide to give us a call today?", 9_000)
+    expect(notes(m, 9_100)).toHaveLength(1)
+    expect(notes(m, 9_300)).toHaveLength(0)
+    said(m, "What's on your mind with the place?", 20_000)
+    expect(notes(m, 20_100)).toHaveLength(0)
+  })
+  it("survives a watcher hand-off", () => {
+    const first = new CallMonitor(0)
+    said(first, "What made you call?", 5_000)
+    const second = new CallMonitor(0, first.state)
+    expect(notes(second, 5_100)).toHaveLength(1)
   })
 })
