@@ -10,7 +10,10 @@
     div.querySelector('[name="s_phone[]"]').value = v.phone || '';
     div.querySelector('[name="s_role[]"]').value = v.role || 'seller';
     div.querySelector('[name="s_delivery[]"]').value = v.delivery || 'email';
-    div.querySelector('[name="s_order[]"]').value = v.order || (v.role === 'buyer' ? '2' : '1');
+    div.querySelector('[name="s_order[]"]').value = v.order || (v.role === 'buyer' ? '1' : '2');
+    var role = div.querySelector('[name="s_role[]"]'), order = div.querySelector('[name="s_order[]"]');
+    // Ryan signs first, then every seller at the same time: picking a role resets the order to match.
+    role.addEventListener('change', function () { order.value = role.value === 'buyer' ? '1' : '2'; });
     div.querySelector('.rm').addEventListener('click', function (e) { e.preventDefault(); div.remove(); });
     rows.appendChild(div);
   }

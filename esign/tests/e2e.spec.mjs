@@ -1,10 +1,10 @@
 // End-to-end: boots a dry server (no Google / Telegram / sidecar) on a free
 // port with a temp data dir, then drives the whole flow on iPhone emulation:
-// admin upload → two sellers (typed + drawn) → buyer invited only after both
-// → completion → final.pdf → verify page. Along the way: the interim build
-// (later signers review the document with the earlier signatures on it) and
-// the template's addendum box (ticked when a signer is on the Signature
-// Addendum).
+// admin upload → three sellers (typed on line 1, drawn on the second seller
+// line, the third on the Signature Addendum) → buyer invited only after all
+// three → completion → final.pdf → verify page. Along the way: the interim
+// build (later signers review the document with the earlier signatures on it)
+// and the template's addendum box (ticked when a signer is on the addendum).
 //
 //   cd esign && npm run test:e2e        (node --test tests/e2e.spec.mjs)
 //
@@ -106,7 +106,7 @@ test("static assets are content-hashed and cached immutably only when the hash m
   assert.equal((await fetch(`${base}/fonts/Allura-Regular.ttf`)).headers.get("content-type"), "font/ttf")
 })
 
-test("admin creates a request by uploading the template with three signers", async () => {
+test("admin creates a request by uploading the template with four signers", async () => {
   await page.goto(`${base}/admin/login`)
   await page.fill("input[name=password]", PASSWORD)
   await page.click("button[type=submit]")
@@ -122,18 +122,25 @@ test("admin creates a request by uploading the template with three signers", asy
   await page.click("#addsigner")
   await names.nth(1).fill("Harold Thompson"); await emails.nth(1).fill("harold@example.com")
   await page.click("#addsigner")
-  await names.nth(2).fill("Ryan LaRocca"); await emails.nth(2).fill("ryan@lrghomes.com")
-  await page.locator('[name="s_role[]"]').nth(2).selectOption("buyer")
-  await page.locator('[name="s_order[]"]').nth(2).selectOption("2")
+  await names.nth(2).fill("Linda Thompson"); await emails.nth(2).fill("linda@example.com")
+  await page.click("#addsigner")
+  await names.nth(3).fill("Ryan LaRocca"); await emails.nth(3).fill("ryan@lrghomes.com")
+  await page.locator('[name="s_role[]"]').nth(3).selectOption("buyer")
+  assert.equal(await page.locator('[name="s_order[]"]').nth(3).inputValue(), "1", "picking Buyer makes Ryan sign first by default")
+  assert.equal(await page.locator('[name="s_order[]"]').nth(0).inputValue(), "2", "sellers default to signing together after Ryan")
+  // This run has the sellers sign first and Ryan last, to exercise the tiers both ways.
+  for (const i of [0, 1, 2]) await page.locator('[name="s_order[]"]').nth(i).selectOption("1")
+  await page.locator('[name="s_order[]"]').nth(3).selectOption("2")
   await page.click("#newform button[type=submit]")
   await page.waitForURL(/\/admin\/e\/[0-9a-f]{16}/)
   envelopeId = /\/admin\/e\/([0-9a-f]{16})/.exec(page.url())[1]
   const text = await page.locator("main").innerText()
-  assert.match(text, /Sent to Margaret Ann Thompson, Harold Thompson/)
+  assert.match(text, /Sent to Margaret Ann Thompson, Harold Thompson, Linda Thompson/)
   assert.match(text, /LRG purchase agreement template/)
-  assert.match(text, /Harold Thompson[\s\S]*on the addendum/)
+  assert.match(text, /Harold Thompson[\s\S]*on the agreement \(2nd seller line\)/)
+  assert.match(text, /Linda Thompson[\s\S]*on the addendum/)
   assert.match(text, /Ryan LaRocca[\s\S]*waiting/)
-  sellerLinks = await waitFor(() => { const l = links(); return l.length === 2 ? l : null }, "two invitation links")
+  sellerLinks = await waitFor(() => { const l = links(); return l.length === 3 ? l : null }, "three invitation links")
   assert.equal((await page.evaluate(() => document.documentElement.scrollWidth)), 390, "no horizontal scroll on the admin page")
 })
 
@@ -143,11 +150,12 @@ test("original.pdf is the uploaded file byte for byte, and the interim build alr
   const served = await page.request.get(`${base}/admin/e/${envelopeId}/original.pdf`)
   assert.equal(sha(await served.body()), templateSha, "the admin's Original PDF download is the sent file")
   assert.match(await page.locator("main").innerText(), new RegExp(`Original SHA-256: ${templateSha}`))
-  // Harold signs on the addendum, so the box on page 2 is ticked and the addendum page exists before anyone has signed.
+  // Linda (third seller) signs on the addendum, so the box on page 2 is ticked and the addendum page exists before anyone has signed.
   const interim = path.join(envDir(), "interim.pdf")
   assert.ok(fs.existsSync(interim), "interim.pdf built at creation (envelope has an addendum signer)")
   const text = pdfText(interim)
-  assert.match(text, /SIGNATURE ADDENDUM[\s\S]*Referenced by the checked box on page 2 of the Agreement[\s\S]*Harold Thompson/)
+  assert.match(text, /SIGNATURE ADDENDUM[\s\S]*Referenced by the checked box on page 2 of the Agreement[\s\S]*Linda Thompson/)
+  assert.doesNotMatch(text, /SIGNATURE ADDENDUM[\s\S]*Harold Thompson/, "the second seller is not on the addendum")
   assert.doesNotMatch(text, /e-signed/, "nobody has signed yet")
   assert.ok(await darkPixels(interim, 2, CHECKBOX) > await darkPixels(TEMPLATE_PDF, 2, CHECKBOX) + 10, "the checkbox is ticked")
   assert.ok(fs.existsSync(path.join(envDir(), "pages", "page-3.png")), "the addendum page is rendered for review")
@@ -198,7 +206,7 @@ test("seller 1 consents, then types a signature in a non-default style on the se
   await page.waitForURL(sellerLinks[0])
   assert.match(await page.locator("h1").innerText(), /Thank you, Margaret/)
   assert.match(await page.locator("main").innerText(), /Once everyone has signed/)
-  assert.equal(links().length, 2, "buyer is not invited while a seller is still outstanding")
+  assert.equal(links().length, 3, "buyer is not invited while a seller is still outstanding")
 })
 
 test("after the first signature the interim view carries it: new page image, document.pdf with the signature, original untouched", async () => {
@@ -215,11 +223,15 @@ test("after the first signature the interim view carries it: new page image, doc
   assert.equal(sha(await res.body()), sha(fs.readFileSync(interim)), "document.pdf serves the interim file")
 })
 
-test("seller 2 signs the addendum card with a drawn signature", async () => {
+test("seller 2 signs on the second seller line with a drawn signature", async () => {
   await consent(sellerLinks[1])
-  assert.ok(await page.locator("#addcard").isVisible(), "addendum signer gets the 'Your signature' card")
-  assert.equal(await page.locator(".pagewrap .spot").count(), 0, "…and no on-page tab")
-  await page.click("#signtab")
+  assert.equal(await page.locator("#addcard").isVisible(), false, "no addendum card for the second seller")
+  const tab = page.locator("#signtab")
+  await tab.scrollIntoViewIfNeeded()
+  const t = await tab.boundingBox(), p2 = await page.locator(".pagewrap").nth(1).boundingBox()
+  const lineY = p2.y + p2.height * ((792 - 123) / 792) // TEMPLATE.seller2.lineY
+  assert.ok(Math.abs(t.y + t.height - lineY) <= 2.5, `tab bottom (${t.y + t.height}) sits on the second seller line (${lineY})`)
+  await tab.click()
   await page.fill("#typed_name", "Harold Thompson")
   await page.click('.tabbtn[data-tab="draw"]')
   await page.click("#adopt")
@@ -243,7 +255,22 @@ test("seller 2 signs the addendum card with a drawn signature", async () => {
   await page.click("#finish")
   await page.waitForURL(sellerLinks[1])
   assert.match(await page.locator("h1").innerText(), /Thank you, Harold/)
-  buyerLink = (await waitFor(() => { const l = links(); return l.length === 3 ? l : null }, "buyer invitation after both sellers signed"))[2]
+  assert.equal(links().length, 3, "buyer still waits for the third seller")
+})
+
+test("seller 3 signs the addendum card", async () => {
+  await consent(sellerLinks[2])
+  assert.ok(await page.locator("#addcard").isVisible(), "addendum signer gets the 'Your signature' card")
+  assert.equal(await page.locator(".pagewrap .spot").count(), 0, "…and no on-page tab")
+  await page.click("#signtab")
+  await page.fill("#typed_name", "Linda Thompson")
+  await page.click("#adopt")
+  await page.waitForTimeout(300)
+  await page.check("#agree")
+  await page.click("#finish")
+  await page.waitForURL(sellerLinks[2])
+  assert.match(await page.locator("h1").innerText(), /Thank you, Linda/)
+  buyerLink = (await waitFor(() => { const l = links(); return l.length === 4 ? l : null }, "buyer invitation after all sellers signed"))[3]
 })
 
 test("second tier: the buyer reviews the document with both sellers' signatures on it", async () => {
@@ -254,7 +281,8 @@ test("second tier: the buyer reviews the document with both sellers' signatures 
   assert.equal(sha(bytes), sha(fs.readFileSync(path.join(envDir(), "interim.pdf"))), "the buyer's PDF link is the interim file")
   assert.match(bytes.toString("latin1"), /\/Subtype \/Image/, "Harold's drawn signature is embedded as an image")
   const text = pdfText(path.join(envDir(), "interim.pdf"))
-  assert.equal((text.match(/e-signed/g) || []).length, 2, "two signatures so far (Margaret on the line, Harold on the addendum)")
+  assert.equal((text.match(/e-signed/g) || []).length, 3, "three signatures so far (Margaret and Harold on the lines, Linda on the addendum)")
+  assert.match(text, /Dated:\s+\d\d\/\d\d\/\d{4}\s+Seller:[\s\S]*Dated:\s+\d\d\/\d\d\/\d{4}\s+Seller:/, "both seller lines are dated")
   assert.ok((await page.request.get(`${buyerLink}/pages/3.png`)).ok(), "addendum page image is served")
   assert.equal((await page.request.get(`${buyerLink}/pages/4.png`)).status(), 404)
 })
@@ -288,15 +316,16 @@ test("buyer signs last and the envelope completes with a downloadable final.pdf"
   assert.ok(fs.existsSync(finalPath))
   assert.equal(crypto.createHash("sha256").update(bytes).digest("hex"), crypto.createHash("sha256").update(fs.readFileSync(finalPath)).digest("hex"))
   assert.equal(fs.statSync(finalPath).mode & 0o222, 0, "final.pdf is read-only")
-  assert.equal(stdout.match(/subject="Completed: Purchase Agreement/g).length, 3, "one completion email per email signer + Ryan")
+  assert.equal(stdout.match(/subject="Completed: Purchase Agreement/g).length, 4, "one completion email per email signer + Ryan")
 })
 
-test("final.pdf: addendum box ticked, the addendum signer named on the addendum, three signatures, original fingerprint in the certificate", async () => {
+test("final.pdf: addendum box ticked, the addendum signer named on the addendum, four signatures, original fingerprint in the certificate", async () => {
   const signedPath = path.join(envDir(), "signed.pdf"), finalPath = path.join(envDir(), "final.pdf")
   const text = pdfText(finalPath)
   assert.match(text, /Additional Seller\(s\) and\/or Buyer\(s\) have signed the attached Signature Addendum/)
-  assert.match(text, /SIGNATURE ADDENDUM[\s\S]*Referenced by the checked box on page 2 of the Agreement[\s\S]*Name:\s+Harold Thompson/)
-  assert.equal((text.match(/e-signed/g) || []).length, 3)
+  assert.match(text, /SIGNATURE ADDENDUM[\s\S]*Referenced by the checked box on page 2 of the Agreement[\s\S]*Name:\s+Linda Thompson/)
+  assert.equal((text.match(/e-signed/g) || []).length, 4)
+  assert.match(text, /placed\s+on\s+the\s+agreement's\s+second\s+seller\s+signature\s+line/, "the certificate says where Harold signed")
   assert.match(text, /Pages \(original\)\s+2/, "the certificate quotes the original page count, not the interim's 3")
   assert.match(text, new RegExp(`Original document\\s+${sha(fs.readFileSync(TEMPLATE_PDF))}`), "certificate's original fingerprint is the sent file's")
   assert.ok(await darkPixels(signedPath, 2, CHECKBOX) > await darkPixels(TEMPLATE_PDF, 2, CHECKBOX) + 10, "the checkbox is ticked on the signed copy")
@@ -307,7 +336,7 @@ test("verify page shows status, signers and the fingerprint of the served file",
   await page.goto(`${base}/verify/${envelopeId}`)
   const text = await page.locator("main").innerText()
   assert.match(text, /completed/)
-  for (const n of ["Margaret Ann Thompson", "Harold Thompson", "Ryan LaRocca"]) assert.match(text, new RegExp(`${n}[\\s\\S]*signed`))
+  for (const n of ["Margaret Ann Thompson", "Harold Thompson", "Linda Thompson", "Ryan LaRocca"]) assert.match(text, new RegExp(`${n}[\\s\\S]*signed`))
   const sha = /Final \(with certificate\):\s*([0-9a-f]{64})/.exec(text)?.[1]
   assert.ok(sha, "final SHA-256 is shown")
   const res = await page.request.get(`${base}/verify/${envelopeId}/final.pdf`)

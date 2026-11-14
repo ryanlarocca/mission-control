@@ -111,9 +111,12 @@ export async function createEnvelope({ title, propertyAddress, agreementDate, me
   const pageCount = await renderPages(originalPath, path.join(dir, "pages"))
 
   // Placement: first seller + first buyer (by order, then list position) sign
-  // on the template's own lines; everyone else on the Signature Addendum.
+  // on the template's own lines, the second seller on the second seller line
+  // (templates from 2026-11-13 on); everyone else on the Signature Addendum.
   const sorted = [...cleanSigners].sort((a, b) => a.order - b.order)
-  const firstSeller = info.isTemplate ? sorted.find((s) => s.role === "seller") : null
+  const sellers = info.isTemplate ? sorted.filter((s) => s.role === "seller") : []
+  const firstSeller = sellers[0] ?? null
+  const secondSeller = info.fields.includes("seller2_signer_name") ? sellers[1] ?? null : null
   const firstBuyer = info.isTemplate ? sorted.find((s) => s.role === "buyer") : null
 
   const ts = now()
@@ -126,7 +129,7 @@ export async function createEnvelope({ title, propertyAddress, agreementDate, me
     insertEnv.run(id, title, propertyAddress || null, agreementDate || null, message || null, driveFileId ? "drive" : "upload", driveFileId || null, driveFolderId,
       sha256(bytes), originalPath, pageCount, pageCount, info.isTemplate ? 1 : 0, "in_progress", ts, createdBy || "admin", cleanCopyTo.length ? JSON.stringify(cleanCopyTo) : null)
     for (const s of cleanSigners) {
-      const placement = s === firstSeller || s === firstBuyer ? "template" : "addendum"
+      const placement = s === firstSeller || s === firstBuyer ? "template" : s === secondSeller ? "template2" : "addendum"
       insertSigner.run(crypto.randomBytes(6).toString("hex"), id, s.order, s.role, s.name, s.email, s.phone, s.delivery, placement, "waiting")
     }
     db.exec("COMMIT")

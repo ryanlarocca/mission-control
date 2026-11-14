@@ -43,7 +43,7 @@ CREATE TABLE IF NOT EXISTS signers (
   email TEXT NOT NULL,
   phone TEXT,
   delivery TEXT NOT NULL DEFAULT 'email', -- 'email' | 'text' | 'both' | 'email_notice' (link by email + a heads-up text with no link)
-  placement TEXT NOT NULL,         -- 'template' | 'addendum' | 'fields' (self-sign: on the document's own lines)
+  placement TEXT NOT NULL,         -- 'template' | 'template2' (second seller line) | 'addendum' | 'fields' (self-sign: on the document's own lines)
   token_hash TEXT,
   token_expires_at TEXT,
   status TEXT NOT NULL,            -- 'waiting' | 'sent' | 'opened' | 'consented' | 'signed' | 'declined'

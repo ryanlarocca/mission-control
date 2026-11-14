@@ -43,9 +43,19 @@ export const TEMPLATE = {
   page: 1,
   buyer: { x: 309, lineY: 280.2, w: 249 },
   seller: { x: 309, lineY: 200.8, w: 249 },
-  dateField: { buyer: "buyer_date", seller: "seller_date" },
+  seller2: { x: 309, lineY: 123, w: 249 }, // second seller block, builds from 2026-11-13 on
+  dateField: { buyer: "buyer_date", seller: "seller_date", seller2: "seller2_date" },
+  nameField: { seller: "seller_signer_name", seller2: "seller2_signer_name" },
   addendum: { checkbox: "addendum_attached" }, // rect 54 48 64 58 (54 124 64 134 before the 2026-11-13 second seller block)
 }
+
+/** Which template line a signer uses: "buyer", "seller", or "seller2" (placement "template2"). */
+export function templateSpotKey(signer) {
+  return signer.placement === "template2" ? "seller2" : signer.role
+}
+
+/** A signer who signs on one of the agreement's own lines. */
+export const onTemplateLine = (signer) => signer.placement === "template" || signer.placement === "template2"
 
 export async function inspectPdf(bytes) {
   const doc = await PDFDocument.load(bytes, { updateMetadata: false })
@@ -227,7 +237,7 @@ async function loadForDrawing(originalBytes, title) {
  */
 async function applySignatures(doc, fonts, envelope, signers) {
   const signed = signers.filter((s) => s.status === "signed")
-  const onTemplate = signed.filter((s) => s.placement === "template")
+  const onTemplate = signed.filter(onTemplateLine)
   const onAddendum = signers.filter((s) => s.placement === "addendum")
   let boxTicked = false
 
@@ -237,7 +247,7 @@ async function applySignatures(doc, fonts, envelope, signers) {
   if (form) {
     if (envelope.is_template) {
       for (const s of onTemplate) {
-        const fieldName = TEMPLATE.dateField[s.role]
+        const fieldName = TEMPLATE.dateField[templateSpotKey(s)]
         try {
           const f = form.getTextField(fieldName)
           if (f.getMaxLength() !== undefined) f.setMaxLength(undefined)
@@ -245,7 +255,7 @@ async function applySignatures(doc, fonts, envelope, signers) {
         } catch { /* field missing — nothing to date */ }
         if (s.role === "seller") {
           try {
-            const f = form.getTextField("seller_signer_name")
+            const f = form.getTextField(TEMPLATE.nameField[templateSpotKey(s)])
             if (!f.getText()) f.setText(s.name)
           } catch { /* ignore */ }
         }
@@ -271,7 +281,7 @@ async function applySignatures(doc, fonts, envelope, signers) {
   if (envelope.is_template && onTemplate.length) {
     const page = doc.getPages()[TEMPLATE.page]
     for (const s of onTemplate) {
-      const spot = TEMPLATE[s.role]
+      const spot = TEMPLATE[templateSpotKey(s)]
       if (!spot) continue
       await drawSignature(doc, page, fonts, s, { x: spot.x, baseY: spot.lineY + 2, maxW: 170, maxH: 26 })
       stampText(page, fonts, s, envelope.id, { x: spot.x, y: spot.lineY - 7.5, w: spot.w })
@@ -441,7 +451,7 @@ async function drawCertificate(doc, fonts, envelope, signers, events, { signedSh
     kv("Consent", s.consented_at ? `${fmtTsPT(s.consented_at)} · agreed to electronic records and signatures (consent text v${s.consent_version}) · IP ${s.consent_ip ?? "?"}` : "—")
     kv("Signed", s.signed_at ? `${fmtTsPT(s.signed_at)} · IP ${s.sign_ip ?? "?"} · ${geoLabel(s.sign_geo)} · ${deviceLabel(s.sign_ua)}` : "—")
     if (s.signed_at) {
-      kv("Signature", `${s.signature_method === "drawn" ? "Drawn on screen with finger/stylus" : `Typed (style: ${SIGNATURE_FONTS[fontKey(s.signature_font)].label})`} · legal name typed: "${s.typed_name}" · placed on ${s.placement === "template" ? "the agreement's signature line" : s.placement === "fields" ? "the document's own signature line" : "the Signature Addendum"}`)
+      kv("Signature", `${s.signature_method === "drawn" ? "Drawn on screen with finger/stylus" : `Typed (style: ${SIGNATURE_FONTS[fontKey(s.signature_font)].label})`} · legal name typed: "${s.typed_name}" · placed on ${s.placement === "template" ? "the agreement's signature line" : s.placement === "template2" ? "the agreement's second seller signature line" : s.placement === "fields" ? "the document's own signature line" : "the Signature Addendum"}`)
       kv("Intent", `Clicked "I agree and sign" after reviewing all ${envelope.page_count} page${envelope.page_count === 1 ? "" : "s"}`)
     }
     kv("SMS verification", s.sms_verified ? "Passed" : "Not requested")

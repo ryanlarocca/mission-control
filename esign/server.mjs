@@ -15,7 +15,7 @@ import { driveClient, listRecentOffers } from "./lib/google.mjs"
 import * as E from "./lib/envelope.mjs"
 import * as V from "./views/pages.mjs"
 import { SIGNATURE_FONTS } from "./lib/fonts.mjs"
-import { TEMPLATE } from "./lib/pdf.mjs"
+import { TEMPLATE, templateSpotKey, onTemplateLine } from "./lib/pdf.mjs"
 import { loadAssets, assetResponse } from "./lib/assets.mjs"
 
 ensureDataDirs()
@@ -107,8 +107,8 @@ function signSpot(envelope, signer) {
     const room = Math.max(16, Math.min(40, (gaps.length ? Math.min(...gaps) : 44) - 4))
     return { page: f.page, x: f.x, lineY: f.lineY, w: f.w, pageW: f.pageW, pageH: f.pageH, room }
   }
-  if (!envelope.is_template || signer.placement !== "template") return null
-  const t = TEMPLATE[signer.role]
+  if (!envelope.is_template || !onTemplateLine(signer)) return null
+  const t = TEMPLATE[templateSpotKey(signer)]
   return t ? { page: TEMPLATE.page + 1, x: t.x, lineY: t.lineY, w: t.w } : null
 }
 
@@ -275,7 +275,7 @@ app.get("/admin", (c) => {
 app.get("/admin/new", async (c) => {
   const q = (k) => c.req.query(k) || ""
   const prefill = { drive: q("drive"), title: q("title"), address: q("address"), date: q("date"), message: q("message"), source: q("source") }
-  if (q("name") || q("email")) prefill.signers = [{ name: q("name"), email: q("email"), phone: q("phone"), role: "seller", order: 1 }, { name: env.ownerName, email: env.senderEmail, role: "buyer", order: 2 }]
+  if (q("name") || q("email")) prefill.signers = [{ name: env.ownerName, email: env.senderEmail, role: "buyer", order: 1 }, { name: q("name"), email: q("email"), phone: q("phone"), role: "seller", order: 2 }] // Ryan signs first, then the sellers together
   let offers = [], offersError = null
   try { offers = await listRecentOffers(await driveClient()) } catch (e) { offersError = e?.message || String(e) }
   if (prefill.drive && !offers.some((o) => o.id === prefill.drive)) offers.unshift({ id: prefill.drive, name: prefill.title || "Selected offer PDF", folder: prefill.address || "Drive" })
