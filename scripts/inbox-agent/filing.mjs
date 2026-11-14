@@ -37,6 +37,8 @@ export const PROOF_FILE_RE = /proof/i
 const LOAN_LETTER_RE = /pre-?\s?(?:qualif|approv)|\b(?:loan|lender|mortgage)\s+approval/i // buyer lender letter sent with an offer
 const PROOF_OF_FUNDS_RE = /proof of\b|\bPOF\b/i // proof of funds / insurance / payment — never a print proof
 // "1541" alone would turn "1541 Foo Ave Addendum.pdf" into a tax form; the regulation is cited as 1541.5 / Reg 1541.
+/** An image whose name says it is a buyer's proof of funds or lender letter ("POF - 2116 Quito Rd.jpg") is a document, even when Gmail marks it inline. */
+export const isNamedOfferImage = (filename) => /\.(jpe?g|png)$/i.test(filename || "") && ((PROOF_OF_FUNDS_RE.test(filename) && !/insurance|payment/i.test(filename)) || LOAN_LETTER_RE.test(filename))
 export const TAX_FORM_FILE_RE = /exempt|CDTFA|\b230-?P\b|1541\.5|\breg(?:ulation)?\.?\s*1541\b/i
 export const DOCUSIGN_SUMMARY_RE = /^summary\.pdf$/i
 

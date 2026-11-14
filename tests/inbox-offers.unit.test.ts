@@ -3,7 +3,7 @@
 // own purchase chain. Pure pieces: buyer detection, package folder + file names,
 // filingDecision with the offer flag, and refineDocType on the POF.
 import { describe, expect, it } from "vitest"
-import { OUR_NAMES_DEFAULT, cleanBuyerName, filingDecision, inboundOfferFrom, offerDocName, offerFolderMatch, offerPackageFolder, refineDocType, shortPrice } from "../scripts/inbox-agent/filing.mjs"
+import { OUR_NAMES_DEFAULT, cleanBuyerName, filingDecision, inboundOfferFrom, isNamedOfferImage, offerDocName, offerFolderMatch, offerPackageFolder, refineDocType, shortPrice } from "../scripts/inbox-agent/filing.mjs"
 import { DOC_TYPES, OFFER_PACKAGE_TYPES, WHITELIST } from "../scripts/inbox-agent/llm.mjs"
 
 const RECEIVED = "2026-10-30T20:09:07+00:00" // Amanda's forward, 1:09 PM PT
@@ -108,5 +108,15 @@ describe("refineDocType — the POF is a proof of funds, never a print proof", (
   it("proof of insurance / payment are not funds, and a classifier 'proof' with no proof in the name is just unknown", () => {
     expect(refineDocType("Proof of Insurance.pdf", "other", "agent@example.com", "")).toBe("other")
     expect(refineDocType("Bank Letter.pdf", "proof", "agent@example.com", "")).toBe("other")
+  })
+})
+
+describe("a proof-of-funds photo is a document, not a signature image", () => {
+  it("named images pass, everything else stays an ordinary inline image", () => {
+    expect(isNamedOfferImage("POF - 2116 Quito Rd.jpg")).toBe(true)
+    expect(isNamedOfferImage("Pre-Approval Letter.png")).toBe(true)
+    expect(isNamedOfferImage("logo.png")).toBe(false)
+    expect(isNamedOfferImage("Proof of Insurance.jpg")).toBe(false)
+    expect(isNamedOfferImage("POF.pdf")).toBe(false)
   })
 })

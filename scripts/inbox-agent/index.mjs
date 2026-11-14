@@ -69,7 +69,7 @@ import {
   CLASSIFY_SYSTEM, FILING_SYSTEM, RULES_SYSTEM, SCREEN_SYSTEM, SONNET, VERIFY_SYSTEM,
   BAY_AREA_RE, CONDO_RE, blastSignalsPass,
   changePrompt, classifyPrompt, complete, completeJson, filingPrompt, rulesPrompt, screenPrompt, verifyPrompt, WHITELIST } from "./llm.mjs"
-import { OFFERS_SUBFOLDER, OUR_NAMES_DEFAULT, destinationFor, driveDuplicateOf, driveNamesakeOf, filingDecision, sameDocName, inboundOfferFrom, isPurchaseDoc, nextSequence, offerDocName, offerFolderMatch, offerPackageFolder, refineDocType, stageOf, vendorFilename, vendorPropertyFolder, withTimeSuffix } from "./filing.mjs"
+import { OFFERS_SUBFOLDER, OUR_NAMES_DEFAULT, destinationFor, driveDuplicateOf, driveNamesakeOf, filingDecision, sameDocName, inboundOfferFrom, isPurchaseDoc, nextSequence, offerDocName, offerFolderMatch, offerPackageFolder, refineDocType, stageOf, vendorFilename, vendorPropertyFolder, withTimeSuffix, isNamedOfferImage } from "./filing.mjs"
 import { AWAITING_PAYMENT_MAX_TRIES, MAX_FETCH_ATTEMPTS, NEW_LINK_ERROR, NEW_LINK_GUARD_MS, awaitingPaymentNext, documentLinks, fetchDocuments, freshbooksAddress, newLinkGuard, nextTryAt, paymentWakeTargets, propertyWebsiteLinks, providerKind, providerLabel, queuesForVendor, queuesOnSystemEmail, readFetchedBytes, requeueDecision, saveFetchedBytes, tapinspectShareId, waitsClosedBy, waitsTimedOut } from "./fetch/index.mjs"
 import { invoiceDiffLines, isPaidName, matchVendor, money, paidName, parentCampaignOf, pickCampaign, stagingInvoiceRowFor, stagingNumberFrom, supersedeRenames, vendorDocType, vendorFilingDecision, vendorRules } from "./vendors.mjs"
 import { DUP_STATUSES, gmailLink, photoDedupeVerdict, propertyFolderFromReply, propertyLabelFromSubject, suffixedFilename } from "./photos.mjs"
@@ -408,7 +408,7 @@ function relevantAttachments(msg, cls, { ignoreRelevance = false } = {}) {
   const byName = new Map((cls?.attachments || []).map((a) => [a.filename, a]))
   const out = []
   for (const a of msg.attachments) {
-    if (a.inline && /^image\//.test(a.mime)) continue
+    if (a.inline && /^image\//.test(a.mime) && !isNamedOfferImage(a.filename)) continue // a forward marks every attachment inline; a POF photo is not a signature logo
     if (/^image\//.test(a.mime) && (a.size || 0) < 40 * 1024) continue // signature logos
     if (/^(image\d{3}|~WRD\d+|front-composer-)/i.test(a.filename)) continue
     if ((a.size || 0) > MAX_ATTACHMENT_BYTES) continue
