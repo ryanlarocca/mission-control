@@ -19,6 +19,10 @@ import { completeText, extractJsonObject, hasLlmKey, SONNET } from "@/lib/llm"
 //   → Nurture  "not now" / "maybe next year" / retail-only and won't budge /
 //              a polite no; OR quiet: Ryan reached out and got no reply for
 //              30 days (quiet only ever moves Active → Nurture, never Dead).
+//              Also a price gap (2026-11-14): Ryan gave his number, they
+//              want far more and the talk ended there — Nurture even though
+//              an offer was made. The judge brings them back to Follow Ups
+//              six months later.
 //   → Dead     sold the property / doesn't own it, or wrong person. Removal
 //              requests already go Dead through the DNC path (unchanged).
 //
@@ -38,8 +42,8 @@ import { completeText, extractJsonObject, hasLlmKey, SONNET } from "@/lib/llm"
 
 export const QUIET_DAYS = 30
 
-export type LeadStage = "lead" | "not_now" | "sold" | "wrong_person" | "unclear"
-export type AutoRule = "lead" | "not_now" | "sold" | "wrong_person" | "quiet_30d"
+export type LeadStage = "lead" | "not_now" | "price_gap" | "sold" | "wrong_person" | "unclear"
+export type AutoRule = "lead" | "not_now" | "price_gap" | "sold" | "wrong_person" | "quiet_30d"
 
 export function autoStatusEnabled(): boolean {
   return (process.env.LEAD_AUTO_STATUS || "").trim().toLowerCase() === "on"
@@ -115,12 +119,15 @@ export function decideStageMove(facts: ClusterFacts, stage: LeadStage): { to: Le
   // Ryan's hand-set status holds until something new happened after it.
   if (facts.ryanSetAt != null && facts.latestEventAt <= facts.ryanSetAt) return null
   const cur = facts.current
-  const effective: LeadStage = facts.hasMilestone && stage !== "sold" && stage !== "wrong_person" ? "lead" : stage
+  // An offer on the card keeps a soft no Active — except the no that IS the
+  // answer to that offer (price_gap; Anthony, 2026-11-14).
+  const effective: LeadStage = facts.hasMilestone && stage !== "sold" && stage !== "wrong_person" && stage !== "price_gap" ? "lead" : stage
   switch (effective) {
     case "lead":
       return cur === "active" ? null : { to: "active", rule: "lead" }
     case "not_now":
-      return cur === "new" || cur === "contacted" || cur === "active" ? { to: "nurture", rule: "not_now" } : null
+    case "price_gap":
+      return cur === "new" || cur === "contacted" || cur === "active" ? { to: "nurture", rule: effective } : null
     case "sold":
     case "wrong_person":
       return cur === "dead" ? null : { to: "dead", rule: effective }
@@ -155,15 +162,16 @@ TODAY IS ${today}.
 
 Decide where this person stands RIGHT NOW, judged mostly by the latest exchanges:
 
-- "lead": they own a property (the mailed one or another) and want to sell soon enough to work on now — roughly within 12 months — and they are open to Ryan's kind of offer (as-is cash, or willing to hear a number / talk numbers). Asking for an offer, inviting a call to discuss selling, or actively negotiating all count. A first message like "I own 123 Main and I'm interested in selling, call me" is a lead.
+- "lead": they own a property (the mailed one or another) and want to sell soon enough to work on now — roughly within 12 months — and they are open to Ryan's kind of offer (as-is cash, or willing to hear a number / talk numbers). Asking for an offer, inviting a call to discuss selling, or still going back and forth on price all count. A first message like "I own 123 Main and I'm interested in selling, call me" is a lead.
 - "not_now": a real owner who isn't a seller for Ryan right now — "maybe in a few years", "not interested right now", "just curious what it's worth", wants full retail and won't budge, someone else decides, or they went cold after earlier interest and said so. A polite or rude "no" without asking to be removed is also not_now. Ryan passing counts too: if, after hearing about the property, Ryan tells them it isn't a fit for him (too nice / already updated, not what he buys, the numbers don't work for him) and doesn't keep talking price on it, the person is not_now even if they still wanted an offer.
+- "price_gap": Ryan gave them his number (an offer or a price range) and they turned it down as far too low — they want much more, or point to an appraisal / retail value well above it — and the conversation ended there, with neither side still working on price ("sorry to bother you, thanks for your time"). Only when that is where things stand now: if they are still negotiating, countered with a number Ryan is considering, or came back afterwards wanting to talk, they are a "lead".
 - "sold": they no longer own the property (sold it, lost it, transferred it) and mention nothing else they own.
 - "wrong_person": not the owner and not connected to the property — a tenant, wrong number, someone who got the letter by mistake. An agent or relative ACTING FOR the owner is not wrong_person; judge the owner's intent instead.
 - "unclear": not enough to tell (a hang-up, a one-word message, only Ryan's side, a voicemail greeting).
 
 Be conservative with "sold" and "wrong_person" — when in doubt use "unclear" or "not_now".
 
-Respond with ONLY a JSON object: {"stage": "lead" | "not_now" | "sold" | "wrong_person" | "unclear", "reason": "one short sentence quoting or paraphrasing what they said"}
+Respond with ONLY a JSON object: {"stage": "lead" | "not_now" | "price_gap" | "sold" | "wrong_person" | "unclear", "reason": "one short sentence quoting or paraphrasing what they said"}
 
 HISTORY (oldest → newest):
 """
@@ -179,7 +187,7 @@ export async function judgeLeadStage(history: string): Promise<{ stage: LeadStag
   const out = await completeText({ model: SONNET, prompt: STAGE_PROMPT(history, today), maxTokens: 8192, tag: "[lead-stage]" })
   if (!out.text || out.truncated) return null
   const parsed = JSON.parse(extractJsonObject(out.text)) as { stage?: unknown; reason?: unknown }
-  const stages: LeadStage[] = ["lead", "not_now", "sold", "wrong_person", "unclear"]
+  const stages: LeadStage[] = ["lead", "not_now", "price_gap", "sold", "wrong_person", "unclear"]
   const stage = stages.includes(parsed.stage as LeadStage) ? (parsed.stage as LeadStage) : "unclear"
   const reason = typeof parsed.reason === "string" ? parsed.reason.trim().slice(0, 300) : ""
   return { stage, reason }

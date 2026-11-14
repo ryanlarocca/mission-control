@@ -55,6 +55,11 @@ describe("decideStageMove", () => {
     const rows = [inbound("a", DAY, { status: "nurture", appointment_at: iso(DAY) })]
     expect(decideStageMove(facts(rows), "not_now")).toEqual({ to: "active", rule: "lead" })
   })
+  it("an offer turned down on price → Nurture, even with the offer on the card", () => {
+    const rows = [inbound("a", 2 * DAY, { status: "active" }), outbound("b", DAY, { offer_verbalized_at: iso(DAY) })]
+    expect(decideStageMove(facts(rows), "price_gap")).toEqual({ to: "nurture", rule: "price_gap" })
+    expect(decideStageMove(facts([inbound("a", DAY, { status: "nurture", offer_verbalized_at: iso(DAY) })]), "price_gap")).toBeNull()
+  })
 })
 
 describe("decideQuietMove", () => {

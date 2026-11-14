@@ -21,6 +21,9 @@
  *   6. Ryan asked them something, no answer yet → wait 3 days, then re-judge
  *   7. they want a number / a call / an answer  → Ryan, today
  *   8. not interested, politely closed          → quiet a year, on autopilot
+ *      (not a price gap — 2026-11-14: Ryan gave a number, they want far
+ *      more, the talk ended. That is rule 5 with a date six months out: off
+ *      Follow Ups until then, no autopilot texts, Ryan follows up himself.)
  *   9. no real conversation EVER               → call again next day, then
  *      day 3, 7, 14 after each attempt, then autopilot
  *  10. nothing new                              → leave the last verdict alone
@@ -61,6 +64,7 @@ const DAY = 86400000
 const SETTLE_MS = 20 * 60000          // let transcription / Ryan's reply land before judging
 const WAIT_ON_THEM_DAYS = 3
 const QUIET_DAYS = 365
+const PRICE_GAP_MONTHS = "six"          // offer turned down on price → back on Follow Ups this long after
 const CHASE_LADDER_DAYS = [1, 3, 7, 14] // after attempt 1, 2, 3, 4 — then autopilot
 const LOOKBACK_DAYS = 3                 // sweep: who had activity recently
 const MODEL = "claude-sonnet-5"
@@ -212,10 +216,10 @@ Pick exactly one state. Highest rule that fits wins:
 2. "dead" — they sold it, don't own it, wrong number / wrong person, or it isn't a seller at all (a vendor or agent pitching Ryan).
 3. "appointment" — a specific meeting, walkthrough or visit was agreed. date = that day.
 4. "ryan_owes" — in the newest real conversation Ryan promised to send or do something specific (a number / an offer, a text with his info, a document, a call back "later today") and there's no sign he did it yet. Ryan's turn, now.
-5. "call_on" — in the newest REAL conversation, they or Ryan set a time to reconnect ("call me in January", "after the holidays", "end of March", "give me a couple of weeks"). Ryan calls a little EARLY, never late — a good salesperson beats the date they gave, but never calls before a month they named. date: a stretch of time from today ("in four months", "six months", "a year") → count it, then come back early: about two weeks early for three months or more, about a week early for one to three months, on the day for under a month ("a couple of weeks" → 14 days). A month they named ("call me in January") → the first weekday on or after the 4th of that month. "End of March" → about the 20th. "After X" → about a week after X. A specific day → that day. When you came in early, the reason says what they asked for ("said call in about four months — calling a little early"). This stands even if later there were hang-ups, voicemails, Jackie logs or auto-texts — those don't move it. If a real conversation happened and nothing was promised or scheduled, this is still the state: pick a sensible date from what was said (a week for an open thread; "nothing moves for two months" → two months).
+5. "call_on" — in the newest REAL conversation, they or Ryan set a time to reconnect ("call me in January", "after the holidays", "end of March", "give me a couple of weeks"). Ryan calls a little EARLY, never late — a good salesperson beats the date they gave, but never calls before a month they named. date: a stretch of time from today ("in four months", "six months", "a year") → count it, then come back early: about two weeks early for three months or more, about a week early for one to three months, on the day for under a month ("a couple of weeks" → 14 days). A month they named ("call me in January") → the first weekday on or after the 4th of that month. "End of March" → about the 20th. "After X" → about a week after X. A specific day → that day. When you came in early, the reason says what they asked for ("said call in about four months — calling a little early"). This stands even if later there were hang-ups, voicemails, Jackie logs or auto-texts — those don't move it. If a real conversation happened and nothing was promised or scheduled, this is still the state: pick a sensible date from what was said (a week for an open thread; "nothing moves for two months" → two months). A PRICE GAP is this state too: Ryan gave them his number (an offer or a range), they turned it down as far too low — they want much more, or point to an appraisal / retail value well above it — and the conversation ended there with nobody still working on price. They do want to sell, just not at Ryan's number today, so Ryan checks back himself: date = ${PRICE_GAP_MONTHS} months after the day of that conversation, exactly (no coming in early), and the reason names both numbers if they were said ("turned down your $X offer — wants about $Y; checking back in ${PRICE_GAP_MONTHS} months"). If they named their own time to talk again, use that instead.
 6. "waiting_on_them" — the last substantive message is a QUESTION FROM RYAN they have not answered yet (e.g. they texted "No", Ryan asked "not the owner anymore, or not for sale?").
 7. "ryan_today" — their newest message asks Ryan for something (a number / an offer, a call, an answer) or they clearly want to talk now.
-8. "quiet_until" — they said not interested / not selling / not now, with no date, without asking to be removed. Ryan may have closed politely ("no problem, you have my number") and they may have acknowledged (👍, "thanks") — that is still quiet_until.
+8. "quiet_until" — they said not interested / not selling / not now, with no date, without asking to be removed. Ryan may have closed politely ("no problem, you have my number") and they may have acknowledged (👍, "thanks") — that is still quiet_until. Turning down Ryan's number because it is too low is NOT this state — that is the price gap under call_on.
 9. "chase" — NO real conversation has EVER happened in this thread: only Ryan's calls that hit voicemail, their hang-ups or empty voicemails, Jackie answering, auto-texts with no reply, phone tag. Ryan is still trying to reach them for the first time. If they ever actually talked, this is never the answer.
 10. "none" — nothing in the thread calls for a change from the standing verdict. Only valid when a standing verdict is given; with none, pick the state that fits.
 
