@@ -1865,6 +1865,35 @@ export async function fetchTwilioAudio(url: string): Promise<Buffer | null> {
   return null
 }
 
+// Bytes a complete MP3 of this recording must have (32 kbps ≈ 4,000 B/s,
+// 90% of that), or 0 when there's nothing to check. The callback's
+// RecordingDuration is NOT the file's length for a <Record> voicemail: it
+// counts the trailing timeout="5" silence that Twilio then trims from the
+// file, so a 9s voicemail arrives as "14s" and the whole file looks partial
+// (2026-11-15, a DNC caller's voicemail thrown away as "download failed").
+// When the bytes fall short, Twilio's stored duration — the trimmed one —
+// has the final word.
+export async function expectedRecordingBytes(fullUrl: string, callbackDurationSec: number | null | undefined, gotBytes: number): Promise<number> {
+  const fromCallback = callbackDurationSec && callbackDurationSec > 0 ? Math.floor(callbackDurationSec * 3600) : 0
+  if (!fromCallback || gotBytes >= fromCallback) return fromCallback
+  const sid = process.env.TWILIO_ACCOUNT_SID
+  const token = process.env.TWILIO_AUTH_TOKEN
+  if (!sid || !token) return fromCallback
+  try {
+    const res = await fetch(fullUrl.replace(/\.mp3$/, ".json"), {
+      headers: { Authorization: `Basic ${Buffer.from(`${sid}:${token}`).toString("base64")}` },
+      cache: "no-store",
+    })
+    if (!res.ok) return fromCallback
+    const stored = Number((await res.json())?.duration)
+    // -1 while Twilio is still processing it.
+    if (!Number.isFinite(stored) || stored <= 0) return fromCallback
+    return Math.min(fromCallback, Math.floor(stored * 3600))
+  } catch {
+    return fromCallback
+  }
+}
+
 // Cities on our mailed lists (2026-11-03). Passed to Whisper as vocabulary so
 // a caller's "Los Gatos" isn't heard as "Las Vegas" (Gary, NOO Q4 A).
 const WHISPER_CITY_HINTS = [
@@ -1987,7 +2016,7 @@ export async function processRecordingBackground(args: {
     // a transcript of the first N minutes and nothing downstream would
     // know it was cut off. 32 kbps ≈ 4,000 B/s; require 90% of that.
     const durationSecForSize = args.recordingDurationSec ?? 0
-    const expectedBytes = durationSecForSize > 0 ? Math.floor(durationSecForSize * 3600) : 0
+    const expectedBytes = audio ? await expectedRecordingBytes(fullUrl, durationSecForSize, audio.length) : 0
     let partial = !!audio && expectedBytes > 0 && audio.length < expectedBytes
     for (let i = 1; i <= 3 && partial; i++) {
       console.warn(`[recording-bg] Lead ${leadId} audio is ${audio!.length} bytes but ${durationSecForSize}s implies ≥${expectedBytes} — partial file, re-downloading (${i}/3)`)
@@ -2178,7 +2207,7 @@ export async function processRecordingBackground(args: {
         const realRecording = audioBytes > 50_000 || durationSec > 12
         if (!transcription && realRecording) {
           const why = !audio
-            ? "the audio download failed"
+            ? (expectedBytes > 0 ? "the downloaded audio was shorter than the recording (partial file)" : "the audio download failed")
             : audioBytes <= 50_000
               ? `only ${Math.round(audioBytes / 1024)} KB downloaded (partial file)`
               : "Whisper returned nothing"

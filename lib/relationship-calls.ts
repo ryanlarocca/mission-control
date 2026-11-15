@@ -10,7 +10,7 @@
 // writes a CRMS-flavoured summary, appends the dated call line to the
 // contact's notes (same format Log Call writes) and bumps the cadence.
 
-import { getLeadsClient, fetchTwilioAudio, transcribeAudio, sendTelegramAlert, FORWARD_TO } from "./leads"
+import { getLeadsClient, fetchTwilioAudio, expectedRecordingBytes, transcribeAudio, sendTelegramAlert, FORWARD_TO } from "./leads"
 import { completeText, hasLlmKey, SONNET } from "./llm"
 import { alertMissedOfficeCall, isEmptyVoicemail, isPlaceholderName } from "./office-inbound"
 import { sendCampaignAlert } from "./campaignAlerts"
@@ -204,7 +204,7 @@ export async function processRelationshipRecording(args: {
     // Same encoding-lag + partial-file guard as the Leads pipeline.
     await new Promise(r => setTimeout(r, 10_000))
     let audio = await fetchTwilioAudio(fullUrl)
-    const expectedBytes = recordingDurationSec && recordingDurationSec > 0 ? Math.floor(recordingDurationSec * 3600) : 0
+    const expectedBytes = audio ? await expectedRecordingBytes(fullUrl, recordingDurationSec, audio.length) : 0
     let partial = !!audio && expectedBytes > 0 && audio.length < expectedBytes
     for (let i = 1; i <= 3 && partial; i++) {
       await new Promise(r => setTimeout(r, 15_000))
