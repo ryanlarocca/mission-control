@@ -211,3 +211,13 @@ describe("one-question reminder (11-13)", () => {
     expect(notes(second, 5_100)).toHaveLength(1)
   })
 })
+
+// 11-14 (opt-out caller talked over three times).
+describe("taking turns (11-14)", () => {
+  it("waits out an unfinished thought, answers a finished one, and yields", () => {
+    expect(VOICE_TEST_INSTRUCTIONS).toContain("A pause is not always your turn")
+    expect(VOICE_TEST_INSTRUCTIONS).not.toContain("Answer the instant they stop talking")
+    expect(VOICE_TEST_INSTRUCTIONS).toContain("Never talk over a caller to get your line out")
+    expect(VOICE_TEST_INSTRUCTIONS).toContain("Never a sentence: no apology, no answer, no question until they've finished")
+  })
+})
