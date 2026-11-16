@@ -746,6 +746,11 @@ export interface Lead {
   is_dnc?: boolean | null
   is_junk?: boolean | null
   is_bad_number?: boolean | null
+  // Why the number can't take texts — 'landline' | 'unreachable' — when an
+  // autopilot text bounced (scripts/autopilot.js); null for a hand-set flag.
+  bad_number_reason?: string | null
+  // On an outbound text row: it didn't deliver, and why (same values).
+  send_error?: string | null
   ai_summary?: string | null
   ai_summary_generated_at?: string | null
   recommended_followup_date?: string | null

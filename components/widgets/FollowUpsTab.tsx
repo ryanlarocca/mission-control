@@ -53,6 +53,9 @@ interface ContactRow {
   emailReplyLeadId: string | null
   stage?: "closed" | "pending" | "offer" | "appointment" | "lead" | null
   history?: ContactHistory
+  // The number can't take texts — reason 'landline' | 'unreachable' when an
+  // autopilot text bounced and took them off autopilot (2026-11-16).
+  badNumber?: { reason: string | null } | null
   primary: NextTouch
   secondary: NextTouch | null
   // They texted / left a voicemail / missed-called this week and Ryan hasn't
@@ -1565,6 +1568,9 @@ function HistoryBlock({ row }: { row: ContactRow }) {
                 <span className="shrink-0">{HISTORY_ICON[it.kind]}</span>
                 <span className="flex-1 min-w-0 break-words">
                   <span className="text-zinc-500">{historyDate(it.at)} · {historyWho(it, first)} — </span>
+                  {it.failed && (
+                    <span className="text-amber-300">📵 Didn&apos;t deliver ({it.failed === "landline" ? "landline" : "unreachable number"}) — autopilot stopped. </span>
+                  )}
                   {lines[it.id] ?? it.line}
                 </span>
                 {it.more && (
@@ -1590,6 +1596,30 @@ function HistoryBlock({ row }: { row: ContactRow }) {
         </button>
       )}
     </div>
+  )
+}
+
+// The number can't take texts (2026-11-16). With a reason, an autopilot
+// text bounced and took them off autopilot; without, flagged by hand.
+function CantTextChip({ reason }: { reason: string | null }) {
+  const label = reason === "landline" ? "📵 Landline · off autopilot" : reason ? "📵 Can't text · off autopilot" : "📵 Can't text"
+  const title = reason
+    ? `An autopilot text didn't deliver (${reason === "landline" ? "landline" : "unreachable number"}) — taken off autopilot. Call instead.`
+    : "Number marked as unable to take texts — call instead."
+  // A tap shows why — the phone has no hover for a title.
+  const [open, setOpen] = useState(false)
+  return (
+    <>
+      <button
+        type="button"
+        onClick={() => setOpen(o => !o)}
+        title={title}
+        className="px-1.5 py-0.5 text-[9px] font-semibold rounded uppercase tracking-wider bg-amber-950 text-amber-300 border border-amber-900 shrink-0"
+      >
+        {label}
+      </button>
+      {open && <span className="basis-full text-[11px] text-amber-200/80">{title}</span>}
+    </>
   )
 }
 
@@ -1638,6 +1668,7 @@ function ContactCard({ row, ...h }: { row: ContactRow } & CardHandlers) {
         {row.propertyAddress && (
           <span className="text-zinc-500 truncate max-w-[200px]" title={row.propertyAddress}>🏠 {row.propertyAddress}</span>
         )}
+        {row.badNumber && <CantTextChip reason={row.badNumber.reason} />}
         {isOnMarket(row.listing) && (
           <span
             className="px-1.5 py-0.5 text-[9px] font-semibold rounded uppercase tracking-wider bg-rose-950 text-rose-300 border border-rose-900 shrink-0"
@@ -1652,7 +1683,17 @@ function ContactCard({ row, ...h }: { row: ContactRow } & CardHandlers) {
             disabled={acting}
             onPick={(choice) => h.onChangeStatus(row, choice)}
           />
-          {row.phone && (
+          {row.phone && row.badNumber && (
+            // Autopilot is texts — a number that can't take them can't go on
+            // it (the API refuses), so no button that looks tappable.
+            <span
+              title="Autopilot only texts, and this number can't take texts"
+              className="inline-flex items-center gap-1 px-2 py-1 rounded border border-zinc-800 text-zinc-600 shrink-0 cursor-not-allowed"
+            >
+              <Bot className="w-3.5 h-3.5" /> Can&apos;t text
+            </span>
+          )}
+          {row.phone && !row.badNumber && (
             <button
               onClick={() => h.onAutopilot(row)}
               disabled={acting}
@@ -1812,7 +1853,7 @@ function CallBlock({
         >
           <Mail className="w-3.5 h-3.5" /> Email
         </button>
-        {row.phone && (
+        {row.phone && !row.badNumber && (
           <button
             onClick={onText}
             disabled={acting}

@@ -417,14 +417,22 @@ async function runAutopilot(sb, deps) {
           const st = await deps.messageStatus(sid)
           if (st && st.status === "undelivered" && [30003, 30005, 30006].includes(Number(st.errorCode))) {
             console.log(`[autopilot] ${label}: text undelivered (${st.errorCode}) — stopping, number flagged`)
+            // 'landline' | 'unreachable' — the cards show it (2026-11-16):
+            // a tag on the person, and the bounced text marked in history.
+            const reason = Number(st.errorCode) === 30006 ? "landline" : "unreachable"
             if (live) {
               await stopAutopilot(sb, lead, {
                 is_bad_number: true,
+                bad_number_reason: reason,
                 recommended_followup_date: pacificDay(),
-                followup_reason: "Text didn't deliver (landline or unreachable number) — call instead.",
+                followup_reason: reason === "landline"
+                  ? "Text didn't deliver (landline) — call instead."
+                  : "Text didn't deliver (unreachable number) — call instead.",
                 followup_generated_at: new Date().toISOString(),
               })
-              await deps.telegram(`Autopilot FYI: ${lead.name || lead.caller_phone}${lead.property_address ? ` (${lead.property_address})` : ""} — the text didn't deliver (${st.errorCode === 30006 ? "landline" : "unreachable number"}). Taken off autopilot and on Follow Ups to call today.`)
+              const { error: markErr } = await sb.from("leads").update({ send_error: reason }).eq("id", lastSent.id)
+              if (markErr) console.error(`[autopilot] ${label}: couldn't mark the bounced text: ${markErr.message}`)
+              await deps.telegram(`Autopilot FYI: ${lead.name || lead.caller_phone}${lead.property_address ? ` (${lead.property_address})` : ""} — the text didn't deliver (${reason === "landline" ? "landline" : "unreachable number"}). Taken off autopilot and on Follow Ups to call today.`)
             }
             bump("undeliverable"); continue
           }

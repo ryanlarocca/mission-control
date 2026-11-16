@@ -52,6 +52,8 @@ interface CandidateLead {
   last_drip_sent_at: string | null
   is_dnc: boolean | null
   is_junk: boolean | null
+  is_bad_number?: boolean | null
+  bad_number_reason?: string | null
   recommended_followup_date: string | null
   followup_reason: string | null
   lead_type: string | null
@@ -68,7 +70,7 @@ interface CandidateLead {
 const LEAD_COLS =
   "id, caller_phone, email, gmail_thread_id, source, source_type, name, status, created_at, " +
   "property_address, temperature, drip_campaign_type, drip_touch_number, last_drip_sent_at, " +
-  "is_dnc, is_junk, recommended_followup_date, followup_reason, lead_type, twilio_number, notes, ai_summary, " +
+  "is_dnc, is_junk, is_bad_number, bad_number_reason, recommended_followup_date, followup_reason, lead_type, twilio_number, notes, ai_summary, " +
   "became_lead_at, appointment_at, offer_verbalized_at, pending_at, deal_closed_at, listing"
 
 interface ContactRow {
@@ -110,6 +112,10 @@ interface ContactRow {
   // — the card's "Recent history". Full text is fetched on tap from
   // /api/follow-ups/history.
   history: ContactHistory
+  // The number can't take texts (2026-11-16) — the card tags it, hides Text
+  // and greys Autopilot. reason: 'landline' | 'unreachable' when an autopilot
+  // text bounced (it took them off autopilot); null when flagged by hand.
+  badNumber: { reason: string | null } | null
   primary: NextTouch
   secondary: NextTouch | null
   // They wrote / left a voicemail / missed-called in the last week and Ryan
@@ -493,6 +499,7 @@ export async function GET(_request: NextRequest) {
       const temp = byRecent.find((l) => l.temperature)?.temperature ?? null
       // Newest inbound email row in the cluster → threads a manual reply.
       const emailReplyLead = byRecent.find((l) => l.lead_type === "email" && l.twilio_number)
+      const badRow = leads.find((l) => l.is_bad_number && l.bad_number_reason) ?? leads.find((l) => l.is_bad_number)
 
       rows.push({
         clusterKey: key,
@@ -530,6 +537,7 @@ export async function GET(_request: NextRequest) {
           : leads.some((l) => l.became_lead_at) ? "lead"
           : null,
         history: { items: [], total: 0 },
+        badNumber: badRow ? { reason: badRow.bad_number_reason ?? null } : null,
         primary: summary.primary,
         secondary: summary.secondary,
         replied,

@@ -92,6 +92,10 @@ interface Lead {
   is_dnc?: boolean | null
   is_junk?: boolean | null
   is_bad_number?: boolean | null
+  // 'landline' | 'unreachable' — an autopilot text bounced (2026-11-16).
+  bad_number_reason?: string | null
+  // On an outbound text row: it didn't deliver, and why (same values).
+  send_error?: string | null
   use_personal_cell?: boolean | null
   ai_summary?: string | null
   ai_summary_generated_at?: string | null
@@ -212,6 +216,8 @@ interface LeadGroup {
   isDnc: boolean
   isJunk: boolean
   isBadNumber: boolean
+  // Why, when an autopilot text bounced: 'landline' | 'unreachable'.
+  badNumberReason: string | null
   usePersonalCell: boolean
   campaignLabel: string | null
   aiSummary: string | null
@@ -541,7 +547,12 @@ function groupLeads(leads: Lead[]): LeadGroup[] {
     // row and the badge vanished, 2026-11-09).
     const isDnc = evs.some(e => !!e.is_dnc)
     const isJunk = !!statusSource.is_junk
-    const isBadNumber = !!statusSource.is_bad_number
+    // Like DNC, the number's, not a row's: the autopilot flags its own row,
+    // which often isn't the status row (2026-11-16).
+    const isBadNumber = evs.some(e => !!e.is_bad_number)
+    const badNumberReason = isBadNumber
+      ? evs.find(e => e.is_bad_number && e.bad_number_reason)?.bad_number_reason ?? null
+      : null
     const usePersonalCell = !!statusSource.use_personal_cell
     const campaignLabel =
       ascending.map(e => e.campaign_label).find(v => v && v.trim()) || null
@@ -600,6 +611,7 @@ function groupLeads(leads: Lead[]): LeadGroup[] {
       isDnc,
       isJunk,
       isBadNumber,
+      badNumberReason,
       usePersonalCell,
       campaignLabel,
       aiSummary: aiSummaryRow?.ai_summary || null,
@@ -1506,6 +1518,29 @@ export function LeadsTab() {
     void fetchLeads(true)
   }
 
+  // The tag reads every row (the autopilot flags its own), so clearing has
+  // to clear every flagged row, not just the newest.
+  async function clearBadNumberOnGroup(group: LeadGroup) {
+    const ids = new Set(group.events.filter(e => e.is_bad_number).map(e => e.id))
+    applyLeadEdit(prev => prev.map(l => ids.has(l.id) ? { ...l, is_bad_number: false, bad_number_reason: null } : l))
+    try {
+      await Promise.all(Array.from(ids).map(async id => {
+        const res = await fetch("/api/leads", {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ id, is_bad_number: false }),
+        })
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({}))
+          throw new Error(err.error || `HTTP ${res.status}`)
+        }
+      }))
+    } catch (e) {
+      console.error("bad-number clear failed:", e)
+      void fetchLeads(true)
+    }
+  }
+
   async function patchFlagOnGroup(group: LeadGroup, patch: Partial<Lead>) {
     applyLeadEdit(prev => prev.map(l => l.id === group.mostRecentId ? { ...l, ...patch } : l))
     try {
@@ -2168,7 +2203,7 @@ export function LeadsTab() {
               onToggleSelect={() => toggleSelect(group.mostRecentId)}
               onApplyDrip={() => applyDripToGroup(group)}
               onAutopilot={(action) => autopilotGroup(group, action)}
-              onMarkBadNumber={() => patchFlagOnGroup(group, { is_bad_number: !group.isBadNumber })}
+              onMarkBadNumber={() => group.isBadNumber ? void clearBadNumberOnGroup(group) : patchFlagOnGroup(group, { is_bad_number: true })}
               onMarkJunk={() => {
                 // 2026-05-11 — flipping junk ON also moves the lead to
                 // status=dead so it leaves the New/Contacted/Active filters
@@ -2596,8 +2631,13 @@ function LeadCard(p: LeadCardProps) {
                 </span>
               )}
               {group.isBadNumber && (
-                <span className="px-1.5 py-0.5 text-[9px] font-semibold rounded uppercase tracking-wider bg-amber-950 text-amber-300 border border-amber-900 shrink-0">
-                  Bad #
+                <span
+                  className="px-1.5 py-0.5 text-[9px] font-semibold rounded uppercase tracking-wider bg-amber-950 text-amber-300 border border-amber-900 shrink-0"
+                  title={group.badNumberReason
+                    ? `An autopilot text didn't deliver (${group.badNumberReason === "landline" ? "landline" : "unreachable number"}) — taken off autopilot. Call instead.`
+                    : "Number marked as unable to take texts — call instead."}
+                >
+                  {group.badNumberReason === "landline" ? "📵 Landline · off autopilot" : group.badNumberReason ? "📵 Can't text · off autopilot" : "📵 Can't text"}
                 </span>
               )}
               {group.usePersonalCell && (
@@ -3104,7 +3144,10 @@ function LeadCard(p: LeadCardProps) {
               {group.contactPhone && (
                 <div className="mt-3 pt-3 border-t border-zinc-800">
                   <div className="flex items-center justify-between mb-1.5">
-                    <div className="text-xs text-zinc-500">Or send iMessage</div>
+                    <div className="text-xs text-zinc-500">
+                      Or send iMessage
+                      {group.isBadNumber && <span className="text-amber-300"> · 📵 this number can&apos;t take texts</span>}
+                    </div>
                     <button
                       onClick={p.onDraftText}
                       disabled={p.draftingText}
@@ -3149,7 +3192,10 @@ function LeadCard(p: LeadCardProps) {
             // Phone-only lead: existing iMessage composer, unchanged.
             <div>
               <div className="flex items-center justify-between mb-1.5">
-                <div className="text-xs text-zinc-500">Send a message</div>
+                <div className="text-xs text-zinc-500">
+                  Send a message
+                  {group.isBadNumber && <span className="text-amber-300"> · 📵 this number can&apos;t take texts</span>}
+                </div>
                 {group.contactPhone && (
                   <button
                     onClick={p.onDraftText}
@@ -3266,7 +3312,17 @@ function LeadCard(p: LeadCardProps) {
                     Apply Drip
                   </button>
                 )}
-                {group.contactPhone && !group.isDnc && !group.isJunk && !group.events.some(e => e.drip_campaign_type === "autopilot") && (
+                {group.contactPhone && group.isBadNumber && !group.isDnc && !group.isJunk && (
+                  // Autopilot only texts — the API refuses a number that can't take them.
+                  <span
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 min-h-[36px] rounded border border-zinc-800 text-zinc-600 text-xs font-medium cursor-not-allowed"
+                    title="Autopilot only texts, and this number can't take texts"
+                  >
+                    <Hourglass className="w-3.5 h-3.5" />
+                    Can&apos;t text
+                  </span>
+                )}
+                {group.contactPhone && !group.isBadNumber && !group.isDnc && !group.isJunk && !group.events.some(e => e.drip_campaign_type === "autopilot") && (
                   <button
                     onClick={() => void runAutopilot("on")}
                     className="inline-flex items-center gap-1.5 px-3 py-1.5 min-h-[36px] rounded bg-sky-900/40 border border-sky-900 text-sky-200 hover:bg-sky-900/60 text-xs font-medium transition-colors"
@@ -4278,6 +4334,11 @@ function TimelineEvent({ ev }: { ev: Lead }) {
         <div className="max-w-[85%] bg-emerald-900/30 border border-emerald-900/50 rounded px-3 py-2 space-y-2">
           <div className="text-[10px] uppercase tracking-wider text-emerald-400/70 flex items-center gap-1.5">
             <span>{senderLabel}{channelSuffix} · {fullTime}</span>
+            {ev.send_error && (
+              <span className="text-amber-300 normal-case tracking-normal">
+                📵 didn&apos;t deliver ({ev.send_error === "landline" ? "landline" : "unreachable number"})
+              </span>
+            )}
           </div>
           {isOutboundCall ? (
             <>

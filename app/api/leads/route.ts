@@ -302,6 +302,9 @@ export async function PATCH(request: NextRequest) {
       update[flag as LeadFlagField] = body[flag]
     }
   }
+  // Clearing the flag clears why it was set — a later hand-set flag mustn't
+  // inherit an old "landline · off autopilot" tag.
+  if (update.is_bad_number === false) update.bad_number_reason = null
 
   if (body.caller_phone !== undefined) {
     const cp = body.caller_phone

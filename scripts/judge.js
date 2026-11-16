@@ -26,6 +26,11 @@
  *      Follow Ups until then, no autopilot texts, Ryan follows up himself.)
  *   9. no real conversation EVER               → call again next day, then
  *      day 3, 7, 14 after each attempt, then autopilot
+ *      (not someone already worked through to autopilot whose number can't
+ *      take texts — 2026-11-16: their bounced text sent Ryan to call
+ *      instead. That call is their autopilot check-in by phone, not a new
+ *      chase: one unanswered call → next call in 6 months, two or more →
+ *      a year, with "mark dead?" in the reason. Marking dead stays Ryan's.)
  *  10. nothing new                              → leave the last verdict alone
  *
  * Timing (2026-11-11): Ryan calls a little early, never late — "call me in
@@ -66,6 +71,7 @@ const WAIT_ON_THEM_DAYS = 3
 const QUIET_DAYS = 365
 const PRICE_GAP_MONTHS = "six"          // offer turned down on price → back on Follow Ups this long after
 const CHASE_LADDER_DAYS = [1, 3, 7, 14] // after attempt 1, 2, 3, 4 — then autopilot
+const CANT_TEXT_MONTHS = [6, 12]        // can't-text, past autopilot: after unanswered call 1, then 2+
 const LOOKBACK_DAYS = 3                 // sweep: who had activity recently
 const MODEL = "claude-sonnet-5"
 const APPLE_EPOCH_OFFSET_MS = 978307200000
@@ -82,6 +88,11 @@ function pacificDay(d = new Date()) {
 function dayPlus(day, n) {
   const d = new Date(`${day}T12:00:00Z`)
   d.setUTCDate(d.getUTCDate() + n)
+  return d.toISOString().slice(0, 10)
+}
+function monthsPlus(day, n) {
+  const d = new Date(`${day}T12:00:00Z`)
+  d.setUTCMonth(d.getUTCMonth() + n)
   return d.toISOString().slice(0, 10)
 }
 function fmtDay(day) {
@@ -185,6 +196,14 @@ function facts(rows) {
     .filter((r) => isRyanOut(r) && /^(call|sms|imessage|email)$/.test(r.lead_type || "") && String(r.message || "").trim())
     .filter((r, i, arr) => i === 0 || new Date(r.created_at).getTime() - new Date(arr[i - 1].created_at).getTime() > 30 * 60000)
   const lastRyanOut = [...rows].reverse().find((r) => isRyanOut(r))
+  // Already worked through to autopilot (an autopilot text went out) and the
+  // number can't take texts: Ryan's tries since the first autopilot text are
+  // phone check-ins, not a fresh chase (rule 9's exception).
+  const firstAutopilotText = rows.find((r) => String(r.lead_type || "").startsWith("drip_") && /\[autopilot #\d/.test(r.notes || ""))
+  const cantText = rows.some((r) => r.is_bad_number)
+  const triesSinceAutopilot = firstAutopilotText && cantText
+    ? attemptsSince.filter((r) => r.created_at > firstAutopilotText.created_at)
+    : []
   const pendingRow = rows.find((r) => r.pending_at)
   const closedRow = rows.find((r) => r.deal_closed_at)
   const deal = (rows.find((r) => r.deal_details) || {}).deal_details || null
@@ -196,7 +215,7 @@ function facts(rows) {
   return {
     newest, name: named.name || null, address: addr.property_address || null,
     appointment: appt && new Date(appt).getTime() > Date.now() - DAY ? appt : null,
-    autopilotRow, attempts: attemptsSince, lastRyanOut, lastInbound,
+    autopilotRow, attempts: attemptsSince, lastRyanOut, lastInbound, triesSinceAutopilot,
     isDnc: rows.some((r) => r.is_dnc), isJunk: rows.some((r) => r.is_junk),
     isDead: rows.length > 0 && rows.every((r) => String(r.status || "").toLowerCase() === "dead"),
     underContract: !!pendingRow && !closedRow, closedAt: closedRow ? closedRow.deal_closed_at : null,
@@ -374,6 +393,16 @@ function decide(llm, f, today) {
       break
     }
     case "chase": {
+      const k = (f.triesSinceAutopilot || []).length
+      if (k) {
+        // Past autopilot, can't be texted, Ryan called and nobody answered.
+        const lastTry = pacificDay(new Date(f.triesSinceAutopilot[k - 1].created_at))
+        date = monthsPlus(lastTry, CANT_TEXT_MONTHS[Math.min(k, CANT_TEXT_MONTHS.length) - 1])
+        reason = k === 1
+          ? "Can't take texts; your call since autopilot went unanswered — next call in 6 months."
+          : `${k} calls since autopilot, no answer, and they can't take texts — next call in a year. Mark dead?`
+        break
+      }
       const n = f.attempts.length
       const last = n ? pacificDay(new Date(f.attempts[n - 1].created_at)) : null
       // Nothing from either side in over two weeks: the chase went cold.

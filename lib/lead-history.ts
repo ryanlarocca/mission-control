@@ -33,6 +33,8 @@ export interface HistoryItem {
   needsLine: boolean
   // Full text — only filled by fetchFullHistory (the on-tap fetch).
   full?: string
+  // An outbound text that didn't deliver: 'landline' | 'unreachable'.
+  failed?: string | null
 }
 
 export interface ContactHistory {
@@ -65,11 +67,12 @@ export interface HistoryRow {
   ai_notes_head: string | null
   history_line: string | null
   has_recording: boolean
+  send_error?: string | null
 }
 
 const VIEW_COLS =
   "id, created_at, lead_type, twilio_number, caller_phone, email, gmail_thread_id, " +
-  "message_head, message_len, ai_notes_head, history_line, has_recording"
+  "message_head, message_len, ai_notes_head, history_line, has_recording, send_error"
 
 const squash = (s: string | null | undefined) => (s || "").replace(/\s+/g, " ").trim()
 
@@ -96,7 +99,7 @@ export function toHistoryItem(r: HistoryRow): HistoryItem | null {
     case "drip_imessage": {
       if (!msg) return null
       const line = clip(msg, TEXT_CLIP)
-      return { ...base, kind: "text", auto: r.lead_type === "drip_imessage", line, more: cut || line !== msg }
+      return { ...base, kind: "text", auto: r.lead_type === "drip_imessage", line, more: cut || line !== msg, failed: r.send_error ?? null }
     }
     case "email":
     case "drip_email": {
@@ -225,6 +228,7 @@ interface FullRow {
   ai_notes: string | null
   history_line: string | null
   recording_url: string | null
+  send_error: string | null
 }
 
 /** Every event for one contact (by clusterKeyOrId), newest first, with the
@@ -235,7 +239,7 @@ export async function fetchFullHistory(sb: SupabaseClient, key: string): Promise
   const val = key.slice(i + 1)
   if (!val) return []
   const cols =
-    "id, created_at, lead_type, twilio_number, caller_phone, email, gmail_thread_id, message, ai_notes, history_line, recording_url"
+    "id, created_at, lead_type, twilio_number, caller_phone, email, gmail_thread_id, message, ai_notes, history_line, recording_url, send_error"
   const base = () => sb.from("leads").select(cols)
   const query =
     prefix === "phone" ? (f: number, t: number) => base().eq("caller_phone", val).order("id").range(f, t)
@@ -262,6 +266,7 @@ export async function fetchFullHistory(sb: SupabaseClient, key: string): Promise
         ai_notes_head: r.ai_notes ? r.ai_notes.slice(0, HEAD) : null,
         history_line: r.history_line,
         has_recording: !!r.recording_url,
+        send_error: r.send_error,
       })
       if (item && item.more) item.full = (r.message || "").trim()
       return item
