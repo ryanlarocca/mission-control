@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server"
+import { serveAudio } from "@/lib/serve-audio"
 
 // Playable voicemail links (2026-07-30). Twilio recording media requires
 // account auth (Ryan's alert links 401'd when tapped), so this streams the
@@ -8,7 +9,7 @@ import { NextRequest, NextResponse } from "next/server"
 
 export const dynamic = "force-dynamic"
 
-export async function GET(_req: NextRequest, ctx: { params: Promise<{ sid: string }> }) {
+export async function GET(req: NextRequest, ctx: { params: Promise<{ sid: string }> }) {
   const { sid } = await ctx.params
   const clean = sid.replace(/\.mp3$/i, "")
   if (!/^RE[0-9a-f]{32}$/.test(clean)) return new NextResponse("not found", { status: 404 })
@@ -21,11 +22,8 @@ export async function GET(_req: NextRequest, ctx: { params: Promise<{ sid: strin
     { headers: { Authorization: "Basic " + Buffer.from(`${accountSid}:${token}`).toString("base64") } }
   )
   if (!upstream.ok || !upstream.body) return new NextResponse("recording unavailable", { status: 404 })
-  return new NextResponse(upstream.body, {
-    headers: {
-      "Content-Type": "audio/mpeg",
-      "Cache-Control": "private, max-age=3600",
-      "Content-Disposition": 'inline; filename="voicemail.mp3"',
-    },
+  const bytes = new Uint8Array(await upstream.arrayBuffer())
+  return serveAudio(bytes, req.headers.get("range"), {
+    "Content-Disposition": 'inline; filename="voicemail.mp3"',
   })
 }

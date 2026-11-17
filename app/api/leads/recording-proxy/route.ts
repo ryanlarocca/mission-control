@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server"
+import { serveAudio } from "@/lib/serve-audio"
 
 // Proxies a Twilio voicemail recording so the browser can play it without
 // exposing Basic-Auth credentials. Only Twilio recording URLs are allowed.
@@ -24,16 +25,14 @@ export async function GET(request: NextRequest) {
   const auth = Buffer.from(`${sid}:${token}`).toString("base64")
 
   try {
+    // Fetch the whole file — Twilio ignores Range — and serve ranges ourselves.
     const upstream = await fetch(target, {
       headers: { Authorization: `Basic ${auth}` },
-      // Forward range requests so the browser can seek
-      ...(request.headers.get("range") ? { headers: { Authorization: `Basic ${auth}`, Range: request.headers.get("range")! } } : {}),
-      // Defensive: skip Next.js fetch cache. Audio buffers are multi-MB and
-      // shouldn't sit in serverless memory between requests.
+      // Defensive: skip Next.js fetch cache.
       cache: "no-store",
     })
 
-    if (!upstream.ok && upstream.status !== 206) {
+    if (!upstream.ok) {
       const text = await upstream.text().catch(() => "")
       console.error(`[recording-proxy] Upstream ${upstream.status}: ${text.slice(0, 200)}`)
       return NextResponse.json(
@@ -42,16 +41,8 @@ export async function GET(request: NextRequest) {
       )
     }
 
-    const headers = new Headers()
-    headers.set("Content-Type", upstream.headers.get("Content-Type") || "audio/mpeg")
-    const len = upstream.headers.get("Content-Length")
-    if (len) headers.set("Content-Length", len)
-    const range = upstream.headers.get("Content-Range")
-    if (range) headers.set("Content-Range", range)
-    headers.set("Accept-Ranges", upstream.headers.get("Accept-Ranges") || "bytes")
-    headers.set("Cache-Control", "private, max-age=3600")
-
-    return new NextResponse(upstream.body, { status: upstream.status, headers })
+    const bytes = new Uint8Array(await upstream.arrayBuffer())
+    return serveAudio(bytes, request.headers.get("range"))
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e)
     console.error("[recording-proxy] Fetch threw:", msg)
