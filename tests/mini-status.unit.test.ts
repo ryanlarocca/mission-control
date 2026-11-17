@@ -154,6 +154,30 @@ function snap(over: Partial<Pick<MiniSnapshot, "helper" | "textHistory" | "jobs"
   }
 }
 
+describe("alertStep — backup late (36 h, problems only)", () => {
+  const now = new Date("2026-11-17T20:00:00Z")
+  const fresh = { lastAt: "2026-11-17T11:13:00Z", errAt: null, failedSince: false }
+  const old = { lastAt: "2026-11-15T11:13:00Z", errAt: null, failedSince: false }
+  it("a recent backup is quiet", () => {
+    const r = alertStep(null, { ...snap(), backup: fresh }, now)
+    expect(r.lines).toEqual([])
+    expect(r.next.backupLate).toBe(false)
+  })
+  it("late → one 🔴, then quiet while still late, then one ✅ when it lands", () => {
+    const r1 = alertStep(null, { ...snap(), backup: old }, now)
+    expect(r1.lines).toHaveLength(1)
+    expect(r1.lines[0]).toMatch(/hasn't completed in over 36 hours/)
+    const r2 = alertStep(r1.next, { ...snap(), backup: old }, now)
+    expect(r2.lines).toEqual([])
+    const r3 = alertStep(r2.next, { ...snap(), backup: fresh }, now)
+    expect(r3.lines).toEqual(["✅ Mac mini backup is landing in Drive again."])
+  })
+  it("never backed up counts as late; a snapshot without backup info judges nothing", () => {
+    expect(alertStep(null, { ...snap(), backup: { lastAt: null, errAt: null, failedSince: false } }, now).lines).toHaveLength(1)
+    expect(alertStep(null, snap(), now).lines).toEqual([])
+  })
+})
+
 describe("alertStep — state changes only", () => {
   it("all fine from no state: nothing to say", () => {
     const r = alertStep(null, snap())
