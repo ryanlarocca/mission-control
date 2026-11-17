@@ -78,6 +78,23 @@ async function consentGate(page) {
   ])
   return box
 }
+/**
+ * Tick the consent box. DocuSign's styled label sits on top of the input and
+ * takes the pointer (2026-11-16: check() and click() both timed out on
+ * "<label for=…> intercepts pointer events"), so click the label — what a
+ * person taps — and force the input as a last resort. True once it's ticked.
+ */
+async function tickConsent(page, box) {
+  const ticked = () => box.isChecked().catch(() => false)
+  await box.check({ timeout: 3_000 }).catch(() => {})
+  if (await ticked()) return true
+  const id = await box.getAttribute("id").catch(() => null)
+  if (id) await page.locator(`label[for="${id}"]`).first().click({ timeout: 3_000 }).catch(() => {})
+  if (await ticked()) return true
+  await box.check({ force: true, timeout: 3_000 }).catch(() => {})
+  return ticked()
+}
+
 async function accessCodeInput(page) {
   return firstVisible(page, [
     (p) => p.getByLabel(/access code/i),
@@ -261,7 +278,7 @@ export async function fetchDocuSign({ url, accessCode = null, jobId = "job", log
         if (!(await safeClick(gate.button, { expect: "Review Documents", log }))) return fail(null, "Review Documents button not clickable")
       } else if (gate.kind === "consent") {
         steps.push("consent")
-        await gate.box.check({ timeout: 5_000 }).catch(() => gate.box.click({ timeout: 5_000 }))
+        if (!(await tickConsent(page, gate.box))) return fail(null, "couldn't tick the electronic-records consent box")
         const btn = await continueButton(page)
         if (!btn || !(await safeClick(btn, { expect: "Continue", log }))) return fail(null, "consent ticked but no Continue button")
       } else if (gate.kind === "access_code") {
