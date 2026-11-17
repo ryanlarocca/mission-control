@@ -95,6 +95,27 @@ function monthsPlus(day, n) {
   d.setUTCMonth(d.getUTCMonth() + n)
   return d.toISOString().slice(0, 10)
 }
+// Ryan doesn't call over the holidays, but a lead isn't left waiting for the
+// whole season either (2026-11-17): only these two windows move.
+//   Thanksgiving Wed–Sun → the Monday after.
+//   Dec 20 – Jan 3       → the first weekday on or after Jan 4.
+// Only for dates the judge picks itself; a day they named stays as said.
+function holidayShift(day) {
+  if (!day) return day
+  const [y, m, d] = day.split("-").map(Number)
+  if ((m === 12 && d >= 20) || (m === 1 && d <= 3)) {
+    let out = `${m === 12 ? y + 1 : y}-01-04`
+    while ([0, 6].includes(new Date(`${out}T12:00:00Z`).getUTCDay())) out = dayPlus(out, 1)
+    return out
+  }
+  if (m === 11) {
+    const firstDow = new Date(Date.UTC(y, 10, 1, 12)).getUTCDay()
+    const thanksgiving = `${y}-11-${String(1 + ((4 - firstDow + 7) % 7) + 21).padStart(2, "0")}`
+    if (day >= dayPlus(thanksgiving, -1) && day <= dayPlus(thanksgiving, 3)) return dayPlus(thanksgiving, 4)
+  }
+  return day
+}
+
 function fmtDay(day) {
   if (!day) return "—"
   return new Date(`${day}T12:00:00Z`).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric", timeZone: "UTC" })
@@ -235,7 +256,7 @@ Pick exactly one state. Highest rule that fits wins:
 2. "dead" — they sold it, don't own it, wrong number / wrong person, or it isn't a seller at all (a vendor or agent pitching Ryan).
 3. "appointment" — a specific meeting, walkthrough or visit was agreed. date = that day.
 4. "ryan_owes" — in the newest real conversation Ryan promised to send or do something specific (a number / an offer, a text with his info, a document, a call back "later today") and there's no sign he did it yet. Ryan's turn, now.
-5. "call_on" — in the newest REAL conversation, they or Ryan set a time to reconnect ("call me in January", "after the holidays", "end of March", "give me a couple of weeks"). Ryan calls a little EARLY, never late — a good salesperson beats the date they gave, but never calls before a month they named. date: a stretch of time from today ("in four months", "six months", "a year") → count it, then come back early: about two weeks early for three months or more, about a week early for one to three months, on the day for under a month ("a couple of weeks" → 14 days). A month they named ("call me in January") → the first weekday on or after the 4th of that month. "End of March" → about the 20th. "After X" → about a week after X. A specific day → that day. When you came in early, the reason says what they asked for ("said call in about four months — calling a little early"). This stands even if later there were hang-ups, voicemails, Jackie logs or auto-texts — those don't move it. If a real conversation happened and nothing was promised or scheduled, this is still the state: pick a sensible date from what was said (a week for an open thread; "nothing moves for two months" → two months). A PRICE GAP is this state too: Ryan gave them his number (an offer or a range), they turned it down as far too low — they want much more, or point to an appraisal / retail value well above it — and the conversation ended there with nobody still working on price. They do want to sell, just not at Ryan's number today, so Ryan checks back himself: date = ${PRICE_GAP_MONTHS} months after the day of that conversation, exactly (no coming in early), and the reason names both numbers if they were said ("turned down your $X offer — wants about $Y; checking back in ${PRICE_GAP_MONTHS} months"). If they named their own time to talk again, use that instead.
+5. "call_on" — in the newest REAL conversation, they or Ryan set a time to reconnect ("call me in January", "after the holidays", "end of March", "give me a couple of weeks"). Ryan calls a little EARLY, never late — a good salesperson beats the date they gave, but never calls before a month they named. date: a stretch of time from today ("in four months", "six months", "a year") → count it, then come back early: about two weeks early for three months or more, about a week early for one to three months, on the day for under a month ("a couple of weeks" → 14 days). A month they named ("call me in January") → the first weekday on or after the 4th of that month. "End of March" → about the 20th. "After X" → about a week after X. A specific day → that day. When you came in early, the reason says what they asked for ("said call in about four months — calling a little early"). This stands even if later there were hang-ups, voicemails, Jackie logs or auto-texts — those don't move it. If a real conversation happened and nothing was promised or scheduled, this is still the state: pick a sensible date from what was said (a week for an open thread; "nothing moves for two months" → two months). EARLY BUT ENGAGED is this state too: Ryan gave them his number or made his case, they did NOT turn it down, they aren't ready to decide yet (taxes / capital gains, family, other options, timing), and Ryan gave them something to work on — referrals, information, a next step for them to take. They need time to act on it, and Ryan should still be the one who helped: date = about seven weeks after that conversation (six to eight), and the reason says what Ryan should ask about ("check whether he talked to the 1031 people about the capital gains"). Ryan emailing them what he promised does not change this — that is the help being delivered. A PRICE GAP is this state too: Ryan gave them his number (an offer or a range), they turned it down as far too low — they want much more, or point to an appraisal / retail value well above it — and the conversation ended there with nobody still working on price. Turning it down means they actually reject the number or say what they want instead; "good to know", comparing it to Zillow or another estimate, or worrying about taxes is NOT turning it down (that is early but engaged). They do want to sell, just not at Ryan's number today, so Ryan checks back himself: date = ${PRICE_GAP_MONTHS} months after the day of that conversation, exactly (no coming in early), and the reason names both numbers if they were said ("turned down your $X offer — wants about $Y; checking back in ${PRICE_GAP_MONTHS} months"). If they named their own time to talk again, use that instead.
 6. "waiting_on_them" — the last substantive message is a QUESTION FROM RYAN they have not answered yet (e.g. they texted "No", Ryan asked "not the owner anymore, or not for sale?").
 7. "ryan_today" — their newest message asks Ryan for something (a number / an offer, a call, an answer) or they clearly want to talk now.
 8. "quiet_until" — they said not interested / not selling / not now, with no date, without asking to be removed. Ryan may have closed politely ("no problem, you have my number") and they may have acknowledged (👍, "thanks") — that is still quiet_until. Turning down Ryan's number because it is too low is NOT this state — that is the price gap under call_on.
@@ -255,8 +276,10 @@ Also separately: how warm are they, reading the WHOLE thread as it stands now (n
 
 Also separately: did THEY give a different phone number to reach them at than the one they are calling / texting from ("this is my daughter's office, my cell is…", "call me back at…", "my real number is…")? Only a number that is theirs to be reached at — never Ryan's or LRG Homes' numbers, never a number Jackie or Ryan read out, never the number they are already calling from, never somebody else's number they merely mention. If they gave more than one, the newest. Put its 10 digits in "callback_number" only if all ten digits are clear in the transcript; if they gave one but the digits are incomplete or unclear, leave "callback_number" null and set "callback_unclear" true. "callback_note" = a few words on whose number it is and where it came from ("her own cell — the number she called from is her daughter's office"). Nothing given → null, false, null.
 
+Also separately: "date_named" is true only when your date is a specific day or month THEY or Ryan named in the conversation ("call me January 2nd", "after Christmas", "the week of Thanksgiving works") or an agreed appointment; false when you worked the date out yourself (counting weeks or months, the price gap, early but engaged). Don't avoid holidays yourself — the system moves dates you worked out away from Thanksgiving and Christmas–New Year's.
+
 Respond with ONLY JSON:
-{"state": "<one of the states>", "date": "YYYY-MM-DD" or null, "owed": "<what Ryan promised, e.g. text her his name/number with Vine Street on it for her attorney>" or null, "reason": "<one plain sentence for Ryan's screen, under 140 characters, naming the fact — e.g. Bill said call in January ahead of his end-of-March sale>", "connected": true|false, "temperature": "hot"|"warm"|"cold", "callback_number": "<10 digits>" or null, "callback_unclear": true|false, "callback_note": "<a few words>" or null}`
+{"state": "<one of the states>", "date": "YYYY-MM-DD" or null, "date_named": true|false, "owed": "<what Ryan promised, e.g. text her his name/number with Vine Street on it for her attorney>" or null, "reason": "<one plain sentence for Ryan's screen, under 140 characters, naming the fact — e.g. Bill said call in January ahead of his end-of-March sale>", "connected": true|false, "temperature": "hot"|"warm"|"cold", "callback_number": "<10 digits>" or null, "callback_unclear": true|false, "callback_note": "<a few words>" or null}`
 }
 
 // "(408) 555-0142" / "4085550142" / "1-408-555-0142" → +14085550142; anything
@@ -295,7 +318,7 @@ async function askModel(anthropic, ctx) {
     try {
       const json = JSON.parse(out.slice(out.indexOf("{"), out.lastIndexOf("}") + 1))
       if (!STATES.includes(json.state)) throw new Error(`bad state ${json.state}`)
-      return { state: json.state, date: /^\d{4}-\d{2}-\d{2}$/.test(json.date || "") ? json.date : null, owed: typeof json.owed === "string" && json.owed.trim() ? json.owed.trim().slice(0, 120) : null, reason: String(json.reason || "").slice(0, 160), connected: !!json.connected, temperature: ["hot", "warm", "cold"].includes(json.temperature) ? json.temperature : null, callback: cleanCallback(json.callback_number), callbackUnclear: json.callback_unclear === true, callbackNote: typeof json.callback_note === "string" && json.callback_note.trim() ? json.callback_note.trim().slice(0, 200) : null, usage: res.usage }
+      return { state: json.state, date: /^\d{4}-\d{2}-\d{2}$/.test(json.date || "") ? json.date : null, dateNamed: json.date_named === true, owed: typeof json.owed === "string" && json.owed.trim() ? json.owed.trim().slice(0, 120) : null, reason: String(json.reason || "").slice(0, 160), connected: !!json.connected, temperature: ["hot", "warm", "cold"].includes(json.temperature) ? json.temperature : null, callback: cleanCallback(json.callback_number), callbackUnclear: json.callback_unclear === true, callbackNote: typeof json.callback_note === "string" && json.callback_note.trim() ? json.callback_note.trim().slice(0, 200) : null, usage: res.usage }
     } catch (e) {
       lastErr = new Error(`${e.message} — stop=${res.stop_reason} blocks=${(res.content || []).map((b) => b.type).join(",") || "none"} said: ${out.slice(0, 200).replace(/\s+/g, " ")}`)
     }
@@ -364,7 +387,7 @@ function decide(llm, f, today) {
     state = "ryan_owes"
     // The card talks to Ryan — "text her your number", not "his".
     const owed = llm.owed.replace(/\bRyan's\b/g, "your").replace(/\bRyan\b/g, "you").replace(/\bhis\b/g, "your").replace(/\bhim\b/g, "you")
-    reason = `You owe them: ${owed}${llm.state === "call_on" && llm.date ? ` — then ${fmtDay(llm.date)}` : ""}`
+    reason = `You owe them: ${owed}${llm.state === "call_on" && llm.date ? ` — then ${fmtDay(llm.dateNamed ? llm.date : holidayShift(llm.date))}` : ""}`
   }
 
   // A meeting that was set for a day already gone isn't a plan — it's history.
@@ -425,6 +448,11 @@ function decide(llm, f, today) {
     default:
       date = null
   }
+  // Future dates the judge worked out itself skip the holidays. Today stays
+  // today (someone waiting on a callback isn't parked), and a day they named
+  // or an appointment stays as said.
+  const named = state === "call_on" && llm.state === "call_on" && llm.dateNamed
+  if (date && date > today && ["call_on", "waiting_on_them", "quiet_until", "chase"].includes(state) && !named) date = holidayShift(date)
   return { state, date, reason: reason.slice(0, 200), enrolAutopilot: state === "chase" && date === null, temperature: llm.temperature || null }
 }
 
@@ -524,7 +552,7 @@ async function saveVerdict(sb, phone, rows, v, llm) {
   const { error } = await sb.from("lead_verdicts").upsert({
     phone, state: v.state, due_date: v.date, reason: v.reason,
     through_at: rows[rows.length - 1].created_at, judged_at: new Date().toISOString(),
-    source: "judge", model: MODEL, raw: llm ? { state: llm.state, date: llm.date, reason: llm.reason, connected: llm.connected, temperature: llm.temperature || null, callback: llm.callback || null, callback_unclear: !!llm.callbackUnclear, usage: llm.usage } : null,
+    source: "judge", model: MODEL, raw: llm ? { state: llm.state, date: llm.date, date_named: !!llm.dateNamed, reason: llm.reason, connected: llm.connected, temperature: llm.temperature || null, callback: llm.callback || null, callback_unclear: !!llm.callbackUnclear, usage: llm.usage } : null,
   })
   if (error) throw new Error(`verdict: ${error.message}`)
 }
@@ -657,7 +685,7 @@ async function runJudge(sb, deps, { live }) {
   return stats
 }
 
-module.exports = { runJudge, judgePhone, dueNow, decide, facts, coolForSilence }
+module.exports = { runJudge, judgePhone, dueNow, decide, facts, coolForSilence, holidayShift }
 
 // ─── CLI ────────────────────────────────────────────────────────────────────
 
