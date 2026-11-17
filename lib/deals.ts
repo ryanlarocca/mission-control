@@ -180,16 +180,17 @@ export async function recordContractEvent(sb: SupabaseClient, ev: ContractEvent)
   }
 
   // Nobody chases a seller who signed: no follow-up dates, no drips, no
-  // autopilot. One date stays — the close-by day, on the newest row.
+  // autopilot, and no close-day reminder — Ryan is in close contact with
+  // anyone he's in contract with (2026-11-17). The close-by day stays in
+  // deal_details for the card line.
   await update(sb, ids, { recommended_followup_date: null, followup_reason: null, drip_campaign_type: null })
   const { error: qErr } = await sb.from("drip_queue").update({ status: "skipped", error: "under_contract" }).in("lead_id", ids).in("status", ["pending", "approved"])
   if (qErr) console.error(`[deals] drip queue skip failed (${leadId}): ${qErr.message}`)
   const reason = underContractReason(details)
   const newest = [...rows].sort((a, b) => b.created_at.localeCompare(a.created_at))[0]
-  if (closeBy) await update(sb, [newest.id], { recommended_followup_date: closeBy, followup_reason: reason, followup_generated_at: new Date().toISOString() })
   if (seed.caller_phone) {
     const { error: vErr } = await sb.from("lead_verdicts").upsert({
-      phone: seed.caller_phone, state: "under_contract", due_date: closeBy, reason,
+      phone: seed.caller_phone, state: "under_contract", due_date: null, reason,
       through_at: newest.created_at, judged_at: new Date().toISOString(), source: "contract", model: null, raw: { envelope_id: ev.envelopeId },
     })
     if (vErr) console.error(`[deals] verdict write failed (${leadId}): ${vErr.message}`)

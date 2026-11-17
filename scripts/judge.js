@@ -366,14 +366,14 @@ function decide(llm, f, today) {
   }
   if (f.underContract && !f.isDnc) {
     // They asked for something / Ryan owes them → Ryan's turn today, with the
-    // deal in the line. Anything else → wait for the close-by day.
+    // deal in the line. Anything else → off Follow Ups: Ryan is in close
+    // contact with anyone he's in contract with (2026-11-17), no close-day reminder.
     if (llm.owed) {
       const owed = llm.owed.replace(/\bRyan's\b/g, "your").replace(/\bRyan\b/g, "you").replace(/\bhis\b/g, "your").replace(/\bhim\b/g, "you")
       return { state: "ryan_owes", date: today, reason: `You owe them: ${owed} (under contract)`.slice(0, 200), enrolAutopilot: false }
     }
     if (llm.state === "ryan_today") return { state: "ryan_today", date: today, reason: `${llm.reason} (under contract)`.slice(0, 200), enrolAutopilot: false }
-    const closeBy = f.deal && f.deal.close_by ? f.deal.close_by : null
-    return { state: "under_contract", date: closeBy ? (closeBy < today ? today : closeBy) : null, reason: underContractReason(f).slice(0, 200), enrolAutopilot: false }
+    return { state: "under_contract", date: null, reason: underContractReason(f).slice(0, 200), enrolAutopilot: false }
   }
   if (f.isDnc) { state = "dnc"; reason = reason || "On the do-not-contact list." }
   else if (f.appointment) {
@@ -499,7 +499,9 @@ async function apply(sb, phone, rows, f, v, deps) {
     // Nobody texts a seller who signed: every drip / autopilot stamp off.
     if (rows.some((r) => r.drip_campaign_type)) await upd({ drip_campaign_type: null }, rows.filter((r) => r.drip_campaign_type).map((r) => r.id))
     await sb.from("drip_queue").update({ status: "skipped", error: "under_contract" }).in("lead_id", ids).in("status", ["pending", "approved"])
-    if (v.date) await upd({ recommended_followup_date: v.date, followup_reason: v.reason, followup_generated_at: now }, [f.newest.id])
+    // Off Follow Ups: clear any date the card still carries (an old close-day reminder).
+    const dated = rows.filter((r) => r.recommended_followup_date).map((r) => r.id)
+    if (dated.length) await upd({ recommended_followup_date: null, followup_reason: null }, dated)
     return
   }
   const host = f.autopilotRow || [...rows].reverse().find((r) => r.name && r.property_address) || [...rows].reverse().find((r) => r.property_address) || f.newest

@@ -44,10 +44,11 @@ describe("the judge with a signed contract", () => {
   ]
   const none = { state: "none", date: null, owed: null, reason: "", connected: true }
 
-  it("waits for the close-by day instead of chasing", () => {
+  // Ryan, 2026-11-17: he's in close contact with anyone he's in contract with — off Follow Ups, no close-day reminder.
+  it("stays off Follow Ups instead of chasing", () => {
     const v = decide({ ...none, state: "call_on", date: "2026-11-11", reason: "see where they landed" }, facts(signed), today)
     expect(v.state).toBe("under_contract")
-    expect(v.date).toBe("2026-11-17")
+    expect(v.date).toBeNull()
     expect(v.enrolAutopilot).toBe(false)
   })
   it("still brings a request from them to Ryan today", () => {
@@ -56,8 +57,9 @@ describe("the judge with a signed contract", () => {
     expect(decide({ ...none, state: "call_on", owed: "send her the escrow number" }, facts(signed), today))
       .toMatchObject({ state: "ryan_owes", date: today })
   })
-  it("keeps showing a past close-by day until it's marked Closed", () => {
-    expect(decide(none, facts(signed), "2026-11-20")).toMatchObject({ state: "under_contract", date: "2026-11-20" })
+  it("doesn't bring the card back on or after the close-by day", () => {
+    expect(decide(none, facts(signed), "2026-11-17")).toMatchObject({ state: "under_contract", date: null })
+    expect(decide(none, facts(signed), "2026-11-20")).toMatchObject({ state: "under_contract", date: null })
   })
   it("leaves a closed deal alone", () => {
     const closed = [...signed, row({ created_at: "2026-11-18T00:00:00Z", deal_closed_at: "2026-11-17T12:00:00Z" })]
