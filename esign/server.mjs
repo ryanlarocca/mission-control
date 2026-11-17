@@ -15,7 +15,7 @@ import { driveClient, listRecentOffers } from "./lib/google.mjs"
 import * as E from "./lib/envelope.mjs"
 import * as V from "./views/pages.mjs"
 import { SIGNATURE_FONTS } from "./lib/fonts.mjs"
-import { TEMPLATE, templateSpotKey, onTemplateLine } from "./lib/pdf.mjs"
+import { TEMPLATE, templateSpotKey, onTemplateLine, signaturePageIndex } from "./lib/pdf.mjs"
 import { loadAssets, assetResponse } from "./lib/assets.mjs"
 
 ensureDataDirs()
@@ -109,7 +109,7 @@ function signSpot(envelope, signer) {
   }
   if (!envelope.is_template || !onTemplateLine(signer)) return null
   const t = TEMPLATE[templateSpotKey(signer)]
-  return t ? { page: TEMPLATE.page + 1, x: t.x, lineY: t.lineY, w: t.w } : null
+  return t ? { page: signaturePageIndex(envelope) + 1, x: t.x, lineY: t.lineY, w: t.w } : null
 }
 
 // ------------------------------------------------------------ static + health

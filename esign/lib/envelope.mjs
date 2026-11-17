@@ -117,7 +117,9 @@ export async function createEnvelope({ title, propertyAddress, agreementDate, me
   const sellers = info.isTemplate ? sorted.filter((s) => s.role === "seller") : []
   const firstSeller = sellers[0] ?? null
   const secondSeller = info.fields.includes("seller2_signer_name") ? sellers[1] ?? null : null
-  const firstBuyer = info.isTemplate ? sorted.find((s) => s.role === "buyer") : null
+  const buyers = info.isTemplate ? sorted.filter((s) => s.role === "buyer") : []
+  const firstBuyer = buyers[0] ?? null
+  const secondBuyer = info.fields.includes("buyer2_date") ? buyers[1] ?? null : null
 
   const ts = now()
   const insertEnv = db.prepare(`INSERT INTO envelopes (id, title, property_address, agreement_date, message, source, drive_file_id, drive_folder_id,
@@ -129,9 +131,11 @@ export async function createEnvelope({ title, propertyAddress, agreementDate, me
     insertEnv.run(id, title, propertyAddress || null, agreementDate || null, message || null, driveFileId ? "drive" : "upload", driveFileId || null, driveFolderId,
       sha256(bytes), originalPath, pageCount, pageCount, info.isTemplate ? 1 : 0, "in_progress", ts, createdBy || "admin", cleanCopyTo.length ? JSON.stringify(cleanCopyTo) : null)
     for (const s of cleanSigners) {
-      const placement = s === firstSeller || s === firstBuyer ? "template" : s === secondSeller ? "template2" : "addendum"
+      const placement = s === firstSeller || s === firstBuyer ? "template" : s === secondSeller ? "template2" : s === secondBuyer ? "template_buyer2" : "addendum"
       insertSigner.run(crypto.randomBytes(6).toString("hex"), id, s.order, s.role, s.name, s.email, s.phone, s.delivery, placement, "waiting")
     }
+    // An addendum is not an offer or a new contract: kind 'addendum' keeps it off the lead card (crm.mjs).
+    if (info.isAddendum) db.prepare(`UPDATE envelopes SET kind = 'addendum' WHERE id = ?`).run(id)
     db.exec("COMMIT")
   } catch (e) {
     db.exec("ROLLBACK")

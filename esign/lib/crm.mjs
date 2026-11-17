@@ -21,11 +21,11 @@ export function crmEnabled() {
  *  e.g. by email): presenting it is the Offer (Ryan's rule, 2026-11-13). The
  *  lead is found by the property address. */
 export function isBuyerSignedOffer(envelope, signers) {
-  return envelope.kind !== "self" && !!envelope.is_template && !/^TEST\b/i.test(envelope.title || "") && signers.length > 0 && signers.every((s) => s.role === "buyer")
+  return !["self", "addendum"].includes(envelope.kind) && !!envelope.is_template && !/^TEST\b/i.test(envelope.title || "") && signers.length > 0 && signers.every((s) => s.role === "buyer")
 }
 
 export function isSellerContract(envelope, signers) {
-  return envelope.kind !== "self" && !!envelope.is_template && !/^TEST\b/i.test(envelope.title || "") && signers.some((s) => s.role === "seller")
+  return !["self", "addendum"].includes(envelope.kind) && !!envelope.is_template && !/^TEST\b/i.test(envelope.title || "") && signers.some((s) => s.role === "seller")
 }
 
 /** The agreement's terms, read from its form fields. {} when unreadable. */

@@ -44,30 +44,37 @@ export const TEMPLATE = {
   buyer: { x: 309, lineY: 280.2, w: 249 },
   seller: { x: 309, lineY: 200.8, w: 249 },
   seller2: { x: 309, lineY: 123, w: 249 }, // second seller block, builds from 2026-11-13 on
-  dateField: { buyer: "buyer_date", seller: "seller_date", seller2: "seller2_date" },
+  buyer2: { x: 309, lineY: 241.2, w: 249 }, // second buyer line: LRG addenda (template/build_addendum.py, 2026-11-17)
+  dateField: { buyer: "buyer_date", seller: "seller_date", seller2: "seller2_date", buyer2: "buyer2_date" },
   nameField: { seller: "seller_signer_name", seller2: "seller2_signer_name" },
   addendum: { checkbox: "addendum_attached" }, // rect 54 48 64 58 (54 124 64 134 before the 2026-11-13 second seller block)
 }
 
-/** Which template line a signer uses: "buyer", "seller", or "seller2" (placement "template2"). */
+/** Which template line a signer uses: "buyer", "seller", "seller2" (placement "template2") or "buyer2" (placement "template_buyer2"). */
 export function templateSpotKey(signer) {
-  return signer.placement === "template2" ? "seller2" : signer.role
+  return signer.placement === "template2" ? "seller2" : signer.placement === "template_buyer2" ? "buyer2" : signer.role
 }
 
+/** The page the template's signature lines are on (0-based): the last page of the original. The purchase
+ *  agreement is 2 pages (index 1, the old fixed TEMPLATE.page); an LRG addendum is 1 page (index 0). */
+export const signaturePageIndex = (envelope) => Math.max(0, (envelope.page_count || TEMPLATE.page + 1) - 1)
+
 /** A signer who signs on one of the agreement's own lines. */
-export const onTemplateLine = (signer) => signer.placement === "template" || signer.placement === "template2"
+export const onTemplateLine = (signer) => ["template", "template2", "template_buyer2"].includes(signer.placement)
 
 export async function inspectPdf(bytes) {
   const doc = await PDFDocument.load(bytes, { updateMetadata: false })
   const pages = doc.getPages()
   let fields = []
   try { fields = doc.getForm().getFields().map((f) => f.getName()) } catch { fields = [] }
-  const p2 = pages[1]?.getSize()
+  // An LRG addendum (template/build_addendum.py) carries an addendum_form marker field and signs on its one page.
+  const isAddendum = fields.includes("addendum_form")
+  const sigPage = pages[pages.length - 1]?.getSize()
   const isTemplate =
-    pages.length === 2 &&
+    (pages.length === 2 || (isAddendum && pages.length === 1)) &&
     ["seller_signer_name", "seller_date", "buyer_date"].every((n) => fields.includes(n)) &&
-    !!p2 && Math.round(p2.width) === 612 && Math.round(p2.height) === 792
-  return { pageCount: pages.length, fields, isTemplate }
+    !!sigPage && Math.round(sigPage.width) === 612 && Math.round(sigPage.height) === 792
+  return { pageCount: pages.length, fields, isTemplate, isAddendum: isTemplate && isAddendum }
 }
 
 // ---------------------------------------------------------------- self-sign fields
@@ -279,7 +286,7 @@ async function applySignatures(doc, fonts, envelope, signers) {
 
   // 2. Signatures on the agreement's own lines.
   if (envelope.is_template && onTemplate.length) {
-    const page = doc.getPages()[TEMPLATE.page]
+    const page = doc.getPages()[signaturePageIndex(envelope)]
     for (const s of onTemplate) {
       const spot = TEMPLATE[templateSpotKey(s)]
       if (!spot) continue
@@ -451,7 +458,7 @@ async function drawCertificate(doc, fonts, envelope, signers, events, { signedSh
     kv("Consent", s.consented_at ? `${fmtTsPT(s.consented_at)} · agreed to electronic records and signatures (consent text v${s.consent_version}) · IP ${s.consent_ip ?? "?"}` : "—")
     kv("Signed", s.signed_at ? `${fmtTsPT(s.signed_at)} · IP ${s.sign_ip ?? "?"} · ${geoLabel(s.sign_geo)} · ${deviceLabel(s.sign_ua)}` : "—")
     if (s.signed_at) {
-      kv("Signature", `${s.signature_method === "drawn" ? "Drawn on screen with finger/stylus" : `Typed (style: ${SIGNATURE_FONTS[fontKey(s.signature_font)].label})`} · legal name typed: "${s.typed_name}" · placed on ${s.placement === "template" ? "the agreement's signature line" : s.placement === "template2" ? "the agreement's second seller signature line" : s.placement === "fields" ? "the document's own signature line" : "the Signature Addendum"}`)
+      kv("Signature", `${s.signature_method === "drawn" ? "Drawn on screen with finger/stylus" : `Typed (style: ${SIGNATURE_FONTS[fontKey(s.signature_font)].label})`} · legal name typed: "${s.typed_name}" · placed on ${s.placement === "template" ? "the agreement's signature line" : s.placement === "template2" ? "the agreement's second seller signature line" : s.placement === "template_buyer2" ? "the document's second buyer signature line" : s.placement === "fields" ? "the document's own signature line" : "the Signature Addendum"}`)
       kv("Intent", `Clicked "I agree and sign" after reviewing all ${envelope.page_count} page${envelope.page_count === 1 ? "" : "s"}`)
     }
     kv("SMS verification", s.sms_verified ? "Passed" : "Not requested")
