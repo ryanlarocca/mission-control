@@ -399,6 +399,9 @@ function decide(llm, f, today) {
       break
     case "call_on":
       date = llm.date && llm.date > today ? llm.date : today
+      // The model sometimes dates a price gap today while its own reason says
+      // six months (seen 2026-11-17, old and new prompt alike). Trust the reason.
+      if (date === today && /\b(six|6) months\b/i.test(llm.reason || "")) date = monthsPlus(today, 6)
       break
     case "ryan_today":
     case "ryan_owes":

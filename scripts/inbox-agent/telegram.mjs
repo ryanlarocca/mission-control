@@ -60,6 +60,35 @@ export async function tgSend(text, { rows = [], replyTo = null, html = true, dry
   return out?.result?.message_id ?? null
 }
 
+/**
+ * A machine-health line from the helper bot (OPS_BOT_TOKEN, falling back to the
+ * Marketing bot like lib/leads opsAlertBotToken). No buttons, nothing about a person.
+ */
+export async function opsSend(text, { dryRun = false } = {}) {
+  if (dryRun) {
+    console.log("---- OPS TELEGRAM (dry run) ----\n" + text)
+    return null
+  }
+  const t = process.env.OPS_BOT_TOKEN || token()
+  if (!t || !chatId()) {
+    warn("ops telegram not configured (OPS_BOT_TOKEN/CAMPAIGN_BOT_TOKEN + TELEGRAM_CHAT_ID)")
+    return null
+  }
+  try {
+    const res = await fetch(`https://api.telegram.org/bot${t}/sendMessage`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ chat_id: chatId(), text: String(text).slice(0, 4000), parse_mode: "HTML", disable_web_page_preview: true }),
+    })
+    const json = await res.json()
+    if (!json.ok) warn("ops telegram rejected:", json.description)
+    return json?.result?.message_id ?? null
+  } catch (e) {
+    warn("ops telegram failed:", e.message)
+    return null
+  }
+}
+
 /** Rewrite a card in place (💸 Paid → the confirmation says so). Buttons replaced by `rows` (none by default). */
 export async function tgEditText(messageId, text, { rows = [], dryRun = false } = {}) {
   if (dryRun) {

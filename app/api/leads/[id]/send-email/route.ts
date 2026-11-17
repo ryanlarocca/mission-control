@@ -130,7 +130,9 @@ export async function POST(
 
     if (draftId) await markDraftSent(draftId, { subject, body: text })
 
-    // Record an outbound row so the timeline shows the send.
+    // Record an outbound row so the timeline shows the send. It carries the
+    // Gmail id so the ryan@ lead email sync (lib/leadEmailSync) knows this
+    // email is already on the card (2026-11-17).
     const { data: outboundRow, error: insErr } = await sb.from("leads").insert({
       source: lead.source,
       source_type: lead.source_type,
@@ -143,6 +145,7 @@ export async function POST(
       email: recipientEmail,
       property_address: lead.property_address,
       gmail_thread_id: lead.gmail_thread_id || null,
+      gmail_message_id: data.id || null,
     }).select("id").single()
     if (insErr) console.warn(`[send-email] event row insert failed for ${id}:`, insErr.message)
 

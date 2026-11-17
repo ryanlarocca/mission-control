@@ -28,6 +28,12 @@
 //   2c. scanEvents     — networking-event watcher: new mail on ryan@ + the personal
 //                        Gmail (IMAP) → one inbox_events row per real event; surfaced
 //                        only in the brief + cards (briefs/BRIEF_EVENT_WATCHER_2026-10-15.md).
+//   2c'. syncLeadMail  — (runs right after pollInbox, before syncCards) lead email sync: mail Ryan
+//                        sent a lead from ryan@ and a lead's replies → POST /api/leads/email-sync,
+//                        which writes the row on the lead card; a reply posts ONE lead alert
+//                        (Draft:/✅ work). A lead's email gets no deal screen card, and the card
+//                        sync logs it on a Relationships card quietly (leadmail.mjs;
+//                        briefs/BRIEF_LEAD_EMAIL_SYNC_2026-11-17.md).
 //   2d. syncCards      — (runs right after pollInbox) Relationships email sync: inbound mail from a card contact, mail
 //                        Ryan sent to one, and bounces → POST /api/crms/email-sync, which
 //                        writes the touch + notes on the card. Never adds people; silent
@@ -52,6 +58,9 @@
 //   node scripts/inbox-agent/index.mjs --events-only --events-backfill=60d --dry-run  # event watcher preview, writes nothing
 //   node scripts/inbox-agent/index.mjs --cards-only --cards-since=2d --dry-run   # card email sync preview: prints what it would POST, writes nothing
 //   node scripts/inbox-agent/index.mjs --cards-only --cards-since=2026-11-10 --cards-emails=a@b.com,c@d.com   # hand catch-up for chosen cards
+//   node scripts/inbox-agent/index.mjs --leads-only --leads-since=30d --dry-run   # lead email sync preview: what it would POST + what Mission Control would do
+//   node scripts/inbox-agent/index.mjs --leads-only --leads-since=30d             # the one hand catch-up (quiet: rows, no alerts)
+//   --no-leads skips the lead email sync in a normal pass
 //   flags: --dry-run (no Telegram, no Drive writes, no DB writes for new rows; link fetches
 //          still run in the browser and land in /tmp/inbox-fetch), --limit=N, --message=<gmail id>
 import crypto from "node:crypto"
@@ -76,6 +85,7 @@ import { DUP_STATUSES, gmailLink, photoDedupeVerdict, propertyFolderFromReply, p
 import { LOOP_ACTIVE_STATUSES, LOOP_KEY_WINDOW_MS, SENT_LOOKBACK_DAYS, answeredBy, completionCloses, completionDismisses, completionEvent, envelopeMatches, isLooseEnd, loopEligible, loopKey, loopKeyMatch, mergeLoop, normalizeEnvelope, owedBy, reportFiledEvent, resolutionKind, splitLoops } from "./loops.mjs"
 import { applyEventDecisions, eventBrief, postEventCards, scanEvents } from "./events-run.mjs"
 import { bounceBriefLines, clearBounceQueue, syncCards } from "./cards.mjs"
+import { isLeadSender, syncLeadMail } from "./leadmail.mjs"
 import { applyRegistryEvent, closingDateFor, cycleRegistryOn, isListingAgreementName, shortAddress, zipFrom } from "../market-cycle/registry.mjs"
 
 // ------------------------------------------------------------------ args
@@ -96,6 +106,7 @@ const EVENTS_SOURCES = opt("events-source", "all") // all | gmail | personal (te
 const EVENTS_MESSAGE = opt("events-message", null) // one ryan@ gmail id through the event watcher (pair with --dry-run)
 const CARDS_SINCE = opt("cards-since", null) // e.g. "2d" or "2026-11-10" — hand-run catch-up for the card email sync (beats the 8-day cap)
 const CARDS_EMAILS = opt("cards-emails", null) // a@b.com,c@d.com — only these card addresses are considered
+const LEADS_SINCE = opt("leads-since", null) // e.g. "30d" — the one hand-run catch-up for the lead email sync (quiet)
 
 // The interview set — real emails from the 2026-09-24 survey of ryan@'s inbox,
 // one per document type Ryan sees every week. Re-seeding is idempotent.
@@ -2151,7 +2162,12 @@ async function handleMessage(ctx, msg) {
   }
 
   // --- deals
-  if (cls.deal && (kind === "deal_lead" || kind === "broker_blast" || cls.deal.tier)) await screenDeal(ctx, msg, cls, pdfDocs)
+  // 2026-11-17: an email from a lead (or on a lead's thread) gets the lead card's
+  // alert from the lead email sync — one email, one alert — so no deal screen card.
+  if (cls.deal && (kind === "deal_lead" || kind === "broker_blast" || cls.deal.tier)) {
+    if (!flag("no-leads") && (await isLeadSender(ctx, msg))) log(`deal screen skipped: ${msg.from.email} is a lead — the lead email sync posts the alert`)
+    else await screenDeal(ctx, msg, cls, pdfDocs)
+  }
 }
 
 // ------------------------------------------------------------------ loops
@@ -2718,6 +2734,7 @@ async function main() {
     return
   }
   if (flag("cards-only")) return syncCards(ctx, { dry: DRY, since: CARDS_SINCE, emails: CARDS_EMAILS })
+  if (flag("leads-only")) return syncLeadMail(ctx, { dry: DRY, since: LEADS_SINCE })
   const t0 = Date.now()
   QUIET = { ...QUIET, ...((agent.quiet_hours && typeof agent.quiet_hours === "object") ? agent.quiet_hours : {}) }
   await alertDriveOnce(ctx)
@@ -2728,6 +2745,7 @@ async function main() {
   await postDeferred(ctx)
   if (flag("interview")) await seedInterview(ctx)
   if (!flag("no-poll")) await pollInbox(ctx)
+  if (!flag("no-leads")) await syncLeadMail(ctx, { dry: DRY, since: LEADS_SINCE })
   if (!flag("no-cards")) await syncCards(ctx, { dry: DRY, since: CARDS_SINCE, emails: CARDS_EMAILS })
   if (!flag("no-events")) await scanEvents(ctx, { dry: DRY, backfillDays: EVENTS_BACKFILL ? parseDays(EVENTS_BACKFILL) : null })
   await runFetches(ctx)

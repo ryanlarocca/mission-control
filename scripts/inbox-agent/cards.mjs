@@ -33,6 +33,10 @@
 //   streak        failed passes in a row
 //   alerted_date  Pacific day of the last Telegram alert
 //   bounce_queue  [{gmailId, name, addr, at}] lines for the next morning brief (maybeDigest reads + clears)
+//
+// Lead email (leadmail.mjs, 2026-11-17) runs just before this pass and leaves
+// ctx.leadGate: an inbound email that is on a lead card is posted with
+// leadCard: true (the lead card alerts, this side doesn't).
 import { MAILBOX, fetchAll, getSetting, log, ptParts, sb, setSetting, warn } from "./env.mjs"
 import { getMessage, listMessageIds } from "./gmail.mjs"
 import { esc, tgSend } from "./telegram.mjs"
@@ -229,7 +233,7 @@ export function dropDone(cands, { done = new Set(), touched = new Set(), skipped
 
 // ------------------------------------------------------------------ pure: payload + results
 /** One message in the contract's shape. `msg` is gmail.mjs getMessage(); `extra` carries the recipients override / failedRecipient. */
-export function buildPayload(msg, direction, { failedRecipient = null, kind = null, mailbox = MAILBOX } = {}) {
+export function buildPayload(msg, direction, { failedRecipient = null, kind = null, leadCard = false, mailbox = MAILBOX } = {}) {
   const at = msg.internalDate ? new Date(msg.internalDate).toISOString().replace(/\.\d{3}Z$/, "Z") : null
   return {
     gmailId: msg.id,
@@ -244,6 +248,8 @@ export function buildPayload(msg, direction, { failedRecipient = null, kind = nu
     // Inbound only: how the poll classified it. Mission Control alerts Telegram for a card
     // contact's email, except a deal_lead — that one already got its deal card (2026-11-11).
     kind: direction === "inbound" ? kind || null : null,
+    // Inbound only, and only when true: the same email is on a lead card, which sends the one alert (2026-11-17).
+    ...(direction === "inbound" && leadCard ? { leadCard: true } : {}),
   }
 }
 
@@ -359,7 +365,8 @@ function headerOf(headers, name) {
   return (headers || []).find((h) => h.name?.toLowerCase() === name.toLowerCase())?.value || ""
 }
 
-async function sentMetas(gmail, ids) {
+/** To/Cc metadata for sent ids (shared with leadmail.mjs). A few unreadable ones are skipped; most failing throws. */
+export async function sentMetas(gmail, ids, tag = "card sync") {
   const metas = []
   let failed = 0
   for (const id of ids) {
@@ -369,7 +376,7 @@ async function sentMetas(gmail, ids) {
       metas.push({ id, threadId: data.threadId, internalDate: data.internalDate ? new Date(Number(data.internalDate)).toISOString() : null, to: headerOf(h, "To"), cc: headerOf(h, "Cc") })
     } catch (e) {
       failed++
-      warn(`card sync: sent message ${id} unreadable this pass:`, e?.response?.data?.error?.message || e.message)
+      warn(`${tag}: sent message ${id} unreadable this pass:`, e?.response?.data?.error?.message || e.message)
     }
   }
   if (failed && failed * 2 > ids.length) throw new Error(`Gmail refused ${failed} of ${ids.length} sent messages`)
@@ -476,6 +483,14 @@ async function runPass(ctx, { dry, since, emails }) {
   // Drop what's done, then fetch bodies for what's left.
   const touched = await touchedIds(candidates.map((c) => c.gmailId)).catch(() => new Set())
   candidates = dropDone(candidates, { done, touched, skipped })
+  // 2026-11-17 (briefs/BRIEF_LEAD_EMAIL_SYNC_2026-11-17.md): an inbound email
+  // that is also on a lead card alerts from there — this side logs it quietly
+  // (leadCard). One the lead sync hasn't finished yet waits a pass, so the
+  // two never both alert. No gate (lead sync off or broken) = as before.
+  const gate = typeof ctx.leadGate === "function" ? await ctx.leadGate(candidates.filter((c) => c.direction === "inbound")).catch((e) => (warn("card sync: lead gate failed:", e.message), new Map())) : new Map()
+  const held = candidates.filter((c) => gate.get(c.gmailId) === "hold")
+  if (held.length) log(`card sync: ${held.length} inbound email${held.length === 1 ? "" : "s"} wait for the lead sync`)
+  candidates = candidates.filter((c) => gate.get(c.gmailId) !== "hold")
   const payloads = []
   for (const c of candidates) {
     try {
@@ -489,7 +504,7 @@ async function runPass(ctx, { dry, since, emails }) {
         }
         payloads.push(buildPayload(msg, "bounce", { failedRecipient: failed }))
       } else {
-        payloads.push(buildPayload(msg, c.direction, { kind: c.kind }))
+        payloads.push(buildPayload(msg, c.direction, { kind: c.kind, leadCard: gate.get(c.gmailId) === "lead" }))
       }
     } catch (e) {
       if (gmailGone(e)) {

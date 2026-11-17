@@ -23,7 +23,8 @@
 // from ryan@ in their thread. Never for sent or bounce, a hand catch-up
 // (`quiet`), a deal lead (the inbox agent posts its own deal card), or a
 // stamped / duplicate / skipped result. An alert failing never fails the
-// sync. The mini alerts when the POST keeps failing.
+// sync. The mini alerts when the POST keeps failing. Nor when the same email
+// is on a lead card (`leadCard`, 2026-11-17): the lead alert is the one.
 //
 // Idempotency: a touch carries its Gmail message id, unique per card
 // (supabase/migrations/2026-11-11_relationship_email_sync.sql). A hand-logged
@@ -68,6 +69,9 @@ export interface SyncMessage {
   failedRecipient: string | null
   /** The inbox agent's classification ("deal_lead", …), when it sent one. */
   kind?: string
+  /** Inbound only: the same email is on a lead card, which sends the one alert
+   * for it (2026-11-17, briefs/BRIEF_LEAD_EMAIL_SYNC_2026-11-17.md). */
+  leadCard?: boolean
 }
 
 /** The inbox agent's classification for a deal lead: it posts its own deal card with a Reply button. */
@@ -141,6 +145,7 @@ export function parseSyncMessage(raw: unknown): ParsedSyncMessage {
       text: typeof r.text === "string" ? r.text : "",
       failedRecipient: normalEmail(r.failedRecipient) || null,
       ...(kind ? { kind } : {}),
+      ...(r.leadCard === true ? { leadCard: true } : {}),
     },
   }
 }
@@ -153,11 +158,11 @@ export function isQuietRequest(raw: unknown): boolean {
 }
 
 /** The one card an email alerts for, or null: an inbound message, not quiet,
- * not a deal lead, newly logged (not stamped / duplicate / skipped). One
- * alert per email — if the sender's address is on two cards, the first
- * logged one. */
+ * not a deal lead, not on a lead card (the lead alert covers it), newly
+ * logged (not stamped / duplicate / skipped). One alert per email — if the
+ * sender's address is on two cards, the first logged one. */
 export function emailAlertCard(msg: SyncMessage, cards: readonly CardResult[], quiet: boolean): string | null {
-  if (quiet || msg.direction !== "inbound" || msg.kind === DEAL_LEAD_KIND) return null
+  if (quiet || msg.direction !== "inbound" || msg.kind === DEAL_LEAD_KIND || msg.leadCard === true) return null
   return cards.find((c) => c.status === "logged")?.relationshipId ?? null
 }
 

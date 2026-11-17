@@ -7,10 +7,11 @@ import { isQuietRequest, MAX_SYNC_MESSAGES, syncRelationshipEmails } from "@/lib
 // cards learn about it silently (2026-11-11,
 // briefs/BRIEF_RELATIONSHIP_EMAIL_SYNC_2026-11-11.md). Public path, gated by
 // the same shared-secret header as /api/reply/drip-draft.
-// Body: { quiet?, messages: [{ gmailId, threadId, direction, at, from, to, subject, text, failedRecipient, kind? }] } (≤ 10)
+// Body: { quiet?, messages: [{ gmailId, threadId, direction, at, from, to, subject, text, failedRecipient, kind?, leadCard? }] } (≤ 10)
 // Since 2026-11-11 (briefs/BRIEF_RELATIONSHIP_EMAIL_ALERTS_2026-11-11.md) an
 // inbound email newly logged on a card posts one Telegram alert; `quiet`
-// (a hand catch-up) and kind "deal_lead" never alert. The response is unchanged.
+// (a hand catch-up), kind "deal_lead" and leadCard: true (the same email is on a
+// lead card, which alerts — /api/leads/email-sync) never alert. The response is unchanged.
 // Returns { results: [{ gmailId, cards: [{ relationshipId, name, status, reason?, note }], done }] }.
 export const dynamic = "force-dynamic"
 export const maxDuration = 60

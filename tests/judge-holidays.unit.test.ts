@@ -58,3 +58,15 @@ describe("decide applies the holiday rule", () => {
     expect(v.date).toBe("2027-01-04")
   })
 })
+
+describe("a price gap the model dated today", () => {
+  it("goes six months out when the reason says six months", () => {
+    const v = decide({ state: "call_on", date: TODAY, dateNamed: false, reason: "Turned down your offer — checking back in six months.", owed: null }, facts(talked), TODAY)
+    expect(v.date).toBe("2027-05-17")
+  })
+  it("a call-back for today with no six months stays today", () => {
+    const v = decide({ state: "call_on", date: TODAY, dateNamed: true, reason: "Said call this afternoon.", owed: null }, facts(talked), TODAY)
+    expect(v.date).toBe(TODAY)
+  })
+})
+

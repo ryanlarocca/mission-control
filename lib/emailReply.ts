@@ -104,6 +104,8 @@ export async function sendThreadedEmailReply(args: { leadId: string; text: strin
       lead_type: "email", source_type: lead.source_type, source: lead.source, twilio_number: null,
       caller_phone: lead.caller_phone, name: null, email: lead.email, message: text, status: "contacted",
       gmail_thread_id: lead.gmail_thread_id,
+      // The Gmail id, so the ryan@ lead email sync (lib/leadEmailSync) knows this reply is already on the card.
+      gmail_message_id: sentMessageId,
     })
     .select("id")
     .single()

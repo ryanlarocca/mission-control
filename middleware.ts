@@ -19,6 +19,9 @@ const PUBLIC_PATHS = [
   // The inbox agent (Mac mini) posts ryan@ email with Relationships contacts
   // so their cards learn about it; same shared-secret header as drip-draft.
   "/api/crms/email-sync",
+  // …and ryan@ email with leads, so the lead card learns about it (2026-11-17);
+  // same shared-secret header.
+  "/api/leads/email-sync",
   // The e-sign service (Mac mini) reports sent / signed purchase agreements
   // (lib/deals); same shared-secret header.
   "/api/leads/contract",
