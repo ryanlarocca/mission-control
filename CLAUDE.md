@@ -50,14 +50,21 @@ texts" — don't repeat it.)
 
 1. Finish + **verify** all in-flight work (build / test / deploy as
    appropriate) — nothing half-done.
-2. Identify the owning project via the `../MEMO_INDEX.md` triage table.
-3. Append a dated entry to that project's `CHANGELOG.md`.
-4. Update that project's `PROJECT_MEMO.md` — the `📍 Where we left off`
-   block, `Latest ships`, and the `Updated:` date.
-5. Bump the project's "Last touched" date in `../MEMO_INDEX.md`.
-6. Save durable learnings to agent memory
-   (`~/.claude/projects/-Users-ryanlarocca/memory/`).
-7. Commit + push.
+2. Route each thing that moved via the `../MEMO_INDEX.md` triage table:
+   a system → its project memo; a deal → `../deals/<street>.md`;
+   a rule, lesson or person → agent memory.
+3. Append dated entries: project `CHANGELOG.md` / deal `## Log`.
+4. Rewrite each touched memo's `📍 Where we left off` (Now ≤ 5 lines;
+   older text → `WHERE_WE_LEFT_OFF_ARCHIVE.md`) + `Updated:`, and each
+   touched deal's `## Status`.
+5. Bump "Last touched" in `../MEMO_INDEX.md`.
+6. Save durable learnings to agent memory — one folder:
+   `~/.claude/projects/-Users-ryanlarocca-Projects-PROJECTS-mission-control/memory/`
+   (the others are symlinks to it).
+7. Commit + push this repo; commit the `~/Projects` repo.
+8. Run `node scripts/wrap-check.mjs` — it verifies all of the above,
+   fast-forwards the main checkout, refreshes the Projects page and
+   starts a silent Drive backup. Done when it says **All clear**.
 
 ## Repo conventions
 

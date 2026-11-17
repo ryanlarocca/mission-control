@@ -51,6 +51,8 @@ export const TEXT_HISTORY_STALE_MS = 3 * 3600_000
 export const LOGIN_WARN_DAYS = 7
 /** The nightly backup runs at 3:10 AM; older than this means last night's didn't land. */
 export const BACKUP_STALE_MS = 26 * 3600_000
+/** No good backup for this long → one 🔴 (Ryan, 2026-11-17: alerts only when something is wrong, never on success). */
+export const BACKUP_ALERT_MS = 36 * 3600_000
 
 // ── job names ───────────────────────────────────────────────────────────────
 
@@ -270,6 +272,12 @@ export function backupOk(b: MiniSnapshot["backup"], now: Date): boolean {
   return now.getTime() - Date.parse(b.lastAt) <= BACKUP_STALE_MS
 }
 
+/** True when no backup has completed in BACKUP_ALERT_MS (or none ever has). Upload failures alert from backup.mjs itself. */
+export function backupLate(b: MiniSnapshot["backup"], now: Date): boolean {
+  if (!b || !b.lastAt) return true
+  return now.getTime() - Date.parse(b.lastAt) > BACKUP_ALERT_MS
+}
+
 // ── alerts (state changes only) ─────────────────────────────────────────────
 
 export interface AlertState {
@@ -277,9 +285,10 @@ export interface AlertState {
   helperDown: boolean         // alerted + restarted; waiting for it to answer again
   textStale: boolean
   failingJobs: string[]       // labels alerted as failing
+  backupLate?: boolean        // alerted that no backup has landed in 36 h
 }
 
-export const EMPTY_ALERT_STATE: AlertState = { helperMisses: 0, helperDown: false, textStale: false, failingJobs: [] }
+export const EMPTY_ALERT_STATE: AlertState = { helperMisses: 0, helperDown: false, textStale: false, failingJobs: [], backupLate: false }
 
 /** Jobs that have their own alert (the helper) or are judged elsewhere. */
 const JOB_ALERT_SKIP = new Set(["com.lrghomes.crms-sidecar"])
@@ -291,7 +300,7 @@ const escHtml = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").re
  * problem clears). `restartHelper` = the helper has missed two checks in a row
  * and hasn't been restarted for this outage yet.
  */
-export function alertStep(prev: AlertState | null, snap: Pick<MiniSnapshot, "helper" | "textHistory" | "jobs">): {
+export function alertStep(prev: AlertState | null, snap: Pick<MiniSnapshot, "helper" | "textHistory" | "jobs"> & Partial<Pick<MiniSnapshot, "backup">>, now: Date = new Date()): {
   next: AlertState; lines: string[]; restartHelper: boolean
 } {
   const p: AlertState = { ...EMPTY_ALERT_STATE, ...(prev ?? {}) }
@@ -339,6 +348,17 @@ export function alertStep(prev: AlertState | null, snap: Pick<MiniSnapshot, "hel
     lines.push(`✅ ${names.join(", ")} ${names.length === 1 ? "is" : "are"} running fine again.`)
   }
   next.failingJobs = nowLabels
+
+  // Backup: judged only when the snapshot carries it; one 🔴 when it goes late, one ✅ when it lands again.
+  if (snap.backup !== undefined) {
+    const late = backupLate(snap.backup, now)
+    if (late && !p.backupLate) {
+      const last = snap.backup?.lastAt ? new Date(snap.backup.lastAt).toLocaleString("en-US", { timeZone: "America/Los_Angeles", month: "short", day: "numeric", year: "numeric", hour: "numeric", minute: "2-digit" }) : "never"
+      lines.push(`🔴 <b>Mac mini backup hasn't completed in over 36 hours</b> (last good run: ${escHtml(last)}). Anything changed since then exists only on the mini.`)
+    }
+    if (!late && p.backupLate) lines.push("✅ Mac mini backup is landing in Drive again.")
+    next.backupLate = late
+  }
 
   return { next, lines, restartHelper }
 }

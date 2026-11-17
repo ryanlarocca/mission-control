@@ -4,6 +4,7 @@
 // Usage: node scripts/mini-backup/backup.mjs [--dry-run] [--status] [--restore-drill [dir]]
 import fs from "node:fs"
 import path from "node:path"
+import os from "node:os"
 import crypto from "node:crypto"
 import { execSync } from "node:child_process"
 import { Readable } from "node:stream"
@@ -48,7 +49,12 @@ function sources() {
   add("esign/envelopes", path.join(esignData, "envelopes"), { dir: true })
   // Claude Code agent: memory, skills, settings
   const projDir = path.join(HOME, ".claude/projects")
-  if (fs.existsSync(projDir)) for (const d of fs.readdirSync(projDir)) add(`claude/memory/${d}`, path.join(projDir, d, "memory"), { dir: true })
+  // Since 2026-11-17 every other projects/*/memory is a symlink to the one real folder: back up the real one once.
+  if (fs.existsSync(projDir)) for (const d of fs.readdirSync(projDir)) {
+    const mem = path.join(projDir, d, "memory")
+    if (!fs.existsSync(mem) || fs.lstatSync(mem).isSymbolicLink()) continue
+    add(`claude/memory/${d}`, mem, { dir: true })
+  }
   add("claude/skills", path.join(HOME, ".claude/skills"), { dir: true, skip: /node_modules|\/skills\/synced\// })  // synced/ re-downloads from Anthropic
   add("claude/settings.json", path.join(HOME, ".claude/settings.json"))
   add("claude/settings.local.json", path.join(HOME, ".claude/settings.local.json"))
@@ -232,12 +238,12 @@ async function main() {
   if (!DRY) { fs.writeFileSync(MANIFEST, JSON.stringify(manifest, null, 1)); await uploadText(drive, rootId, "manifest.json", JSON.stringify(manifest, null, 1), manifest) }
   log(`done: uploaded ${uploaded} (${(bytes / 1e6).toFixed(1)} MB), unchanged ${unchanged}, failed ${failed.length}, ${run.seconds}s`)
   if (failed.length) await sendTelegram(`🔴 <b>Mac mini backup</b>: ${failed.length} file(s) failed\n${failed.slice(0, 5).join("\n")}`)
-  else if (new Date().getDate() === 1 || args.has("--notify")) await sendTelegram(`🟢 <b>Mac mini backup</b> ran: ${files.length} files mirrored, ${uploaded} updated (${(bytes / 1e6).toFixed(1)} MB), ${run.seconds}s. Folder: Business Operations / ${BACKUP_FOLDER_NAME.replace("/", " / ")}`)
+  // Success is silent (Ryan, 2026-11-17: alerts only when something is wrong). --notify still reports on demand.
+  else if (args.has("--notify")) await sendTelegram(`🟢 <b>Mac mini backup</b> ran: ${files.length} files mirrored, ${uploaded} updated (${(bytes / 1e6).toFixed(1)} MB), ${run.seconds}s. Folder: Business Operations / ${BACKUP_FOLDER_NAME.replace("/", " / ")}`)
 }
 
 // Pull the whole Drive folder down and check it against the manifest — proves the backup restores.
-async function restoreDrill() {
-  const dest = [...args].find((a) => !a.startsWith("--")) || "/tmp/mini-restore-drill"
+async function restoreDrill(dest = [...args].find((a) => !a.startsWith("--")) || "/tmp/mini-restore-drill") {
   fs.mkdirSync(dest, { recursive: true })
   const drive = await driveClient()
   const rootId = await resolveFolder(drive, BUSINESS_OPS_ID, BACKUP_FOLDER_NAME, { create: false })
@@ -253,10 +259,27 @@ async function restoreDrill() {
   }
   const bundleOk = sh(`git bundle verify '${path.join(dest, "repos/projects.bundle")}' 2>&1 | tail -1`)
   console.log(`restore drill → ${dest}: ${ok} files verified, ${bad.length} mismatched ${bad.length ? bad.join(", ") : ""}\nbundle: ${bundleOk}`)
-  if (bad.length) process.exit(1)
+  return { ok, bad, bundleOk, bundleGood: /is okay/.test(bundleOk) }
 }
 
-;(args.has("--restore-drill") ? restoreDrill() : main()).catch(async (e) => {
+// Monthly restore test (1st of the month, after the nightly run): silent when it passes, 🔴 when it doesn't.
+async function monthlyRestoreTest() {
+  const dest = fs.mkdtempSync(path.join(os.tmpdir(), "mini-restore-test-"))
+  try {
+    const r = await restoreDrill(dest)
+    if (r.bad.length || !r.bundleGood) await sendTelegram(`🔴 <b>Monthly backup restore test failed</b>: ${r.bad.length} file(s) didn't match${r.bad.length ? ` (${r.bad.slice(0, 5).join(", ")})` : ""}; git bundle: ${r.bundleGood ? "ok" : "NOT ok"}. The Drive copy may not restore cleanly.`)
+    else log(`monthly restore test passed: ${r.ok} files verified, bundle ok`)
+  } catch (e) {
+    await sendTelegram(`🔴 <b>Monthly backup restore test couldn't run</b>: ${String(e.message || e).slice(0, 300)}`)
+  } finally {
+    fs.rmSync(dest, { recursive: true, force: true })
+  }
+}
+
+const run = args.has("--restore-drill")
+  ? restoreDrill().then((r) => { if (r.bad.length || !r.bundleGood) process.exit(1) })
+  : main().then(async () => { if (!DRY && (new Date().getDate() === 1 || args.has("--restore-test"))) await monthlyRestoreTest() })
+run.catch(async (e) => {
   console.error("backup failed:", e)
   if (!DRY) await sendTelegram(`🔴 <b>Mac mini backup failed</b>: ${String(e.message || e).slice(0, 300)}`)
   process.exit(1)
