@@ -412,9 +412,9 @@ describe("fieldsFromInput — the Mini App form", () => {
 })
 
 describe("pdfFieldValues", () => {
-  it("renders the 15 template fields; seller_date blank, governing_state California, expiration resolved", () => {
+  it("renders the 16 template fields (seller2_signer_name since 11-13); seller_date blank, governing_state California, expiration resolved", () => {
     const v = pdfFieldValues(full())
-    expect(Object.keys(v)).toHaveLength(15)
+    expect(Object.keys(v)).toHaveLength(16)
     expect(v.agreement_date).toBe("10/16/2026")
     expect(v.buyer_date).toBe("10/16/2026")
     expect(v.expiration_date).toBe("10/19/2026") // 3 calendar days after the agreement date
@@ -458,7 +458,7 @@ describe("fillOfferPdf — pdf-lib fixture", () => {
     expect(out.absent).toContain("purchase_price")
     expect(out.absent).toContain("expiration_date")
     expect(out.absent).toContain("expiration_time")
-    expect(out.absent).toHaveLength(13)
+    expect(out.absent).toHaveLength(14)
 
     const reloaded = await PDFDocument.load(out.bytes)
     const form = reloaded.getForm()

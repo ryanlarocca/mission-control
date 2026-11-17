@@ -66,7 +66,7 @@ export function consentPage({ envelope, signer, token, error }) {
   })
 }
 
-export function reviewPage({ envelope, signer, token, error, spot }) {
+export function reviewPage({ envelope, signer, token, error, spot, saved = null }) {
   // spot: { page (1-based), x, lineY, w } in PDF points for template signers; null → addendum.
   // The anchor's top is the signature line itself (letter page, 612×792pt); the tab hangs above it.
   // Self-sign spots carry their page size; the purchase agreement is letter.
@@ -80,8 +80,18 @@ export function reviewPage({ envelope, signer, token, error, spot }) {
   const pages = Array.from({ length: pageCount }, (_, i) =>
     `<div class="pagewrap"><img class="page" src="/s/${token}/pages/${i + 1}.png" alt="Page ${i + 1}" loading="${i < 2 ? "eager" : "lazy"}">${pct && spot.page === i + 1 ? `<div class="${spotClass}" style="left:${pct.left.toFixed(3)}%;top:${pct.top.toFixed(3)}%;width:${pct.width.toFixed(3)}%${spot.room ? `;--ar:${(Math.min(spot.w, 249) / spot.room).toFixed(3)}` : ""}">${tab}</div>` : ""}</div><div class="pageno">Page ${i + 1} of ${pageCount}</div>`).join("")
   const fontFaces = Object.values(SIGNATURE_FONTS).map((f) => `@font-face{font-family:"${f.css}";src:url(${asset(`/fonts/${f.file}`)}) format("truetype");font-display:swap}`).join("")
-  const fontCards = Object.entries(SIGNATURE_FONTS).map(([k, f]) => `<label class="fontcard"><input type="radio" name="fontpick" value="${k}" ${k === DEFAULT_FONT ? "checked" : ""}><span class="fontbody"><span class="fontprev" style="font-family:'${f.css}';font-size:${f.webSize}px" data-font="${k}">${esc(signer.name)}</span><span class="fontlabel">${f.label}</span></span></label>`).join("")
+  const fontCards = Object.entries(SIGNATURE_FONTS).map(([k, f]) => `<label class="fontcard"><input type="radio" name="fontpick" value="${k}" ${k === (saved && !saved.png ? saved.font : DEFAULT_FONT) ? "checked" : ""}><span class="fontbody"><span class="fontprev" style="font-family:'${f.css}';font-size:${f.webSize}px" data-font="${k}">${esc(signer.name)}</span><span class="fontlabel">${f.label}</span></span></label>`).join("")
   const roleLabel = signer.role === "buyer" ? "Buyer" : "Seller"
+  // Returning signer (signed before with this email/phone): one tap signs with the signature they already adopted.
+  const savedFont = saved && SIGNATURE_FONTS[saved.font]
+  const savedCard = saved ? `<div class="card" id="savedcard">
+  <h2>Welcome back, ${esc(first(saved.typedName))}</h2>
+  <p>Read the document above. When you're ready, sign with the same signature you used last time:</p>
+  <div class="savedsig">${saved.png ? `<img src="${saved.png}" alt="your saved signature">` : `<span style="font-family:'${savedFont.css}'">${esc(saved.typedName)}</span>`}</div>
+  <button class="btn green" type="button" id="onetap" data-name="${esc(saved.typedName)}" data-method="${saved.method}" data-font="${esc(saved.font)}">Sign as ${esc(saved.typedName)}</button>
+  <p class="muted" style="margin-top:10px">By tapping, I confirm I have read this document and I agree to sign it electronically. I understand this is legally binding.</p>
+  <p class="muted"><a class="link" href="#" id="usedifferent">Use a different signature</a></p>
+</div>` : ""
   const addendumCard = !spot ? `<div class="card" id="addcard"><h2>Your signature</h2><p class="muted">Your signature goes on the Signature Addendum attached to this agreement, with the other ${roleLabel.toLowerCase()}s.</p><div class="addline"><div class="spot inline">${tab}</div><div class="linebar"></div><div class="muted" style="font-size:14px">${roleLabel} · ${esc(signer.name)}</div></div></div>` : ""
   return layout({
     title: "Review and sign",
@@ -92,24 +102,25 @@ export function reviewPage({ envelope, signer, token, error, spot }) {
   <div class="step">Step 2 of 2 · Review, then sign</div>
   <h1>${esc(envelope.title)}</h1>
   ${envelope.property_address ? `<p class="muted">${esc(envelope.property_address)}</p>` : ""}
-  <p>Read all ${pageCount} page${pageCount === 1 ? "" : "s"}, then tap the yellow <strong>Sign here</strong> tab${spot ? ` on page ${spot.page}` : " below"}. <a class="link" href="/s/${token}/document.pdf" target="_blank">Open as a PDF</a></p>
+  <p>${saved ? `Read all ${pageCount} page${pageCount === 1 ? "" : "s"}, then tap <strong>Sign as ${esc(saved.typedName)}</strong> below.` : `Read all ${pageCount} page${pageCount === 1 ? "" : "s"}, then tap the yellow <strong>Sign here</strong> tab${spot ? ` on page ${spot.page}` : " below"}.`} <a class="link" href="/s/${token}/document.pdf" target="_blank">Open as a PDF</a></p>
   ${error ? `<div class="error">${esc(error)}</div>` : ""}
 </div>
 <div class="pages">${pages}</div>
+${savedCard}
 ${addendumCard}
-<div class="card" id="finishcard">
+<div class="card" id="finishcard"${saved ? " hidden" : ""}>
   <label class="check"><input type="checkbox" id="agree"> I have read this document and I agree to sign it electronically. I understand this is legally binding.</label>
   <button class="btn green" type="button" id="finish" disabled>Finish</button>
   <p class="muted" id="finishhint" style="margin-top:10px">Tap <strong>Sign here</strong> on the document first.</p>
   <p class="muted" style="margin-top:14px">Changed your mind? Just close this page. Nothing is signed until you tap Finish. Questions: ${esc(env.ownerName)}, ${esc(env.ownerPhone)}.</p>
 </div>
 <form method="post" action="/s/${token}/sign" id="signform" style="display:none">
-  <input type="hidden" name="typed_name" id="f_typed_name"><input type="hidden" name="method" id="f_method" value="typed"><input type="hidden" name="font" id="f_font" value="${DEFAULT_FONT}"><input type="hidden" name="signature_png" id="f_png"><input type="hidden" name="agree" id="f_agree" value="">
+  <input type="hidden" name="typed_name" id="f_typed_name"><input type="hidden" name="method" id="f_method" value="typed"><input type="hidden" name="font" id="f_font" value="${DEFAULT_FONT}"><input type="hidden" name="signature_png" id="f_png"><input type="hidden" name="agree" id="f_agree" value=""><input type="hidden" name="reused" id="f_reused" value="">
 </form>
 <div class="sheet" id="sheet" hidden>
   <div class="sheetin">
     <h2>Your signature</h2>
-    <label class="field"><span>Type your full legal name</span><input type="text" id="typed_name" placeholder="${esc(signer.name)}" autocapitalize="words" autocomplete="name" maxlength="80"></label>
+    <label class="field"><span>Type your full legal name</span><input type="text" id="typed_name" placeholder="${esc(signer.name)}" value="${esc(saved?.typedName || "")}" autocapitalize="words" autocomplete="name" maxlength="80"></label>
     <div class="tabs"><button type="button" class="tabbtn on" data-tab="type">Choose a style</button><button type="button" class="tabbtn" data-tab="draw">Draw with your finger</button></div>
     <div id="tab-type" class="fontgrid">${fontCards}</div>
     <div id="tab-draw" hidden><canvas class="sigpad" id="pad"></canvas><div class="sigrow"><span>Sign above with your finger</span><button class="link" id="clearpad" type="button">Clear</button></div></div>

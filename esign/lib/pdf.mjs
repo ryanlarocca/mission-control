@@ -44,9 +44,9 @@ export const TEMPLATE = {
   buyer: { x: 309, lineY: 280.2, w: 249 },
   seller: { x: 309, lineY: 200.8, w: 249 },
   seller2: { x: 309, lineY: 123, w: 249 }, // second seller block, builds from 2026-11-13 on
-  buyer2: { x: 309, lineY: 241.2, w: 249 }, // second buyer line: LRG addenda (template/build_addendum.py, 2026-11-17)
+  buyer2: { x: 309, lineY: 241.2, w: 249 }, // second buyer line: the agreement from 2026-11-17 builds + LRG addenda (template/build_addendum.py)
   dateField: { buyer: "buyer_date", seller: "seller_date", seller2: "seller2_date", buyer2: "buyer2_date" },
-  nameField: { seller: "seller_signer_name", seller2: "seller2_signer_name" },
+  nameField: { seller: "seller_signer_name", seller2: "seller2_signer_name", buyer2: "buyer2_signer_name" },
   addendum: { checkbox: "addendum_attached" }, // rect 54 48 64 58 (54 124 64 134 before the 2026-11-13 second seller block)
 }
 
@@ -260,7 +260,7 @@ async function applySignatures(doc, fonts, envelope, signers) {
           if (f.getMaxLength() !== undefined) f.setMaxLength(undefined)
           f.setText(fmtDatePT(s.signed_at))
         } catch { /* field missing — nothing to date */ }
-        if (s.role === "seller") {
+        if (TEMPLATE.nameField[templateSpotKey(s)]) {
           try {
             const f = form.getTextField(TEMPLATE.nameField[templateSpotKey(s)])
             if (!f.getText()) f.setText(s.name)

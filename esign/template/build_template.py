@@ -96,7 +96,7 @@ TERMS = [
     ("Closing.", "Closing shall occur as soon as possible and no later than {field:closing_days:32} days from acceptance at a "
                  "time and place designated by Buyer's choice of escrow, title and/or Closing agent. Time is expressly declared "
                  "to be of the essence of this Agreement except as provided in para. 6. Buyer and Seller shall each pay closing "
-                 "costs as customary in the county where the Property is located. Closing to be held at: Chicago Title Company. Escrow Company's contact "
+                 "costs as customary in the city and county where the Property is located. Closing to be held at: Chicago Title Company. Escrow Company's contact "
                  "information: Phone: (408) 354-6737."),
     ("Earnest money.", "Buyer shall deliver an earnest money deposit in the amount of $ {field:earnest_money:85} to Escrow "
                        "Company prior to Closing."),
@@ -198,6 +198,8 @@ LABEL_X, VALUE_X = 269.0, 309.0   # Name:/Tel:/Email: labels and values
 ROW = 16.2                        # label row spacing in the signature blocks
 SELLER2_BLOCK_Y = 126.0           # second seller block (2026-11-13: two sellers sign on the agreement itself)
 SELLER2_LINE_Y = 123.0            # second seller signature line
+BUYER2_BLOCK_Y = 244.2            # second buyer block (2026-11-17: two buyers sign on the agreement itself)
+BUYER2_LINE_Y = 241.2             # second buyer signature line (esign/lib/pdf.mjs TEMPLATE.buyer2)
 CHECKBOX_RECT = (54.0, 48.0, 64.0, 58.0)
 ADDENDUM_TEXT_Y = 52.0            # baseline of the checkbox sentence (wraps to a second line at 52 - LEAD2)
 
@@ -360,11 +362,27 @@ def build_pages():
     c.setStrokeColorRGB(0, 0, 0)
     c.line(SIG_X0, BUYER_LINE_Y, SIG_X1, BUYER_LINE_Y)
     p.text(SIG_X0 + 2, BUYER_LINE_Y - 8.0, "Signature", ITAL, 7)
-    yy = BUYER_BLOCK_Y - 45.6
+    # Ryan's contact rows sit in the left column under the date (2026-11-17), leaving the
+    # right column below the buyer line for the second buyer's signature.
+    yy = BUYER_BLOCK_Y - 16.2
     for label, value in (("Name:", "Ryan LaRocca"), ("Tel:", "(408) 500-6293"), ("Email:", "ryan@lrghomes.com")):
-        p.text(LABEL_X, yy, label)
-        p.text(VALUE_X, yy, value)
-        yy -= ROW
+        p.text(LEFT, yy, label)
+        p.text(88.0, yy, value)
+        yy -= 12.0
+
+    # Second buyer block (e-sign fills the date and the name when they sign)
+    p.text(LEFT, BUYER2_BLOCK_Y, "Dated:")
+    r = (88.0, BUYER2_BLOCK_Y - FIELD_DROP, 198.0, BUYER2_BLOCK_Y - FIELD_DROP + FIELD_H)
+    p.field_box(r[0], r[1], r[2] - r[0], FIELD_H)
+    p.fields.append({"name": "buyer2_date", "rect": r, "multiline": False})
+    p.text(LABEL_X, BUYER2_BLOCK_Y, "Buyer:")
+    c.line(SIG_X0, BUYER2_LINE_Y, SIG_X1, BUYER2_LINE_Y)
+    p.text(SIG_X0 + 2, BUYER2_LINE_Y - 8.0, "Signature", ITAL, 7)
+    yy = BUYER2_BLOCK_Y - 16.2
+    p.text(LEFT, yy, "Name:")
+    r = (88.0, yy - FIELD_DROP, 262.0, yy - FIELD_DROP + FIELD_H)
+    p.field_box(r[0], r[1], r[2] - r[0], FIELD_H)
+    p.fields.append({"name": "buyer2_signer_name", "rect": r, "multiline": False})
 
     # Seller blocks: the first keeps the 2026-10-15 position (envelopes from older
     # builds still sign there); the second sits under it. A third seller and up
@@ -516,6 +534,7 @@ def main():
     print(f"  buyer signature line   x {SIG_X0:.0f}–{SIG_X1:.0f}  y {BUYER_LINE_Y}")
     print(f"  seller signature line  x {SIG_X0:.0f}–{SIG_X1:.0f}  y {SELLER_LINE_Y}")
     print(f"  seller2 signature line x {SIG_X0:.0f}–{SIG_X1:.0f}  y {SELLER2_LINE_Y}")
+    print(f"  buyer2 signature line  x {SIG_X0:.0f}–{SIG_X1:.0f}  y {BUYER2_LINE_Y}")
     print(f"  addendum_attached box  {CHECKBOX_RECT}")
 
 

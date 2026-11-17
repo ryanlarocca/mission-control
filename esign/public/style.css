@@ -106,3 +106,8 @@ html,body{max-width:100%;overflow-x:hidden}
   .btn.small{margin:4px 6px 4px 0}
   .row .btn.small{flex:1 1 auto}
 }
+
+/* returning signer: their saved signature, signed in one tap (2026-11-17) */
+.savedsig{border-bottom:1.5px solid #333;margin:14px 0 16px;min-height:56px;display:flex;align-items:flex-end;color:#1a1a59}
+.savedsig span{font-size:34px;line-height:1.1;white-space:nowrap;overflow:hidden}
+.savedsig img{max-height:60px;max-width:100%}

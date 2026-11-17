@@ -95,6 +95,25 @@
     refresh();
   });
 
+  // Returning signer: one tap adopts their saved signature, agrees and signs.
+  var onetap = $('onetap'), usedifferent = $('usedifferent');
+  if (onetap) {
+    onetap.addEventListener('click', function () {
+      if (submitted) return;
+      var img = document.querySelector('#savedcard .savedsig img');
+      $('f_typed_name').value = onetap.getAttribute('data-name');
+      $('f_method').value = onetap.getAttribute('data-method');
+      $('f_font').value = onetap.getAttribute('data-font');
+      $('f_png').value = img ? img.getAttribute('src') : '';
+      $('f_reused').value = '1'; $('f_agree').value = '1';
+      submitted = true; onetap.disabled = true; onetap.textContent = 'Signing…'; form.submit();
+    });
+    usedifferent.addEventListener('click', function (e) {
+      e.preventDefault(); $('savedcard').hidden = true; $('finishcard').hidden = false; $('f_reused').value = '';
+      tab.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    });
+  }
+
   function refresh() { finish.disabled = !(adopted && agree.checked); agree.parentNode.classList.toggle('on', agree.checked); }
   agree.addEventListener('change', refresh); refresh();
   finish.addEventListener('click', function () {

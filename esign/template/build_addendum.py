@@ -43,7 +43,7 @@ from reportlab.pdfbase.pdfmetrics import stringWidth  # noqa: E402
 from reportlab.pdfgen import canvas  # noqa: E402
 
 from build_template import (  # noqa: E402
-    BODY, BOLD, BUYER_BLOCK_Y, BUYER_LINE_Y, CHECKBOX_RECT, FIELD_DROP, FIELD_H, INDENT, ITAL,
+    BODY, BOLD, BUYER_BLOCK_Y, BUYER_LINE_Y, BUYER2_BLOCK_Y, BUYER2_LINE_Y, CHECKBOX_RECT, FIELD_DROP, FIELD_H, INDENT, ITAL,
     LABEL_X, LEFT, REG, RIGHT, SELLER_BLOCK_Y, SELLER_LINE_Y, SIG_X0, SIG_X1, VALUE_X, W, H,
     Page, add_form, tokens, wrap,
 )
@@ -57,8 +57,6 @@ BOX_LABEL_X = LEFT + 26.0
 BOX_VALUE_X = LEFT + 160.0
 BOX_X0, BOX_X1 = LEFT + 20.0, RIGHT - 20.0
 TERMS_FLOOR = 322.0   # the lowest baseline the terms may use; the signature blocks start below it
-BUYER2_BLOCK_Y = 244.2
-BUYER2_LINE_Y = 241.2  # esign/lib/pdf.mjs TEMPLATE.buyer2
 NAME_SIZE = 8.2
 
 

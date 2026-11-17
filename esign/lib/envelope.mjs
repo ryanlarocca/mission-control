@@ -394,7 +394,29 @@ export async function recordDecline(signer, envelope, reason, ctx) {
   await notify(`✋ <b>${esc(signer.name)}</b> declined to sign <b>${esc(envelope.title)}</b> electronically${reason ? `: ${esc(reason)}` : ""}.\nThey asked for a paper copy — call them at ${esc(signer.phone || "(no phone on file)")}.`)
 }
 
-export async function recordSign(signer, envelope, { typedName, method, signaturePng, font }, ctx) {
+/**
+ * The signature this person adopted the last time they signed anything (matched by email, else phone),
+ * so a returning signer can sign in one tap (Ryan, 2026-11-17: typing the name every time confused Barbara).
+ * null for a first-time signer. `png` is a data URL for a drawn signature.
+ */
+export function savedSignatureFor(signer) {
+  const byEmail = !!signer.email
+  const key = byEmail ? String(signer.email).toLowerCase() : signer.phone
+  if (!key) return null
+  const row = getDb().prepare(`SELECT typed_name, signature_method, signature_font, signature_png FROM signers
+     WHERE ${byEmail ? "lower(email) = ?" : "phone = ?"} AND status = 'signed' AND id != ? AND typed_name IS NOT NULL
+     ORDER BY signed_at DESC LIMIT 1`).get(key, signer.id)
+  if (!row) return null
+  const drawn = row.signature_method === "drawn" && row.signature_png
+  return {
+    typedName: row.typed_name,
+    method: drawn ? "drawn" : "typed",
+    font: fontKey(row.signature_font),
+    png: drawn ? `data:image/png;base64,${Buffer.from(row.signature_png).toString("base64")}` : null,
+  }
+}
+
+export async function recordSign(signer, envelope, { typedName, method, signaturePng, font, reused = false }, ctx) {
   if (envelope.status !== "in_progress") throw new UserError("This document is no longer open for signing")
   if (signer.status === "signed") throw new UserError("You already signed this document")
   if (!signer.consented_at) throw new UserError("Please accept the electronic signature consent first")
@@ -413,7 +435,7 @@ export async function recordSign(signer, envelope, { typedName, method, signatur
   const r = run(`UPDATE signers SET status = 'signed', signed_at = ?, sign_ip = ?, sign_ua = ?, sign_geo = ?, typed_name = ?, signature_method = ?, signature_png = ?, signature_font = ?
      WHERE id = ? AND status != 'signed'`, ts, ctx.ip, ctx.ua, ctx.geo ? JSON.stringify(ctx.geo) : null, name, png ? "drawn" : "typed", png, fontK, signer.id)
   if (!r.changes) throw new UserError("You already signed this document")
-  addEvent(envelope.id, "signed", { signerId: signer.id, ip: ctx.ip, ua: ctx.ua, geo: ctx.geo, details: { typedName: name, method: png ? "drawn" : "typed", font: png ? null : fontK } })
+  addEvent(envelope.id, "signed", { signerId: signer.id, ip: ctx.ip, ua: ctx.ua, geo: ctx.geo, details: { typedName: name, method: png ? "drawn" : "typed", font: png ? null : fontK, ...(reused ? { reusedSavedSignature: true } : {}) } })
   await notify(`✍️ <b>${esc(signer.name)}</b> signed <b>${esc(envelope.title)}</b>\n${esc(ctx.geoLabel)} · ${esc(ctx.device)}`)
   // Advance: finish or invite the next tier. Failures here must not undo the signature.
   try {

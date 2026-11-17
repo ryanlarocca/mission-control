@@ -160,7 +160,7 @@ app.get("/s/:token", async (c) => {
   const ctx = await ctxOf(c)
   await E.recordOpen(signer, envelope, ctx)
   if (!signer.consented_at) return html(c, V.consentPage({ envelope, signer, token }))
-  return html(c, V.reviewPage({ envelope, signer, token, spot: signSpot(envelope, signer) }))
+  return html(c, V.reviewPage({ envelope, signer, token, saved: E.savedSignatureFor(signer), spot: signSpot(envelope, signer) }))
 })
 
 app.post("/s/:token/consent", async (c) => {
@@ -189,14 +189,14 @@ app.post("/s/:token/sign", async (c) => {
   if (signer.status === "signed") return c.redirect(`/s/${token}`)
   const { str } = await parseForm(c)
   const spot = signSpot(envelope, signer)
-  if (str("agree") !== "1") return html(c, V.reviewPage({ envelope, signer, token, spot, error: "Please tick the box to confirm you've read the document." }))
+  if (str("agree") !== "1") return html(c, V.reviewPage({ envelope, signer, token, saved: E.savedSignatureFor(signer), spot, error: "Please tick the box to confirm you've read the document." }))
   try {
-    await E.recordSign(signer, envelope, { typedName: str("typed_name"), method: str("method"), signaturePng: str("signature_png"), font: str("font") }, await ctxOf(c))
+    await E.recordSign(signer, envelope, { typedName: str("typed_name"), method: str("method"), signaturePng: str("signature_png"), font: str("font"), reused: str("reused") === "1" }, await ctxOf(c))
   } catch (e) {
-    if (e instanceof E.UserError) return html(c, V.reviewPage({ envelope, signer, token, spot, error: e.message }), 400)
+    if (e instanceof E.UserError) return html(c, V.reviewPage({ envelope, signer, token, saved: E.savedSignatureFor(signer), spot, error: e.message }), 400)
     console.error("[esign] sign failed:", e)
     await notify(`🔴 e-sign: signing failed for ${tesc(signer.name)} on <b>${tesc(envelope.title)}</b>: ${tesc(e?.message || e)}`)
-    return html(c, V.reviewPage({ envelope, signer, token, spot, error: "Something went wrong on our side. Please try again in a minute, or call " + env.ownerPhone + "." }), 500)
+    return html(c, V.reviewPage({ envelope, signer, token, saved: E.savedSignatureFor(signer), spot, error: "Something went wrong on our side. Please try again in a minute, or call " + env.ownerPhone + "." }), 500)
   }
   return c.redirect(`/s/${token}`)
 })
