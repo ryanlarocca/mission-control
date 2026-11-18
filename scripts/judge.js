@@ -74,8 +74,9 @@ const CHASE_LADDER_DAYS = [1, 3, 7, 14] // after attempt 1, 2, 3, 4 — then aut
 const CANT_TEXT_MONTHS = [6, 12]        // can't-text, past autopilot: after unanswered call 1, then 2+
 const LOOKBACK_DAYS = 3                 // sweep: who had activity recently
 const MODEL = "claude-sonnet-5"
+const CONTACT_CATEGORIES = ["Agent", "Vendor", "Personal", "PM", "Investor", "PrivateMoney"] // lib/crms RELATIONSHIP_CATEGORIES
 const APPLE_EPOCH_OFFSET_MS = 978307200000
-const STATES = ["dnc", "dead", "under_contract", "closed", "appointment", "ryan_owes", "call_on", "waiting_on_them", "ryan_today", "quiet_until", "chase", "none"]
+const STATES = ["dnc", "dead", "contact", "under_contract", "closed", "appointment", "ryan_owes", "call_on", "waiting_on_them", "ryan_today", "quiet_until", "chase", "none"]
 
 // ─── dates (Pacific days, like lib/pacificDate) ─────────────────────────────
 
@@ -253,7 +254,8 @@ function systemPrompt(today) {
 Pick exactly one state. Highest rule that fits wins:
 
 1. "dnc" — they asked to be removed, to stop contact, or were hostile about being contacted.
-2. "dead" — they sold it, don't own it, wrong number / wrong person, or it isn't a seller at all (a vendor or agent pitching Ryan).
+2. "dead" — they sold it, don't own it, wrong number / wrong person, a cold sales pitch for a service (marketing, lead lists, software), or junk.
+2b. "contact" — a real person who isn't selling a property but knows Ryan or wants to work with him: someone he met (a meetup, networking event, through a friend), a real estate agent, an investor, a lender, a contractor, a friend. They belong on his Relationships list, not in seller leads — never "dead". Also give "contact_name" (their name as they said it, else null) and "contact_category": one of Agent, Vendor, Personal, PM, Investor, PrivateMoney (PM = property manager; PrivateMoney = someone lending money; a contractor is Vendor; an investor or someone who met him at a real estate meetup and gave no other role is Investor).
 3. "appointment" — a specific meeting, walkthrough or visit was agreed. date = that day.
 4. "ryan_owes" — in the newest real conversation Ryan promised to send or do something specific (a number / an offer, a text with his info, a document, a call back "later today") and there's no sign he did it yet. Ryan's turn, now.
 5. "call_on" — in the newest REAL conversation, they or Ryan set a time to reconnect ("call me in January", "after the holidays", "end of March", "give me a couple of weeks"). Ryan calls a little EARLY, never late — a good salesperson beats the date they gave, but never calls before a month they named. date: a stretch of time from today ("in four months", "six months", "a year") → count it, then come back early: about two weeks early for three months or more, about a week early for one to three months, on the day for under a month ("a couple of weeks" → 14 days). A month they named ("call me in January") → the first weekday on or after the 4th of that month. "End of March" → about the 20th. "After X" → about a week after X. A specific day → that day. When you came in early, the reason says what they asked for ("said call in about four months — calling a little early"). This stands even if later there were hang-ups, voicemails, Jackie logs or auto-texts — those don't move it. If a real conversation happened and nothing was promised or scheduled, this is still the state: pick a sensible date from what was said (a week for an open thread; "nothing moves for two months" → two months). EARLY BUT ENGAGED is this state too: Ryan gave them his number or made his case, they did NOT turn it down, they aren't ready to decide yet (taxes / capital gains, family, other options, timing), and Ryan gave them something to work on — referrals, information, a next step for them to take. They need time to act on it, and Ryan should still be the one who helped: date = about seven weeks after that conversation (six to eight), and the reason says what Ryan should ask about ("check whether he talked to the 1031 people about the capital gains"). Ryan emailing them what he promised does not change this — that is the help being delivered. A PRICE GAP is this state too: Ryan gave them his number (an offer or a range), they turned it down as far too low — they want much more, or point to an appraisal / retail value well above it — and the conversation ended there with nobody still working on price. Turning it down means they actually reject the number or say what they want instead; "good to know", comparing it to Zillow or another estimate, or worrying about taxes is NOT turning it down (that is early but engaged). They do want to sell, just not at Ryan's number today, so Ryan checks back himself: date = ${PRICE_GAP_MONTHS} months after the day of that conversation, exactly (no coming in early), and the reason names both numbers if they were said ("turned down your $X offer — wants about $Y; checking back in ${PRICE_GAP_MONTHS} months"). If they named their own time to talk again, use that instead.
@@ -279,7 +281,7 @@ Also separately: did THEY give a different phone number to reach them at than th
 Also separately: "date_named" is true only when your date is a specific day or month THEY or Ryan named in the conversation ("call me January 2nd", "after Christmas", "the week of Thanksgiving works") or an agreed appointment; false when you worked the date out yourself (counting weeks or months, the price gap, early but engaged). Don't avoid holidays yourself — the system moves dates you worked out away from Thanksgiving and Christmas–New Year's.
 
 Respond with ONLY JSON:
-{"state": "<one of the states>", "date": "YYYY-MM-DD" or null, "date_named": true|false, "owed": "<what Ryan promised, e.g. text her his name/number with Vine Street on it for her attorney>" or null, "reason": "<one plain sentence for Ryan's screen, under 140 characters, naming the fact — e.g. Bill said call in January ahead of his end-of-March sale>", "connected": true|false, "temperature": "hot"|"warm"|"cold", "callback_number": "<10 digits>" or null, "callback_unclear": true|false, "callback_note": "<a few words>" or null}`
+{"state": "<one of the states>", "date": "YYYY-MM-DD" or null, "date_named": true|false, "owed": "<what Ryan promised, e.g. text her his name/number with Vine Street on it for her attorney>" or null, "reason": "<one plain sentence for Ryan's screen, under 140 characters, naming the fact — e.g. Bill said call in January ahead of his end-of-March sale>", "connected": true|false, "temperature": "hot"|"warm"|"cold", "callback_number": "<10 digits>" or null, "callback_unclear": true|false, "callback_note": "<a few words>" or null, "contact_name": "<name>" or null, "contact_category": "<category>" or null}`
 }
 
 // "(408) 555-0142" / "4085550142" / "1-408-555-0142" → +14085550142; anything
@@ -318,7 +320,7 @@ async function askModel(anthropic, ctx) {
     try {
       const json = JSON.parse(out.slice(out.indexOf("{"), out.lastIndexOf("}") + 1))
       if (!STATES.includes(json.state)) throw new Error(`bad state ${json.state}`)
-      return { state: json.state, date: /^\d{4}-\d{2}-\d{2}$/.test(json.date || "") ? json.date : null, dateNamed: json.date_named === true, owed: typeof json.owed === "string" && json.owed.trim() ? json.owed.trim().slice(0, 120) : null, reason: String(json.reason || "").slice(0, 160), connected: !!json.connected, temperature: ["hot", "warm", "cold"].includes(json.temperature) ? json.temperature : null, callback: cleanCallback(json.callback_number), callbackUnclear: json.callback_unclear === true, callbackNote: typeof json.callback_note === "string" && json.callback_note.trim() ? json.callback_note.trim().slice(0, 200) : null, usage: res.usage }
+      return { state: json.state, date: /^\d{4}-\d{2}-\d{2}$/.test(json.date || "") ? json.date : null, dateNamed: json.date_named === true, owed: typeof json.owed === "string" && json.owed.trim() ? json.owed.trim().slice(0, 120) : null, reason: String(json.reason || "").slice(0, 160), connected: !!json.connected, temperature: ["hot", "warm", "cold"].includes(json.temperature) ? json.temperature : null, callback: cleanCallback(json.callback_number), callbackUnclear: json.callback_unclear === true, callbackNote: typeof json.callback_note === "string" && json.callback_note.trim() ? json.callback_note.trim().slice(0, 200) : null, contactName: typeof json.contact_name === "string" && json.contact_name.trim() ? json.contact_name.trim().slice(0, 80) : null, contactCategory: CONTACT_CATEGORIES.includes(json.contact_category) ? json.contact_category : "Investor", usage: res.usage }
     } catch (e) {
       lastErr = new Error(`${e.message} — stop=${res.stop_reason} blocks=${(res.content || []).map((b) => b.type).join(",") || "none"} said: ${out.slice(0, 200).replace(/\s+/g, " ")}`)
     }
@@ -382,7 +384,7 @@ function decide(llm, f, today) {
     // appointment_at's clock time isn't reliable; the model's line carries the time.
     reason = `Appointment ${fmtDay(date)}${llm.reason ? ` — ${llm.reason}` : ""}`
   }
-  else if (llm.owed && !["dead", "none"].includes(state)) {
+  else if (llm.owed && !["dead", "contact", "none"].includes(state)) {
     // Something Ryan promised comes before any timeline they discussed.
     state = "ryan_owes"
     // The card talks to Ryan — "text her your number", not "his".
@@ -456,7 +458,7 @@ function decide(llm, f, today) {
   // or an appointment stays as said.
   const named = state === "call_on" && llm.state === "call_on" && llm.dateNamed
   if (date && date > today && ["call_on", "waiting_on_them", "quiet_until", "chase"].includes(state) && !named) date = holidayShift(date)
-  return { state, date, reason: reason.slice(0, 200), enrolAutopilot: state === "chase" && date === null, temperature: llm.temperature || null }
+  return { state, date, reason: reason.slice(0, 200), enrolAutopilot: state === "chase" && date === null, temperature: llm.temperature || null, contactName: llm.contactName || null, contactCategory: llm.contactCategory || null }
 }
 
 // ─── writes ─────────────────────────────────────────────────────────────────
@@ -481,6 +483,24 @@ async function apply(sb, phone, rows, f, v, deps) {
   if (v.state === "dead") {
     await upd({ status: "dead", status_set_by: "auto", status_set_at: now, recommended_followup_date: null, followup_reason: null, drip_campaign_type: null })
     await deps.telegram(`Judge: ${label} — marked dead.\n${v.reason}`)
+    return
+  }
+
+  if (v.state === "contact") {
+    // A real person who isn't selling (2026-11-17, Matt Mainini from a meetup was
+    // marked dead): move them to Relationships the way the card's Promote button
+    // does — the route builds the card, closes the lead cluster, stops outreach.
+    const who = (v.contactName || f.name || "").trim()
+    const promoteTo = f.newest.id
+    if (who && !f.name) await upd({ name: who }, [promoteTo])
+    const out = await (deps.promote || promoteToRelationship)(promoteTo, v.contactCategory || "Investor")
+    if (out.ok) {
+      await deps.telegram(`Judge: ${who || label} — not a seller, so I moved them to Relationships (${v.contactCategory || "Investor"}, tier B).\n${v.reason}`)
+    } else {
+      // Nothing changed on the lead: say so, so Ryan can promote by hand.
+      await deps.telegram(`Judge: ${who || label} isn't a seller and belongs on Relationships, but moving them failed (${out.error}). Tap Promote on their card.\n${v.reason}`)
+      throw new Error(`promote failed: ${out.error}`)
+    }
     return
   }
 
@@ -625,12 +645,28 @@ async function judgePhone(sb, deps, phone, opts = {}) {
     await apply(sb, phone, rows, f, v, deps)
     await saveVerdict(sb, phone, rows, v, llm)
     // After the verdict, and never able to undo it: a best-number hiccup is an alert, not a failed ruling.
-    if (v.state !== "dnc" && v.state !== "dead") {
+    if (v.state !== "dnc" && v.state !== "dead" && v.state !== "contact") {
       try { result.bestNumber = await saveCallback(sb, phone, rows, f, llm, deps) }
       catch (e) { await deps.telegram(`Judge: couldn't save the number ${f.name || phone} asked to be reached at — ${e.message}`).catch(() => {}) }
     }
   }
   return result
+}
+
+// ─── promote to Relationships (the card's own route) ─────────────────────────
+
+async function promoteToRelationship(leadId, category) {
+  const base = (process.env.MC_BASE_URL || "https://mission-control-three-chi.vercel.app").replace(/\/$/, "")
+  try {
+    const auth = await fetch(`${base}/api/auth`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ password: process.env.MC_PASSWORD }), redirect: "manual" })
+    const cookie = (auth.headers.getSetCookie ? auth.headers.getSetCookie() : [auth.headers.get("set-cookie") || ""]).map((c) => c.split(";")[0]).filter(Boolean).join("; ")
+    if (!auth.ok || !cookie) return { ok: false, error: `login ${auth.status}` }
+    const res = await fetch(`${base}/api/leads/${leadId}/promote-to-relationship`, { method: "POST", headers: { "content-type": "application/json", cookie }, body: JSON.stringify({ category, tier: "B" }) })
+    const j = await res.json().catch(() => ({}))
+    return res.ok && j.ok ? { ok: true, relationshipId: j.relationshipId } : { ok: false, error: j.error || `HTTP ${res.status}` }
+  } catch (e) {
+    return { ok: false, error: e.message }
+  }
 }
 
 // ─── the sweep: who is due ──────────────────────────────────────────────────
