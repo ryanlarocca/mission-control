@@ -79,6 +79,8 @@ import {
   BAY_AREA_RE, CONDO_RE, blastSignalsPass,
   changePrompt, classifyPrompt, complete, completeJson, filingPrompt, rulesPrompt, screenPrompt, verifyPrompt, WHITELIST } from "./llm.mjs"
 import { OFFERS_SUBFOLDER, OUR_NAMES_DEFAULT, destinationFor, driveDuplicateOf, driveNamesakeOf, filingDecision, sameDocName, inboundOfferFrom, isPurchaseDoc, nextSequence, offerDocName, offerFolderMatch, offerPackageFolder, refineDocType, stageOf, vendorFilename, vendorPropertyFolder, withTimeSuffix, isNamedOfferImage } from "./filing.mjs"
+import { DOCUSIGN_SUMMARY_RE, OLDER_VERSIONS, acceptanceFromText, acceptedFolderName, contractChain, contractFacts, contractLabel, dollars, emailNamesProperty, isAcceptedFolder, isRatified, labelOfName, purchaseChain, ratifiedContractName } from "./filing.mjs"
+import { mergePdfs, pdfText } from "./pdf.mjs"
 import { AWAITING_PAYMENT_MAX_TRIES, MAX_FETCH_ATTEMPTS, NEW_LINK_ERROR, NEW_LINK_GUARD_MS, awaitingPaymentNext, documentLinks, fetchDocuments, freshbooksAddress, newLinkGuard, nextTryAt, paymentWakeTargets, propertyWebsiteLinks, providerKind, providerLabel, queuesForVendor, queuesOnSystemEmail, readFetchedBytes, requeueDecision, saveFetchedBytes, tapinspectShareId, waitsClosedBy, waitsTimedOut } from "./fetch/index.mjs"
 import { invoiceDiffLines, isPaidName, matchVendor, money, paidName, parentCampaignOf, pickCampaign, stagingInvoiceRowFor, stagingNumberFrom, supersedeRenames, vendorDocType, vendorFilingDecision, vendorRules } from "./vendors.mjs"
 import { DUP_STATUSES, gmailLink, photoDedupeVerdict, propertyFolderFromReply, propertyLabelFromSubject, suffixedFilename } from "./photos.mjs"
@@ -537,13 +539,93 @@ async function detectInboundOffer(ctx, msg, docs) {
   return offer ? { ...offer, verifyByName } : null
 }
 
-/** Destination inside the buyer's package folder; a later counter/addendum joins the existing folder for that buyer. */
-async function offerDest(ctx, pf, att, msg, offer) {
+/** Destination inside the buyer's package folder; a later counter/addendum joins the existing folder for that buyer.
+ *  Once that folder is ACCEPTED (ratified), contract paperwork that follows — addenda, contingency removals, a
+ *  later counter — numbers into Purchase & Sale after the ratified contract (Ryan 2026-11-18). */
+async function offerDest(ctx, pf, att, msg, offer, { facts = null, stage = null, source = "attachment" } = {}) {
   const offersPath = `${pf.path}/${OFFERS_SUBFOLDER}`
   const { id } = await resolvePath(ctx.drive, ctx.rootId, offersPath, { create: !DRY })
   const existing = id ? (await listChildren(ctx.drive, id)).filter((k) => k.mimeType === "application/vnd.google-apps.folder").map((k) => k.name) : []
-  const folderName = offerFolderMatch(existing, offer.buyer) || offerPackageFolder({ buyer: offer.buyer, price: offer.price, receivedAt: msg.internalDate })
-  return { folder: `${offersPath}/${folderName}`, name: offerDocName({ docType: att.doc_type, filename: att.cleanName || att.filename, receivedAt: msg.internalDate }) }
+  const match = offerFolderMatch(existing, offer.buyer)
+  if (match && isAcceptedFolder(match) && isPurchaseDoc(att.doc_type)) return deterministicDest(ctx, pf, att, msg, stage, source)
+  const folderName = match || offerPackageFolder({ buyer: offer.buyer, price: offer.price, receivedAt: msg.internalDate })
+  return { folder: `${offersPath}/${folderName}`, offerFolder: folderName, name: offerDocName({ docType: att.doc_type, filename: att.cleanName || att.filename, receivedAt: msg.internalDate, facts }) }
+}
+
+/** A newer signed copy of the same form ("SCO 1 …") supersedes the one on file: the older one moves to Older versions, so the folder shows one copy of each document. */
+async function setAsideOlderCopies(ctx, dest) {
+  const label = labelOfName(dest.name)
+  if (!label) return
+  const { id: folderId } = await resolvePath(ctx.drive, ctx.rootId, dest.folder)
+  if (!folderId) return
+  const older = (await listChildren(ctx.drive, folderId)).filter((k) => k.mimeType !== "application/vnd.google-apps.folder" && labelOfName(k.name) === label)
+  if (!older.length) return
+  const { id: asideId } = await resolvePath(ctx.drive, ctx.rootId, `${dest.folder}/${OLDER_VERSIONS}`, { create: true })
+  for (const k of older) {
+    await moveFile(ctx.drive, k.id, asideId)
+    log(`superseded: ${dest.folder}/${k.name} → ${OLDER_VERSIONS}/ (new copy: ${dest.name})`)
+  }
+}
+
+/** The ratified contract: the chain's signed copies joined in order → Purchase & Sale, one Telegram line. Returns {name, url} or null. */
+async function fileRatifiedContract(ctx, pf, chain, { side, msg, price }) {
+  if (!chain.length) {
+    await tgSend(`⚠️ ${esc(pf.name)}: signed by both sides, but I couldn't find the offer to build the ratified contract from — file it by hand.`, { dryRun: DRY })
+    return null
+  }
+  const labels = chain.map((f) => labelOfName(f.name) || String(f.name).replace(/^\d{2} /, "").replace(/ \d{4}-\d{2}-\d{2}.*$/, ""))
+  const merged = await mergePdfs(await Promise.all(chain.map((f) => downloadFile(ctx.drive, f.id))))
+  const { id: psId } = await resolvePath(ctx.drive, ctx.rootId, `${pf.path}/Purchase & Sale`, { create: !DRY })
+  const seq = psId ? nextSequence((await listChildren(ctx.drive, psId)).map((k) => k.name)) : 1
+  const name = ratifiedContractName({ side, receivedAt: msg.internalDate, price, seq })
+  if (DRY) {
+    log(`ratified (dry run): Purchase & Sale/${name} ← ${labels.join(" + ")}`)
+    return { name, url: "(dry run)" }
+  }
+  const up = await uploadFile(ctx.drive, psId, name, "application/pdf", merged)
+  log(`ratified: ${pf.name} → Purchase & Sale/${name} (${labels.join(" + ")})`)
+  await tgSend(`✅ <b>${esc(pf.name)} ratified</b>${dollars(price) ? ` — ${dollars(price)}` : ""}. Signed contract (${esc(labels.join(" + "))}) → <a href="${up.webViewLink}">Purchase & Sale/${esc(name)}</a>`)
+  return { name, url: up.webViewLink }
+}
+
+/** Files named before 2026-11-18 ("Offer RPA 2026-11-18.pdf", "Counter Offer …") are read for their form, so a
+ *  negotiation already under way still joins: each gets a working name "SCO 1 <modified time>" (drafts dropped). */
+async function withContractLabels(ctx, kids) {
+  const out = []
+  for (const k of kids) {
+    if (labelOfName(k.name)) {
+      out.push(k)
+      continue
+    }
+    if (!/offer|counter|rpa|purchase/i.test(k.name)) continue
+    const facts = contractFacts(await pdfText(await downloadFile(ctx.drive, k.id)))
+    const label = !facts?.inProcess && contractLabel(facts)
+    if (label) out.push({ ...k, name: `${label} ${k.modifiedTime || ""}`, filedAs: k.name })
+  }
+  return out
+}
+
+/** An offer Ryan received is ratified: join the chain, mark the buyer's folder ACCEPTED, and his side on the property becomes seller (escrow statements are then his Seller Statements). */
+async function ratifyOffer(ctx, pf, dest, msg, facts, verify, justFiled = null) {
+  if (isAcceptedFolder(dest.offerFolder)) return
+  const { id: folderId } = await resolvePath(ctx.drive, ctx.rootId, dest.folder)
+  if (!folderId) return
+  const kids = (await listChildren(ctx.drive, folderId)).filter((k) => k.mimeType === "application/pdf")
+  if (justFiled && !kids.some((k) => k.id === justFiled.id)) kids.push(justFiled) // a listing right after the upload can miss it
+  const done = await fileRatifiedContract(ctx, pf, contractChain(await withContractLabels(ctx, kids)), { side: "seller", msg, price: facts?.price ?? verify?.price ?? null })
+  if (!done || DRY) return
+  await renameFile(ctx.drive, folderId, acceptedFolderName(dest.offerFolder))
+  const agent = await getSetting("agent")
+  await setSetting("agent", { sides: { ...(agent.sides || {}), [propertyKey(pf.name)]: "seller" } })
+}
+
+/** Ryan's own offer is ratified: his Offer RPA and the counters numbered after it in Purchase & Sale → "NN Purchase – Ratified Contract …". */
+async function ratifyPurchase(ctx, pf, msg, facts, verify) {
+  const { id: psId } = await resolvePath(ctx.drive, ctx.rootId, `${pf.path}/Purchase & Sale`)
+  if (!psId) return
+  const kids = (await listChildren(ctx.drive, psId)).filter((k) => k.mimeType === "application/pdf")
+  if (kids.some((k) => / Purchase – Ratified Contract /.test(k.name))) return
+  await fileRatifiedContract(ctx, pf, purchaseChain(kids), { side: "buyer", msg, price: facts?.price ?? verify?.price ?? null })
 }
 
 /** The per-document lines of a filed-confirmation card (shared with the link-fetch card). */
@@ -774,7 +856,7 @@ async function fileToDrive(ctx, row, folder, name, { suffixOnExisting = false, b
     const up = await uploadFile(ctx.drive, folderId, name, row.mime, bytes)
     await sb().from("inbox_files").update({ status: "filed", final_folder: folder, final_name: name, drive_file_id: up.id, drive_folder_id: folderId, drive_url: up.webViewLink, filed_at: isoNow(), resolved_at: isoNow(), error: null }).eq("id", row.id)
     await addLabel(ctx.gmail, row.gmail_id, "MC/Filed")
-    return { ok: true, url: up.webViewLink, created, name, folderId }
+    return { ok: true, url: up.webViewLink, created, name, folderId, id: up.id }
   } catch (e) {
     const error = e?.response?.data?.error?.message || e.message
     if (!DRY) await sb().from("inbox_files").update({ status: "error", error }).eq("id", row.id)
@@ -1083,6 +1165,16 @@ async function fileDocuments(ctx, msg, cls, docs, { source = "attachment", fetch
   const filed = []
   const outcomes = [] // [{filename, outcome, why}] — the link-fetch card lists what happened to every file
   const note = (att, outcome, why = "") => outcomes.push({ filename: att.cleanName || att.filename, outcome, why })
+  // Ryan 2026-11-18: "The only one I want saved is the one that's signed." A DocuSign
+  // "please sign" email (Amanda sending a counter for his signature) files nothing;
+  // the Completed email that follows carries the signed copy.
+  if (kind === "docusign_request") {
+    for (const att of docs) {
+      await recordIgnored(msg, att, "sent for signature — filed once it's signed", recOpts)
+      note(att, "ignored", "sent for signature")
+    }
+    return { filed, pdfDocs, outcomes, registryLines: [] }
+  }
   let property = cls?.property?.label || null // the email's property; refined by the first verified PDF
   const offer = rulesApproved && ctx.drive ? await detectInboundOffer(ctx, msg, docs) : null
   if (offer?.label && !property) property = offer.label
@@ -1119,6 +1211,18 @@ async function fileDocuments(ctx, msg, cls, docs, { source = "attachment", fetch
       continue
     }
 
+    // Contract form / number / price from the PDF text; a copy DocuSign stamped
+    // "In Process" is still out for signature — a draft, never filed (2026-11-18).
+    const text = /^application\/pdf$/.test(att.mime) ? await pdfText(rec.bytes) : null
+    const facts = contractFacts(text)
+    if (facts?.inProcess) {
+      const why = "unsigned DocuSign copy (In Process) — filed once it's signed"
+      if (!DRY) await sb().from("inbox_files").update({ status: "ignored", error: why, resolved_at: isoNow() }).eq("id", rec.row.id)
+      log(`ignore ${att.filename}: ${why}`)
+      note(att, "ignored", why)
+      continue
+    }
+
     // Property from the document itself.
     let verify = offer?.verifyByName.get(att.cleanName) || null
     if (!verify && /^application\/pdf$/.test(att.mime) && att.doc_type !== "marketing_list") verify = await verifyProperty(ctx, rec.bytes, att.cleanName)
@@ -1132,9 +1236,17 @@ async function fileDocuments(ctx, msg, cls, docs, { source = "attachment", fetch
       continue
     }
     if (vLabel && property && !keysMatch(propertyKey(vLabel), propertyKey(property)) && (verify?.confidence ?? 1) >= 0.6) {
-      await postAskCard(ctx, rec.row, `The PDF says ${vLabel} but the email looks like ${property}. Which property does “${att.cleanName}” belong to?`, null)
-      note(att, "asked", `PDF says ${vLabel}, email says ${property}`)
-      continue
+      // 2026-11-18: the Halleck BCO's Completed email carried only a file name and the
+      // classifier guessed 2116 Quito Rd. An address the email never states is a guess —
+      // the document's own first page decides. Ask only when both really disagree.
+      if (!emailNamesProperty(`${msg.subject}\n${msg.text || ""}`, property)) {
+        log(`property: “${att.cleanName}” says ${vLabel}; the email never names ${property} — going by the PDF`)
+        property = vLabel
+      } else {
+        await postAskCard(ctx, rec.row, `The PDF says ${vLabel} but the email looks like ${property}. Which property does “${att.cleanName}” belong to?`, null)
+        note(att, "asked", `PDF says ${vLabel}, email says ${property}`)
+        continue
+      }
     }
     if (!property && vLabel) property = vLabel
     if (property && !DRY) await sb().from("inbox_files").update({ property_label: property, property_key: propertyKey(property), doc_type: att.doc_type }).eq("id", rec.row.id)
@@ -1157,8 +1269,9 @@ async function fileDocuments(ctx, msg, cls, docs, { source = "attachment", fetch
       note(att, "asked", `no folder for ${property}`)
       continue
     }
-    const dest = offer ? await offerDest(ctx, pf, att, msg, offer) : await deterministicDest(ctx, pf, att, msg, stage, source)
+    const dest = offer ? await offerDest(ctx, pf, att, msg, offer, { facts, stage, source }) : await deterministicDest(ctx, pf, att, msg, stage, source)
     if (!dest) continue
+    if (dest.offerFolder && !DRY) await setAsideOlderCopies(ctx, dest)
     // A namesake with different bytes (a re-signed disclosure, an updated report) is a new
     // version: it takes the existing file's spelling so the time suffix lands it alongside.
     if (!offer && rec.namesake && KEEPS_SENDER_NAME.has(att.doc_type) && rec.namesake.path.replace(/\/[^/]*$/, "") === dest.folder) {
@@ -1175,6 +1288,18 @@ async function fileDocuments(ctx, msg, cls, docs, { source = "attachment", fetch
     if (!offer && /^(closing_statement|net_sheet)$/.test(att.doc_type) && r.folderId && !DRY) diff = await statementDiff(ctx, r.folderId, rec.bytes, r.name || dest.name, pf.name)
     filed.push({ row: rowNow, folder: dest.folder, name: r.name || dest.name, url: r.url, diff })
     note(att, "filed", `${dest.folder}/${r.name || dest.name}`)
+    // Ryan 2026-11-18: the other side signed the Acceptance → the deal is ratified;
+    // the chain becomes one signed contract in Purchase & Sale.
+    const ratified = (att.doc_type === "purchase_agreement" || att.doc_type === "counter") && isRatified({ form: facts?.form, textSays: acceptanceFromText(text, facts?.form), modelSays: verify?.accepted ?? null })
+    if (ratified) {
+      try {
+        if (dest.offerFolder) await ratifyOffer(ctx, pf, dest, msg, facts, verify, r.id ? { id: r.id, name: r.name || dest.name, mimeType: "application/pdf" } : null)
+        else if (!offer && verify?.buyer && !inboundOfferFrom(verify, [...OUR_NAMES_DEFAULT, ...(((await getSetting("agent")).our_names) || [])])) await ratifyPurchase(ctx, pf, msg, facts, verify)
+      } catch (e) {
+        warn(`ratified contract for ${pf.name} failed:`, e.message)
+        await tgSend(`⚠️ ${esc(pf.name)}: “${esc(r.name || dest.name)}” is signed by both sides, but I couldn't build the ratified contract (${esc(e.message)}). The pieces are filed; join them by hand or tell me to retry.`, { dryRun: DRY })
+      }
+    }
     if (REGISTRY_ON && !offer && att.doc_type === "closing_statement" && stage === "final") {
       const line = await registryFromStatement(msg, cls, verify, pf, r.name || dest.name)
       if (line) registryLines.push(line)
@@ -1627,6 +1752,18 @@ async function enqueueFetches(ctx, msg, cls, kind, atts = [], vendor = null) {
   // classifier may not report the link — a media provider link queues regardless
   // (2026-10-16: HomeSentry's tapinspect share link likewise).
   if (!FETCH_KINDS.has(kind) && !reported.length && !links.some((l) => queuesOnSystemEmail(l.provider))) return
+  // Ryan 2026-11-18: a "please sign" link holds an unsigned draft — never fetched,
+  // except when it is DocuSign's fresh link for an expired Completed envelope we asked for.
+  if (kind === "docusign_request" && links.length && !(await awaitsNewLink(msg))) {
+    log(`fetch skipped: “${shortSubject(msg.subject, 50)}” is out for signature — the Completed email brings the signed copy`)
+    return
+  }
+  // The Completed email already carries the signed PDFs: fetching the link too filed the same
+  // counter twice (two ❓ cards on the Halleck BCO, 2026-11-18).
+  if (kind === "docusign_completed" && atts.some((a) => /^application\/pdf$/.test(a.mime) && !DOCUSIGN_SUMMARY_RE.test(a.cleanName || a.filename))) {
+    log(`fetch skipped: “${shortSubject(msg.subject, 50)}” has the signed PDF attached`)
+    return
+  }
   if (!links.length) {
     if (kind === "docusign_completed" && !atts.length) await tgSend(`🖊 DocuSign completed — “${esc(shortSubject(msg.subject))}” — no signed PDF attached and no envelope link I can open; grab it from the email.`, { dryRun: DRY })
     return
@@ -1731,6 +1868,12 @@ async function expiredCard(job, reason) {
   const what = providerKind(job.provider) === "media" ? "photos" : "documents"
   const hint = job.provider === "docusign" ? ", or log the agent into DocuSign (<code>node scripts/inbox-agent/fetch/cli.mjs --login --headed</code> on the mini)" : ""
   return tgSend(`⚠️ Couldn't pull the ${what} from ${providerLabel(job.provider)} (${esc(reason)}) — ask the sender to resend${hint}.`, { rows: [[{ text: "🔁 Retry", data: `ix:fr:${job.id}` }]], dryRun: DRY })
+}
+/** Is a fetch parked waiting for DocuSign's fresh link for this envelope? (Then a "please sign"-shaped email is that link.) */
+async function awaitsNewLink(msg) {
+  const { data, error } = await sb().from("inbox_fetches").select("id, status, thread_id, inbox_messages(subject)").eq("status", "awaiting_new_link").limit(50)
+  if (error) return false
+  return waitsClosedBy({ id: null, thread_id: msg.threadId, subject: msg.subject }, withSubject(data)).length > 0
 }
 /** A job for the same envelope is done → the parked awaiting_new_link rows are resolved. */
 async function resolveNewLinkWaits(job, msg) {
@@ -2157,7 +2300,9 @@ async function handleMessage(ctx, msg) {
     // A person who pitched Ryan a deal directly is owed an answer, whatever the screen says.
     if (cls.deal?.tier === "direct" && !cls.needs_reply) cls = { ...cls, needs_reply: true, ask: cls.ask || `Reply to ${cls.counterparty || msg.from.name || msg.from.email} about ${cls.deal.address || "their deal"}`, category: cls.category || "agent" }
     // Ryan 2026-10-12: a "Completed:" envelope never opens a loop — it only closes one (loops.mjs).
-    if (loopEligible(kind, msg, cls) && (cls.needs_reply || kind === "docusign_request")) await upsertLoop(ctx, msg, cls, kind)
+    // Ryan 2026-11-18: "I get an email notification, so I don't really need Telegram being a
+    // second email duplicate" — a DocuSign "please sign" no longer opens a Sign: loop.
+    if (kind !== "docusign_request" && loopEligible(kind, msg, cls) && cls.needs_reply) await upsertLoop(ctx, msg, cls, kind)
     else if (!loopEligible(kind, msg, cls)) log(`no loop: ${completion ? `${completion.vendor} ${completion.kind}` : kind} is a completion event`)
   }
 

@@ -42,9 +42,10 @@ describe("names", () => {
     expect(shortPrice(850000)).toBe("$850k")
     expect(shortPrice(null)).toBeNull()
   })
-  it("one folder per offer, named by buyer, price and the day it arrived", () => {
-    expect(offerPackageFolder({ buyer: "Coko LLC", price: 1500000, receivedAt: RECEIVED })).toBe("Coko LLC $1.5M offer 2026-10-30")
-    expect(offerPackageFolder({ buyer: "Coko LLC", price: null, receivedAt: RECEIVED })).toBe("Coko LLC offer 2026-10-30")
+  it("one folder per offer, dated first so the folders sort in order, then buyer and price (2026-11-18)", () => {
+    expect(offerPackageFolder({ buyer: "Coko LLC", price: 1500000, receivedAt: RECEIVED })).toBe("2026-10-30 Coko LLC $1.5M")
+    expect(offerPackageFolder({ buyer: "Coko LLC", price: null, receivedAt: RECEIVED })).toBe("2026-10-30 Coko LLC")
+    expect(offerPackageFolder({ buyer: "Priya Anand Sharma, Rohan Mehta", price: 1050000, receivedAt: "2026-11-17T23:03:52Z" })).toBe("2026-11-17 Sharma & Mehta $1.05M")
   })
   it("a later counter joins the buyer's existing folder", () => {
     const existing = ["Coko LLC $1.5M offer 2026-10-30", "Jane Doe $1.6M offer 2026-11-02"]
@@ -76,7 +77,7 @@ describe("filingDecision with the offer flag", () => {
     expect(docType).toBe("loan_letter")
     expect(filingDecision(docType, null, { offer: true })).toMatchObject({ file: true, sub: "Offers" })
     const folder = offerPackageFolder({ buyer: "Coko LLC", price: 1500000, receivedAt: RECEIVED })
-    expect(`${folder}/${offerDocName({ docType, filename, receivedAt: RECEIVED })}`).toBe("Coko LLC $1.5M offer 2026-10-30/Pre-Approval Letter 2026-10-30.pdf")
+    expect(`${folder}/${offerDocName({ docType, filename, receivedAt: RECEIVED })}`).toBe("2026-10-30 Coko LLC $1.5M/Pre-Approval Letter 2026-10-30.pdf")
   })
   it("the buyer-rep agreement and other noise still stay out", () => {
     expect(filingDecision("other", null, { offer: true }).file).toBe(false)

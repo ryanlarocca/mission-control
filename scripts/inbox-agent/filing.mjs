@@ -106,7 +106,7 @@ export function filingDecision(docType, stage, { offer = false } = {}) {
 
 /** Next two-digit prefix for Purchase & Sale, looking only at files this convention named. */
 export function nextSequence(existingNames) {
-  const nums = existingNames.map((n) => Number((/^(\d{2}) (Offer RPA|Counter Offer|Addendum|Contingency Removal)\b/.exec(n) || [])[1])).filter((n) => Number.isFinite(n))
+  const nums = existingNames.map((n) => Number((/^(\d{2}) (Offer RPA|Counter Offer|Addendum|Contingency Removal|(?:Sale|Purchase) – Ratified Contract)\b/.exec(n) || [])[1])).filter((n) => Number.isFinite(n))
   return (nums.length ? Math.max(...nums) : 0) + 1
 }
 
@@ -153,26 +153,220 @@ export function shortPrice(price) {
   return `$${n}`
 }
 
-/** One folder per offer: "Coko LLC $1.5M offer 2026-10-30". */
-export function offerPackageFolder({ buyer, price, receivedAt }) {
-  const p = shortPrice(price)
-  return sanitizeFilename(`${cleanBuyerName(buyer)}${p ? ` ${p}` : ""} offer ${ptDate(receivedAt)}`)
+const ENTITY_RE = /\b(LLC|L\.L\.C\.?|Inc\.?|Corp\.?|Corporation|Company|Co\.|LP|LLP|Trust|Homes|Holdings|Investments?|Properties|Capital|Partners|Group|Ventures|Fund|Realty|Development)\b/i
+const NAME_SUFFIX_RE = /^(jr|sr|ii|iii|iv)\.?$/i
+
+/** The names a buyer folder is known by: an entity whole ("Coko LLC"), people by surname ("Priya Anand Sharma, Rohan Mehta" → Sharma, Mehta). */
+export function buyerSurnames(buyer) {
+  const b = cleanBuyerName(buyer)
+  if (!b) return []
+  if (ENTITY_RE.test(b)) return [b]
+  const out = []
+  for (const person of b.split(/\s*(?:,|&|\band\b)\s*/i).map((p) => p.trim()).filter(Boolean)) {
+    const words = person.split(/\s+/).filter((w) => !NAME_SUFFIX_RE.test(w))
+    const last = words.at(-1)
+    if (last && !out.some((o) => o.toLowerCase() === last.toLowerCase())) out.push(last)
+  }
+  return out
 }
 
-/** A later piece of the same negotiation (counter, revised offer) joins the buyer's existing package folder. */
+/** One folder per buyer, dated so the folders sort in order: "2026-11-17 Sharma & Mehta $1.05M" (Ryan 2026-11-18). */
+export function offerPackageFolder({ buyer, price, receivedAt }) {
+  const p = shortPrice(price)
+  const who = buyerSurnames(buyer).join(" & ") || cleanBuyerName(buyer)
+  return sanitizeFilename(`${ptDate(receivedAt)} ${who}${p ? ` ${p}` : ""}`)
+}
+
+/**
+ * A later piece of the same negotiation (counter, revised offer) joins the buyer's existing package folder.
+ * Matched on surnames, so "Daniel Tran, Mei-Lin Wong" and "Daniel Tran & Mei-Lin Wong" are one buyer
+ * (they had been split into two Halleck folders); old-style names ("Coko LLC $1.5M offer 2026-10-30") still match.
+ */
 export function offerFolderMatch(existingNames, buyer) {
-  const want = cleanBuyerName(buyer).toLowerCase()
-  if (!want) return null
-  return (existingNames || []).find((n) => String(n).toLowerCase().startsWith(want + " ") || String(n).toLowerCase() === want) || null
+  const want = buyerSurnames(buyer).map((n) => n.toLowerCase())
+  if (!want.length) return null
+  const has = (hay, w) => new RegExp(`(^|[^a-z0-9])${w.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}([^a-z0-9]|$)`, "i").test(hay)
+  const hits = (existingNames || []).filter((n) => n !== OLDER_VERSIONS && want.every((w) => has(String(n), w)))
+  return hits.find(isAcceptedFolder) || hits[0] || null
+}
+
+// ---- ratified contracts (Ryan 2026-11-18)
+// Offers, counters and counters-to-counters fly back and forth while a property
+// is negotiated. Only signed copies are kept (a DocuSign "please sign" copy and
+// any PDF stamped "In Process" are drafts); each document is named by its form,
+// number, date and price; when the other side signs the last counter's
+// Acceptance, the chain (RPA → SCO 1 → BCO 1 …) is joined into one PDF in
+// Purchase & Sale — the "ratified contract" escrow wants.
+export const OLDER_VERSIONS = "Older versions"
+const ACCEPTED_SUFFIX = " – ACCEPTED"
+export const isAcceptedFolder = (name) => /\s[–-]\sACCEPTED$/i.test(String(name || ""))
+export const acceptedFolderName = (name) => (isAcceptedFolder(name) ? name : `${name}${ACCEPTED_SUFFIX}`)
+
+/** $1060000 → "$1,060,000" (whole dollars; contract prices never carry cents worth showing). */
+export function dollars(n) {
+  const v = Number(n)
+  if (!Number.isFinite(v) || v <= 0) return null
+  return `$${Math.round(v).toLocaleString("en-US")}`
+}
+const priceNum = (s) => {
+  const n = Number(String(s || "").replace(/[$,\s]/g, ""))
+  return Number.isFinite(n) && n >= 10000 ? n : null
+}
+
+/**
+ * What a contract PDF is, from its text (pdftotext -layout): the C.A.R. form and number, the price,
+ * DocuSign envelope ids, and whether DocuSign stamped it "In Process" (an unsigned draft).
+ * null when there is no text to read.
+ * @returns {{ form: "RPA"|"SCO"|"BCO"|"SMCO"|null, number: number|null, price: number|null, envelopeIds: string[], inProcess: boolean } | null}
+ */
+export function contractFacts(text) {
+  const t = String(text || "")
+  if (!t.trim()) return null
+  const envelopeIds = [...new Set([...t.matchAll(/Envelope ID:\s*([0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{12})/gi)].map((m) => m[1].toUpperCase()))]
+  // DocuSign prints a standalone "In Process" stamp on every page of an envelope that is still out for signature.
+  const inProcess = envelopeIds.length > 0 && /^\s*In Process\s*$/m.test(t)
+  // The form is the title that appears first: a Buyer Counter Offer mentions "Seller Counter Offer No. 1" further down.
+  const titles = [
+    ["SMCO", /SELLER\s+MULTIPLE\s+COUNTER\s+OFFER\s+No\.?\s*(\d+)/],
+    ["SCO", /SELLER\s+COUNTER\s+OFFER\s+No\.?\s*(\d+)/],
+    ["BCO", /BUYER\s+COUNTER\s+OFFER\s+No\.?\s*(\d+)/],
+    ["RPA", /(?:CALIFORNIA\s+)?RESIDENTIAL\s+PURCHASE\s+AGREEMENT\s+AND\s+JOINT\s+ESCROW|CALIFORNIA\s+RESIDENTIAL\s+PURCHASE\s+AGREEMENT/],
+  ]
+  let form = null, number = null, at = Infinity
+  for (const [f, re] of titles) {
+    const m = re.exec(t)
+    if (m && m.index < at) {
+      at = m.index
+      form = f
+      number = m[1] ? Number(m[1]) : null
+    }
+  }
+  let price = null
+  if (form && form !== "RPA") price = priceNum((/purchase\s+price\s+(?:to\s+be|shall\s+be|is|of)\s*:?\s*(\$?\s*[\d,]{5,}(?:\.\d{2})?)/i.exec(t) || [])[1])
+  if (form === "RPA") price = priceNum((/Purchase\s+Price\s+\$\s*([\d,]{5,}(?:\.\d{2})?)/.exec(t) || [])[1])
+  return { form, number, price, envelopeIds, inProcess }
+}
+
+/**
+ * Did the party receiving this form sign its Acceptance, read from the PDF text? A counter's
+ * "N. ACCEPTANCE:" paragraph carries a date only once the other side signs it (Halleck: blank on
+ * SCO 1, "11/18/2026" on BCO 1). Accepting "subject to" a new counter is a counter, not acceptance;
+ * an RPA answered with a Seller Counter Offer was not accepted. null = the text can't tell (scan,
+ * odd layout, or an RPA whose seller signature is further down) and the model's read decides.
+ * The model alone called SCO 1 accepted because it saw Ryan's own signature, so text wins.
+ */
+export function acceptanceFromText(text, form) {
+  const t = String(text || "")
+  if (!t.trim() || !form) return null
+  if (form === "RPA") {
+    const m = /ACCEPTANCE OF OFFER:([\s\S]{0,1500})/.exec(t)
+    if (!m) return null
+    if (/^\s*X\s+Seller\s+(?:Multiple\s+)?Counter\s+Offer/m.test(m[1])) return false
+    return null
+  }
+  const m = /^\s*\d+\.\s+ACCEPTANCE:([\s\S]*?)(?=^\s*\d+\.\s+[A-Z]|©)/m.exec(t)
+  if (!m) return null
+  const block = m[1]
+  if (/COUNTER\s+OFFER\s+No\.\s*\d/i.test(block)) return false
+  return /\b\d{1,2}\/\d{1,2}\/\d{2,4}\b/.test(block)
+}
+
+/**
+ * Is this signed form the one that ratifies the deal? Counters: the text decides when it can.
+ * A Seller Multiple Counter Offer also needs the seller's final acceptance, so the text (buyer
+ * signed) AND the model (final acceptance signed) must agree. An RPA: a ticked counter-offer box
+ * is a no; otherwise the model's read of the seller's signature.
+ * @param {{ form: string|null|undefined, textSays?: boolean|null, modelSays?: boolean|null }} args
+ */
+export function isRatified({ form, textSays = null, modelSays = null }) {
+  if (!form) return false
+  if (form === "SMCO") return textSays !== false && modelSays === true
+  if (textSays !== null) return textSays === true
+  return modelSays === true
+}
+
+/** "SCO 1" / "BCO 2" / "RPA" — the label a contract file starts with. */
+export function contractLabel(facts) {
+  if (!facts?.form) return null
+  return facts.form === "RPA" ? "RPA" : `${facts.form}${facts.number ? ` ${facts.number}` : ""}`
+}
+const LABEL_RE = /^(RPA|SCO \d+|BCO \d+|SMCO \d+)\b/
+/** The contract label a filed name starts with ("SCO 1 2026-11-17 $1,075,000.pdf" → "SCO 1"), else null. */
+export const labelOfName = (name) => (LABEL_RE.exec(String(name || "")) || [])[1] || null
+
+/**
+ * The negotiation chain inside a buyer's folder, in contract order: the RPA, then the counters
+ * by number with the seller's counter before the buyer's reply (SCO 1 → BCO 1 → SCO 2 …),
+ * one copy of each (the latest). Takes file objects ({name, …}); files that are not contract forms are left out.
+ * @template {{ name?: string }} F
+ * @param {F[]} files
+ * @returns {F[]}
+ */
+export function contractChain(files) {
+  const rank = (label) => {
+    if (label === "RPA") return 0
+    const [form, n] = label.split(" ")
+    return Number(n) * 10 + (form === "BCO" ? 5 : 0)
+  }
+  // One copy per form: the latest name (names carry the date) wins.
+  const byLabel = new Map()
+  for (const f of files || []) {
+    const label = labelOfName(f?.name)
+    if (!label) continue
+    const cur = byLabel.get(label)
+    if (!cur || String(f.name).localeCompare(String(cur.name)) > 0) byLabel.set(label, f)
+  }
+  if (!byLabel.has("RPA")) return []
+  return [...byLabel.entries()].sort(([a], [b]) => rank(a) - rank(b)).map(([, f]) => f)
+}
+
+/**
+ * Ryan's own purchase chain in Purchase & Sale ("01 Offer RPA …", "02 Counter Offer …"): the latest
+ * Offer RPA and every counter numbered after it, in sequence order.
+ * @template {{ name?: string }} F
+ * @param {F[]} files
+ * @returns {F[]}
+ */
+export function purchaseChain(files) {
+  const seq = (f) => Number((/^(\d{2}) /.exec(String(f?.name || "")) || [])[1])
+  const kind = (f) => (/^\d{2} (Offer RPA|Counter Offer)\b/.exec(String(f?.name || "")) || [])[1] || null
+  const docs = (files || []).filter((f) => kind(f) && Number.isFinite(seq(f))).sort((a, b) => seq(a) - seq(b))
+  const lastRpa = docs.map(kind).lastIndexOf("Offer RPA")
+  return lastRpa < 0 ? [] : docs.slice(lastRpa)
+}
+
+/** "04 Sale – Ratified Contract 2026-11-18 $1,060,000.pdf" (side = Ryan's side: seller on his listings, buyer on his purchases). */
+export function ratifiedContractName({ side = "seller", receivedAt, price, seq = 1 }) {
+  const p = dollars(price)
+  return sanitizeFilename(`${String(seq).padStart(2, "0")} ${side === "seller" ? "Sale" : "Purchase"} – Ratified Contract ${ptDate(receivedAt)}${p ? ` ${p}` : ""}.pdf`)
+}
+
+/**
+ * Does the email itself name this property? A DocuSign "Completed" email carries only the file name, and the
+ * classifier once guessed 2116 Quito Rd for a Halleck counter whose first page said 5764 Halleck Dr. When the
+ * street number and name are nowhere in the subject or body, the PDF's own address decides.
+ */
+export function emailNamesProperty(text, label) {
+  const m = /^\s*(\d+)\s+([A-Za-z][A-Za-z'-]*)/.exec(String(label || ""))
+  if (!m) return false
+  const hay = String(text || "").toLowerCase()
+  return new RegExp(`\\b${m[1]}\\b`).test(hay) && hay.includes(m[2].toLowerCase())
 }
 
 const OFFER_DOC_LABEL = {
   purchase_agreement: "Offer RPA", counter: "Counter Offer", addendum: "Addendum", contingency_removal: "Buyer Contingency Removal",
   closing_statement: "Buyer Closing Statement", net_sheet: "Buyer Net Sheet", emd_receipt: "EMD Receipt", proof_of_funds: "Proof of Funds", loan_letter: "Pre-Approval Letter", escrow_instructions: "Escrow Wire Instructions",
 }
-/** Short, dated names inside the package folder (the folder already says who and how much). */
-export function offerDocName({ docType, filename, receivedAt }) {
+/** Short, dated names inside the package folder (the folder already says who); a contract form reads
+ *  "RPA 2026-11-17 $1,050,000.pdf" / "SCO 1 2026-11-17 $1,075,000.pdf" so the folder tells the negotiation. */
+/** @param {{ docType: string, filename: string, receivedAt: string, facts?: { form: string|null, number: number|null, price: number|null } | null }} args */
+export function offerDocName({ docType, filename, receivedAt, facts = null }) {
   const ext = (/\.([a-z0-9]{1,6})$/i.exec(filename || "") || [])[1]?.toLowerCase() || "pdf"
+  const formLabel = (docType === "purchase_agreement" || docType === "counter") && contractLabel(facts)
+  if (formLabel) {
+    const p = dollars(facts.price)
+    return sanitizeFilename(`${formLabel} ${ptDate(receivedAt)}${p ? ` ${p}` : ""}.${ext}`)
+  }
   const n = (/addendum\s*#?\s*(\d+|[A-Z])\b/i.exec(filename || "") || [])[1]
   const label = docType === "addendum" && n ? `Addendum ${n}` : OFFER_DOC_LABEL[docType]
   return sanitizeFilename(label ? `${label} ${String(receivedAt || "").slice(0, 10)}.${ext}` : filename)
