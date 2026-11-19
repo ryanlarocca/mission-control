@@ -14,6 +14,12 @@ import type { ApiContact } from "@/lib/relationships"
 // in one sitting, so this returns every due contact: Agents first, then
 // everyone else, each group in queueOrder (tier, real history before
 // never-contacted, most recently talked-to).
+//
+// 2026-11-18 (Ryan): pinned contacts (someone who handed him a lead) come back
+// in `pinned` every day — due or not, snoozed or not, phone or not — and stay
+// out of the due queue. Longest since last contact first. `inQueue` says
+// whether they're also due today, so unpinning in the tab drops them back
+// into the queue only if they belong there.
 export const dynamic = "force-dynamic"
 export const revalidate = 0
 
@@ -27,19 +33,27 @@ export async function GET() {
     for (const t of RELATIONSHIP_TYPES) dueByType[t] = 0
     const agents: ApiContact[] = []
     const others: ApiContact[] = []
+    const pinned: (ApiContact & { inQueue: boolean })[] = []
     const now = new Date()
 
-    for (const row of rows) {
-      if (!row.phone) continue                       // phoneless contacts can't be queued
-      if (row.status === "do_not_contact") continue  // removed from rotation
+    const isDue = (row: (typeof rows)[number]): boolean => {
+      if (!row.phone) return false                       // phoneless contacts can't be queued
+      if (row.status === "do_not_contact") return false  // removed from rotation
       const tier = (row.tier || "C").trim().toUpperCase()
-      if (tier === "E") continue                     // tier E = excluded from queue
-      if (row.snooze_until && new Date(row.snooze_until) > now) continue
-
+      if (tier === "E") return false                     // tier E = excluded from queue
+      if (row.snooze_until && new Date(row.snooze_until) > now) return false
       const lastDate = row.last_contacted_at ? new Date(row.last_contacted_at) : null
       const cadenceDays = CADENCE[tier] ?? 45
-      if (daysSince(lastDate) < cadenceDays) continue // not due yet
+      return daysSince(lastDate) >= cadenceDays
+    }
 
+    for (const row of rows) {
+      const due = isDue(row)
+      if (row.pinned_at && row.status !== "do_not_contact") {
+        pinned.push({ ...toApiContact(row), inQueue: due })
+        continue
+      }
+      if (!due) continue
       const c = toApiContact(row)
       dueByType[c.type]++
       ;(c.type === "Agent" ? agents : others).push(c)
@@ -48,9 +62,15 @@ export async function GET() {
     agents.sort(queueOrder)
     others.sort(queueOrder)
     const queue = [...agents, ...others]
+    const lastMs = (id: string) => {
+      const at = rows.find((r) => r.id === id)?.last_contacted_at
+      return at ? new Date(at).getTime() : 0
+    }
+    pinned.sort((a, b) => lastMs(a.id) - lastMs(b.id))
 
     return NextResponse.json({
       contacts: queue,
+      pinned,
       total: queue.length,
       totalDue: queue.length,
       dueByType,

@@ -11,6 +11,7 @@ import { RelationshipField } from "./RelationshipField"
 import { RelationshipPhone } from "./RelationshipPhone"
 import { useRelationshipCall, CallButton, CallStatusLine } from "./RelationshipCall"
 import { CardLineButton } from "./RelationshipCardLine"
+import { PinButton } from "./RelationshipPin"
 import { CARD_LINE_DISPLAY } from "@/lib/card-line"
 import { ReplyPlanner } from "./ReplyPlanner"
 import { type Plan, type CoachTurn, requestDraft, requestCoach } from "@/lib/reply-client"
@@ -50,6 +51,9 @@ export interface ContactDetailContact {
   altPhones?: string[]
   // Card #: calls + texts go from the business-card line (408) 458-5442.
   useCardLine?: boolean
+  // Pin (2026-11-18): someone with a lead, in the tab's Pinned section.
+  pinnedAt?: string | null
+  pinNote?: string
   lastContacted: string
   notes: string
   hasNotes: boolean
@@ -69,6 +73,8 @@ interface Props {
   // The parent owns the Card # flag (optimistic flip + revert), so the queue
   // card and this modal stay in sync.
   onCardLineToggle?: (id: string, on: boolean) => void
+  // The parent owns the pin too (same optimistic pattern).
+  onPinChange?: (id: string, pinned: boolean, note: string) => void
 }
 
 const CATEGORY_OPTIONS = ["Agent", "Vendor", "Personal", "PM", "Investor", "PrivateMoney"] as const
@@ -132,7 +138,7 @@ function formatDateTime(iso: string): string {
   })
 }
 
-export function ContactDetailModal({ contact, onClose, onSendToast, onNotesSaved, onCategoryChanged, onTierChanged, onPhoneChanged, onDetailsChanged, onCardLineToggle }: Props) {
+export function ContactDetailModal({ contact, onClose, onSendToast, onNotesSaved, onCategoryChanged, onTierChanged, onPhoneChanged, onDetailsChanged, onCardLineToggle, onPinChange }: Props) {
   const [history, setHistory] = useState<InteractionEntry[]>([])
   const [loadingHistory, setLoadingHistory] = useState(true)
   const [notes, setNotes] = useState(contact.notes)
@@ -535,6 +541,16 @@ export function ContactDetailModal({ contact, onClose, onSendToast, onNotesSaved
               {contact.phone && onCardLineToggle && (
                 <span className="ml-1">
                   <CardLineButton on={!!contact.useCardLine} onToggle={() => onCardLineToggle(contact.id, !contact.useCardLine)} />
+                </span>
+              )}
+              {onPinChange && (
+                <span className="ml-1">
+                  <PinButton
+                    pinned={!!contact.pinnedAt}
+                    note={contact.pinNote ?? ""}
+                    onSave={(note) => onPinChange(contact.id, true, note)}
+                    onUnpin={() => onPinChange(contact.id, false, "")}
+                  />
                 </span>
               )}
             </div>

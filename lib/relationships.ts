@@ -18,7 +18,7 @@ export const RELATIONSHIP_TYPES: readonly RelationshipCategory[] = [
 
 // Column list for `select()` against the relationships table.
 export const REL_COLUMNS =
-  "id, name, phone, email, alt_phones, use_card_line, source, category, tier, notes, enriched_at, last_contacted_at, snooze_until, source_lead_id, status, cleanup_verdict, cleanup_reviewed_at"
+  "id, name, phone, email, alt_phones, use_card_line, source, category, tier, notes, enriched_at, last_contacted_at, snooze_until, source_lead_id, status, cleanup_verdict, cleanup_reviewed_at, pinned_at, pin_note"
 
 // Cleanup-mode triage verdicts (2026-07-16): keep = leave as-is, vague =
 // demoted to tier D, never = status set to do_not_contact.
@@ -46,6 +46,9 @@ export interface RelationshipRow {
   status: string | null
   cleanup_verdict: string | null
   cleanup_reviewed_at: string | null
+  // Pin (2026-11-18): someone with a lead for Ryan, shown at the top of the tab.
+  pinned_at?: string | null
+  pin_note?: string | null
 }
 
 // The shape the Relationships-tab UI consumes. Kept identical to the old
@@ -74,6 +77,9 @@ export interface ApiContact {
   dnc: boolean
   cleanupVerdict: CleanupVerdict | null
   cleanupReviewedAt: string | null
+  // Pin (2026-11-18): set = in the tab's Pinned section, out of the due queue.
+  pinnedAt: string | null
+  pinNote: string
 }
 
 export function daysSince(date: Date | null): number {
@@ -224,6 +230,8 @@ export function toApiContact(row: RelationshipRow): ApiContact {
         ? row.cleanup_verdict
         : null,
     cleanupReviewedAt: row.cleanup_reviewed_at,
+    pinnedAt: row.pinned_at ?? null,
+    pinNote: (row.pin_note ?? "").trim(),
   }
 }
 

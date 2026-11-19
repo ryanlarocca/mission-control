@@ -5,7 +5,7 @@ import {
   Send, RefreshCw, SkipForward, Phone, Loader2,
   UserCheck, User, Wrench, TrendingUp, Home, Building2,
   MessageSquare, AlertTriangle, CheckCircle2, Check, Search, X, Banknote,
-  ListChecks, Undo2, PhoneCall, Mail,
+  ListChecks, Undo2, PhoneCall, Mail, Pin,
 } from "lucide-react"
 import type { LucideIcon } from "lucide-react"
 import { ContactDetailModal } from "./ContactDetailModal"
@@ -15,6 +15,7 @@ import { RelationshipField } from "./RelationshipField"
 import { RelationshipPhone } from "./RelationshipPhone"
 import { useRelationshipCall, CallButton, CallStatusLine } from "./RelationshipCall"
 import { CardLineButton } from "./RelationshipCardLine"
+import { PinButton } from "./RelationshipPin"
 import { CleanupMode } from "./CleanupMode"
 import { ReplyPlanner } from "./ReplyPlanner"
 import { requestDraft, requestCoach, type Plan, type CoachTurn } from "@/lib/reply-client"
@@ -168,7 +169,14 @@ interface CRMSContact {
   hasNotes:      boolean
   notesStale:    boolean
   dnc?:          boolean   // removed from rotation (status = do_not_contact)
+  pinnedAt?:     string | null  // Pin (2026-11-18): in the Pinned section, out of the queue
+  pinNote?:      string
+  inQueue?:      boolean   // pinned rows only: also due today (unpin → back in the queue)
 }
+
+// The due queue = loaded contacts that aren't pinned. Pinned ones ride in the
+// same list (so every card patch reaches them) but show in their own section.
+const isQueued = (c: CRMSContact) => !c.pinnedAt && c.inQueue !== false
 
 // ══════════════════════════════════════════════════════════════════════════════
 // STYLE MAPS
@@ -488,7 +496,7 @@ function CRMSTabInner() {
       const res = await fetch("/api/crms/contacts", { cache: "no-store" })
       if (!res.ok) throw new Error()
       const data = await res.json()
-      const loaded: CRMSContact[] = (data.contacts || []).map((c: CRMSContact) => ({
+      const loaded: CRMSContact[] = [...(data.pinned || []), ...(data.contacts || [])].map((c: CRMSContact) => ({
         ...c,
         type: coerceType(c.type ?? c.category),
         category: coerceType(c.type ?? c.category),
@@ -500,7 +508,7 @@ function CRMSTabInner() {
       setLoadingContacts(false)
 
       // Auto-select first contact not already sent/skipped
-      const firstDue = loaded.find(c => !sent.has(c.id) && !skipped.has(c.id))
+      const firstDue = loaded.find(c => isQueued(c) && !sent.has(c.id) && !skipped.has(c.id))
       if (firstDue) {
         setSelectedId(firstDue.id)
         const initialMod = DEFAULT_MODALITY[firstDue.type]
@@ -887,6 +895,39 @@ function CRMSTabInner() {
     }
   }
 
+  // ── Pin (2026-11-18): someone with a lead goes to the Pinned section at the
+  // top. Optimistic on both lists, revert + toast if the write fails. Pinning
+  // someone found in search adds them to the loaded list (not queued) so the
+  // section can show them.
+  async function handlePin(id: string, pinned: boolean, note: string) {
+    const before = contacts.find(c => c.id === id) ?? allContacts.find(c => c.id === id)
+    if (!before) return
+    const prev = { pinnedAt: before.pinnedAt ?? null, pinNote: before.pinNote ?? "" }
+    const value = pinned
+      ? { pinnedAt: before.pinnedAt || new Date().toISOString(), pinNote: note }
+      : { pinnedAt: null, pinNote: "" }
+    // A queue contact (no inQueue yet) is due today: unpinning puts it back.
+    const apply = (v: { pinnedAt: string | null; pinNote: string }) => (c: CRMSContact) =>
+      c.id === id ? { ...c, ...v, inQueue: c.inQueue ?? true } : c
+    setContacts(list => list.some(c => c.id === id)
+      ? list.map(apply(value))
+      : [{ ...before, ...value, inQueue: false }, ...list])
+    setAllContacts(list => list.map(c => c.id === id ? { ...c, ...value } : c))
+    try {
+      const res = await fetch("/api/crms/pin", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id, pinned, note }),
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok || !data?.ok) throw new Error(data?.error || `HTTP ${res.status}`)
+    } catch (e) {
+      setContacts(list => list.map(c => c.id === id ? { ...c, ...prev } : c))
+      setAllContacts(list => list.map(c => c.id === id ? { ...c, ...prev } : c))
+      showSendToast(`${pinned ? "Pin" : "Unpin"} failed — ${e instanceof Error ? e.message : "try again"}`)
+    }
+  }
+
   // ── Send: advance UI immediately; fire API calls in background ──
   function handleSend() {
     if (!selectedContact) return
@@ -1173,7 +1214,7 @@ function CRMSTabInner() {
 
   function advanceSelection(excludeId: string) {
     const remaining = contacts.filter(c =>
-      c.id !== excludeId && !sent.has(c.id) && !skipped.has(c.id) && !removed.has(c.id)
+      isQueued(c) && c.id !== excludeId && !sent.has(c.id) && !skipped.has(c.id) && !removed.has(c.id)
     )
     const next = remaining[0]
     if (!next) { setSelectedId(""); setMobileView("list"); return }
@@ -1219,13 +1260,18 @@ function CRMSTabInner() {
   }
 
   // ── Derived ──
-  const dueContacts     = contacts.filter(c => !sent.has(c.id) && !skipped.has(c.id) && !removed.has(c.id))
+  const queueContacts   = contacts.filter(isQueued)
+  const dueContacts     = queueContacts.filter(c => !sent.has(c.id) && !skipped.has(c.id) && !removed.has(c.id))
+  // Pinned (2026-11-18): longest since last contact first (the API's order).
+  const pinnedContacts  = contacts.filter(c => !!c.pinnedAt && !c.dnc && !removed.has(c.id))
   // Selection is sticky: a contact that gets worked while selected (a
   // click-to-call connecting marks them sent) stays on screen through the
   // call, the transcription, and the saved summary — until Ryan hits Next.
   // Send / Skip / Remove / Mark Done all advance explicitly, so this only
   // ever shows an already-worked contact after a call.
   const selectedContact = dueContacts.find(c => c.id === selectedId)
+    ?? contacts.find(c => c.id === selectedId)
+    ?? null
 
   // Once the open card's draft is on screen (never competing with it), draft
   // the next two contacts in the queue.
@@ -1243,14 +1289,12 @@ function CRMSTabInner() {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [nextToPrefetch, generatingFor, openDrafted])
-    ?? contacts.find(c => c.id === selectedId)
-    ?? null
   const selectedWorked  = !!selectedContact && !dueContacts.some(c => c.id === selectedContact.id)
 
   // Worked-through meter (2026-09-21): the queue is the whole due list, so
   // progress is how much of it has been handled (sent, skipped, or removed)
   // out of what was due at load. Green only when nothing is left.
-  const listTotal = contacts.length
+  const listTotal = queueContacts.length
   const handled = listTotal - dueContacts.length
   const allDone = listTotal > 0 && dueContacts.length === 0
   const progressPct = listTotal > 0 ? Math.min(100, Math.round((handled / listTotal) * 100)) : 0
@@ -1352,6 +1396,41 @@ function CRMSTabInner() {
 
   return (
     <div className="space-y-3">
+
+      {/* Pinned (2026-11-18) — people with a lead for Ryan. Every day, above
+          the queue, until he unpins them. Tap a name to open the card. */}
+      {pinnedContacts.length > 0 && (
+        <div className="bg-zinc-900 border border-amber-900/50 rounded-lg overflow-hidden">
+          <div className="flex items-center gap-1.5 px-3 pt-2.5 pb-1.5">
+            <Pin className="w-3.5 h-3.5 text-amber-400" />
+            <span className="text-xs font-medium text-amber-300">Pinned</span>
+            <span className="text-xs text-zinc-600">— has a lead for you</span>
+          </div>
+          <div className="divide-y divide-zinc-800">
+            {pinnedContacts.map(c => (
+              <button
+                key={c.id}
+                type="button"
+                onClick={() => setDetailId(c.id)}
+                className="w-full text-left px-3 py-2.5 hover:bg-zinc-800 transition-colors"
+              >
+                <div className="flex items-center gap-2">
+                  <span className={`text-xs font-bold px-1 py-0.5 rounded border leading-none shrink-0 ${tierStyle[c.tier] ?? tierStyle.C}`}>
+                    {c.tier}
+                  </span>
+                  <span className="text-sm font-medium text-zinc-100 truncate flex-1 min-w-0">{c.name}</span>
+                  <span className="text-xs text-zinc-500 shrink-0">
+                    {c.lastContacted ? `last talked ${c.lastContacted}` : "never talked"}
+                  </span>
+                </div>
+                {c.pinNote && (
+                  <p className="text-xs text-amber-200/80 mt-0.5 truncate">{c.pinNote}</p>
+                )}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* Progress bar */}
       <div className="bg-zinc-900 border border-zinc-800 rounded-lg px-3 py-2.5 space-y-2">
@@ -1457,6 +1536,7 @@ function CRMSTabInner() {
                     </span>
                     <Icon className={`w-3.5 h-3.5 shrink-0 ${categoryColor[c.type] ?? "text-zinc-400"}`} />
                     <span className={`text-xs font-medium truncate flex-1 min-w-0 ${isRemoved ? "text-zinc-500 line-through" : "text-zinc-200"}`}>{c.name}</span>
+                    {c.pinnedAt && <Pin className="w-3 h-3 text-amber-400 shrink-0" aria-label="Pinned" />}
                     {isRemoved && (
                       <span className="text-[9px] font-bold px-1 py-0.5 rounded bg-red-500/10 text-red-400 border border-red-500/30 shrink-0 leading-none">
                         removed
@@ -1980,6 +2060,12 @@ function CRMSTabInner() {
                     onToggle={() => void handleCardLineToggle(selectedContact.id, !selectedContact.useCardLine)}
                   />
                 )}
+                <PinButton
+                  pinned={!!selectedContact.pinnedAt}
+                  note={selectedContact.pinNote ?? ""}
+                  onSave={(note) => void handlePin(selectedContact.id, true, note)}
+                  onUnpin={() => void handlePin(selectedContact.id, false, "")}
+                />
                 <button
                   onClick={() => void regenerate()}
                   disabled={!!generatingFor}
@@ -2090,6 +2176,7 @@ function CRMSTabInner() {
             setAllContacts(prev => prev.map(patch))
           }}
           onCardLineToggle={(id, on) => void handleCardLineToggle(id, on)}
+          onPinChange={(id, pinned, note) => void handlePin(id, pinned, note)}
         />
       )}
     </div>
