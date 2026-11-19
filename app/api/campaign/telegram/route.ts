@@ -569,6 +569,9 @@ async function legacyRelationshipSubject(text: string): Promise<AlertSubject | n
   return null
 }
 
+// What a bare "Draft:" means: write the reply the message plainly calls for.
+const BLANK_DRAFT_GIST = "No specific guidance from Ryan. Read their latest message and write the natural, obvious next reply in his voice: answer what they asked or said, move the conversation forward, and don't invent any facts, numbers or commitments."
+
 export async function POST(request: Request) {
   const secret = process.env.CAMPAIGN_TG_SECRET
   if (!secret) {
@@ -949,7 +952,7 @@ export async function POST(request: Request) {
     return NextResponse.json({ ok: true })
   }
 
-  const body = (msg.text || "").trim()
+  let body = (msg.text || "").trim()
   const repliedText = msg.reply_to_message?.text || msg.reply_to_message?.caption || ""
   // Who the replied-to alert is about, when it recorded that (lib/alertSubject,
   // 2026-11-10). Looked up once, on demand.
@@ -1330,15 +1333,11 @@ export async function POST(request: Request) {
 
   // "draft:" with no guidance must NEVER fall through to the literal-send
   // paths — Robert Moreno and Marisela Molina both received an email whose
-  // entire body was "draft:" (2026-08-03/06). Catch it before anything else.
-  if (/^draft:?\s*$/i.test(body)) {
-    await tg("sendMessage", {
-      chat_id: chatId,
-      text: "⚠️ Nothing sent. draft: needs guidance — e.g. draft: thank him and ask if the seller has a price in mind.",
-      reply_to_message_id: msg.message_id,
-    })
-    return NextResponse.json({ ok: true })
-  }
+  // entire body was "draft:" (2026-08-03/06). Until 2026-11-19 it was
+  // refused; now (Ryan: "I just want to put draft blank") a bare "Draft:"
+  // gets a default gist so it takes the normal draft paths below — every one
+  // posts a draft for ✅, nothing is sent as-is.
+  if (/^draft:?\s*$/i.test(body)) body = `draft: ${BLANK_DRAFT_GIST}`
 
   // Reply to a posted DRAFT message = revision feedback (2026-07-29, the
   // Pamela 4plex/8plex fix). Claude rewrites with the old draft + feedback,
