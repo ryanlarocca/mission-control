@@ -115,6 +115,11 @@ export async function resolveAgentContact(
     // triage ("never" — out of the daily queue) comes back to active on
     // a genuine inbound. Pass false for STOP / unsubscribe texts & emails.
     reactivate?: boolean
+    // Pass false for STOP / unsubscribe / remove replies: an existing card is
+    // still found (and marked do-not-contact by the caller), but a stranger
+    // who only asked to be removed gets NO new card (Ryan 2026-11-19: a
+    // "REMOVE" reply landed in his Relationships tab as a new tier-B agent).
+    create?: boolean
   }
 ): Promise<AgentContact> {
   const phone = args.phone?.trim() || null
@@ -149,7 +154,8 @@ export async function resolveAgentContact(
         if (leads && leads.length > 0) return { kind: "lead" }
       }
     }
-    // 5. Nobody has them — create the card.
+    // 5. Nobody has them — create the card (never for a remove request).
+    if (args.create === false) return { kind: "lead" }
     const created = await createAgentRelationship(sb, { phone, email, campaign, channel: args.channel, source: args.source })
     if (!created) return { kind: "lead" }
     // A simultaneous webhook may have created the same person's card.

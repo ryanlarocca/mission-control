@@ -42,7 +42,7 @@ export async function POST(request: NextRequest) {
   const selfTest = !!from && isOwnedNumber(from)
   const isStop = STOP_RE.test(body)
   const who = digits.length === 10 && !selfTest
-    ? await resolveAgentContact(sb, { phone: from, campaign: contact, channel: "sms", reactivate: !isStop })
+    ? await resolveAgentContact(sb, { phone: from, campaign: contact, channel: "sms", reactivate: !isStop, create: !isStop })
     : { kind: "lead" as const }
   const rel = who.kind === "relationship" ? who : null
   const label = rel ? `${describeAgent(rel)} ${fmt}` : contact?.name ? `<b>${esc(contact.name)}</b> ${fmt} (after T${contact.touch_number})` : `${fmt}${selfTest ? " (our own line — system test)" : " (not in campaign)"}`

@@ -430,8 +430,13 @@ async function handleContactMessage(
   const nowIso = new Date().toISOString()
 
   const firstLine = fresh.split(/\r?\n/).map((l) => l.trim()).find(Boolean) ?? ""
+  // The subject counts too: some agents send a new email with "REMOVE" as
+  // the subject and an empty body (Ryan 2026-11-19 — the body-only check
+  // missed it and it alerted as an AGENT REPLY).
+  const bareSubject = subject.replace(/^((re|fwd?|aw):\s*)+/i, "").trim()
   const isUnsub =
-    UNSUB_SHORT_RE.test(fresh) || UNSUB_SHORT_RE.test(firstLine) || UNSUB_RE.test(fresh.slice(0, 400))
+    UNSUB_SHORT_RE.test(fresh) || UNSUB_SHORT_RE.test(firstLine) || UNSUB_RE.test(fresh.slice(0, 400)) ||
+    UNSUB_SHORT_RE.test(bareSubject) || UNSUB_RE.test(bareSubject)
   if (isUnsub) {
     // Insert-as-gatekeeper FIRST (same pattern as genuine replies): this row
     // is what alreadyProcessed() checks. Without it, the message re-processed
@@ -442,7 +447,7 @@ async function handleContactMessage(
       contact_id: contact.id,
       kind: "email_reply",
       triage: "unsubscribe",
-      body: fresh.slice(0, 500),
+      body: (fresh || bareSubject).slice(0, 500),
       raw: { gmail_id: gmailId, thread_id: threadId, mailbox, send: removedSend },
     })
     if (unsubEvErr) {
@@ -452,7 +457,7 @@ async function handleContactMessage(
     await addSuppression(sb, {
       email: contact.email,
       name: contact.name,
-      reason: `replied "${fresh.slice(0, 80)}"`,
+      reason: `replied "${(fresh || bareSubject).slice(0, 80)}"`,
       source: "email_unsubscribe",
       source_ref: `campaign_contact:${contact.id}`,
       channel: "email",
@@ -463,10 +468,10 @@ async function handleContactMessage(
       .update({ status: "unsubscribed", next_touch_at: null, updated_at: nowIso })
       .eq("id", contact.id)
     await cancelQueuedSends(sb, contact.id, "unsubscribed")
-    const card = await cardForReply(sb, contact, sender, fresh, subject, false)
-    if (card) await markRelationshipDoNotContact(sb, card.id, `replied "${fresh.slice(0, 80)}" to the agent email campaign`)
+    const card = await cardForReply(sb, contact, sender, fresh || bareSubject, subject, false, null, false)
+    if (card) await markRelationshipDoNotContact(sb, card.id, `replied "${(fresh || bareSubject).slice(0, 80)}" to the agent email campaign`)
     const confirmed = await sendRemoveConfirmation(sb, gmail, contact, { gmailId, threadId, mailbox, sender })
-    await sendCampaignAlert(sb, `🚫 Campaign unsubscribe — <b>${esc(contact.name ?? contact.email ?? "")}</b> ("${esc(fresh.slice(0, 60))}") — handled automatically, drip stopped${card ? ", card marked do-not-contact" : ""}${confirmed ? `, confirmation sent from ${esc(mailbox)}` : ""}`)
+    await sendCampaignAlert(sb, `🚫 Campaign unsubscribe — <b>${esc(contact.name ?? contact.email ?? "")}</b> ("${esc((fresh || bareSubject).slice(0, 60))}") — handled automatically, drip stopped${card ? ", card marked do-not-contact" : ""}${confirmed ? `, confirmation sent from ${esc(mailbox)}` : ""}`)
     return
   }
 
@@ -527,13 +532,16 @@ async function handleContactMessage(
   // fully automatic, no confirm step. Everything else just tags the alert.
   // Runs before the card step so the phone numbers it pulled out of the
   // reply can land on the card in the same pass (2026-10-15).
-  const triage = await triageAgentReply({ name: contact.name, subject, body: fresh })
+  const triage = await triageAgentReply({ name: contact.name, subject, body: fresh || bareSubject })
+  const removing = !!triage && (triage.label === "remove" || triage.label === "retired_or_wrong_person")
 
   // The agent lands on a Relationships card (created tier B if nobody has
   // them) and the reply becomes an inbound email touch there (2026-10-01).
-  const card = await cardForReply(sb, contact, sender, fresh, subject, true, triage)
+  // A remove request only touches a card that already exists — it never
+  // creates one (2026-11-19).
+  const card = await cardForReply(sb, contact, sender, fresh, subject, !removing, triage, !removing)
 
-  if (triage && (triage.label === "remove" || triage.label === "retired_or_wrong_person")) {
+  if (triage && removing) {
     const why = triage.label === "retired_or_wrong_person" ? "retired / wrong person" : "asked to be removed"
     await addSuppression(sb, {
       email: contact.email,
@@ -758,7 +766,8 @@ async function cardForReply(
   body: string,
   subject: string,
   reactivate = true,
-  triage: ReplyTriage | null = null
+  triage: ReplyTriage | null = null,
+  create = true
 ): Promise<ReplyCard | null> {
   try {
     const lite: CampaignContactLite = {
@@ -770,7 +779,7 @@ async function cardForReply(
       touch_number: contact.touch_number,
       status: contact.status,
     }
-    const who = await resolveAgentContact(sb, { email: sender || contact.email, campaign: lite, channel: "email", reactivate })
+    const who = await resolveAgentContact(sb, { email: sender || contact.email, campaign: lite, channel: "email", reactivate, create })
     if (who.kind !== "relationship") return null
     const logged = await logInboundEmailTouch(sb, who, body, subject)
     const phonesLine = logged && triage?.phones.length ? await addReplyPhonesToCard(sb, who.id, triage.phones) : null
