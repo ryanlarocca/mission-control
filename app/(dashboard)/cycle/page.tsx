@@ -1,9 +1,11 @@
 import DisagreeButton from "@/components/cycle/DisagreeButton"
+import LatestCard from "@/components/cycle/LatestCard"
 import { getLeadsClient } from "@/lib/leads"
 import { BETS, configCalendar, configClaims, configDials, initialWeights } from "@/lib/marketCycle/config"
 import { longDate } from "@/lib/marketCycle/card"
 import { BET_EMOJI, betNow } from "@/lib/marketCycle/bets"
-import { betWeightsFrom, loadFromSupabase, todayPT } from "@/lib/marketCycle/data"
+import { betWeightsFrom, latestWriteAt, loadFromSupabase, todayPT } from "@/lib/marketCycle/data"
+import { alarmLine, betSigns, checkedStamp, latestGroups } from "@/lib/marketCycle/latest"
 import { DISPLAY, GROUP_ORDER, NEARBY, PRICE_BANDS, type DialDisplay } from "@/lib/marketCycle/display"
 import { checkpointDue, mondayOnOrAfter, nextCheckpoint } from "@/lib/marketCycle/schedule"
 import { computeVotes, corridorSeries } from "@/lib/marketCycle/votes"
@@ -280,8 +282,9 @@ export default async function CyclePage() {
   const due = checkpointDue(today, { calendar: state.calendar, readings: R, checkpoints: state.checkpoints }, state.tripwireEvents)
   const next = nextCheckpoint(today, { calendar: state.calendar, checkpoints: state.checkpoints })
   const nextReview = next ? `~${longDate(next.date)} (${next.kind})` : "not scheduled"
+  const allVotes = computeVotes(state.dials, R, today)
   const votes = new Map(
-    computeVotes(state.dials, R, today)
+    allVotes
       .filter((v) => v.vote === "bear" || v.vote === "base" || v.vote === "bull")
       .map((v) => [v.dial_id, v.vote as Scenario]),
   )
@@ -290,6 +293,13 @@ export default async function CyclePage() {
   const peakIds = [...NEARBY.map((n) => n.dial), ...zipDials.map((z) => `zhvi_zip_${z}_level`)]
   const allTime: Record<string, { as_of: string; value: number }> = loadError ? {} : await peaks(peakIds).catch(() => ({}))
   const sfrInv = loadError ? [] : await sfrInventory().catch(() => [] as Reading[])
+  // ---- latest numbers (top card): built before the page adds its own derived series to R
+  const lastWrite = loadError ? null : await latestWriteAt(getLeadsClient()).catch(() => null)
+  const reviewDay = next ? longDate(next.date) : null
+  const latestBets = loadError
+    ? []
+    : BETS.map((b) => ({ ...betSigns(b, allVotes, state, reviewDay), title: `${BET_EMOJI[b.id] ?? ""} ${b.id === "housing" ? "SCC houses" : "S&P 500"}` }))
+  const latestNums = loadError ? [] : latestGroups(state, today)
   R["scc_sfr_inventory"] = sfrInv
 
   // ---- one dial row
@@ -442,6 +452,8 @@ export default async function CyclePage() {
       </div>
 
       {loadError && <p className="rounded-lg border border-amber-800 bg-amber-950/40 p-2 text-xs text-amber-300">Couldn&apos;t load the stored data ({loadError}). Showing the thesis config only.</p>}
+
+      {!loadError && <LatestCard stamp={checkedStamp(lastWrite)} bets={latestBets} groups={latestNums} alarm={alarmLine(state)} nextReview={reviewDay} />}
 
       {BETS.map((b) => (
         <BetCard key={b.id} bet={b} weights={state.betWeights[b.id] ?? b.initial_weights} now={betNow(b, state)} accent={b.id !== "housing"} nextReview={nextReview} />

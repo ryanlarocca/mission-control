@@ -96,7 +96,7 @@ export async function loadFromSupabase(sb: SupabaseClient, today: string = today
   // 440 days: "vs last year" on a monthly print that lags ~6 weeks needs the same month a year earlier
   const recentSince = shiftDays(today, -440)
   const seasonalSince = shiftDays(today, -6 * 366)
-  const sel = "dial_id, as_of, value, source_url, raw"
+  const sel = "dial_id, as_of, value, source_url, raw, created_at"
   // Base series only (variant ''). collect-macro/bootstrap also store corridor variants
   // (10d_avg, 2d_close, drawdowns) under the same dial_id; votes compute their own reads
   // from the base prints, so a variant row here would be read as a second value that day.
@@ -141,6 +141,15 @@ export async function loadFromSupabase(sb: SupabaseClient, today: string = today
     ownedProperties: owned,
     missingTables,
   }
+}
+
+/** When the collectors last wrote anything: the newest cycle_readings row.
+ *  The daily job writes a row every morning (weekends too), so this is the
+ *  page's "checked this morning" heartbeat. */
+export async function latestWriteAt(sb: SupabaseClient): Promise<string | null> {
+  const { data, error } = await sb.from("cycle_readings").select("created_at").order("created_at", { ascending: false }).limit(1)
+  if (error) throw new Error(`cycle_readings: ${error.message}`)
+  return ((data ?? [])[0] as { created_at: string } | undefined)?.created_at ?? null
 }
 
 // ---------------------------------------------------------------- fixture

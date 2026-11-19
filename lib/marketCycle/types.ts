@@ -82,6 +82,8 @@ export interface Reading {
   value: number | null
   source_url?: string
   raw?: string | null
+  /** When the collector first wrote the row (Supabase only; /cycle "new this week"). */
+  created_at?: string
 }
 
 export interface Claim {
