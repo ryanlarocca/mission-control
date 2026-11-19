@@ -38,13 +38,17 @@ import {
   parseMergedMessage,
   parsePending,
   parseRenameCommand,
+  recategorizeRelationship,
+  deleteRelationship,
   renameRelationshipByPhone,
   retierRelationship,
   type ExtractedContact,
   type ImageMediaType,
   type Tier,
 } from "@/lib/contactIntake"
-import { CALENDAR_INTENT_RE, createCalendarEvent, deleteCalendarEvent, extractEvent, formatWhen } from "@/lib/calendarIntake"
+import { CALENDAR_INTENT_RE, createCalendarEvent, deleteCalendarEvent, extractEvent, formatWhen, type ExtractedEvent } from "@/lib/calendarIntake"
+import { buildPhotoSummary, planPhoto, PHOTO_SOURCE, REL_CAT_PREFIX, REL_DEL_PREFIX, type ContactOutcome, type EventOutcome, type PhotoPlan } from "@/lib/photoBrain"
+import { gatherQr } from "@/lib/photoQr"
 import { APPT_UNDO_PREFIX, CAL_UNDO_PREFIX, findLeadForEvent, getClusterAppointment, pacificDayOf, setClusterAppointment, undoAppointment } from "@/lib/appointments"
 import { INBOX_CB_PREFIX, advanceSetup, answerInboxQuestion, bindReplyPrompt, cardForReplyPrompt, draftDealReply, findInboxByTgMessage, handleInboxCallback, handleInboxCommand, looksLikeQuestion, recordInboxReply, takeOpenReplyPrompt } from "@/lib/inboxAgent"
 import { CYCLE_DISAGREE_PREFIX } from "@/lib/marketCycle/card"
@@ -71,8 +75,10 @@ import { LEAD_CALL_CB_PREFIX } from "@/lib/websiteLead"
 export const dynamic = "force-dynamic"
 export const runtime = "nodejs"
 // draft:/photo intake wait on a Claude API call; planner redrafts run the
-// Opus writer in waitUntil after the webhook has answered.
-export const maxDuration = 120
+// Opus writer in waitUntil after the webhook has answered. 300 since the
+// photo brain (2026-11-18): QR link fetch + an Opus vision plan + several
+// inserts / calendar writes all run in one waitUntil.
+export const maxDuration = 300
 
 const CALL_INTENT_RE = /^(please\s+)?call(\s+(her|him|them|back))*(\s+back)?[.!\s]*$/i
 
@@ -84,6 +90,8 @@ type TgMessage = {
   photo?: Array<{ file_id: string; file_size?: number; width?: number; height?: number }>
   document?: { file_id: string; mime_type?: string; file_size?: number }
   reply_to_message?: { message_id?: number; text?: string; caption?: string }
+  /** present on callback_query.message — the buttons the tapped message carries */
+  reply_markup?: { inline_keyboard?: Array<Array<{ text: string; callback_data?: string }>> }
 }
 type TgUpdate = {
   update_id?: number
@@ -211,7 +219,7 @@ async function addContactAndReport(chatId: number, replyTo: number | undefined, 
   })
 }
 
-const HELP_TEXT = "Reply to a specific alert to act on it (tap-and-reply). Buttons on alerts work too. Send a screenshot of a contact card with a caption (e.g. \"add as personal, tier A\") to add them to Relationships. To put something on the calendar, just say it: \"appointment with Ana at 123 Main St tomorrow 2pm\" (or send an invite screenshot captioned \"add to calendar\"). Reply to a call alert with \"name: Dave Chen, agent, tier B\" to name a new contact."
+const HELP_TEXT = "Reply to a specific alert to act on it (tap-and-reply). Buttons on alerts work too. Send any photo or screenshot — a business card, a table of cards, a QR code on someone's phone, a text about a call, an event flyer or invite — and I'll add the people to Relationships and put the calls/events on your calendar. A note is optional (e.g. \"all agents from the Santa Clara meetup, tier B\"). To put something on the calendar by text, just say it: \"appointment with Ana at 123 Main St tomorrow 2pm\". Reply to a call alert with \"name: Dave Chen, agent, tier B\" to name a new contact."
 
 /** Text or photo(+caption) → Google Calendar event (2026-08-21, replaces the
  * Thadius calendar-events skill). Creates immediately when unambiguous;
@@ -252,6 +260,23 @@ async function handleCalendar(chatId: number, msg: TgMessage, text: string, opts
     })
     return
   }
+  const booked = await bookEvent({ ...event, summary: event.summary, start: event.start, end: event.end })
+  await tg("sendMessage", {
+    chat_id: chatId,
+    text: booked.text,
+    reply_to_message_id: msg.message_id,
+    disable_web_page_preview: true,
+    ...(booked.undo ? { reply_markup: { inline_keyboard: [[{ text: "↩️ Undo", callback_data: booked.undo }]] } } : {}),
+  })
+}
+
+type BookableEvent = ExtractedEvent & { summary: string; start: string; end: string }
+
+/** Create one calendar event (or spot it's already on the lead card) — the
+ *  body of handleCalendar, shared with the photo brain (2026-11-18).
+ *  `text` is the stand-alone reply handleCalendar has always sent; `line` is
+ *  the shorter form for the photo summary; `undo` the ↩️ callback, if any. */
+async function bookEvent(event: BookableEvent): Promise<{ text: string; line: string; undo: string | null }> {
   // A named lead → the same event is their Appointment milestone. If their
   // card already holds this day's appointment with a calendar event (booked
   // from the call), say so instead of adding a second event.
@@ -267,14 +292,12 @@ async function handleCalendar(chatId: number, msg: TgMessage, text: string, opts
     const cur = await getClusterAppointment(sb, found.leadId)
     if (cur?.date === day && cur.details?.event_id) {
       const d = cur.details
-      await tg("sendMessage", {
-        chat_id: chatId,
-        text: `📅 Already booked — ${found.name}: ${d.end && /T\d{2}:/.test(d.start) ? formatWhen({ start: d.start, end: d.end, allDay: false }) : day}${d.location ? `\n📍 ${d.location}` : ""}\nIt's on the lead card and your calendar, so I didn't add it twice.${d.html_link ? `\n${d.html_link}` : ""}`,
-        reply_to_message_id: msg.message_id,
-        disable_web_page_preview: true,
-        reply_markup: { inline_keyboard: [[{ text: "↩️ Undo", callback_data: `${APPT_UNDO_PREFIX}${found.leadId}` }]] },
-      })
-      return
+      const when = d.end && /T\d{2}:/.test(d.start) ? formatWhen({ start: d.start, end: d.end, allDay: false }) : day
+      return {
+        text: `📅 Already booked — ${found.name}: ${when}${d.location ? `\n📍 ${d.location}` : ""}\nIt's on the lead card and your calendar, so I didn't add it twice.${d.html_link ? `\n${d.html_link}` : ""}`,
+        line: `📅 Already booked — ${found.name}: ${when} (on the lead card and your calendar, not added twice)`,
+        undo: `${APPT_UNDO_PREFIX}${found.leadId}`,
+      }
     }
   }
   const out = await createCalendarEvent(event)
@@ -294,15 +317,15 @@ async function handleCalendar(chatId: number, msg: TgMessage, text: string, opts
     }
   }
   const undo = linked ? `${APPT_UNDO_PREFIX}${linked.leadId}` : out.id ? `${CAL_UNDO_PREFIX}${out.id}` : null
-  await tg("sendMessage", {
-    chat_id: chatId,
+  return {
     text: out.success
       ? `📅 ${out.summary} — ${out.when}${event.location ? `\n📍 ${event.location}` : ""}${linked ? `\n👤 Also set as the appointment on ${linked.name}'s lead card.` : ""}${out.htmlLink ? `\n${out.htmlLink}` : ""}`
       : `⚠️ Not added — ${out.error}`,
-    reply_to_message_id: msg.message_id,
-    disable_web_page_preview: true,
-    ...(out.success && undo && undo.length <= 64 ? { reply_markup: { inline_keyboard: [[{ text: "↩️ Undo", callback_data: undo }]] } } : {}),
-  })
+    line: out.success
+      ? `📅 ${out.summary} — ${out.when}${event.location ? `\n    📍 ${event.location}` : ""}${linked ? `\n    👤 Also set as the appointment on ${linked.name}'s lead card.` : ""}`
+      : `⚠️ ${event.summary} — not added to the calendar: ${out.error}`,
+    undo: out.success && undo && undo.length <= 64 ? undo : null,
+  }
 }
 
 /** Photo (+ caption) → Relationships contact. Replaces the old Thadius
@@ -356,6 +379,112 @@ async function handleContactPhoto(chatId: number, msg: TgMessage): Promise<void>
   await addContactAndReport(chatId, msg.message_id, contact)
 }
 
+/** Every photo / image document → one plan (lib/photoBrain, 2026-11-18): any
+ * QR is decoded in code (and its link fetched), Opus reads the image + the
+ * optional note and lists the contacts to add and the events to book; this
+ * runs them and sends ONE summary with per-contact category / undo buttons.
+ *
+ * Returns false only when nothing has happened yet (no file, the planner
+ * failed) — the caller then falls back to the old caption-routed flow. Once
+ * the plan is executing, a crash is reported instead: falling back then
+ * could add the same contact twice. */
+async function handlePhotoBrain(chatId: number, msg: TgMessage): Promise<boolean> {
+  const note = msg.caption ?? ""
+  const fileId = msg.photo?.length ? msg.photo[msg.photo.length - 1].file_id : msg.document?.file_id
+  if (!fileId) return false
+  const img = await tgDownload(fileId)
+  if ("error" in img) {
+    await tg("sendMessage", { chat_id: chatId, text: `⚠️ Couldn't fetch the image — ${img.error}`, reply_to_message_id: msg.message_id })
+    return true
+  }
+  const { findings, notes } = await gatherQr(Buffer.from(img.base64, "base64"))
+  const { plan, error } = await planPhoto({ image: img, note, qr: findings })
+  if (!plan) {
+    console.error("[campaign-tg] photo brain plan failed — falling back:", error)
+    return false
+  }
+  try {
+    await runPhotoPlan(chatId, msg, plan, notes)
+  } catch (e) {
+    console.error("[campaign-tg] photo brain run failed:", e instanceof Error ? e.message : String(e))
+    await tg("sendMessage", {
+      chat_id: chatId,
+      text: `⚠️ That photo half-worked and then crashed — ${e instanceof Error ? e.message : String(e)}. Check Relationships / your calendar before re-sending it.`,
+      reply_to_message_id: msg.message_id,
+    })
+  }
+  return true
+}
+
+async function runPhotoPlan(chatId: number, msg: TgMessage, plan: PhotoPlan, qrNotes: string[]): Promise<void> {
+  const reply = { reply_to_message_id: msg.message_id, allow_sending_without_reply: true }
+  if (plan.kind === "unclear" || (!plan.contacts.length && !plan.events.length)) {
+    await tg("sendMessage", {
+      chat_id: chatId,
+      text: `🤔 ${plan.question ?? "I couldn't tell what you want done with that photo."}\nResend it with a short note — e.g. "add these agents", "lender, tier B" or "put this call on my calendar".${qrNotes.length ? `\nℹ️ ${qrNotes.join("\nℹ️ ")}` : ""}`,
+      ...reply,
+    })
+    return
+  }
+
+  // Contacts one at a time, so two copies of the same card in one photo
+  // dedupe against each other.
+  const contacts: ContactOutcome[] = []
+  for (const c of plan.contacts) {
+    if (!c.name) {
+      const reach = [c.phone ? fmtPhone(c.phone) : null, c.email].filter(Boolean).join(", ")
+      contacts.push({ status: "skipped", reason: `Skipped a card with no name${reach ? ` (${reach})` : ""} — resend with the name in the note.` })
+      continue
+    }
+    const tier: Tier = c.tier ?? "C"
+    try {
+      const dups = await findDuplicates({ name: c.name, phone: c.phone, email: c.email })
+      if (dups.length) {
+        const pending: ExtractedContact = {
+          name: c.name, phone: c.phone, email: c.email, category: c.category, tier: c.tier,
+          source: PHOTO_SOURCE, notes: c.notes, otherNames: [], uncertain: c.uncertain,
+        }
+        await tg("sendMessage", { chat_id: chatId, text: formatPending(pending, dups), ...reply })
+        contacts.push({ status: "duplicate", name: c.name })
+        continue
+      }
+      const out = await insertRelationship({
+        name: c.name, phone: c.phone, email: c.email, category: c.category, tier,
+        source: PHOTO_SOURCE, notes: c.notes,
+      })
+      if (out.success && out.id) {
+        contacts.push({
+          status: "added", id: out.id, name: c.name, category: c.category, tier,
+          phone: c.phone, email: c.email, alternatives: c.categoryAlternatives, uncertain: c.uncertain,
+        })
+      } else {
+        contacts.push({ status: "failed", name: c.name, error: out.error ?? "insert failed" })
+      }
+    } catch (e) {
+      contacts.push({ status: "failed", name: c.name, error: e instanceof Error ? e.message : String(e) })
+    }
+  }
+
+  const events: EventOutcome[] = []
+  for (const ev of plan.events) {
+    try {
+      const b = await bookEvent(ev)
+      events.push({ line: b.line, undo: b.undo, label: ev.summary.length > 24 ? `${ev.summary.slice(0, 23)}…` : ev.summary })
+    } catch (e) {
+      events.push({ line: `⚠️ ${ev.summary} — not added to the calendar: ${e instanceof Error ? e.message : String(e)}`, undo: null, label: ev.summary })
+    }
+  }
+
+  const { text, keyboard } = buildPhotoSummary({ contacts, events, notes: qrNotes, question: plan.question })
+  await tg("sendMessage", {
+    chat_id: chatId,
+    text,
+    ...reply,
+    disable_web_page_preview: true,
+    ...(keyboard.length ? { reply_markup: { inline_keyboard: keyboard } } : {}),
+  })
+}
+
 /** Reply to a ⏸ PENDING CONTACT message: add / add anyway / update / skip. */
 async function handlePendingReply(chatId: number, msg: TgMessage, pendingText: string, body: string): Promise<boolean> {
   const pending = parsePending(pendingText)
@@ -392,7 +521,9 @@ async function handlePendingReply(chatId: number, msg: TgMessage, pendingText: s
     // Tier override inline: "add as B"
     const tierM = /\b(?:as|tier|level)\s+([a-e])\b/i.exec(b)
     if (tierM) c.tier = tierM[1].toUpperCase() as Tier
-    if (!c.name || !c.category || (!c.phone && !c.email)) {
+    // A photo-brain card may have neither phone nor email (it's added anyway
+    // and flagged); the older flows still require one.
+    if (!c.name || !c.category || (!c.phone && !c.email && c.source !== PHOTO_SOURCE)) {
       await tg("sendMessage", { chat_id: chatId, text: "⚠️ That pending contact is missing required fields — re-send the screenshot.", reply_to_message_id: msg.message_id })
       return true
     }
@@ -523,6 +654,42 @@ export async function POST(request: Request) {
         const label = out.label.charAt(0).toUpperCase() + out.label.slice(1)
         await tg("sendMessage", { chat_id: chatId, text: out.ok ? `↩️ ${label}.` : `⚠️ ${label}.`, reply_to_message_id: cardId, disable_web_page_preview: true })
       })().catch((e) => console.error("[campaign-tg] appointment undo failed:", e instanceof Error ? e.message : String(e))))
+      return NextResponse.json({ ok: true })
+    }
+    // Photo-brain summary buttons (2026-11-18, lib/photoBrain): "Sarah→Investor"
+    // re-categorizes the card the photo just added; "↩️ Sarah" deletes it
+    // (only a card the photo flow made in the last 7 days).
+    const relCat = new RegExp(`^${REL_CAT_PREFIX}([0-9a-f-]{36}):([A-Za-z]+)$`).exec(cb.data)
+    const relDel = new RegExp(`^${REL_DEL_PREFIX}([0-9a-f-]{36})$`).exec(cb.data)
+    if ((relCat || relDel) && typeof chatId === "number") {
+      const cardId = cb.message?.message_id
+      const id = (relCat ?? relDel)![1]
+      let ok: boolean
+      let msgText: string
+      if (relCat) {
+        const out = await recategorizeRelationship(id, relCat[2])
+        ok = out.success
+        msgText = out.success ? `✅ ${out.name || "Contact"} → ${out.category}` : `⚠️ Not changed — ${out.error}`
+      } else {
+        const out = await deleteRelationship(id)
+        ok = out.success
+        msgText = out.success ? `↩️ Removed ${out.name || "that contact"}` : `⚠️ Not removed — ${out.error}`
+      }
+      await tg("answerCallbackQuery", { callback_query_id: cb.id, text: msgText.slice(0, 190) })
+      if (ok) {
+        // Drop the buttons that no longer apply: all of this contact's after a
+        // delete, its category choices after a re-categorize.
+        const rows = cb.message?.reply_markup?.inline_keyboard ?? []
+        const keep = rows
+          .map((row) => row.filter((b) => {
+            const d = b.callback_data ?? ""
+            if (!d.includes(id)) return true
+            return relCat ? d.startsWith(REL_DEL_PREFIX) : false
+          }))
+          .filter((row) => row.length)
+        await tg("editMessageReplyMarkup", { chat_id: chatId, message_id: cardId, reply_markup: { inline_keyboard: keep } })
+      }
+      await tg("sendMessage", { chat_id: chatId, text: msgText, reply_to_message_id: cardId, allow_sending_without_reply: true })
       return NextResponse.json({ ok: true })
     }
     // Signed contract ↩️ Undo (2026-11-09, lib/deals): the e-sign service's
@@ -754,19 +921,29 @@ export async function POST(request: Request) {
   if (!msg || typeof chatId !== "number") return NextResponse.json({ ok: true })
   if (allowedChat && String(chatId) !== String(allowedChat)) return NextResponse.json({ ok: true })
 
-  // ---- Photo → Relationships contact (2026-08-20, replaces Thadius) ----
-  // Any image sent to this bot is a contact-intake request; the caption
-  // carries category/tier ("add this personal relationship ... A level").
+  // ---- Photo → photo brain (2026-11-18; contact intake since 2026-08-20) ----
+  // Every image goes to the planner (lib/photoBrain): cards, a table of cards,
+  // a QR on someone's phone, a text thread about a call, an event flyer — no
+  // caption needed. If the planner can't run, the old caption routing takes
+  // over (calendar word → handleCalendar, else contact intake).
   // Ack Telegram immediately and finish in the background (waitUntil keeps
   // the function alive) — a slow vision call must never make Telegram
   // re-deliver the update, which would double-add the contact.
   if (msg.photo?.length || (msg.document?.mime_type ?? "").startsWith("image/")) {
     const caption = msg.caption ?? ""
-    const job = CALENDAR_INTENT_RE.test(caption) ? handleCalendar(chatId, msg, caption) : handleContactPhoto(chatId, msg)
+    const job = (async () => {
+      let handled = false
+      try {
+        handled = await handlePhotoBrain(chatId, msg)
+      } catch (e) {
+        console.error("[campaign-tg] photo brain threw — falling back:", e instanceof Error ? e.message : String(e))
+      }
+      if (!handled) await (CALENDAR_INTENT_RE.test(caption) ? handleCalendar(chatId, msg, caption) : handleContactPhoto(chatId, msg))
+    })()
     waitUntil(
       job.catch(async (e) => {
-        console.error("[campaign-tg] contact photo failed:", e instanceof Error ? e.message : String(e))
-        await tg("sendMessage", { chat_id: chatId, text: `⚠️ Contact intake crashed — ${e instanceof Error ? e.message : String(e)}`, reply_to_message_id: msg.message_id })
+        console.error("[campaign-tg] photo job failed:", e instanceof Error ? e.message : String(e))
+        await tg("sendMessage", { chat_id: chatId, text: `⚠️ Photo handling crashed — ${e instanceof Error ? e.message : String(e)}`, reply_to_message_id: msg.message_id })
       })
     )
     return NextResponse.json({ ok: true })

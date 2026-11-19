@@ -218,6 +218,43 @@ export async function retierRelationship(id: string, tier: Tier): Promise<{ succ
   return error ? { success: false, error: error.message } : { success: true }
 }
 
+// ---- Photo-brain buttons (2026-11-18) ----------------------------------
+// The summary after a photo carries "Sarah→Investor" (rcat:) and "↩️ Sarah"
+// (rdel:) buttons per contact it added.
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
+export async function recategorizeRelationship(
+  id: string,
+  category: string
+): Promise<{ success: boolean; name?: string; category?: Category; error?: string }> {
+  if (!UUID_RE.test(id)) return { success: false, error: "bad contact id" }
+  const cat = asIntakeCategory(category)
+  if (!cat) return { success: false, error: `unknown category "${category}"` }
+  const sb = getLeadsClient()
+  const { data, error } = await sb.from("relationships").update({ category: cat }).eq("id", id).select("id, name").maybeSingle()
+  if (error) return { success: false, error: error.message }
+  if (!data) return { success: false, error: "that contact is gone" }
+  return { success: true, name: String(data.name ?? ""), category: cat }
+}
+
+/** ↩️ on a photo summary. Only removes a card the photo flow itself created
+ *  in the last 7 days — never an older or hand-made card. */
+export async function deleteRelationship(id: string): Promise<{ success: boolean; name?: string; error?: string }> {
+  if (!UUID_RE.test(id)) return { success: false, error: "bad contact id" }
+  const sb = getLeadsClient()
+  const { data: row, error: readErr } = await sb.from("relationships").select("id, name, source, created_at").eq("id", id).maybeSingle()
+  if (readErr) return { success: false, error: readErr.message }
+  if (!row) return { success: false, error: "that contact is already gone" }
+  const name = String(row.name ?? "")
+  if (row.source !== "telegram photo") return { success: false, name, error: `${name || "That card"} wasn't added from a photo — remove it in Mission Control` }
+  const age = Date.now() - new Date(String(row.created_at)).getTime()
+  if (!(age >= 0 && age <= 7 * 24 * 3600_000)) return { success: false, name, error: `${name || "That card"} is more than 7 days old — remove it in Mission Control` }
+  const { error } = await sb.from("relationships").delete().eq("id", id).eq("source", "telegram photo")
+  if (error) return { success: false, name, error: error.message }
+  return { success: true, name }
+}
+
 // ---- Rename a contact from Telegram (2026-10-06) ----------------------
 // Ryan hands out the business card; the caller lands in Relationships as
 // "(408) 513-4444" (office-inbound placeholder). He names them by replying

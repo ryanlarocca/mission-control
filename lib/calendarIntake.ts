@@ -37,7 +37,7 @@ export interface ExtractedEvent {
   person?: string | null
 }
 
-function pacificNow(): { iso: string; human: string; offset: string } {
+export function pacificNow(): { iso: string; human: string; offset: string } {
   const now = new Date()
   const parts = new Intl.DateTimeFormat("en-US", {
     timeZone: "America/Los_Angeles",
