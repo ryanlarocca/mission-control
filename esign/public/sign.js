@@ -6,6 +6,17 @@
   var sheet = $('sheet'), tab = $('signtab'), preview = $('sigpreview'), typed = $('typed_name'), agree = $('agree'), finish = $('finish'), hint = $('finishhint');
   var pad = $('pad'), clearBtn = $('clearpad'), err = $('sheeterr'), adoptBtn = $('adopt'), cancelBtn = $('cancelsheet');
   var mode = 'type', ctx, drawing = false, drawn = false, last, adopted = false, submitted = false;
+  // Initials boxes (several signers on a document's own lines): each one must be tapped before signing.
+  var initsTotal = +(form.getAttribute('data-inits') || 0), letters = form.getAttribute('data-initials') || '', tapped = {};
+  var initTabs = Array.prototype.slice.call(document.querySelectorAll('.inittab'));
+  function initialsOf(name) { return name.split(/[\s-]+/).filter(Boolean).map(function (w) { return w[0].toUpperCase(); }).slice(0, 3).join(''); }
+  function initsLeft() { var n = 0; initTabs.forEach(function (t) { if (!tapped[t.getAttribute('data-i')]) n++; }); return initsTotal ? n : 0; }
+  function paintInits() {
+    initTabs.forEach(function (t) { var on = !!tapped[t.getAttribute('data-i')]; t.classList.toggle('done', on); var sp = t.querySelector('.ini'); sp.textContent = on ? letters : ''; sp.style.fontFamily = fontOf(pickedFont()); });
+    $('f_initials').value = Object.keys(tapped).filter(function (k) { return tapped[k]; }).sort().join(',');
+  }
+  initTabs.forEach(function (t) { t.addEventListener('click', function () { if (submitted) return; var k = t.getAttribute('data-i'); tapped[k] = !tapped[k]; paintInits(); refresh(); }); });
+  function firstUntapped() { for (var i = 0; i < initTabs.length; i++) if (!tapped[initTabs[i].getAttribute('data-i')]) return initTabs[i]; return null; }
 
   function fontOf(key) { var el = document.querySelector('.fontprev[data-font="' + key + '"]'); return el ? el.style.fontFamily : 'cursive'; }
   function pickedFont() { var r = document.querySelector('input[name=fontpick]:checked'); return r ? r.value : 'greatvibes'; }
@@ -90,6 +101,7 @@
     if (png) { var img = document.createElement('img'); img.src = png; img.alt = 'your signature'; preview.appendChild(img); }
     else { var sp = document.createElement('span'); sp.textContent = name; sp.style.fontFamily = fontOf(pickedFont()); preview.appendChild(sp); fit(sp, Math.max(12, Math.min(28, Math.round(preview.clientHeight * 1.15))), 9, preview); }
     tab.classList.add('signed'); tab.setAttribute('aria-label', 'Your signature — tap to change'); adopted = true; closeSheet();
+    letters = initialsOf(name); paintInits();
     hint.innerHTML = 'Signature added. Tick the box, then tap <strong>Finish</strong>. Tap your signature on the document to change it.';
     setTimeout(function () { $('finishcard').scrollIntoView({ behavior: 'smooth', block: 'center' }); }, 60);
     refresh();
@@ -100,6 +112,7 @@
   if (onetap) {
     onetap.addEventListener('click', function () {
       if (submitted) return;
+      if (initsLeft()) { var t = firstUntapped(); var m = $('onetapmsg'); if (m) { m.textContent = 'Tap each yellow Initial tab on the document first (' + initsLeft() + ' left).'; m.hidden = false; } if (t) t.scrollIntoView({ behavior: 'smooth', block: 'center' }); return; }
       var img = document.querySelector('#savedcard .savedsig img');
       $('f_typed_name').value = onetap.getAttribute('data-name');
       $('f_method').value = onetap.getAttribute('data-method');
@@ -114,7 +127,13 @@
     });
   }
 
-  function refresh() { finish.disabled = !(adopted && agree.checked); agree.parentNode.classList.toggle('on', agree.checked); }
+  function refresh() {
+    var left = initsLeft();
+    finish.disabled = !(adopted && agree.checked && !left); agree.parentNode.classList.toggle('on', agree.checked);
+    if (adopted && left) hint.innerHTML = 'Signature added. Now tap each yellow <strong>Initial</strong> tab (' + left + ' left), tick the box, then tap <strong>Finish</strong>.';
+    else if (adopted) hint.innerHTML = 'Signature added. Tick the box, then tap <strong>Finish</strong>. Tap your signature on the document to change it.';
+    var m = $('onetapmsg'); if (m && !left) m.hidden = true;
+  }
   agree.addEventListener('change', refresh); refresh();
   finish.addEventListener('click', function () {
     if (finish.disabled || submitted) return;

@@ -191,8 +191,12 @@ app.post("/s/:token/sign", async (c) => {
   const { str } = await parseForm(c)
   const spot = signSpot(envelope, signer)
   if (str("agree") !== "1") return html(c, V.reviewPage({ envelope, signer, token, saved: E.savedSignatureFor(signer), spot, error: "Please tick the box to confirm you've read the document." }))
+  // Initials boxes must each have been tapped on the page (several signers on the document's own lines).
+  const initFields = envelope.fields_json && envelope.kind !== "self" ? JSON.parse(envelope.fields_json).filter((f) => f.signerId === signer.id && f.kind === "initials") : []
+  const acked = new Set(str("initials_ack").split(",").filter(Boolean).map(Number))
+  if (initFields.some((_, k) => !acked.has(k))) return html(c, V.reviewPage({ envelope, signer, token, saved: E.savedSignatureFor(signer), spot, error: "Please tap each yellow Initial tab on the document before signing." }), 400)
   try {
-    await E.recordSign(signer, envelope, { typedName: str("typed_name"), method: str("method"), signaturePng: str("signature_png"), font: str("font"), reused: str("reused") === "1" }, await ctxOf(c))
+    await E.recordSign(signer, envelope, { typedName: str("typed_name"), method: str("method"), signaturePng: str("signature_png"), font: str("font"), reused: str("reused") === "1", initialed: initFields.map((f) => f.page) }, await ctxOf(c))
   } catch (e) {
     if (e instanceof E.UserError) return html(c, V.reviewPage({ envelope, signer, token, saved: E.savedSignatureFor(signer), spot, error: e.message }), 400)
     console.error("[esign] sign failed:", e)

@@ -482,6 +482,8 @@ async function drawCertificate(doc, fonts, envelope, signers, events, { signedSh
     kv("Signed", s.signed_at ? `${fmtTsPT(s.signed_at)} · IP ${s.sign_ip ?? "?"} · ${geoLabel(s.sign_geo)} · ${deviceLabel(s.sign_ua)}` : "—")
     if (s.signed_at) {
       kv("Signature", `${s.signature_method === "drawn" ? "Drawn on screen with finger/stylus" : `Typed (style: ${SIGNATURE_FONTS[fontKey(s.signature_font)].label})`} · legal name typed: "${s.typed_name}" · placed on ${s.placement === "template" ? "the agreement's signature line" : s.placement === "template2" ? "the agreement's second seller signature line" : s.placement === "template_buyer2" ? "the document's second buyer signature line" : s.placement === "fields" ? (envelope.kind === "self" ? "the document's own signature line" : "the document's own signature, initial and date lines") : "the Signature Addendum"}`)
+      const initPages = envelope.fields_json && envelope.kind !== "self" ? JSON.parse(envelope.fields_json).filter((f) => f.signerId === s.id && f.kind === "initials").map((f) => f.page) : []
+      if (initPages.length) kv("Initials", `${initPages.length} initials box${initPages.length === 1 ? "" : "es"} (page${new Set(initPages).size > 1 ? "s" : ""} ${[...new Set(initPages)].join(", ")}), each tapped separately by the signer before signing`)
       kv("Intent", `Clicked "I agree and sign" after reviewing all ${envelope.page_count} page${envelope.page_count === 1 ? "" : "s"}`)
     }
     kv("SMS verification", s.sms_verified ? "Passed" : "Not requested")

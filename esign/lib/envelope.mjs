@@ -437,7 +437,7 @@ export function savedSignatureFor(signer) {
   }
 }
 
-export async function recordSign(signer, envelope, { typedName, method, signaturePng, font, reused = false }, ctx) {
+export async function recordSign(signer, envelope, { typedName, method, signaturePng, font, reused = false, initialed = null }, ctx) {
   if (envelope.status !== "in_progress") throw new UserError("This document is no longer open for signing")
   if (signer.status === "signed") throw new UserError("You already signed this document")
   if (!signer.consented_at) throw new UserError("Please accept the electronic signature consent first")
@@ -456,7 +456,7 @@ export async function recordSign(signer, envelope, { typedName, method, signatur
   const r = run(`UPDATE signers SET status = 'signed', signed_at = ?, sign_ip = ?, sign_ua = ?, sign_geo = ?, typed_name = ?, signature_method = ?, signature_png = ?, signature_font = ?
      WHERE id = ? AND status != 'signed'`, ts, ctx.ip, ctx.ua, ctx.geo ? JSON.stringify(ctx.geo) : null, name, png ? "drawn" : "typed", png, fontK, signer.id)
   if (!r.changes) throw new UserError("You already signed this document")
-  addEvent(envelope.id, "signed", { signerId: signer.id, ip: ctx.ip, ua: ctx.ua, geo: ctx.geo, details: { typedName: name, method: png ? "drawn" : "typed", font: png ? null : fontK, ...(reused ? { reusedSavedSignature: true } : {}) } })
+  addEvent(envelope.id, "signed", { signerId: signer.id, ip: ctx.ip, ua: ctx.ua, geo: ctx.geo, details: { typedName: name, method: png ? "drawn" : "typed", font: png ? null : fontK, ...(reused ? { reusedSavedSignature: true } : {}), ...(initialed?.length ? { initialedSeparately: initialed } : {}) } })
   await notify(`✍️ <b>${esc(signer.name)}</b> signed <b>${esc(envelope.title)}</b>\n${esc(ctx.geoLabel)} · ${esc(ctx.device)}`)
   // Advance: finish or invite the next tier. Failures here must not undo the signature.
   try {
