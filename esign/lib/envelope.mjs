@@ -542,7 +542,8 @@ export async function deliver(envelopeId) {
 
   const already = new Set(getEvents(envelopeId).filter((e) => e.kind === "completion_email_sent" || e.kind === "completion_text_sent").map((e) => JSON.parse(e.details || "{}").to))
   for (const s of signers) {
-    if ((s.delivery !== "text" && s.delivery !== "both") || !s.phone || already.has(s.phone)) continue
+    // Completion goes by email to anyone with an email; a text only to a signer reached by text alone (Ryan 11-19: no texts from his cell unless he asks).
+    if (s.delivery !== "text" || !s.phone || already.has(s.phone)) continue
     try {
       await sendText(s.phone, completedText({ envelope, signer: s }))
       addEvent(envelopeId, "completion_text_sent", { details: { to: s.phone } })
