@@ -211,11 +211,18 @@ export async function applyStatusChange(
   const from = args.anchor.status
   if (applied) {
     const now = new Date().toISOString()
-    const { error } = await sb
+    let write = sb
       .from("leads")
       .update({ status: args.to, status_set_by: args.source === "undo" ? "ryan" : args.source, status_set_at: now })
       .eq("id", args.anchor.id)
+    // An automatic move never lands on a DNC'd row. The auto-status read can
+    // predate an opt-out being marked a second earlier — Victoria Evans
+    // 2026-11-19: DNC set Dead at :48.9, the judge (reading from before)
+    // wrote Nurture over it at :49.5.
+    if (args.source === "auto") write = write.eq("is_dnc", false)
+    const { data: wrote, error } = await write.select("id")
     if (error) throw new Error(`status write failed: ${error.message}`)
+    if (!wrote?.length) return null
     if (args.to === "active") await stampBecameLead(sb, args.rows)
     // An automatic move to Nurture / Dead also cools the card's chip: it reads
     // the newest row that has a temperature, which can be an older "hot" call
