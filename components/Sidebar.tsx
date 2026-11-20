@@ -5,22 +5,30 @@ import Link from "next/link"
 import { usePathname } from "next/navigation"
 import { cn } from "@/lib/utils"
 import {
-  Home, Phone, Users, Megaphone, Zap, Gauge, Folder, HeartPulse, Lightbulb, Dumbbell, MoreHorizontal, X,
+  Home, LayoutGrid, Phone, Users, Megaphone, Zap, Gauge, Folder, HeartPulse, Lightbulb, Dumbbell, MoreHorizontal, X,
   type LucideIcon,
 } from "lucide-react"
 
 // Mission Control 2.0 navigation (2026-11-10, approved "Signal" mockup).
 //   Desktop (md+): 220 px left sidebar, three groups.
-//   Phone: fixed bottom tab bar — Today · Leads · People · Campaigns · More,
-//   "More" opens a sheet with the rest.
-// Retired from every menu (still reachable by URL): /board, /deal-flow.
+//   Phone: fixed bottom tab bar — Today · Board · Leads · People · More,
+//   "More" opens a sheet with the rest (Campaigns first).
+// /board is The Board (2026-11-20): open threads in four lanes. The old
+// 90-day goals board it replaced is retired.
+// Retired from every menu (still reachable by URL): /deal-flow.
 // /leads-embed, /offer and /login live outside the (dashboard) group, so
 // none of this renders there.
 
 type NavItem = { href: string; label: string; icon: LucideIcon }
 
 const navGroups: { label: string; items: NavItem[] }[] = [
-  { label: "Daily", items: [{ href: "/today", label: "Today", icon: Home }] },
+  {
+    label: "Daily",
+    items: [
+      { href: "/today", label: "Today", icon: Home },
+      { href: "/board", label: "Board", icon: LayoutGrid },
+    ],
+  },
   {
     label: "Real estate",
     items: [
@@ -43,12 +51,13 @@ const navGroups: { label: string; items: NavItem[] }[] = [
 
 const tabs: NavItem[] = [
   { href: "/today", label: "Today", icon: Home },
+  { href: "/board", label: "Board", icon: LayoutGrid },
   { href: "/leads", label: "Leads", icon: Phone },
   { href: "/relationships", label: "People", icon: Users },
-  { href: "/campaigns", label: "Campaigns", icon: Megaphone },
 ]
 
 const moreItems: NavItem[] = [
+  { href: "/campaigns", label: "Campaigns", icon: Megaphone },
   { href: "/email-campaign", label: "Email Drip", icon: Zap },
   { href: "/cycle", label: "Market Cycle", icon: Gauge },
   { href: "/projects", label: "Projects", icon: Folder },

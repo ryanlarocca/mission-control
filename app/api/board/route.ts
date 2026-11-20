@@ -1,33 +1,109 @@
 import { NextResponse } from "next/server"
 import { getLeadsClient } from "@/lib/leads"
-import { isDateKey } from "@/lib/board"
-import { fetchActivePeriod, fetchPeriodEvents } from "@/lib/boardDb"
+import { BOARD_COLS, BOARD_DONE_DAYS, isBoardLane } from "@/lib/boardItems"
 
-// The Board — 90-day rep tracker snapshot.
-//
-//   GET ?date=YYYY-MM-DD   period containing the client's local "today"
-//                          (fallback: most recent period) + all its events.
-//
-// All quota / stat math happens client-side in lib/board.ts over the raw
-// event list, so this route stays a dumb read.
+// The Board (2026-11-20): one card per open thread, four lanes. Table
+// board_items (supabase/migrations/2026-11-20_board_items.sql). Chats write to
+// the same table through scripts/board.mjs. Session-gated by middleware.
+//   GET    open cards + cards done in the last BOARD_DONE_DAYS days
+//   POST   { title, next_step?, lane?, waiting_on?, due_date?, due_note?, tag?, link? }
+//   PATCH  { id, status?, lane?, title?, next_step?, waiting_on?, due_date?, due_note?, tag?, link? }
+// (This path used to serve the retired 90-day goals board; its /events and
+// /periods sub-routes are left in place for the old tables.)
 export const dynamic = "force-dynamic"
+export const revalidate = 0
 
-export async function GET(request: Request) {
+function clean(v: unknown, max: number): string | null {
+  if (typeof v !== "string") return null
+  const t = v.trim()
+  return t ? t.slice(0, max) : null
+}
+
+function cleanDate(v: unknown): string | null | undefined {
+  if (v === null || v === "") return null
+  if (typeof v !== "string") return undefined
+  return /^\d{4}-\d{2}-\d{2}$/.test(v) ? v : undefined
+}
+
+export async function GET() {
   try {
-    const url = new URL(request.url)
-    const date = url.searchParams.get("date")
-    if (!isDateKey(date)) {
-      return NextResponse.json({ error: "date=YYYY-MM-DD is required" }, { status: 400 })
+    const sb = getLeadsClient()
+    const since = new Date(Date.now() - BOARD_DONE_DAYS * 86_400_000).toISOString()
+    const [open, done] = await Promise.all([
+      sb.from("board_items").select(BOARD_COLS).eq("status", "open").limit(1000),
+      sb.from("board_items").select(BOARD_COLS).eq("status", "done").gte("done_at", since).order("done_at", { ascending: false }).limit(200),
+    ])
+    const err = open.error ?? done.error
+    if (err) {
+      console.error("[board] list failed:", err.message)
+      return NextResponse.json({ error: "Couldn't load the Board." }, { status: 503 })
     }
+    return NextResponse.json({ items: [...(open.data ?? []), ...(done.data ?? [])] })
+  } catch (e) {
+    console.error("[board] list threw:", e)
+    return NextResponse.json({ error: "Couldn't load the Board." }, { status: 503 })
+  }
+}
 
-    const supabase = getLeadsClient()
-    const period = await fetchActivePeriod(supabase, date)
-    if (!period) return NextResponse.json({ period: null, events: [] })
+export async function POST(req: Request) {
+  try {
+    const body = (await req.json().catch(() => ({}))) as Record<string, unknown>
+    const title = clean(body.title, 200)
+    if (!title) return NextResponse.json({ error: "Give it a title." }, { status: 400 })
+    const due = cleanDate(body.due_date)
+    const row = {
+      title,
+      next_step: clean(body.next_step, 500),
+      lane: isBoardLane(body.lane) ? body.lane : "you",
+      waiting_on: clean(body.waiting_on, 120),
+      due_date: due ?? null,
+      due_note: clean(body.due_note, 40),
+      tag: clean(body.tag, 24),
+      link: clean(body.link, 1000),
+      source: "board page",
+    }
+    const { data, error } = await getLeadsClient().from("board_items").insert(row).select(BOARD_COLS).single()
+    if (error) return NextResponse.json({ error: error.message }, { status: 500 })
+    return NextResponse.json({ item: data })
+  } catch (e) {
+    return NextResponse.json({ error: e instanceof Error ? e.message : String(e) }, { status: 500 })
+  }
+}
 
-    const events = await fetchPeriodEvents(supabase, period.id)
-    return NextResponse.json({ period, events })
-  } catch (err) {
-    console.error("board GET error:", err)
-    return NextResponse.json({ error: "board load failed" }, { status: 500 })
+export async function PATCH(req: Request) {
+  try {
+    const body = (await req.json().catch(() => ({}))) as Record<string, unknown>
+    const id = typeof body.id === "string" ? body.id : null
+    if (!id) return NextResponse.json({ error: "id required" }, { status: 400 })
+    const patch: Record<string, unknown> = {}
+    if (body.status !== undefined) {
+      if (body.status !== "open" && body.status !== "done") return NextResponse.json({ error: "bad status" }, { status: 400 })
+      patch.status = body.status
+      patch.done_at = body.status === "done" ? new Date().toISOString() : null
+    }
+    if (body.lane !== undefined) {
+      if (!isBoardLane(body.lane)) return NextResponse.json({ error: "bad lane" }, { status: 400 })
+      patch.lane = body.lane
+    }
+    if (body.title !== undefined) {
+      const title = clean(body.title, 200)
+      if (!title) return NextResponse.json({ error: "Title can't be empty." }, { status: 400 })
+      patch.title = title
+    }
+    if (body.due_date !== undefined) {
+      const due = cleanDate(body.due_date)
+      if (due === undefined) return NextResponse.json({ error: "Date must be YYYY-MM-DD." }, { status: 400 })
+      patch.due_date = due
+    }
+    const texts: [string, number][] = [["next_step", 500], ["waiting_on", 120], ["due_note", 40], ["tag", 24], ["link", 1000]]
+    for (const [k, max] of texts) if (body[k] !== undefined) patch[k] = clean(body[k], max)
+    if (!Object.keys(patch).length) return NextResponse.json({ error: "nothing to change" }, { status: 400 })
+    patch.updated_at = new Date().toISOString()
+    const { data, error } = await getLeadsClient().from("board_items").update(patch).eq("id", id).select(BOARD_COLS).maybeSingle()
+    if (error) return NextResponse.json({ error: error.message }, { status: 500 })
+    if (!data) return NextResponse.json({ error: "not found" }, { status: 404 })
+    return NextResponse.json({ item: data })
+  } catch (e) {
+    return NextResponse.json({ error: e instanceof Error ? e.message : String(e) }, { status: 500 })
   }
 }

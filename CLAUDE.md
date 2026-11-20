@@ -27,6 +27,29 @@ picking up cold) + `CHANGELOG.md` (append-only ship history).
 `briefs/*.md` — execution specs **do** live in this repo. That's the one
 docs exception.
 
+## The Board — Ryan's one list of everything in motion
+
+`/board` in Mission Control (table `board_items`) holds one card per open
+thread: deals, taxes, videos, admin, subscriptions. Lanes: **you** (Your
+move) · **waiting** (Waiting on someone) · **me** (I'm handling); done cards
+show for 7 days. Every chat keeps it current:
+
+```
+node scripts/board.mjs list                     # read it when Ryan asks "where am I at" / starts a day
+node scripts/board.mjs add --key <slug> --title "..." --next "..." --lane you|waiting|me \
+     [--waiting-on "..."] [--due YYYY-MM-DD] [--note "1:30 PM"] [--tag Deal] [--link URL]
+node scripts/board.mjs update <key> --next "..." --lane waiting   # when something moves
+node scripts/board.mjs done <key>
+```
+
+- **"Throw it on the board"** = `add`. Don't wait to be asked: any new thread
+  with a next step (a promise, a deadline, a follow-up, waiting on someone)
+  gets a card **in the same turn**, and news on an existing one updates it.
+- Reuse the card's `--key` (stable slug like `amex-swap`, `bieber-occupants`)
+  so the next chat updates the same card instead of adding a duplicate.
+- iPhone reminders still go through the sidecar; the board is the overview,
+  not a replacement for them.
+
 ## Looking up someone's message — texts first, automatically
 
 When Ryan references a person's message, text, pitch, deal, or "what X
