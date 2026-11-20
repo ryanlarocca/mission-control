@@ -4,7 +4,7 @@ import { env } from "../lib/env.mjs"
 import { consentParagraphs } from "../lib/consent.mjs"
 import { fmtTsPT, fmtLongDatePT, fmtDatePT } from "../lib/pdf.mjs"
 import { geoLabel, deviceLabel } from "../lib/geo.mjs"
-import { SIGNATURE_FONTS, DEFAULT_FONT } from "../lib/fonts.mjs"
+import { SIGNATURE_FONTS, DEFAULT_FONT, initialsOf } from "../lib/fonts.mjs"
 import { asset } from "../lib/assets.mjs"
 
 export const esc = (s) => String(s ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;")
@@ -66,7 +66,7 @@ export function consentPage({ envelope, signer, token, error }) {
   })
 }
 
-export function reviewPage({ envelope, signer, token, error, spot, saved = null }) {
+export function reviewPage({ envelope, signer, token, error, spot, saved: savedIn = null }) {
   // spot: { page (1-based), x, lineY, w } in PDF points for template signers; null → addendum.
   // The anchor's top is the signature line itself (letter page, 612×792pt); the tab hangs above it.
   // Self-sign spots carry their page size; the purchase agreement is letter.
@@ -81,8 +81,10 @@ export function reviewPage({ envelope, signer, token, error, spot, saved = null 
     const part = (k, word) => { const ps = pagesOf(k); return ps.length ? `${word} (page${ps.length > 1 ? "s" : ""} ${ps.join(", ")})` : "" }
     marks = [part("signature", "signature"), part("date", "date")].filter(Boolean).join(", ")
   }
-  const initLetters = String(saved?.typedName || signer.name).split(/[\s-]+/).filter(Boolean).map((w) => w[0].toUpperCase()).slice(0, 3).join("")
-  const initTab = (f, k) => `<button type="button" class="inittab" data-i="${k}" aria-label="Initial here" style="left:${((f.x / (f.pageW || 612)) * 100).toFixed(3)}%;top:${(((f.pageH || 792) - f.lineY) / (f.pageH || 792) * 100).toFixed(3)}%;width:${((f.w / (f.pageW || 612)) * 100).toFixed(3)}%"><span class="flag">Initial</span><span class="ini"></span></button>`
+  // A drawn saved signature can only be reused in one tap when drawn initials were saved with it.
+  const saved = savedIn && !(savedIn.png && inits.length && !savedIn.initialsPng) ? savedIn : null
+  const initLetters = initialsOf(saved?.typedName || signer.name)
+  const initTab = (f, k) => `<button type="button" class="inittab" data-i="${k}" aria-label="Initial here" style="left:${((f.x / (f.pageW || 612)) * 100).toFixed(3)}%;top:${(((f.pageH || 792) - f.lineY) / (f.pageH || 792) * 100).toFixed(3)}%;width:${((f.w / (f.pageW || 612)) * 100).toFixed(3)}%;aspect-ratio:${(f.w / 16).toFixed(3)}"><span class="flag">Initial</span><span class="ini"></span></button>`
   const pct = spot ? { left: (spot.x / pw) * 100, top: ((ph - spot.lineY) / ph) * 100, width: (Math.min(spot.w, 249) / pw) * 100 } : null
   // spot.room (self-sign): the tab keeps the page's proportions so it never covers the line above; its flag sits beside it.
   const spotClass = spot?.room ? `spot fit${spot.x + Math.min(spot.w, 249) > pw * 0.62 ? " right" : ""}` : "spot"
@@ -92,16 +94,18 @@ export function reviewPage({ envelope, signer, token, error, spot, saved = null 
   const pages = Array.from({ length: pageCount }, (_, i) =>
     `<div class="pagewrap"><img class="page" src="/s/${token}/pages/${i + 1}.png" alt="Page ${i + 1}" loading="${i < 2 ? "eager" : "lazy"}">${pct && spot.page === i + 1 ? `<div class="${spotClass}" style="left:${pct.left.toFixed(3)}%;top:${pct.top.toFixed(3)}%;width:${pct.width.toFixed(3)}%${spot.room ? `;--ar:${(Math.min(spot.w, 249) / spot.room).toFixed(3)}` : ""}">${tab}</div>` : ""}${inits.map((f, k) => (f.page === i + 1 ? initTab(f, k) : "")).join("")}</div><div class="pageno">Page ${i + 1} of ${pageCount}</div>`).join("")
   const fontFaces = Object.values(SIGNATURE_FONTS).map((f) => `@font-face{font-family:"${f.css}";src:url(${asset(`/fonts/${f.file}`)}) format("truetype");font-display:swap}`).join("")
-  const fontCards = Object.entries(SIGNATURE_FONTS).map(([k, f]) => `<label class="fontcard"><input type="radio" name="fontpick" value="${k}" ${k === (saved && !saved.png ? saved.font : DEFAULT_FONT) ? "checked" : ""}><span class="fontbody"><span class="fontprev" style="font-family:'${f.css}';font-size:${f.webSize}px" data-font="${k}">${esc(signer.name)}</span><span class="fontlabel">${f.label}</span></span></label>`).join("")
+  // The four styles on offer, each shown with the signer's name and (when this document has initials boxes) their initials.
+  const pickFont = saved && !saved.png && SIGNATURE_FONTS[saved.font]?.pick ? saved.font : DEFAULT_FONT
+  const fontCards = Object.entries(SIGNATURE_FONTS).filter(([, f]) => f.pick).map(([k, f]) => `<label class="fontcard"><input type="radio" name="fontpick" value="${k}" ${k === pickFont ? "checked" : ""}><span class="fontbody"><span class="fontrow"><span class="fontprev" style="font-family:'${f.css}';font-size:${f.webSize}px" data-font="${k}">${esc(signer.name)}</span>${inits.length ? `<span class="fontini" style="font-family:'${f.css}';font-size:${f.webSize}px">${esc(initialsOf(signer.name))}</span>` : ""}</span><span class="fontlabel">${f.label}${inits.length ? " · signature and initials" : ""}</span></span></label>`).join("")
   const roleLabel = signer.role === "buyer" ? "Buyer" : "Seller"
   // Returning signer (signed before with this email/phone): one tap signs with the signature they already adopted.
   const savedFont = saved && SIGNATURE_FONTS[saved.font]
   const savedCard = saved ? `<div class="card" id="savedcard">
   <h2>Welcome back, ${esc(first(saved.typedName))}</h2>
   <p>Read the document above. When you're ready, sign with the same signature you used last time:</p>
-  <div class="savedsig">${saved.png ? `<img src="${saved.png}" alt="your saved signature">` : `<span style="font-family:'${savedFont.css}'">${esc(saved.typedName)}</span>`}</div>
+  <div class="savedsig">${saved.png ? `<img src="${saved.png}" alt="your saved signature">` : `<span style="font-family:'${savedFont.css}'">${esc(saved.typedName)}</span>`}${inits.length ? `<span class="savedini">${saved.initialsPng ? `<img src="${saved.initialsPng}" alt="your saved initials">` : `<span style="font-family:'${savedFont.css}'">${esc(initLetters)}</span>`}</span>` : ""}</div>
   <p class="error" id="onetapmsg" hidden></p>
-  <button class="btn green" type="button" id="onetap" data-name="${esc(saved.typedName)}" data-method="${saved.method}" data-font="${esc(saved.font)}">Sign as ${esc(saved.typedName)}</button>
+  <button class="btn green" type="button" id="onetap" data-name="${esc(saved.typedName)}" data-method="${saved.method}" data-font="${esc(saved.font)}"${saved.initialsPng ? ` data-ipng="${saved.initialsPng}"` : ""}>Sign as ${esc(saved.typedName)}</button>
   <p class="muted" style="margin-top:10px">By tapping, I confirm I have read this document and I agree to sign it electronically. I understand this is legally binding.</p>
   <p class="muted"><a class="link" href="#" id="usedifferent">Use a different signature</a></p>
 </div>` : ""
@@ -130,7 +134,7 @@ ${addendumCard}
   <p class="muted" style="margin-top:14px">Changed your mind? Just close this page. Nothing is signed until you tap Finish. Questions: ${esc(env.ownerName)}, ${esc(env.ownerPhone)}.</p>
 </div>
 <form method="post" action="/s/${token}/sign" id="signform" data-inits="${inits.length}" data-initials="${esc(initLetters)}" style="display:none">
-  <input type="hidden" name="typed_name" id="f_typed_name"><input type="hidden" name="method" id="f_method" value="typed"><input type="hidden" name="font" id="f_font" value="${DEFAULT_FONT}"><input type="hidden" name="signature_png" id="f_png"><input type="hidden" name="agree" id="f_agree" value=""><input type="hidden" name="reused" id="f_reused" value=""><input type="hidden" name="initials_ack" id="f_initials" value="">
+  <input type="hidden" name="typed_name" id="f_typed_name"><input type="hidden" name="method" id="f_method" value="typed"><input type="hidden" name="font" id="f_font" value="${DEFAULT_FONT}"><input type="hidden" name="signature_png" id="f_png"><input type="hidden" name="agree" id="f_agree" value=""><input type="hidden" name="reused" id="f_reused" value=""><input type="hidden" name="initials_ack" id="f_initials" value=""><input type="hidden" name="initials_png" id="f_ipng" value="">
 </form>
 <div class="sheet" id="sheet" hidden>
   <div class="sheetin">
@@ -138,7 +142,7 @@ ${addendumCard}
     <label class="field"><span>Type your full legal name</span><input type="text" id="typed_name" placeholder="${esc(signer.name)}" value="${esc(saved?.typedName || "")}" autocapitalize="words" autocomplete="name" maxlength="80"></label>
     <div class="tabs"><button type="button" class="tabbtn on" data-tab="type">Choose a style</button><button type="button" class="tabbtn" data-tab="draw">Draw with your finger</button></div>
     <div id="tab-type" class="fontgrid">${fontCards}</div>
-    <div id="tab-draw" hidden><canvas class="sigpad" id="pad"></canvas><div class="sigrow"><span>Sign above with your finger</span><button class="link" id="clearpad" type="button">Clear</button></div></div>
+    <div id="tab-draw" hidden><canvas class="sigpad" id="pad"></canvas><div class="sigrow"><span>Sign above with your finger</span><button class="link" id="clearpad" type="button">Clear</button></div>${inits.length ? `<canvas class="sigpad initpad" id="ipad"></canvas><div class="sigrow"><span>Draw your initials above</span><button class="link" id="clearipad" type="button">Clear</button></div>` : ""}</div>
     <div class="error" id="sheeterr" hidden></div>
     <button class="btn green" type="button" id="adopt">Adopt and sign</button>
     <button class="btn secondary" type="button" id="cancelsheet">Cancel</button>

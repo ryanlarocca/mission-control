@@ -94,6 +94,7 @@ export function getDb() {
   const cols = db.prepare("PRAGMA table_info(signers)").all().map((c) => c.name)
   if (!cols.includes("signature_font")) db.exec("ALTER TABLE signers ADD COLUMN signature_font TEXT")
   if (!cols.includes("delivery")) db.exec("ALTER TABLE signers ADD COLUMN delivery TEXT NOT NULL DEFAULT 'email'")
+  if (!cols.includes("initials_png")) db.exec("ALTER TABLE signers ADD COLUMN initials_png BLOB") // drawn initials (2026-11-19)
   const ecols = db.prepare("PRAGMA table_info(envelopes)").all().map((c) => c.name)
   if (!ecols.includes("view_page_count")) db.exec("ALTER TABLE envelopes ADD COLUMN view_page_count INTEGER")
   // Self-sign (2026-11-04): Ryan signing someone else's form on its own lines.

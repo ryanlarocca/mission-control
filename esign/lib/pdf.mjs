@@ -218,6 +218,12 @@ async function drawSignature(doc, page, fonts, signer, { x, baseY, maxW, maxH })
 
 /** A signer's initials (from the legal name they typed) in their signature style, centred on an initials line. */
 async function drawInitials(doc, page, fonts, signer, f) {
+  if (signer.signature_method === "drawn" && signer.initials_png) {
+    const img = await doc.embedPng(signer.initials_png)
+    const scale = Math.min((f.w - 6) / img.width, 18 / img.height, 1.5)
+    page.drawImage(img, { x: f.x + (f.w - img.width * scale) / 2, y: f.lineY + 1.5, width: img.width * scale, height: img.height * scale })
+    return
+  }
   const letters = String(signer.typed_name || signer.name).split(/[\s-]+/).filter(Boolean).map((w) => w[0].toUpperCase()).slice(0, 3).join("")
   const sf = await scriptFontFor(doc, fonts, signer)
   const w1 = sf.font.widthOfTextAtSize(letters, 1)
@@ -483,7 +489,7 @@ async function drawCertificate(doc, fonts, envelope, signers, events, { signedSh
     if (s.signed_at) {
       kv("Signature", `${s.signature_method === "drawn" ? "Drawn on screen with finger/stylus" : `Typed (style: ${SIGNATURE_FONTS[fontKey(s.signature_font)].label})`} · legal name typed: "${s.typed_name}" · placed on ${s.placement === "template" ? "the agreement's signature line" : s.placement === "template2" ? "the agreement's second seller signature line" : s.placement === "template_buyer2" ? "the document's second buyer signature line" : s.placement === "fields" ? (envelope.kind === "self" ? "the document's own signature line" : "the document's own signature, initial and date lines") : "the Signature Addendum"}`)
       const initPages = envelope.fields_json && envelope.kind !== "self" ? JSON.parse(envelope.fields_json).filter((f) => f.signerId === s.id && f.kind === "initials").map((f) => f.page) : []
-      if (initPages.length) kv("Initials", `${initPages.length} initials box${initPages.length === 1 ? "" : "es"} (page${new Set(initPages).size > 1 ? "s" : ""} ${[...new Set(initPages)].join(", ")}), each tapped separately by the signer before signing`)
+      if (initPages.length) kv("Initials", `${initPages.length} initials box${initPages.length === 1 ? "" : "es"} (page${new Set(initPages).size > 1 ? "s" : ""} ${[...new Set(initPages)].join(", ")}), each tapped separately by the signer before signing · ${s.signature_method === "drawn" && s.initials_png ? "initials drawn on screen" : "initials in the adopted signature style"}`)
       kv("Intent", `Clicked "I agree and sign" after reviewing all ${envelope.page_count} page${envelope.page_count === 1 ? "" : "s"}`)
     }
     kv("SMS verification", s.sms_verified ? "Passed" : "Not requested")

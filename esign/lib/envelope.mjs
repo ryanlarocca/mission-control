@@ -424,7 +424,7 @@ export function savedSignatureFor(signer) {
   const byEmail = !!signer.email
   const key = byEmail ? String(signer.email).toLowerCase() : signer.phone
   if (!key) return null
-  const row = getDb().prepare(`SELECT typed_name, signature_method, signature_font, signature_png FROM signers
+  const row = getDb().prepare(`SELECT typed_name, signature_method, signature_font, signature_png, initials_png FROM signers
      WHERE ${byEmail ? "lower(email) = ?" : "phone = ?"} AND status = 'signed' AND id != ? AND typed_name IS NOT NULL
      ORDER BY signed_at DESC LIMIT 1`).get(key, signer.id)
   if (!row) return null
@@ -434,10 +434,11 @@ export function savedSignatureFor(signer) {
     method: drawn ? "drawn" : "typed",
     font: fontKey(row.signature_font),
     png: drawn ? `data:image/png;base64,${Buffer.from(row.signature_png).toString("base64")}` : null,
+    initialsPng: drawn && row.initials_png ? `data:image/png;base64,${Buffer.from(row.initials_png).toString("base64")}` : null,
   }
 }
 
-export async function recordSign(signer, envelope, { typedName, method, signaturePng, font, reused = false, initialed = null }, ctx) {
+export async function recordSign(signer, envelope, { typedName, method, signaturePng, initialsPng, font, reused = false, initialed = null }, ctx) {
   if (envelope.status !== "in_progress") throw new UserError("This document is no longer open for signing")
   if (signer.status === "signed") throw new UserError("You already signed this document")
   if (!signer.consented_at) throw new UserError("Please accept the electronic signature consent first")
@@ -451,10 +452,18 @@ export async function recordSign(signer, envelope, { typedName, method, signatur
     png = Buffer.from(m[1], "base64")
     if (png.length > 400_000) throw new UserError("Drawn signature is too large")
   }
+  // Drawn initials (only with a drawn signature, on documents with initials boxes).
+  let ipng = null
+  if (png && initialsPng) {
+    const m = /^data:image\/png;base64,([A-Za-z0-9+/=]+)$/.exec(String(initialsPng))
+    if (!m) throw new UserError("Your drawn initials didn't come through — try again")
+    ipng = Buffer.from(m[1], "base64")
+    if (ipng.length > 200_000) throw new UserError("Drawn initials are too large")
+  }
   const ts = now()
   const fontK = fontKey(font)
-  const r = run(`UPDATE signers SET status = 'signed', signed_at = ?, sign_ip = ?, sign_ua = ?, sign_geo = ?, typed_name = ?, signature_method = ?, signature_png = ?, signature_font = ?
-     WHERE id = ? AND status != 'signed'`, ts, ctx.ip, ctx.ua, ctx.geo ? JSON.stringify(ctx.geo) : null, name, png ? "drawn" : "typed", png, fontK, signer.id)
+  const r = run(`UPDATE signers SET status = 'signed', signed_at = ?, sign_ip = ?, sign_ua = ?, sign_geo = ?, typed_name = ?, signature_method = ?, signature_png = ?, signature_font = ?, initials_png = ?
+     WHERE id = ? AND status != 'signed'`, ts, ctx.ip, ctx.ua, ctx.geo ? JSON.stringify(ctx.geo) : null, name, png ? "drawn" : "typed", png, fontK, ipng, signer.id)
   if (!r.changes) throw new UserError("You already signed this document")
   addEvent(envelope.id, "signed", { signerId: signer.id, ip: ctx.ip, ua: ctx.ua, geo: ctx.geo, details: { typedName: name, method: png ? "drawn" : "typed", font: png ? null : fontK, ...(reused ? { reusedSavedSignature: true } : {}), ...(initialed?.length ? { initialedSeparately: initialed } : {}) } })
   await notify(`✍️ <b>${esc(signer.name)}</b> signed <b>${esc(envelope.title)}</b>\n${esc(ctx.geoLabel)} · ${esc(ctx.device)}`)
