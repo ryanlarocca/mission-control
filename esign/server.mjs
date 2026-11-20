@@ -100,7 +100,8 @@ function copyToFromForm(arr) {
 function signSpot(envelope, signer) {
   if (envelope.fields_json && signer.placement === "fields") {
     const fields = JSON.parse(envelope.fields_json)
-    const f = fields.find((x) => x.kind === "signature")
+    // Several signers: this signer's first signature line (fields carry signerId); self-sign: the only one.
+    const f = fields.find((x) => x.kind === "signature" && (!x.signerId || x.signerId === signer.id))
     if (!f) return null
     // Other people's forms stack their lines close together: the tab may only fill the space up to the next line above.
     const gaps = fields.filter((x) => x !== f && x.page === f.page && x.lineY > f.lineY && x.x < f.x + f.w && f.x < x.x + x.w).map((x) => x.lineY - f.lineY)

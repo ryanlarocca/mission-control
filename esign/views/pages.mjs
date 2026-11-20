@@ -71,6 +71,14 @@ export function reviewPage({ envelope, signer, token, error, spot, saved = null 
   // The anchor's top is the signature line itself (letter page, 612×792pt); the tab hangs above it.
   // Self-sign spots carry their page size; the purchase agreement is letter.
   const pw = spot?.pageW || 612, ph = spot?.pageH || 792
+  // Several signers on the document's own lines: say everything one signature places (initials, date, extra signatures).
+  let marks = ""
+  if (envelope.fields_json && envelope.kind !== "self") {
+    const mine = JSON.parse(envelope.fields_json).filter((f) => f.signerId === signer.id)
+    const pagesOf = (k) => [...new Set(mine.filter((f) => f.kind === k).map((f) => f.page))]
+    const part = (k, word) => { const ps = pagesOf(k); return ps.length ? `${word} (page${ps.length > 1 ? "s" : ""} ${ps.join(", ")})` : "" }
+    marks = [part("signature", "signature"), part("initials", "initials"), part("date", "date")].filter(Boolean).join(", ")
+  }
   const pct = spot ? { left: (spot.x / pw) * 100, top: ((ph - spot.lineY) / ph) * 100, width: (Math.min(spot.w, 249) / pw) * 100 } : null
   // spot.room (self-sign): the tab keeps the page's proportions so it never covers the line above; its flag sits beside it.
   const spotClass = spot?.room ? `spot fit${spot.x + Math.min(spot.w, 249) > pw * 0.62 ? " right" : ""}` : "spot"
@@ -103,6 +111,7 @@ export function reviewPage({ envelope, signer, token, error, spot, saved = null 
   <h1>${esc(envelope.title)}</h1>
   ${envelope.property_address ? `<p class="muted">${esc(envelope.property_address)}</p>` : ""}
   <p>${saved ? `Read all ${pageCount} page${pageCount === 1 ? "" : "s"}, then tap <strong>Sign as ${esc(saved.typedName)}</strong> below.` : `Read all ${pageCount} page${pageCount === 1 ? "" : "s"}, then tap the yellow <strong>Sign here</strong> tab${spot ? ` on page ${spot.page}` : " below"}.`} <a class="link" href="/s/${token}/document.pdf" target="_blank">Open as a PDF</a></p>
+  ${marks ? `<p class="muted">Signing puts your ${marks} on the lines marked for you.</p>` : ""}
   ${error ? `<div class="error">${esc(error)}</div>` : ""}
 </div>
 <div class="pages">${pages}</div>

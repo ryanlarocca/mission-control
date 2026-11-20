@@ -79,14 +79,17 @@ export async function inspectPdf(bytes) {
 
 // ---------------------------------------------------------------- self-sign fields
 
-const FIELD_KINDS = new Set(["text", "date", "signature"])
+const FIELD_KINDS = new Set(["text", "date", "signature", "initials"])
 
 /**
  * Validate a self-sign field list against the document. Each field sits on a
  * blank line of the form: `page` (1-based), `x` = where the line starts,
  * `lineY` = the line's height from the bottom of the page (PDF points),
- * `w` = line length. `text` fields carry their `value`; `date` and
- * `signature` are drawn when the signer signs.
+ * `w` = line length. `text` fields carry their `value`; `date`, `signature`
+ * and `initials` are drawn when the signer signs.
+ * Several signers (createEnvelope with `fields`): each field names its signer
+ * by `signer`, the 0-based index into the envelope's signer list; a field
+ * without `signer` belongs to the only signer (self-sign).
  */
 export async function checkFields(bytes, fields) {
   if (!Array.isArray(fields) || !fields.length) throw new Error("fields: at least one field is required")
@@ -94,7 +97,7 @@ export async function checkFields(bytes, fields) {
   const pages = doc.getPages()
   const out = fields.map((f, i) => {
     const kind = String(f.kind || "")
-    if (!FIELD_KINDS.has(kind)) throw new Error(`field ${i + 1}: kind must be text, date or signature`)
+    if (!FIELD_KINDS.has(kind)) throw new Error(`field ${i + 1}: kind must be text, date, signature or initials`)
     const page = Number(f.page)
     if (!Number.isInteger(page) || page < 1 || page > pages.length) throw new Error(`field ${i + 1}: page ${f.page} is not in the document (1–${pages.length})`)
     const { width, height } = pages[page - 1].getSize()
@@ -102,7 +105,13 @@ export async function checkFields(bytes, fields) {
     if (![x, lineY, w].every(Number.isFinite) || w < 20 || x < 0 || x + w > width + 1 || lineY < 0 || lineY > height) throw new Error(`field ${i + 1}: position is off the page`)
     const value = kind === "text" ? String(f.value ?? "").trim() : null
     if (kind === "text" && !value) throw new Error(`field ${i + 1}: a text field needs a value (leave the blank out instead)`)
-    return { page, kind, x, lineY, w, value, label: f.label ? String(f.label) : null, pageW: width, pageH: height }
+    const out = { page, kind, x, lineY, w, value, label: f.label ? String(f.label) : null, pageW: width, pageH: height }
+    if (f.signer !== undefined && f.signer !== null) {
+      const si = Number(f.signer)
+      if (!Number.isInteger(si) || si < 0) throw new Error(`field ${i + 1}: signer must be a signer's 0-based index`)
+      out.signer = si
+    }
+    return out
   })
   if (!out.some((f) => f.kind === "signature")) throw new Error("fields: the document needs at least one signature field")
   return out
@@ -207,6 +216,15 @@ async function drawSignature(doc, page, fonts, signer, { x, baseY, maxW, maxH })
   page.drawText(name, { x: x + 2, y: baseY + 3, size, font: sf.font, color: rgb(0.1, 0.1, 0.35) })
 }
 
+/** A signer's initials (from the legal name they typed) in their signature style, centred on an initials line. */
+async function drawInitials(doc, page, fonts, signer, f) {
+  const letters = String(signer.typed_name || signer.name).split(/[\s-]+/).filter(Boolean).map((w) => w[0].toUpperCase()).slice(0, 3).join("")
+  const sf = await scriptFontFor(doc, fonts, signer)
+  const w1 = sf.font.widthOfTextAtSize(letters, 1)
+  const size = Math.max(9, Math.min(14, (f.w - 8) / w1))
+  page.drawText(letters, { x: f.x + (f.w - w1 * size) / 2, y: f.lineY + 2.5, size, font: sf.font, color: rgb(0.1, 0.1, 0.35) })
+}
+
 function stampText(page, fonts, signer, envelopeId, { x, y, w }) {
   const t = `e-signed ${fmtTsPT(signer.signed_at)} · ${envelopeId.slice(0, 8)}`
   const size = 5.5
@@ -295,21 +313,26 @@ async function applySignatures(doc, fonts, envelope, signers) {
     }
   }
 
-  // 2b. Self-sign: date + signature on the form's own lines (text fill-ins are already in the original).
+  // 2b. Fields: date, initials + signature on the document's own lines (text fill-ins are already in the original).
+  // Self-sign has one signer and unassigned fields; a multi-signer envelope assigns each field to a signer (signerId).
   if (envelope.fields_json) {
     const fields = JSON.parse(envelope.fields_json)
     const pages = doc.getPages()
-    const signer = signers.find((s) => s.placement === "fields")
-    const signedHere = signer?.status === "signed"
+    const fieldSigners = signers.filter((s) => s.placement === "fields")
+    const multi = fields.some((f) => f.signerId)
     for (const f of fields) {
       const page = pages[f.page - 1]
       if (!page) continue
-      // Before signing the date shows today's, so the review matches what gets signed today.
-      if (f.kind === "date") drawOnLine(page, fonts.helv, fmtDatePT(signedHere ? signer.signed_at : new Date().toISOString()), f)
+      const signer = multi ? fieldSigners.find((s) => s.id === f.signerId) : fieldSigners[0]
+      const signedHere = signer?.status === "signed"
+      // Self-sign: before signing the date shows today's, so the review matches what gets signed today.
+      // Several signers: a date appears only once its signer has signed.
+      if (f.kind === "date" && (signedHere || !multi)) drawOnLine(page, fonts.helv, fmtDatePT(signedHere ? signer.signed_at : new Date().toISOString()), f)
       if (f.kind === "signature" && signedHere) {
         await drawSignature(doc, page, fonts, signer, { x: f.x, baseY: f.lineY + 1.5, maxW: Math.min(f.w, 200), maxH: 24 })
         stampText(page, fonts, signer, envelope.id, { x: f.x, y: f.lineY - 7.5, w: f.w })
       }
+      if (f.kind === "initials" && signedHere) await drawInitials(doc, page, fonts, signer, f)
     }
   }
 
@@ -452,13 +475,13 @@ async function drawCertificate(doc, fonts, envelope, signers, events, { signedSh
     page.drawText(`${s.name}  —  ${s.role === "buyer" ? "Buyer" : "Seller"} (signing order ${s.order_index})`, { x: M, y, size: 9.5, font: fonts.bold }); y -= 13
     kv("Email / phone", [s.email, s.phone].filter(Boolean).join("  ·  ") || "—")
     kv("Status", s.status === "signed" ? "Signed" : s.status)
-    if (s.placement === "fields") kv("Link", s.sent_at ? `${fmtTsPT(s.sent_at)} · signing link created for ${s.name} (not emailed)` : "—")
+    if (s.placement === "fields" && envelope.kind === "self") kv("Link", s.sent_at ? `${fmtTsPT(s.sent_at)} · signing link created for ${s.name} (not emailed)` : "—")
     else kv("Sent", s.sent_at ? `${fmtTsPT(s.sent_at)} by ${s.delivery === "both" ? "email and text message" : s.delivery === "text" ? "text message" : "email"}${s.send_count > 1 ? ` (${s.send_count} sends)` : ""}` : "—")
     kv("Opened", s.opened_at ? `${fmtTsPT(s.opened_at)} · IP ${s.open_ip ?? "?"} · ${geoLabel(s.open_geo)} · ${deviceLabel(s.open_ua)}` : "—")
     kv("Consent", s.consented_at ? `${fmtTsPT(s.consented_at)} · agreed to electronic records and signatures (consent text v${s.consent_version}) · IP ${s.consent_ip ?? "?"}` : "—")
     kv("Signed", s.signed_at ? `${fmtTsPT(s.signed_at)} · IP ${s.sign_ip ?? "?"} · ${geoLabel(s.sign_geo)} · ${deviceLabel(s.sign_ua)}` : "—")
     if (s.signed_at) {
-      kv("Signature", `${s.signature_method === "drawn" ? "Drawn on screen with finger/stylus" : `Typed (style: ${SIGNATURE_FONTS[fontKey(s.signature_font)].label})`} · legal name typed: "${s.typed_name}" · placed on ${s.placement === "template" ? "the agreement's signature line" : s.placement === "template2" ? "the agreement's second seller signature line" : s.placement === "template_buyer2" ? "the document's second buyer signature line" : s.placement === "fields" ? "the document's own signature line" : "the Signature Addendum"}`)
+      kv("Signature", `${s.signature_method === "drawn" ? "Drawn on screen with finger/stylus" : `Typed (style: ${SIGNATURE_FONTS[fontKey(s.signature_font)].label})`} · legal name typed: "${s.typed_name}" · placed on ${s.placement === "template" ? "the agreement's signature line" : s.placement === "template2" ? "the agreement's second seller signature line" : s.placement === "template_buyer2" ? "the document's second buyer signature line" : s.placement === "fields" ? (envelope.kind === "self" ? "the document's own signature line" : "the document's own signature, initial and date lines") : "the Signature Addendum"}`)
       kv("Intent", `Clicked "I agree and sign" after reviewing all ${envelope.page_count} page${envelope.page_count === 1 ? "" : "s"}`)
     }
     kv("SMS verification", s.sms_verified ? "Passed" : "Not requested")

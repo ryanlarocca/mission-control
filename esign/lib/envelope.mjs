@@ -82,8 +82,12 @@ export function normalizeCopyTo(input) {
 /**
  * Create an envelope and send the first round of invitations.
  * `pdfBytes` or `driveFileId` (downloaded through Ryan's Drive) — one of them.
+ * `fields` (optional, any PDF that isn't the template): every signer signs on
+ * the document's own lines — [{ signer: <0-based index into signers>, kind:
+ * signature|initials|date, page, x, lineY, w }] in PDF points (see
+ * checkFields). Each signer needs at least one signature field.
  */
-export async function createEnvelope({ title, propertyAddress, agreementDate, message, pdfBytes, driveFileId, signers, copyTo, createdBy }) {
+export async function createEnvelope({ title, propertyAddress, agreementDate, message, pdfBytes, driveFileId, signers, copyTo, createdBy, fields }) {
   const db = getDb()
   const cleanSigners = normalizeSigners(signers)
   const cleanCopyTo = normalizeCopyTo(copyTo)
@@ -101,6 +105,16 @@ export async function createEnvelope({ title, propertyAddress, agreementDate, me
   if (bytes.subarray(0, 5).toString() !== "%PDF-") throw new UserError("That file is not a PDF")
   title = String(title || "").trim() || "Document"
   const info = await inspectPdf(bytes)
+  let placedFields = null
+  if (fields) {
+    if ((signers || []).length !== cleanSigners.length) throw new UserError("With fields, every signer row must be filled in (fields point at signers by position)")
+    const checked = await checkFields(bytes, fields)
+    if (checked.some((f) => f.kind === "text")) throw new UserError("fields: text fill-ins aren't supported here — put them in the PDF")
+    for (const f of checked) if (f.signer === undefined || f.signer >= cleanSigners.length) throw new UserError(`fields: every field needs a signer index (0–${cleanSigners.length - 1})`)
+    cleanSigners.forEach((s, i) => { if (!checked.some((f) => f.signer === i && f.kind === "signature")) throw new UserError(`fields: ${s.name} has no signature field`) })
+    placedFields = checked
+    info.isTemplate = false; info.isAddendum = false // signatures go on the fields, never on template lines or an addendum
+  }
 
   const id = crypto.randomBytes(8).toString("hex")
   const dir = envelopeDir(id)
@@ -130,9 +144,16 @@ export async function createEnvelope({ title, propertyAddress, agreementDate, me
   try {
     insertEnv.run(id, title, propertyAddress || null, agreementDate || null, message || null, driveFileId ? "drive" : "upload", driveFileId || null, driveFolderId,
       sha256(bytes), originalPath, pageCount, pageCount, info.isTemplate ? 1 : 0, "in_progress", ts, createdBy || "admin", cleanCopyTo.length ? JSON.stringify(cleanCopyTo) : null)
+    const signerIds = []
     for (const s of cleanSigners) {
-      const placement = s === firstSeller || s === firstBuyer ? "template" : s === secondSeller ? "template2" : s === secondBuyer ? "template_buyer2" : "addendum"
-      insertSigner.run(crypto.randomBytes(6).toString("hex"), id, s.order, s.role, s.name, s.email, s.phone, s.delivery, placement, "waiting")
+      const placement = placedFields ? "fields" : s === firstSeller || s === firstBuyer ? "template" : s === secondSeller ? "template2" : s === secondBuyer ? "template_buyer2" : "addendum"
+      const sid = crypto.randomBytes(6).toString("hex")
+      signerIds.push(sid)
+      insertSigner.run(sid, id, s.order, s.role, s.name, s.email, s.phone, s.delivery, placement, "waiting")
+    }
+    if (placedFields) {
+      const stored = placedFields.map(({ signer, ...f }) => ({ ...f, signerId: signerIds[signer] }))
+      db.prepare("UPDATE envelopes SET fields_json = ? WHERE id = ?").run(JSON.stringify(stored), id)
     }
     // An addendum is not an offer or a new contract: kind 'addendum' keeps it off the lead card (crm.mjs).
     if (info.isAddendum) db.prepare(`UPDATE envelopes SET kind = 'addendum' WHERE id = ?`).run(id)
@@ -141,7 +162,7 @@ export async function createEnvelope({ title, propertyAddress, agreementDate, me
     db.exec("ROLLBACK")
     throw e
   }
-  addEvent(id, "created", { details: { title, pages: pageCount, template: info.isTemplate, source: driveFileId ? "drive" : "upload", signers: cleanSigners.length, copyTo: cleanCopyTo.map((c) => c.email) } })
+  addEvent(id, "created", { details: { title, pages: pageCount, template: info.isTemplate, source: driveFileId ? "drive" : "upload", signers: cleanSigners.length, copyTo: cleanCopyTo.map((c) => c.email), ...(placedFields ? { fields: placedFields.map(({ kind, page, signer }) => ({ kind, page, signer })) } : {}) } })
   await refreshInterim(id) // the addendum box + page are there from the first signer on
   const sent = await sendPending(id)
   await reportOfferSent(id)
