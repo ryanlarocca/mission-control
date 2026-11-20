@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest"
 import type { SupabaseClient } from "@supabase/supabase-js"
-import { isPieceMismatch, mailRecordSiteLine, normStreet, normSurname, parseFreeAddress, pieceMismatchLabel, soundAlike, soundAlikeMatch, soundAlikeName, soundKey, streetParts, suggestMailRecord } from "@/lib/mailMatch"
+import { isPieceMismatch, letterNameMatch, mailRecordSiteLine, normStreet, normSurname, parseFreeAddress, pieceMismatchLabel, soundAlike, soundAlikeMatch, soundAlikeName, soundKey, streetParts, suggestMailRecord } from "@/lib/mailMatch"
 
 describe("mailMatch normalizers", () => {
   it("drops units and standardizes suffixes", () => {
@@ -198,5 +198,36 @@ describe("echoesWhisperPrompt", () => {
     const { echoesWhisperPrompt } = await import("@/lib/leads")
     expect(echoesWhisperPrompt("LRG Homes. San Jose, Santa Clara, Sunnyvale, Palo Alto, Milpitas.")).toBe(true)
     expect(echoesWhisperPrompt("140 Johnson Avenue in Los Gatos. Have him call me anytime.")).toBe(false)
+  })
+})
+
+describe("letterNameMatch — the name the letter was addressed to (2026-11-20)", () => {
+  const rows = [
+    { owner_name: "Kushma Singh & Singh Family Trust", arm: "A", piece: "A" },
+    { owner_name: "Jason Fernandes & Jaspreet Singh", arm: "A", piece: "A" },
+    { owner_name: "Jaswinder Singh & Shashi Kiran", arm: "A", piece: "A" },
+    { owner_name: "Philip & Julia Smith", arm: "A", piece: "A" },
+    { owner_name: "Jon Erickson", arm: "A", piece: "A" },
+    { owner_name: "Jon Richardson", arm: "none", piece: null },
+  ]
+  it("finds the trust a co-owner named, misheard first name and all", () => {
+    expect(letterNameMatch("Krishna Singh and Family Trust", rows, "A").winner?.owner_name).toBe("Kushma Singh & Singh Family Trust")
+  })
+  it("an exact name beats the sound-alikes", () => {
+    expect(letterNameMatch("Kushma Singh", rows, "A").winner?.owner_name).toBe("Kushma Singh & Singh Family Trust")
+  })
+  it("two that fit equally → no link, both offered", () => {
+    const m = letterNameMatch("Krishna Singh", rows, "A")
+    expect(m.winner).toBeNull()
+    expect(m.near.length).toBeGreaterThanOrEqual(2)
+  })
+  it("never links on a first name or a surname that only sounds close", () => {
+    expect(letterNameMatch("Bob Smith", rows).winner).toBeNull()
+    expect(letterNameMatch("Jon Richardson", rows).winner?.owner_name).toBe("Jon Richardson")
+    expect(letterNameMatch("Jon Richardson", rows.filter(r => r.owner_name !== "Jon Richardson")).winner).toBeNull()
+  })
+  it("skips the other piece and one-word names", () => {
+    expect(letterNameMatch("Krishna Singh and Family Trust", rows, "B").winner).toBeNull()
+    expect(letterNameMatch("Singh", rows).winner).toBeNull()
   })
 })

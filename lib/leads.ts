@@ -2280,7 +2280,7 @@ export async function processRecordingBackground(args: {
         const sb = getLeadsClient()
         await mergeJackieCall(sb, leadId, {
           ...(review
-            ? { intake_complete: review.intake_complete, callback_when: review.callback_when, callback_date: review.callback_date, spanish: review.spanish, not_selling: review.not_selling ?? false, check: review.check ?? null, reviewed_at: new Date().toISOString() }
+            ? { intake_complete: review.intake_complete, got_address: review.got_address ?? false, callback_when: review.callback_when, callback_date: review.callback_date, spanish: review.spanish, not_selling: review.not_selling ?? false, check: review.check ?? null, reviewed_at: new Date().toISOString() }
             : { review_failed: true }),
           ...(jackieTiming ? { timing: jackieTiming } : {}),
         })
@@ -2323,6 +2323,15 @@ export async function processRecordingBackground(args: {
               : review.not_selling ? "👋 Talked with Jackie, not selling — no missed-call text"
               : "⚠️ Intake incomplete — the missed-call text will still go out",
           ]
+          // Ryan calls without knowing which house (2026-11-20). The line
+          // stays quiet when the address came some other way (the name the
+          // letter went to, an earlier call).
+          if (!review.got_address && !review.opted_out && !analysis?.is_dnc && (review.callback_when || review.intake_complete)) {
+            let q = sb.from("leads").select("id").not("property_address", "is", null).limit(1)
+            q = callerPhone && !isAnonymousCaller(callerPhone) ? q.or(`id.eq.${leadId},caller_phone.eq.${callerPhone}`) : q.eq("id", leadId)
+            const { data: known } = await q
+            if (!known?.length) jackieLines.push("📍 No property address — ask which house when you call")
+          }
           if (review.spanish) jackieLines.push("🇲🇽 Spanish speaker — team callback")
         }
         const check = jackieCheckLine(review?.check, jackieTiming)
@@ -2736,6 +2745,11 @@ export interface AnalyzeCallResult {
   summary: string
   name: string | null
   property_address: string | null
+  // Who the letter was addressed to, when the caller says and it isn't them
+  // ("you keep sending this to Krishna Singh and Family Trust", 2026-11-20).
+  // Finds the mailed house when the caller's own surname can't
+  // (autoLinkMailRecord letterName). Null when not said.
+  letter_name?: string | null
   // Email the caller stated out loud — incl. spelled-out / "at gmail dot
   // com" forms, normalized. Lets a call-only lead get an email on the card
   // (and the send-email path) without Ryan typing it in. null if none said.
@@ -2945,6 +2959,13 @@ ${TEMPERATURE_RUBRIC}
     specific property, surface it here even when the fresh transcript is
     just a voicemail greeting.
 
+- letter_name: the name the caller says the letter or mail was addressed
+    to, when it isn't the caller's own name ("you keep sending this to
+    Krishna Singh and Family Trust", "the letter was for my mother, Mary
+    Lopez"), as said, including any trust words. Null if they didn't say
+    one, or it's just their own name. Never a company name of ours (LRG
+    Homes, Ryan).
+
 - email: any email address the caller stated. Callers often spell it out or
     say it aloud ("john smith at gmail dot com", "j-s-m-i-t-h") — normalize
     those spoken forms to a standard address (johnsmith@gmail.com). Null only
@@ -3124,6 +3145,7 @@ Respond with ONLY the JSON object — no markdown fences, no explanation.
   "summary": "...",
   "name": "..." | null,
   "property_address": "..." | null,
+  "letter_name": "..." | null,
   "email": "..." | null,
   "recommended_followup_date": "YYYY-MM-DD" | null,
   "followup_reason": "..." | null,
@@ -3240,6 +3262,10 @@ ${historyBlock}${freshLabel}
       property_address:
         typeof parsed.property_address === "string" && parsed.property_address.trim()
           ? parsed.property_address.trim()
+          : null,
+      letter_name:
+        typeof parsed.letter_name === "string" && parsed.letter_name.trim()
+          ? parsed.letter_name.trim().slice(0, 120)
           : null,
       email:
         typeof parsed.email === "string" && /\S+@\S+\.\S+/.test(parsed.email.trim())
@@ -3490,7 +3516,7 @@ export async function applyFollowupOnlyResult(
   // another row of theirs must reach this row too.
   if (!error) {
     try {
-      await autoLinkMailRecord(sb, leadId)
+      await autoLinkMailRecord(sb, leadId, { letterName: result.letter_name ?? null })
     } catch (e) {
       console.warn("[mail-match] auto-link failed:", e instanceof Error ? e.message : String(e))
     }
@@ -3642,7 +3668,7 @@ export async function applyAnalyzeCallResult(
   // another row of theirs must reach this row too.
   if (!error) {
     try {
-      await autoLinkMailRecord(sb, leadId)
+      await autoLinkMailRecord(sb, leadId, { letterName: result.letter_name ?? null })
     } catch (e) {
       console.warn("[mail-match] auto-link failed:", e instanceof Error ? e.message : String(e))
     }

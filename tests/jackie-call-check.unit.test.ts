@@ -30,6 +30,7 @@ describe("jackieCheckLine", () => {
   it("flags a question asked more than once (11-13), and reads calls graded before the field existed", () => {
     expect(jackieCheckLine({ ...clean, repeated_question: "why they called ×3" }, null)).toBe("🔎 Check: asked more than once: why they called ×3")
     expect(jackieCheckLine({ ...clean, repeated_question: null }, null)).toBeNull()
+    expect(jackieCheckLine({ ...clean, skipped_address: true }, null)).toBe("🔎 Check: never asked for the address")
   })
   it("flags a removal offer nobody asked for", () => {
     expect(jackieCheckLine({ ...clean, offered_removal_unprompted: true }, null)).toBe("🔎 Check: offered removal unprompted")

@@ -48,8 +48,8 @@ describe("returning caller note", () => {
     expect(n).toContain("don't greet them by name")
     expect(n).not.toContain("95030")
   })
-  it("no address on file → the address is still her top priority", () => {
-    expect(returningCallerNote({ name: null, property_address: null })).toContain("Getting the property address is still your top priority")
+  it("no address on file → she asks for it once", () => {
+    expect(returningCallerNote({ name: null, property_address: null })).toContain("Ask for the property address once")
   })
   it("spokenAddress drops state + zip only", () => {
     expect(spokenAddress("140 Johnson Ave, Los Gatos, CA 95030")).toBe("140 Johnson Ave, Los Gatos")

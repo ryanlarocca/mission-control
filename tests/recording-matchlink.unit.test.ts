@@ -65,18 +65,18 @@ describe("recording pipeline re-runs the mailed-record linker", () => {
   it("links even when the row already held the address (no mail_record_id yet)", async () => {
     state.existing = { ...state.existing!, property_address: "2127 Los Gatos Almaden Rd", name: "Brian" }
     await applyAnalyzeCallResult("lead-2", RESULT)
-    expect(linker).toHaveBeenCalledWith(expect.anything(), "lead-2")
+    expect(linker).toHaveBeenCalledWith(expect.anything(), "lead-2", { letterName: null })
   })
 
   it("applyFollowupOnlyResult (outbound branch) links when it carries an address", async () => {
     await applyFollowupOnlyResult("lead-3", RESULT)
-    expect(linker).toHaveBeenCalledWith(expect.anything(), "lead-3")
+    expect(linker).toHaveBeenCalledWith(expect.anything(), "lead-3", { letterName: null })
   })
 
   it("still runs the linker when the analysis has neither name nor address (it also credits the mailing, 2026-11-09)", async () => {
     await applyAnalyzeCallResult("lead-4", { ...RESULT, name: null, property_address: null })
     await applyFollowupOnlyResult("lead-5", { ...RESULT, name: null, property_address: null })
-    expect(linker).toHaveBeenCalledWith(expect.anything(), "lead-4")
-    expect(linker).toHaveBeenCalledWith(expect.anything(), "lead-5")
+    expect(linker).toHaveBeenCalledWith(expect.anything(), "lead-4", { letterName: null })
+    expect(linker).toHaveBeenCalledWith(expect.anything(), "lead-5", { letterName: null })
   })
 })

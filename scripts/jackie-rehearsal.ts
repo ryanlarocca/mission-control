@@ -126,6 +126,19 @@ const SCENARIOS: Scenario[] = [
     ],
   },
   {
+    id: "co-owner-yes",
+    about: "11-20 Johnny call: a co-owner, not selling, says yes to Ryan's call — she must still ask for the address",
+    lines: [
+      "Hi. My name is Johnny Richardson, and I'm calling about this letter you sent me.",
+      "Well, I get letters all the time about that house. I don't know why everybody wants it.",
+      "Oh, we own it. You keep sending the letter to Krishna Singh and Family Trust, but I own half of that house. We bought it together.",
+      "I really hadn't thought about doing anything with it. Not at this point.",
+      "Yeah, you can call me.",
+      "It's 279 Chestnut Street, in San Carlos. And anytime's fine.",
+      "That's the only number to get me. Okay, all right.",
+    ],
+  },
+  {
     id: "one-word-reason",
     about: "gives a one-word reason for calling, then cooperates",
     lines: [

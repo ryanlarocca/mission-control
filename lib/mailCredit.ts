@@ -39,7 +39,7 @@ export const WEBSITE_LINE = "+16506703914"
 export type CampaignVia = "line" | "inherited" | "match" | "manual"
 
 /** Link methods that credit on their own. Everything else waits for Ryan's pick. */
-export const STRONG_LINK_METHODS: ReadonlySet<string> = new Set(["auto_address", "auto_parcel", "auto_soundalike", "manual"])
+export const STRONG_LINK_METHODS: ReadonlySet<string> = new Set(["auto_address", "auto_parcel", "auto_soundalike", "auto_letter_name", "manual"])
 
 export interface CreditRow {
   id: string

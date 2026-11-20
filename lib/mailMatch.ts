@@ -95,7 +95,7 @@ export function parseFreeAddress(addr: unknown): { street: string; city: string;
 // auto_parcel (2026-11-09): the address is one of a multi-parcel owner's
 // other houses (mail_records.parcels). rejected: Ryan unlinked the match on
 // the card — never auto-link this person again.
-export type MailMatchMethod = "auto_address" | "auto_mail_address" | "auto_surname" | "auto_soundalike" | "auto_parcel" | "manual" | "rejected"
+export type MailMatchMethod = "auto_address" | "auto_mail_address" | "auto_surname" | "auto_soundalike" | "auto_parcel" | "auto_letter_name" | "manual" | "rejected"
 
 export const MAIL_RECORD_LITE_COLUMNS =
   "id, campaign_id, record_id, owner_name, site_address, site_city, site_zip, mail_address, mail_city, mail_zip, county, arm, batch, is_seed, piece, tenure_bucket, imp_tercile, any_signal, estate_language, family_transfer, out_of_state, multi_parcel_personal, prior_pieces"
@@ -295,6 +295,77 @@ export function soundAlikeName(heardName: string | null, ownerName: string | nul
   if (!best) return null
   const proper = best.token.charAt(0) + best.token.slice(1).toLowerCase()
   return [...words.slice(0, -1), proper].join(" ")
+}
+
+// ── The name the letter was addressed to (2026-11-20) ──────────────────────
+// A co-owner or relative calls under their own name and says who the letter
+// went to: "you keep sending this to Krishna Singh and Family Trust" (the
+// list: "Kushma Singh & Singh Family Trust", 279 Chestnut St). The caller's
+// surname found four unrelated Richardsons; the addressee's name is the
+// house. Same two-witness spirit as soundAlikeMatch: one word of the heard
+// name on the record exactly, every other word sounding alike.
+
+export interface LetterNameRow {
+  owner_name: string | null
+  arm?: string | null
+  piece?: string | null
+}
+
+/** The record the letter's addressee names, or none; near ones (best first) for the card picker. */
+export function letterNameMatch<T extends LetterNameRow>(
+  heardName: string,
+  rows: T[],
+  campaignPiece: string | null = null
+): { winner: T | null; near: T[] } {
+  const heard = ownerNameTokens(heardName).filter(t => t.length >= 3)
+  if (heard.length < 2) return { winner: null, near: [] }
+  const saidTrust = /\bTRUST\b/.test(normText(heardName))
+  // The surname carries it (exact, or a near-certain mishearing); a first
+  // name may be misheard but keeps its first letter — KRISHNA ~ KUSHMA,
+  // never BOB ~ PHILIP or a Jon Richardson ~ Jon Erickson. A record that has
+  // every word as said beats the sound-alikes (KUSHMA, not JASON).
+  const surname = heard[heard.length - 1]
+  const scored = rows
+    .map(r => {
+      const owner = ownerNameTokens(r.owner_name)
+      const sur = Math.max(0, ...owner.map(o => soundAlike(surname, o).sound))
+      if (sur < 0.75 || !owner.includes(surname) && sur < 0.9) return null
+      const given = heard.slice(0, -1).map(h =>
+        Math.max(0, ...owner.filter(o => o.charAt(0) === h.charAt(0)).map(o => soundAlike(h, o).sound)))
+      if (given.some(s => s < 0.65)) return null
+      const sims = [sur, ...given]
+      if (isPieceMismatch(campaignPiece, r.piece)) return null
+      const trustOk = !saidTrust || /\bTRUST\b/.test(normText(r.owner_name))
+      return { r, trustOk, exact: sims.every(x => x === 1), mailed: r.arm != null && r.arm !== "none", score: sims.reduce((a, b) => a + b, 0) + (trustOk ? 0.2 : 0) }
+    })
+    .filter((x): x is NonNullable<typeof x> => !!x)
+    .sort((a, b) => b.score - a.score)
+  // A record that was actually mailed beats one that's only on the list.
+  const pool = scored.some(x => x.mailed) ? scored.filter(x => x.mailed) : scored
+  const fits = pool.filter(x => x.trustOk)
+  const top = fits.some(x => x.exact) ? fits.filter(x => x.exact) : fits
+  return { winner: top.length === 1 ? top[0].r : null, near: scored.map(x => x.r) }
+}
+
+/** Search one list for the letter's addressee: rows carrying any heard name word, then letterNameMatch. */
+export async function suggestByLetterName(
+  sb: SupabaseClient,
+  input: { campaignId: string; letterName: string; campaignPiece: string | null }
+): Promise<{ record: MailRecordLite | null; candidates: MailRecordLite[] }> {
+  const words = ownerNameTokens(input.letterName).filter(t => t.length >= 3)
+  if (words.length < 2) return { record: null, candidates: [] }
+  const byId = new Map<string, MatchRow>()
+  for (const w of words) {
+    const { data } = await sb
+      .from("mail_records")
+      .select(MAIL_RECORD_LITE_COLUMNS)
+      .eq("campaign_id", input.campaignId)
+      .ilike("owner_name_norm", `%${w}%`)
+      .limit(300)
+    for (const r of (data ?? []) as unknown as MatchRow[]) byId.set(r.id, r)
+  }
+  const m = letterNameMatch(input.letterName, Array.from(byId.values()), input.campaignPiece)
+  return { record: m.winner ? strip([m.winner])[0] : null, candidates: strip(m.near).slice(0, CANDIDATE_CAP) }
 }
 
 /**
@@ -502,7 +573,9 @@ export async function autoLinkMailRecord(
   // `alert: false` — the opt-out path runs its own looser match right after
   // and must not announce a miss it is about to resolve. `creditAlert: false`
   // — the caller's own alert already names the mailing (website form).
-  opts: { alert?: boolean; creditAlert?: boolean } = {}
+  // `letterName` — who the caller said the letter was addressed to, when
+  // that isn't them (the call/text analyzer's letter_name).
+  opts: { alert?: boolean; creditAlert?: boolean; letterName?: string | null } = {}
 ): Promise<MailMatchResult | null> {
   const result = await autoLinkInner(sb, leadId, opts)
   try {
@@ -513,7 +586,7 @@ export async function autoLinkMailRecord(
   return result
 }
 
-async function autoLinkInner(sb: SupabaseClient, leadId: string, opts: { alert?: boolean }): Promise<MailMatchResult | null> {
+async function autoLinkInner(sb: SupabaseClient, leadId: string, opts: { alert?: boolean; letterName?: string | null }): Promise<MailMatchResult | null> {
   const { data: lead } = await sb
     .from("leads")
     .select("id, caller_phone, email, gmail_thread_id, name, property_address, campaign_id, mail_record_id, mail_match_method, mail_match_candidates, source, source_type, twilio_number, lead_type")
@@ -566,7 +639,8 @@ async function autoLinkInner(sb: SupabaseClient, leadId: string, opts: { alert?:
       .limit(1)
     address = (known?.[0]?.property_address as string | undefined) ?? null
   }
-  if (!address && !lead.name) return null
+  const letterName = opts.letterName?.trim() || null
+  if (!address && !lead.name && !letterName) return null
   let campaign: CampaignScopeLite | null = null
   if (lead.campaign_id) {
     const { data: c } = await sb
@@ -585,7 +659,24 @@ async function autoLinkInner(sb: SupabaseClient, leadId: string, opts: { alert?:
     if (!any?.length) scope = null
   }
   const letterDoor = scope !== null
-  const raw = await suggestMailRecord(sb, { campaignId: scope, propertyAddress: address, name: lead.name })
+  let raw = await suggestMailRecord(sb, { campaignId: scope, propertyAddress: address, name: lead.name })
+  // No house from the address: the name the letter went to, on the letter's
+  // own list. A hit there is the house — it replaces the caller-surname
+  // candidates, and the card gets the address when it has none.
+  if (!raw.record && letterName && scope) {
+    const byName = await suggestByLetterName(sb, { campaignId: scope, letterName, campaignPiece: campaign?.piece ?? null })
+    if (byName.record) {
+      await linkMailRecordToCluster(sb, lead, byName.record.id, "auto_letter_name", null, byName.record.prior_pieces ?? null)
+      const site = mailRecordSiteLine(byName.record)
+      if (site && !address) {
+        const { error } = await sb.from("leads").update({ property_address: site }).eq("id", lead.id).is("property_address", null)
+        if (error) console.error(`[mail-match] letter-name address write failed for ${lead.id}: ${error.message}`)
+      }
+      console.log(`[mail-match] lead ${lead.id}: letter addressed to "${letterName}" → ${byName.record.record_id} ${site ?? ""}`)
+      return { record: byName.record, method: "auto_letter_name", candidates: [] }
+    }
+    if (byName.candidates.length) raw = { ...raw, candidates: byName.candidates }
+  }
   const strongOpen = raw.method === "auto_address" || raw.method === "auto_parcel"
   if (raw.record && (letterDoor || strongOpen)) {
     if (isPieceMismatch(campaign?.piece, raw.record.piece)) {

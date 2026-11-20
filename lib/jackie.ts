@@ -289,7 +289,14 @@ This number has been in touch with Ryan before. On file: ${onFile}.
 // ─── After her call ──────────────────────────────────────────────────────────
 
 export type JackieCallReview = {
+  /** Name + a callback agreed. The address is its own flag (got_address, 2026-11-20). */
   intake_complete: boolean
+  /**
+   * The caller gave the property's street (or confirmed the one on file).
+   * 2026-11-20: a trust's name counted as the address and a call with no
+   * house went out as "Intake complete". Absent on calls reviewed before.
+   */
+  got_address?: boolean
   callback_when: string | null
   callback_date: string | null
   spanish: boolean
@@ -317,6 +324,11 @@ export type JackieCheck = {
    * calls graded before then.
    */
   repeated_question?: string | null
+  /**
+   * The caller agreed to Ryan's call and she never asked for the address
+   * (2026-11-20, "Yeah, you can call me" read as a goodbye). Absent before.
+   */
+  skipped_address?: boolean
   /** Times she said she'd pass something along to Ryan (counted, not judged). */
   pass_along: number | null
 }
@@ -349,7 +361,8 @@ It is now ${weekday} ${ymd}, ${clock} Pacific.
 
 Answer in JSON only:
 {
-  "intake_complete": true if the caller gave a name (or confirmed one Jackie had on file), a property address (street number + street, a city if they said it; a property Jackie already had on file and the caller confirmed counts), and either a callback time or agreed Ryan can call them; false otherwise (hung up early, refused, wrong number, wanted off the list),
+  "intake_complete": true if the caller gave a name (or confirmed one Jackie had on file) and either a callback time or agreed Ryan can call them; false otherwise (hung up early, refused, wrong number, wanted off the list). The address doesn't decide this one (see got_address),
+  "got_address": true if the caller said the property's street address (a street number and street name, or a street name Jackie could place) or confirmed a property Jackie already had on file. A person's or trust's name ("the Singh Family Trust"), a city alone, or "the house" is NOT an address: false,
   "callback_when": the callback Jackie promised or the caller asked for, in a few words as said ("tomorrow around noon", "next Thursday after 3", "within one business day"), or null if none,
   "callback_date": that callback as YYYY-MM-DD in Pacific time, or null if no callback was arranged,
   "spanish": true if the caller spoke Spanish,
@@ -359,6 +372,7 @@ Answer in JSON only:
   "answered_first_question": only if the caller's first words to Jackie were a question to her (e.g. "did you send me this letter?"): true if she answered it directly before moving on, false if she went past it. She says who she is in her first full reply ("This is Jackie with LRG Homes"); giving that introduction and then answering in the same reply counts as answering directly, and so does an answer that isn't a plain yes or no (asked if Ryan is a realtor, "he was licensed at one point, these days he only invests" is the answer). null if the caller opened with anything other than a question (a statement like "I'm thinking about selling" is not a question),
   "asked_selling_too_early": true if Jackie asked why they're selling, what's changed, or whether they're thinking of selling before the caller had said anything suggesting they might sell,
   "pushed_after_no": true if, after the caller said they weren't selling, Jackie kept pushing: asked about selling again, asked for their address or name more than once, or made a second offer after they declined. Her ONE low-pressure offer right after they say they're not selling ("want me to have Ryan give you a call with a number?") is expected and is not pushing,
+  "skipped_address": true if the caller asked for Ryan's call or said yes when Jackie offered one, wasn't asking to come off the list, and Jackie never asked for the property address and the caller never gave it (a property already on file that the caller confirmed counts as given); false otherwise,
   "offered_removal_unprompted": true if Jackie offered to take them off the mailing list when the caller hadn't complained about the letters or asked to stop them,
   "repeated_question": if Jackie asked the caller for the same thing more than once, in the same or different words, a few words naming what and how many times ("why they called ×3", "the address ×2"); otherwise null. Asking what made them call, what's on their mind with the place, what's going on with the property, what's changed, and why they're selling are all ONE question (why they called): two or more of those in a call is a repeat, even when the caller's first answer was short ("the letter"). Not a repeat: asking for something once more because she plainly didn't hear it; asking for a missing piece (the city, an area code); asking for a name a second time later in the call after the caller dodged it; the callback-number check at the end
 }
@@ -366,11 +380,12 @@ Answer in JSON only:
 Transcript:
 ${transcript.slice(0, 20000)}`
   try {
-    const out = await completeText({ prompt, model: SONNET, maxTokens: 500, thinking: false, tag: "[jackie-review]" })
+    const out = await completeText({ prompt, model: SONNET, maxTokens: 700, thinking: false, tag: "[jackie-review]" })
     const j = JSON.parse(extractJsonObject(out.text)) as Partial<JackieCallReview> & Record<string, unknown>
     const date = typeof j.callback_date === "string" && /^\d{4}-\d{2}-\d{2}$/.test(j.callback_date) && j.callback_date >= ymd ? j.callback_date : null
     return {
       intake_complete: j.intake_complete === true,
+      got_address: j.got_address === true,
       callback_when: typeof j.callback_when === "string" && j.callback_when.trim() ? j.callback_when.trim().slice(0, 120) : null,
       callback_date: date,
       spanish: j.spanish === true,
@@ -383,6 +398,7 @@ ${transcript.slice(0, 20000)}`
         pushed_after_no: j.pushed_after_no === true,
         offered_removal_unprompted: j.offered_removal_unprompted === true,
         repeated_question: typeof j.repeated_question === "string" && j.repeated_question.trim() ? j.repeated_question.trim().slice(0, 80) : null,
+        skipped_address: j.skipped_address === true,
         pass_along: countPassAlong(transcript),
       },
     }
@@ -420,6 +436,7 @@ export function jackieCheckLine(check: JackieCheck | null | undefined, timing: T
   if (check?.pushed_after_no) issues.push("kept asking after they said no")
   if (check?.offered_removal_unprompted) issues.push("offered removal unprompted")
   if (check?.repeated_question) issues.push(`asked more than once: ${check.repeated_question}`)
+  if (check?.skipped_address) issues.push("never asked for the address")
   if ((check?.pass_along ?? 0) >= PASS_ALONG_FLAG) issues.push(`"pass along" ×${check!.pass_along}`)
   if (timing?.slowest_s != null && timing.slowest_s >= SLOW_REPLY_FLAG_S) {
     const at = timing.slowest_at_s
