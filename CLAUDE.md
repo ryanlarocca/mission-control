@@ -53,6 +53,11 @@ node scripts/board.mjs done <key>     ·   remove <key>
 
 - A **new project** starting in a chat → a card in the same turn. News on a
   project → update its status line / lane / key date in the same turn.
+- **When a project moves, do both, every time** (Ryan, 11-20): (1) set or
+  adjust the iPhone reminder for the next check-in (sidecar + `reminders-index`),
+  and (2) update the project's card: status line, whose move, and `--due` =
+  that next check-in date. The reminder nudges him; the card shows where the
+  whole project stands.
 - Reuse the project's `--key` so every chat updates the same card.
 
 ## Looking up someone's message — texts first, automatically
