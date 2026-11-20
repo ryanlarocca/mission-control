@@ -25,6 +25,8 @@
 //                        (briefs/BRIEF_INBOX_MEDIA_DELIVERY_2026-10-15.md);
 //                        HomeSentry inspection reports behind a tapinspect
 //                        share link park as awaiting_payment until released.
+//   2b'. watchPartners — partners@lrghomes.com (alias on ryan@, 'Partners' label, skips the
+//                        inbox) → one Telegram line per message (partners.mjs).
 //   2c. scanEvents     — networking-event watcher: new mail on ryan@ + the personal
 //                        Gmail (IMAP) → one inbox_events row per real event; surfaced
 //                        only in the brief + cards (briefs/BRIEF_EVENT_WATCHER_2026-10-15.md).
@@ -88,6 +90,7 @@ import { LOOP_ACTIVE_STATUSES, LOOP_KEY_WINDOW_MS, SENT_LOOKBACK_DAYS, answeredB
 import { applyEventDecisions, eventBrief, postEventCards, scanEvents } from "./events-run.mjs"
 import { bounceBriefLines, clearBounceQueue, syncCards } from "./cards.mjs"
 import { isLeadSender, syncLeadMail } from "./leadmail.mjs"
+import { watchPartners } from "./partners.mjs"
 import { applyRegistryEvent, closingDateFor, cycleRegistryOn, isListingAgreementName, shortAddress, zipFrom } from "../market-cycle/registry.mjs"
 
 // ------------------------------------------------------------------ args
@@ -2880,6 +2883,7 @@ async function main() {
   }
   if (flag("cards-only")) return syncCards(ctx, { dry: DRY, since: CARDS_SINCE, emails: CARDS_EMAILS })
   if (flag("leads-only")) return syncLeadMail(ctx, { dry: DRY, since: LEADS_SINCE })
+  if (flag("partners-only")) return watchPartners(ctx, { dry: DRY })
   const t0 = Date.now()
   QUIET = { ...QUIET, ...((agent.quiet_hours && typeof agent.quiet_hours === "object") ? agent.quiet_hours : {}) }
   await alertDriveOnce(ctx)
@@ -2890,6 +2894,7 @@ async function main() {
   await postDeferred(ctx)
   if (flag("interview")) await seedInterview(ctx)
   if (!flag("no-poll")) await pollInbox(ctx)
+  await watchPartners(ctx, { dry: DRY }).catch((e) => warn("partners watch:", e.message))
   if (!flag("no-leads")) await syncLeadMail(ctx, { dry: DRY, since: LEADS_SINCE })
   if (!flag("no-cards")) await syncCards(ctx, { dry: DRY, since: CARDS_SINCE, emails: CARDS_EMAILS })
   if (!flag("no-events")) await scanEvents(ctx, { dry: DRY, backfillDays: EVENTS_BACKFILL ? parseDays(EVENTS_BACKFILL) : null })
