@@ -356,7 +356,7 @@ export function BoardView() {
           ref={addRef}
           value={draft}
           onChange={e => setDraft(e.target.value)}
-          placeholder="Throw something on the board…"
+          placeholder="Add a project…"
           aria-label="Add a card"
           enterKeyHint="done"
           autoComplete="off"

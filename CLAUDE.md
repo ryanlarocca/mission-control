@@ -27,32 +27,33 @@ picking up cold) + `CHANGELOG.md` (append-only ship history).
 `briefs/*.md` — execution specs **do** live in this repo. That's the one
 docs exception.
 
-## The Board — Ryan's one list of everything in motion
+## The Board — Ryan's project board (NOT a to-do list)
 
-`/board` in Mission Control (table `board_items`) holds one card per open
-thread: deals, taxes, videos, admin, subscriptions. Lanes: **you** (Your
-move) · **waiting** (Waiting on someone) · **me** (I'm handling); done cards
-show for 7 days. Every chat keeps it current:
+`/board` in Mission Control (table `board_items`) has **one card per
+project**: a deal (261 Bieber flip), a dispute (Mercedes FTB), a lawsuit, a
+video, a mailer, a system build, the Amex swap. Each card = project name +
+one-line status · next step + whose move. Lanes: **you** (Your move) ·
+**waiting** (Waiting on someone) · **me** (I'm handling); finished projects
+show under Done for 7 days.
+
+**Never put small tasks on it** (Ryan, 11-20: "This is not a reminders list.
+This is a project management file."): no "print the packet", "pay the
+property tax / mortgage / loan payment", "call this guy", "cancel this
+trial", no lead follow-ups (those live in Follow Ups / Relationships). Tasks
+go on iPhone Reminders (sidecar) or inside the project's notes; the card's
+status line just reflects where the project stands.
 
 ```
-node scripts/board.mjs list                     # read it when Ryan asks "where am I at" / starts a day
-node scripts/board.mjs add --key <slug> --title "..." --next "..." --lane you|waiting|me \
-     [--waiting-on "..."] [--due YYYY-MM-DD] [--note "1:30 PM"] [--tag Deal] [--link URL]
-node scripts/board.mjs update <key> --next "..." --lane waiting   # when something moves
-node scripts/board.mjs done <key>
+node scripts/board.mjs list
+node scripts/board.mjs add --key <project-slug> --title "Project name" --next "status · next step" \
+     --lane you|waiting|me [--waiting-on "..."] [--due YYYY-MM-DD] [--tag Deal] [--link URL]
+node scripts/board.mjs update <key> --next "..." --lane waiting    # when the project moves
+node scripts/board.mjs done <key>     ·   remove <key>
 ```
 
-- **"Throw it on the board"** = `add`. Don't wait to be asked: any new thread
-  with a next step (a promise, a deadline, a follow-up, waiting on someone)
-  gets a card **in the same turn**, and news on an existing one updates it.
-- Reuse the card's `--key` (stable slug like `amex-swap`, `bieber-occupants`)
-  so the next chat updates the same card instead of adding a duplicate.
-- **No lead follow-ups on the Board** (Ryan, 11-20): calling/texting a seller,
-  agent or contact back lives in Follow Ups / Relationships (the judge sets
-  those dates). The Board is for his own projects, admin, money, deals in
-  escrow, videos, marketing work and decisions.
-- iPhone reminders still go through the sidecar; the board is the overview,
-  not a replacement for them.
+- A **new project** starting in a chat → a card in the same turn. News on a
+  project → update its status line / lane / key date in the same turn.
+- Reuse the project's `--key` so every chat updates the same card.
 
 ## Looking up someone's message — texts first, automatically
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// The Board CLI (2026-11-20) — how every Claude chat reads and writes Ryan's
+// The Board CLI (2026-11-20) — PROJECTS, not tasks (one card per project). How every Claude chat reads and writes Ryan's
 // board (table board_items; the page is /board). "Throw it on the board" =
 // `add`. Cards are found by a stable --key slug so the next chat updates the
 // same card instead of adding a duplicate.
