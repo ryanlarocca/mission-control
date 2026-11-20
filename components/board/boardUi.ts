@@ -37,7 +37,7 @@ const TAG_AMBER = "bg-[#f5b942]/[.12] text-[#f5b942]"
 
 const TAG_COLORS: Record<string, string> = {
   deal: TAG_TEAL,
-  lead: TAG_TEAL,
+  mail: TAG_AMBER,
   taxes: TAG_VIOLET,
   tax: TAG_VIOLET,
   money: TAG_VIOLET,

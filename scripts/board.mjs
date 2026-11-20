@@ -10,7 +10,7 @@
 //        [--due 2026-11-27] [--note "1:30 PM"] [--tag Admin] [--link URL] [--source "chat"]
 //        (add on an existing key updates only the fields you pass)
 //   node scripts/board.mjs update <key|id> [same flags]   (--due none clears the date)
-//   node scripts/board.mjs done <key|id>      ·   reopen <key|id>
+//   node scripts/board.mjs done <key|id>      ·   reopen <key|id>   ·   remove <key|id> (delete; for cards that don't belong)
 //   node scripts/board.mjs import <file.json> (array of {key, title, ...} — upsert by key)
 //
 // Lanes: you = Your move · waiting = Waiting on someone · me = I'm handling.
@@ -140,6 +140,13 @@ if (!cmd || cmd === "list") {
   const { error } = await sb.from("board_items").update({ status: done ? "done" : "open", done_at: done ? new Date().toISOString() : null, updated_at: new Date().toISOString() }).eq("id", existing.id)
   if (error) die(error.message)
   console.log(`${done ? "done" : "reopened"}: ${existing.title}`)
+} else if (cmd === "remove") {
+  const ref = rest[0] ?? flags.key
+  const existing = ref ? await find(ref) : null
+  if (!existing) die(`no card "${ref}"`)
+  const { error } = await sb.from("board_items").delete().eq("id", existing.id)
+  if (error) die(error.message)
+  console.log(`removed: ${existing.title}`)
 } else if (cmd === "import") {
   const file = rest[0]
   if (!file) die("import needs a JSON file")
@@ -153,4 +160,4 @@ if (!cmd || cmd === "list") {
     c._created ? created++ : updated++
   }
   console.log(`import: ${created} added, ${updated} updated`)
-} else die(`unknown command "${cmd}" (list · add · update · done · reopen · import)`)
+} else die(`unknown command "${cmd}" (list · add · update · done · reopen · remove · import)`)

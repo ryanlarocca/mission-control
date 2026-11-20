@@ -20,7 +20,9 @@ export const BOARD_LANE_LABEL: Record<BoardLane, string> = {
 }
 
 // Short colored chip on each card. Free text is allowed; these get colors.
-export const BOARD_TAGS = ["Deal", "Lead", "Taxes", "Video", "Admin", "Money", "Subs", "Build", "Email", "Legal", "Health", "Personal"] as const
+// No "Lead": person-by-person lead follow-ups live in Follow Ups / Relationships,
+// never on the Board (Ryan, 2026-11-20). Marketing work (mailers) is "Mail".
+export const BOARD_TAGS = ["Deal", "Mail", "Taxes", "Video", "Admin", "Money", "Subs", "Build", "Email", "Legal", "Health", "Personal"] as const
 
 export type BoardStatus = "open" | "done"
 

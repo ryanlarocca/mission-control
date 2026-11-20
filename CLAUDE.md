@@ -47,6 +47,10 @@ node scripts/board.mjs done <key>
   gets a card **in the same turn**, and news on an existing one updates it.
 - Reuse the card's `--key` (stable slug like `amex-swap`, `bieber-occupants`)
   so the next chat updates the same card instead of adding a duplicate.
+- **No lead follow-ups on the Board** (Ryan, 11-20): calling/texting a seller,
+  agent or contact back lives in Follow Ups / Relationships (the judge sets
+  those dates). The Board is for his own projects, admin, money, deals in
+  escrow, videos, marketing work and decisions.
 - iPhone reminders still go through the sidecar; the board is the overview,
   not a replacement for them.
 
