@@ -9,6 +9,7 @@
     "replyTo: header on every send. null = no Reply-To, so replies come back to the sending mailbox — Ryan's call 2026-09-24 (reverses rebuild Q2's info@): the new domains need two-way conversation history of their own, and a Reply-To on the spam-flagged lrghomes.com was a negative signal. Both new mailboxes are in CAMPAIGN_INBOXES (lib/campaignInbox.ts) so replies/bounces/unsubs are ingested exactly like info@.",
     "CAMPAIGN_SENDERS env (comma list of addresses) narrows the enabled set at runtime; unset = every sender with enabled:true. This file is the ONLY sender source — CAMPAIGN_SEND_AS is dead (removed 2026-09-06, rebuild item 4); no enabled sender here = the engine refuses to run.",
     "Per-sender health + auto-pause (rebuild item 3, 2026-09-05): each mailbox pauses ON ITS OWN — bounce red day, Gmail throttle, DWD auth failure, or canary in Spam two days running — for autoPauseHours, then resumes by itself; the other sender keeps sending. Telegram: 'pause buys' / 'resume offers' / 'canary buys primary|promotions|spam' / 'reputation offers high|medium|low|bad' / 'campaign status'.",
+    "2026-11-20 (Ryan): buys landed in Spam (judge C36 + a fresh Gmail inbox) at 100/day, so buys is paused with no end date (retest ~Dec 21) and offers is capped at 30/day (ceiling 40 -> 30). October at ~20/day drew the replies; the volume climb didn't. Raise a ceiling only on Ryan's say-so.",
     "requireCanaryVerdict: the brief's 'canary Primary 3 days running' gate. true = a sender cannot advance a rung until its last minHealthyDays recorded canary verdicts are all 'primary' and the newest is at most canaryVerdictMaxAgeDays old. Verdicts come from Ryan reading the judge inbox (CAMPAIGN_CANARY_TO) and replying 'canary <label> <verdict>' on Telegram. requirePostmaster stays false until Postmaster Tools has the new domains and shows a reputation (weeks of volume) — 'reputation <label> <level>' records what the dashboard shows."
   ],
   "gates": {
@@ -39,7 +40,7 @@
       "role": "understudy",
       "label": "offers",
       "ramp": [3, 5, 10, 20, 30, 40],
-      "ceiling": 40,
+      "ceiling": 30,
       "segment": "relationships",
       "segmentTiers": ["A", "B", "C"],
       "overflow": true,
