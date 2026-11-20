@@ -10,11 +10,14 @@
 //   node scripts/pile/ask.mjs person "<name|phone>" [--since ...]  → texts + calls + email with one person, newest first
 //                                                                    (no saved match → unsaved threads that mention the name, newest first)
 //   node scripts/pile/ask.mjs recent [--days 7] [--unsaved] [--each 2] → who texted Ryan lately, grouped by sender, self-intros pulled out
+//   node scripts/pile/ask.mjs attachments [--with <name|phone>] [--since ...] [--until ...] [--limit 20] [--mine|--theirs] [--no-groups] [--no-save]
+//     → photos/files sent in texts (chat.db only, 2026-03-09 →), saved to /tmp/pile-attachments/ (HEIC → JPEG); open the printed paths with Read
 //   node scripts/pile/ask.mjs status
 // Add --json for machine output.
 import { ImapFlow } from "imapflow"
 import { loadEnvFile, MC_ROOT } from "../mini-backup/lib.mjs"
 import path from "node:path"
+import fs from "node:fs"
 
 const env = { ...loadEnvFile(path.join(MC_ROOT, ".env.local")), ...process.env }
 const SIDECAR = "http://localhost:5799"
@@ -105,6 +108,32 @@ async function main() {
     rows = dedupeTexts(rows); rows.sort((a, b) => (a.at < b.at ? 1 : -1)); rows = rows.slice(0, limit)
     if (JSON_OUT) return console.log(JSON.stringify(rows))
     console.log(`${rows.length} texts${q ? ` matching "${q}"` : ""}${who ? ` with ${who.names[0] || flags.with}` : ""}`); printTexts(rows, names); return
+  }
+  if (cmd === "attachments") {
+    const who = flags.with ? await resolve(flags.with) : null
+    if (flags.with && !(who && who.phones.length)) return console.log(`no phone number found for "${flags.with}"`)
+    const lim = Number(flags.limit || 20)
+    const base = { since: flags.since, until: flags.until, limit: lim, from_me: flags.mine ? "1" : flags.theirs ? "0" : "", groups: groupsParam() }
+    let rows = []
+    if (who) for (const p of who.phones) rows.push(...await sc("/pile/attachments", { ...base, phone: p }))
+    else rows = await sc("/pile/attachments", base)
+    rows = [...new Map(rows.map((r) => [r.id, r])).values()].sort((a, b) => (a.at < b.at ? 1 : -1)).slice(0, lim)
+    const dir = "/tmp/pile-attachments"; if (!flags["no-save"]) fs.mkdirSync(dir, { recursive: true })
+    for (const r of rows) {
+      if (flags["no-save"] || !r.on_disk) continue
+      const res = await fetch(`${SIDECAR}/pile/attachment?id=${r.id}`)
+      if (!res.ok) { r.error = `${res.status} ${await res.text()}`; continue }
+      const name = (/filename="([^"]+)"/.exec(res.headers.get("content-disposition") || "") || [])[1] || `${r.id}`
+      r.saved = path.join(dir, `${r.id}-${name}`); fs.writeFileSync(r.saved, Buffer.from(await res.arrayBuffer()))
+    }
+    if (JSON_OUT) return console.log(JSON.stringify(rows))
+    console.log(`${rows.length} attachments${who ? ` with ${who.names[0] || flags.with}` : ""}`)
+    for (const r of rows) {
+      const from = r.from_me ? "me" : (r.name || names.get(last10(r.number)) || r.number || "?")
+      console.log(`${fmt(r.at).padEnd(22)} ${from.padEnd(22)} ${r.group ? `[${r.group.label}] ` : ""}${r.mime || "?"} ${r.filename || ""}${r.caption ? `  "${r.caption.slice(0, 80)}"` : ""}`)
+      console.log(`   ${r.saved || (r.on_disk ? "(not saved)" : "NOT ON DISK (offloaded to iCloud)")}${r.error ? "  ERROR " + r.error : ""}`)
+    }
+    return
   }
   if (cmd === "calls") {
     const who = flags.with ? await resolve(flags.with) : null
