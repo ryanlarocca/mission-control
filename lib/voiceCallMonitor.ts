@@ -59,7 +59,7 @@ const GOODBYE_GRACE_MS = 2_500 // caller silence after her goodbye before we han
 const GOODBYE_MAX_WAIT_MS = 8_000 // noisy line: hang up anyway
 const LOUD_INPUT_HOLD_MS = 1_200 // caller audio this recent = they may be talking
 const INTRO_AFTER_MS = 3_000 // caller silent after her "Hello?" → she says who she is
-const INTRO_NUDGE = `The caller hasn't said anything since you picked up. Say now: "This is Jackie with LRG Homes, how can I help you?" Then listen. That counts as your introduction; don't give it again.`
+const INTRO_NUDGE = `The caller hasn't said anything since you picked up. Say now: "This is Jackie, how can I help you?" Then listen. That counts as your introduction; don't give it again.`
 // 11-13: the script alone still let her re-ask "what made you call" in 1 of 5
 // rehearsals (and 3 of 3 before the script change), so the moment she's heard
 // asking it, she's told it's spent. Matches her ways of asking why they

@@ -21,6 +21,7 @@
 //   … scripts/jackie-rehearsal.ts --runs 3                                    # each scenario 3 times (the voice varies)
 //   … scripts/jackie-rehearsal.ts --send                                      # post every mp3 to Telegram as a voice note
 //   … scripts/jackie-rehearsal.ts --send --send-only terse-owner,opt-out      # …only these scenarios (needs --send)
+//   … scripts/jackie-rehearsal.ts --first-words <file> --label <name>          # trial FIRST WORDS section (opener try-outs), audio under <name>
 //
 // Env (from .env.local): OPENAI_VOICE_API_KEY (or OPENAI_API_KEY), and
 // ANTHROPIC_API_KEY for the grading pass.
@@ -138,6 +139,10 @@ const SCENARIOS: Scenario[] = [
       "That's the only number to get me. Okay, all right.",
     ],
   },
+  // Opener try-outs (2026-11-20): only her first real turn matters here.
+  { id: "opener-hello", about: "says hello back, then mentions the letter", lines: ["Hello?", "Yeah, I got a letter from you guys about my house."] },
+  { id: "opener-ryan", about: "asks for Ryan", lines: ["Hello, is there a Ryan there?", "Yeah, I got his letter."] },
+  { id: "opener-letter", about: "gives his name and mentions the letter", lines: ["Hi, my name is Johnny, and I'm calling about this letter you sent me."] },
   {
     id: "one-word-reason",
     about: "gives a one-word reason for calling, then cooperates",
@@ -162,6 +167,8 @@ const NO_REPLY_GIVE_UP_MS = 9_000 // she never started: move on and log it
 const QUIET_AFTER_HER_MS = Number(process.env.REHEARSAL_QUIET_MS) || 2_500
 const CALLER_PHONE = "+14085550142"
 const GUARD = !process.argv.includes("--no-guard")
+// --opener "<line>": a trial pickup line in place of VOICE_TEST_OPENER (opener try-outs).
+let greeting = VOICE_TEST_GREETING
 
 function arg(name: string): string | null {
   const i = process.argv.indexOf(name)
@@ -332,7 +339,7 @@ async function rehearse(sc: Scenario, instructions: string, key: string): Promis
           instructions,
           audio: { format: { type: "audio/pcm", rate: RATE }, output: { voice: VOICE_TEST_VOICE } },
           delegation: { type: "responses", responses: { model: VOICE_TEST_BACKEND_MODEL, reasoning: { effort: VOICE_TEST_BACKEND_EFFORT } } },
-          input: [{ type: "message", role: "developer", content: [{ type: "input_text", text: VOICE_TEST_GREETING }] }],
+          input: [{ type: "message", role: "developer", content: [{ type: "input_text", text: greeting }] }],
         },
       }))
     })
@@ -341,7 +348,7 @@ async function rehearse(sc: Scenario, instructions: string, key: string): Promis
       try { m = JSON.parse(String(raw)) } catch { return }
       switch (m.type) {
         case "session.started":
-          ws.send(JSON.stringify({ type: "session.commentary.append", delegation_id: null, content: VOICE_TEST_GREETING }))
+          ws.send(JSON.stringify({ type: "session.commentary.append", delegation_id: null, content: greeting }))
           // Stream the "microphone": caller lines when it's their turn, silence
           // otherwise. Paced by the wall clock, not by timer ticks — setInterval
           // runs late, and a stream that falls behind the session's clock makes
@@ -397,14 +404,22 @@ async function main(): Promise<void> {
   const key = process.env.OPENAI_VOICE_API_KEY || process.env.OPENAI_API_KEY
   if (!key) throw new Error("OPENAI_VOICE_API_KEY / OPENAI_API_KEY missing")
   const ref = arg("--script-from")
-  const base = ref ? instructionsAt(ref) : VOICE_TEST_INSTRUCTIONS
+  let base = ref ? instructionsAt(ref) : VOICE_TEST_INSTRUCTIONS
+  const firstWords = arg("--first-words")
+  const opener = arg("--opener")
+  if (opener) greeting = `Pick up the phone now. Say only: "${opener}" the way a person answers a call, then stop and listen.`
+  if (firstWords) {
+    const section = /FIRST WORDS\n[\s\S]*?\n\n(?=Interruption policy:)/
+    if (!section.test(base)) throw new Error("no FIRST WORDS section to replace")
+    base = base.replace(section, `FIRST WORDS\n${fs.readFileSync(firstWords, "utf-8").trim()}\n\n`)
+  }
   const only = arg("--only")?.split(",")
   const scenarios = only ? SCENARIOS.filter(s => only.includes(s.id)) : SCENARIOS
   const runs = Math.max(1, Math.floor(Number(arg("--runs")) || 1))
   const send = process.argv.includes("--send")
   const sendOnly = arg("--send-only")?.split(",") ?? null
   if (sendOnly && !send) console.log("(--send-only only limits --send; nothing will be posted without --send)")
-  const label = ref ? ref.replace(/[^A-Za-z0-9._-]+/g, "_") : "working-tree"
+  const label = (arg("--label") ?? ref ?? "working-tree").replace(/[^A-Za-z0-9._-]+/g, "_")
   const outDir = path.join("/tmp/jackie-rehearsal-audio", label)
   fs.mkdirSync(outDir, { recursive: true })
   console.log(`Jackie rehearsal — script ${ref ?? "working tree"} (${base.split(/\s+/).length} words), ${scenarios.length} scenario(s) × ${runs} run(s)\n`)

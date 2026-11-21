@@ -144,7 +144,7 @@ describe("opener + wrap-up (11-10)", () => {
     expect(nudges(m, 3_000)).toHaveLength(0)
     const out = nudges(m, 4_500)
     expect(out).toHaveLength(1)
-    expect(out[0].type === "commentary" && out[0].content).toContain("This is Jackie with LRG Homes")
+    expect(out[0].type === "commentary" && out[0].content).toContain("This is Jackie, how can I help you?")
     expect(nudges(m, 8_000)).toHaveLength(0)
   })
   it("stays out of the way when the caller answers", () => {
