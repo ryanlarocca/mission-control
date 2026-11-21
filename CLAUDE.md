@@ -51,8 +51,10 @@ node scripts/board.mjs update <key> --next "..." --lane waiting    # when the pr
 node scripts/board.mjs done <key>     ·   remove <key>
 ```
 
-- A **new project** starting in a chat → a card in the same turn. News on a
-  project → update its status line / lane / key date in the same turn.
+- **New cards only when Ryan asks** (Ryan, 11-21: "I'll tell you when I want
+  that from now on"). Never add a card on your own initiative. News on a
+  project that already has a card → update its status line / lane / key date
+  in the same turn.
 - **When a project moves, do both, every time** (Ryan, 11-20): (1) set or
   adjust the iPhone reminder for the next check-in (sidecar + `reminders-index`),
   and (2) update the project's card: status line, whose move, and `--due` =
