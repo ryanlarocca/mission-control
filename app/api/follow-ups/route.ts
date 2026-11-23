@@ -252,7 +252,18 @@ async function fetchUnansweredReplies(sb: Sb): Promise<Map<string, ReplyHit>> {
       for (const k of keys) out.delete(k)
       continue
     }
-    const missedCall = t === "call" && (r.message ?? "").startsWith("📵")
+    // They called in and Ryan picked up — a live conversation answers any
+    // earlier voicemail / text, same as Ryan calling out (2026-11-23: Johnny
+    // left a blank voicemail, called again 3 min later and talked to Ryan,
+    // and stayed pinned under Replied). Answered inbound rows read "📱 They
+    // called your iPhone …" or carry a "Ryan:" turn in the transcript; a
+    // voicemail left on a call row has neither.
+    const msg = r.message ?? ""
+    if (t === "call" && (msg.startsWith("📱") || /(^|\s)Ryan:/.test(msg))) {
+      for (const k of keys) out.delete(k)
+      continue
+    }
+    const missedCall = t === "call" && msg.startsWith("📵")
     if (!(t === "sms" || t === "voicemail" || t === "email" || missedCall)) continue
     const text = (r.message ?? r.ai_summary ?? "").replace(/\s+/g, " ").trim().slice(0, 240) || null
     const kind = missedCall ? "missed call" : t === "sms" ? "text" : t
