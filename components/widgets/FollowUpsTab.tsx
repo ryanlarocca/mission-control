@@ -132,6 +132,7 @@ const INTERVAL_OPTIONS: { key: string; label: string; days?: number; months?: nu
   { key: "1mo", label: "1 month", months: 1 },
   { key: "3mo", label: "3 months", months: 3 },
   { key: "6mo", label: "6 months", months: 6 },
+  { key: "9mo", label: "9 months", months: 9 },
   { key: "1y", label: "1 year", months: 12 },
   { key: "none", label: "No follow-up" },
 ]
@@ -744,7 +745,7 @@ export function FollowUpsTab() {
   }
 
   // "Done" on a call — always opens the interval picker so Ryan explicitly
-  // sets the next check-in (1w / 1mo / 3mo / 6mo / 1y / None). See applyInterval.
+  // sets the next check-in (1w / 1mo / 3mo / 6mo / 9mo / 1y / None). See applyInterval.
   function doneCall(row: ContactRow) {
     setIntervalOpenFor(prev => (prev === row.clusterKey ? null : row.clusterKey))
   }
