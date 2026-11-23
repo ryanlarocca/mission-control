@@ -52,9 +52,10 @@ describe("decide applies the holiday rule", () => {
   it("today stays today", () => {
     expect(decide(callOn("2026-11-26"), facts(talked), "2026-11-26").date).toBe("2026-11-26")
   })
-  it("a quiet year that lands on Christmas moves to January", () => {
-    const rows = [{ id: "q", created_at: "2025-12-24T20:00:00Z", lead_type: "sms", twilio_number: "+15550001", message: "not selling", notes: null }]
-    const v = decide({ state: "quiet_until", date: null, reason: "Not selling.", owed: null }, facts(rows), "2025-12-24")
+  it("a 9-month quiet that lands on Christmas moves to January", () => {
+    // QUIET_DAYS = 274 (Ryan 2026-11-23): Mar 25, 2026 + 274 days = Dec 24, 2026.
+    const rows = [{ id: "q", created_at: "2026-03-25T20:00:00Z", lead_type: "sms", twilio_number: "+15550001", message: "not selling", notes: null }]
+    const v = decide({ state: "quiet_until", date: null, reason: "Not selling.", owed: null }, facts(rows), "2026-03-25")
     expect(v.date).toBe("2027-01-04")
   })
 })

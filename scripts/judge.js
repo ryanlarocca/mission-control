@@ -20,7 +20,7 @@
  *      logs don't move it
  *   6. Ryan asked them something, no answer yet → wait 3 days, then re-judge
  *   7. they want a number / a call / an answer  → Ryan, today
- *   8. not interested, politely closed          → quiet a year, on autopilot
+ *   8. not interested, politely closed          → quiet 9 months, on autopilot
  *      (not a price gap — 2026-11-14: Ryan gave a number, they want far
  *      more, the talk ended. That is rule 5 with a date six months out: off
  *      Follow Ups until then, no autopilot texts, Ryan follows up himself.)
@@ -68,7 +68,7 @@
 const DAY = 86400000
 const SETTLE_MS = 20 * 60000          // let transcription / Ryan's reply land before judging
 const WAIT_ON_THEM_DAYS = 3
-const QUIET_DAYS = 365
+const QUIET_DAYS = 274 // ~9 months (Ryan 2026-11-23; was 365)
 const PRICE_GAP_MONTHS = "six"          // offer turned down on price → back on Follow Ups this long after
 const CHASE_LADDER_DAYS = [1, 3, 7, 14] // after attempt 1, 2, 3, 4 — then autopilot
 const CANT_TEXT_MONTHS = [6, 12]        // can't-text, past autopilot: after unanswered call 1, then 2+

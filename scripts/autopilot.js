@@ -46,6 +46,14 @@
  *                                                # by then (real model calls; writes nothing)
  *   node scripts/autopilot.js --sequence <phone> # all 8 texts for one person
  * ENV_FILE=/path/.env.local overrides where the CLI reads its env.
+ *
+ * EMAIL (Ryan 2026-11-23): a person with no phone number — only an email —
+ * gets the same 8 slots as emails (renderEmail, wording Ryan approved that
+ * day), each a NEW email (not a reply in an old thread) from the mailbox they
+ * first wrote to, signed "Ryan LaRocca". Only by his tap on the Autopilot
+ * button — nothing enrols email people on its own. The judge doesn't read
+ * email-only people, so their replies are classified here even when
+ * JUDGE_LIVE. "Not interested" = quiet 9 months for texts and emails alike.
  */
 
 "use strict"
@@ -56,7 +64,7 @@ const DAY = 86400000
 // Touch → days after the previous text (touch 1 = on enrolment).
 const SCHEDULE_DAYS = { 1: 0, 2: 30, 3: 90, 4: 90, 5: 90, 6: 90, 7: 90, 8: 90 }
 const LAST_TOUCH = 8
-const QUIET_AFTER_NO_DAYS = 365
+const QUIET_AFTER_NO_DAYS = 274 // ~9 months (Ryan 2026-11-23; was 365 — existing holds keep their date)
 const MAX_SENDS_PER_PASS = 6
 // Opus calls per pass. Holds and blocks don't count as sends, so without this
 // a pass with many people due could run dozens of slow model calls.
@@ -67,7 +75,7 @@ const SEND_GAP_MS = [25000, 45000]
 // isn't a name, an intersection for an address, the price they quoted). They
 // identify real sellers, so they live outside the repo — in the local-only
 // projects folder — keyed by caller_phone:
-//   { "+1…": { "name": null | "First", "street": "…", "price": "$3M" } }
+//   { "+1…" | "someone@…": { "name": null | "First", "street": "…", "price": "$3M" } }
 // Missing file = no overrides (names/streets derived from the row).
 const OVERRIDES_PATH = process.env.AUTOPILOT_OVERRIDES
   || require("node:path").join(require("node:os").homedir(), "Projects/PROJECTS/lead-pipeline/autopilot-overrides.json")
@@ -92,12 +100,15 @@ function firstName(raw) {
 }
 
 function streetPhrase(addr) {
-  const s = String(addr || "").replace(/\([^)]*\)/g, "").split(",")[0].replace(/\s+/g, " ").trim()
+  let s = String(addr || "").replace(/\([^)]*\)/g, "").split(",")[0].replace(/\s+/g, " ").trim()
+  // No commas: "956 Paula Street San Jose CA 95126" → cut after the street word.
+  const m = s.match(/^(.*?\b(?:Street|St|Avenue|Ave|Drive|Dr|Road|Rd|Court|Ct|Way|Lane|Ln|Boulevard|Blvd|Place|Pl|Circle|Cir|Terrace|Ter)\.?)\s.*\bCA\b/i)
+  if (m) s = m[1]
   return s || null
 }
 
 function personFacts(lead) {
-  const o = overrides()[lead.caller_phone] || {}
+  const o = overrides()[lead.caller_phone || String(lead.email || "").toLowerCase()] || {}
   const name = "name" in o ? o.name : firstName(lead.name)
   const street = o.street || streetPhrase(lead.property_address)
   return {
@@ -236,6 +247,82 @@ function renderTouch(lead, touch, when = new Date()) {
   return { text, seasonal: null }
 }
 
+// ─── the emails (people with no phone) ──────────────────────────────────────
+
+const EMAIL_SIGN = "Ryan LaRocca"
+
+// True when autopilot reaches this person by email: no phone on the row.
+function isEmailPerson(lead) {
+  return !lead.caller_phone && !!lead.email
+}
+
+// The 8 emails Ryan approved 2026-11-23 — same slots and purpose as the
+// texts, no seasonal swaps. Body only: the writer edits it, then the sign-off
+// is added (withSignature) so "Ryan" is named once in what the writer sees.
+function renderEmail(lead, touch) {
+  const f = personFacts(lead)
+  const n = f.name
+  const s = f.street
+  const usePrice = !!f.price
+  let text
+  switch (touch) {
+    case 1: {
+      const hi = n ? `Hi ${n}, Ryan LaRocca here.` : "Hi, Ryan LaRocca here."
+      text = usePrice
+        ? `${hi} You wrote to me a while back about ${s} and mentioned ${f.price}. Do you still own it, and is that still your number? If you've sold or have no interest in selling, just reply and let me know.`
+        : `${hi} You wrote to me a while back about ${s}. Do you still own it, and would you consider selling at some point? If you've sold or have no interest in selling, just reply and let me know.`
+      break
+    }
+    case 2:
+      text = `${n ? `${n}, following` : "Following"} up on ${s}. If you ever want a cash number on it, reply here and I'll put one together.`
+      break
+    case 3:
+      text = `I'm still buying in your area and ${s} came to mind. If it's ever on the table, I'd make you a cash offer, as-is, on whatever timeline works for you.`
+      break
+    case 4:
+      text = usePrice
+        ? `Quick question: last time we talked you mentioned ${f.price} for ${s}. Is that still about where you're at?`
+        : `Quick question: any chance you'd sell ${s} in the next year or so? A yes, no, or maybe is fine.`
+      break
+    case 5:
+      text = `If you're ever curious what ${s} would sell for as-is, I can run the numbers and send them over.`
+      break
+    case 6:
+      text = `It's been a while${n ? `, ${n}` : ""}. Still holding ${s}? If anything changes, I'm still buying.`
+      break
+    case 7:
+      text = `No repairs, no cleanout, no showings. If that would ever make selling ${s} easier, just reply to this email.`
+      break
+    case 8:
+      text = `${n ? `Hi ${n}` : "Hi"}, Ryan LaRocca again. Do you still own ${s}? If you've sold or have no interest in selling, let me know and I'll update my notes.`
+      break
+    default:
+      return null
+  }
+  return { text, seasonal: null }
+}
+
+function emailSubject(lead) {
+  const f = personFacts(lead)
+  return f.hasAddress ? f.street : "Your property"
+}
+
+function withSignature(body) {
+  return `${String(body).trim()}\n\n${EMAIL_SIGN}`
+}
+
+// The mailbox they first wrote to (inbound email rows carry
+// twilio_number = "email:<mailbox>"), else the drip default.
+function emailMailbox(rows) {
+  const r = (rows || []).find((x) => String(x.twilio_number || "").startsWith("email:"))
+  return r ? String(r.twilio_number).slice("email:".length) : (process.env.DRIP_DEFAULT_MAILBOX || "ryan@lrghomes.com")
+}
+
+// Texts for phone people, emails for email-only people.
+function renderFor(lead, touch, when = new Date()) {
+  return isEmailPerson(lead) ? renderEmail(lead, touch) : renderTouch(lead, touch, when)
+}
+
 // When the person's next text is due (Date), or null when the sequence is over.
 // autopilot_next_at (set when someone is put back on autopilot) is the exact
 // due time and overrides the schedule; a sent or held text clears it.
@@ -289,8 +376,8 @@ function isInbound(row) {
 async function clusterRows(sb, lead) {
   const { data, error } = await sb
     .from("leads")
-    .select("id, created_at, lead_type, twilio_number, message, ai_summary, ai_notes, notes, status, is_dnc, is_junk, is_bad_number, recommended_followup_date, name, caller_phone, property_address, source, offer_amount, offer_verbalized_at, pending_at, deal_closed_at")
-    .eq("caller_phone", lead.caller_phone)
+    .select("id, created_at, lead_type, twilio_number, message, ai_summary, ai_notes, notes, status, is_dnc, is_junk, is_bad_number, recommended_followup_date, name, caller_phone, email, property_address, source, offer_amount, offer_verbalized_at, pending_at, deal_closed_at")
+    .eq(isEmailPerson(lead) ? "email" : "caller_phone", isEmailPerson(lead) ? lead.email : lead.caller_phone)
     .order("created_at", { ascending: true })
   if (error) throw new Error(error.message)
   return data || []
@@ -319,7 +406,7 @@ async function stopAutopilot(sb, lead, patch = {}) {
 
 // "Pat Smith (12 Elm St)" — who an alert is about.
 function who(lead) {
-  return `${lead.name || lead.caller_phone}${lead.property_address ? ` (${lead.property_address})` : ""}`
+  return `${lead.name || lead.caller_phone || lead.email}${lead.property_address ? ` (${lead.property_address})` : ""}`
 }
 
 // Some row already carries a follow-up date of today or later.
@@ -347,6 +434,7 @@ async function personalTexts(deps, phone, appleEpochMs = deps.appleEpochMs) {
 }
 
 async function loadVerdict(sb, phone) {
+  if (!phone) return null // the judge only rules on people with a phone
   const { data } = await sb.from("lead_verdicts").select("state, reason").eq("phone", phone).maybeSingle()
   return data || null
 }
@@ -365,7 +453,8 @@ function editedTag(changed) {
 async function runAutopilot(sb, deps) {
   const live = deps.live && !deps.dryRun
   const writer = deps.writer === "fixed" ? "fixed" : "opus"
-  const leads = await fetchAutopilotLeads(sb)
+  // deps.onlyLeadIds: tests run the pass on their own fake lead only.
+  const leads = (await fetchAutopilotLeads(sb)).filter((l) => !deps.onlyLeadIds || deps.onlyLeadIds.includes(l.id))
   console.log(`[autopilot] ${leads.length} on autopilot (${live ? "LIVE" : "preview only — AUTOPILOT_LIVE is off"}, writer: ${writer})`)
   const now = new Date()
   const sendable = inSendWindow(now)
@@ -377,7 +466,8 @@ async function runAutopilot(sb, deps) {
   for (const lead of leads) {
     try {
       const rows = await clusterRows(sb, lead)
-      const label = `${lead.name || lead.caller_phone} (${lead.caller_phone})`
+      const emailPerson = isEmailPerson(lead)
+      const label = `${lead.name || lead.caller_phone || lead.email} (${lead.caller_phone || lead.email})`
 
       // 1. Killed elsewhere (dead / DNC / junk on any row) → off autopilot.
       if (rows.some((r) => r.is_dnc || r.is_junk || String(r.status || "").toLowerCase() === "dead")) {
@@ -447,7 +537,9 @@ async function runAutopilot(sb, deps) {
         // whole thread: it either holds them here (quiet / waiting on them,
         // moving autopilot_since past the reply) or takes them off autopilot.
         // Until it has, don't text them and don't second-guess it.
-        if ((process.env.JUDGE_LIVE || "").trim().toLowerCase() === "true") { bump("reply_for_judge"); continue }
+        // The judge only reads people with a phone — email-only replies are
+        // classified right here.
+        if (!emailPerson && (process.env.JUDGE_LIVE || "").trim().toLowerCase() === "true") { bump("reply_for_judge"); continue }
         const last = replies[replies.length - 1]
         // Let the voicemail / call transcription land before judging it.
         if (Date.now() - new Date(last.created_at).getTime() < 20 * 60000) { bump("reply_settling"); continue }
@@ -459,22 +551,27 @@ async function runAutopilot(sb, deps) {
           const ids = rows.map((r) => r.id)
           await sb.from("leads").update({ status: "dead", status_set_by: "auto", status_set_at: new Date().toISOString(), recommended_followup_date: null, followup_reason: null }).in("id", ids)
           await stopAutopilot(sb, lead)
-          await deps.telegram(`Autopilot FYI: ${lead.name || lead.caller_phone}${lead.property_address ? ` (${lead.property_address})` : ""} says they no longer own it — marked dead.\n“${String(text).slice(0, 200)}”`)
+          await deps.telegram(`Autopilot FYI: ${who(lead)} says they no longer own it — marked dead.\n“${String(text).slice(0, 200)}”`)
         } else if (verdict.kind === "not_interested") {
           const hold = new Date(Date.now() + QUIET_AFTER_NO_DAYS * DAY).toISOString()
           await sb.from("leads").update({ autopilot_since: new Date().toISOString(), autopilot_hold_until: hold }).eq("id", lead.id)
-          await deps.telegram(`Autopilot FYI: ${lead.name || lead.caller_phone}${lead.property_address ? ` (${lead.property_address})` : ""} isn't interested — quiet for a year, then the check-ins resume.\n“${String(text).slice(0, 200)}”`)
+          // Autopilot owns them again: a date the intake's AI put on the
+          // reply itself would pull them back onto Follow Ups (how an
+          // email-only "not interested" landed there in Nov 2026).
+          const replyIds = replies.map((r) => r.id)
+          if (replyIds.length) await sb.from("leads").update({ recommended_followup_date: null, followup_reason: null }).in("id", replyIds)
+          await deps.telegram(`Autopilot FYI: ${who(lead)} isn't interested — quiet for 9 months, then the check-ins resume.\n“${String(text).slice(0, 200)}”`)
         } else if (verdict.kind === "stop") {
           // The inbound path DNCs explicit opt-outs; this is the backstop.
           await stopAutopilot(sb, lead)
-          await deps.telegram(`Autopilot: ${lead.name || lead.caller_phone} asked to stop — autopilot stopped. Check they're on DNC.\n“${String(text).slice(0, 200)}”`)
+          await deps.telegram(`Autopilot: ${who(lead)} asked to stop — autopilot stopped. Check they're on DNC.\n“${String(text).slice(0, 200)}”`)
         } else {
           // Ryan's now. Keep the AI analyzer's date if it already set one.
           const today = new Date().toISOString().slice(0, 10)
           const hasDate = rows.some((r) => r.recommended_followup_date && r.recommended_followup_date >= today)
           await stopAutopilot(sb, lead, hasDate ? {} : {
             recommended_followup_date: today,
-            followup_reason: `Replied to your autopilot text: “${String(text).replace(/\s+/g, " ").slice(0, 160)}”`,
+            followup_reason: `Replied to your autopilot ${emailPerson ? "email" : "text"}: “${String(text).replace(/\s+/g, " ").slice(0, 160)}”`,
             followup_generated_at: new Date().toISOString(),
           })
         }
@@ -482,7 +579,7 @@ async function runAutopilot(sb, deps) {
       }
 
       // 3. Ryan texting them from his own phone → they're his.
-      if (deps.fetchIMessageHistory) {
+      if (deps.fetchIMessageHistory && !emailPerson) {
         const msgs = await deps.fetchIMessageHistory(lead.caller_phone).catch(() => [])
         const sinceApple = since - deps.appleEpochMs
         if ((msgs || []).some((m) => Number(m.timestamp) > sinceApple)) {
@@ -511,15 +608,36 @@ async function runAutopilot(sb, deps) {
       if (nd.due.getTime() > Date.now()) { bump("not_due"); continue }
       if (!sendable) { bump("due_outside_window"); continue }
       if (sent >= MAX_SENDS_PER_PASS) { bump("due_next_pass"); continue }
-      if (await deps.contactIsDnc(sb, lead, "sms")) {
+      if (emailPerson && !deps.sendEmail) { bump("no_email_sender"); continue }
+      // An email person Ryan just tapped onto autopilot whose last word was
+      // "not interested": wait 9 months from that no before email #1 (the
+      // judge does this for text people; nothing reads email people's
+      // threads but this pass). Once — the hold date then stays set.
+      if (emailPerson && nd.touch === 1 && !lead.autopilot_hold_until && deps.anthropic) {
+        const theirs = rows.filter(isInbound)
+        const lastNo = theirs[theirs.length - 1]
+        if (lastNo && Date.now() - new Date(lastNo.created_at).getTime() < QUIET_AFTER_NO_DAYS * DAY) {
+          const v = await classifyReply(deps.anthropic, deps.model, lastNo.message || lastNo.ai_summary || "")
+          if (v.kind === "not_interested") {
+            const hold = new Date(new Date(lastNo.created_at).getTime() + QUIET_AFTER_NO_DAYS * DAY).toISOString()
+            console.log(`[autopilot] ${label}: last email said not interested (${v.reason}) — first email waits until ${hold.slice(0, 10)}`)
+            if (live) {
+              const { error } = await sb.from("leads").update({ autopilot_hold_until: hold }).eq("id", lead.id)
+              if (error) throw new Error(`hold update failed: ${error.message}`)
+            }
+            bump("quiet_after_no"); continue
+          }
+        }
+      }
+      if (await deps.contactIsDnc(sb, lead, emailPerson ? "email" : "sms")) {
         if (live) await stopAutopilot(sb, lead)
         bump("dnc"); continue
       }
-      const r = renderTouch(lead, nd.touch, now)
+      const r = renderFor(lead, nd.touch, now)
       if (!r || !r.text) { bump("no_text"); continue }
       if (!live) {
         // Preview: no model call on the hourly pass — the fixed text is logged.
-        console.log(`[autopilot] would send #${nd.touch}${r.seasonal ? ` (${r.seasonal})` : ""} → ${label}: ${r.text}`)
+        console.log(`[autopilot] would send ${emailPerson ? "email " : ""}#${nd.touch}${r.seasonal ? ` (${r.seasonal})` : ""} → ${label}: ${r.text}`)
         bump("would_send"); continue
       }
 
@@ -531,9 +649,9 @@ async function runAutopilot(sb, deps) {
       if (writer === "opus") {
         if (writes >= MAX_WRITES_PER_PASS) { bump("due_next_pass"); continue }
         writes++
-        const personal = await personalTexts(deps, lead.caller_phone)
+        const personal = emailPerson ? [] : await personalTexts(deps, lead.caller_phone)
         const verdict = await loadVerdict(sb, lead.caller_phone)
-        const w = await writeTouch({ anthropic: deps.anthropic, model: WRITER_MODEL, lead, rows, personal, verdict, touch: nd.touch, base: r.text, today: now })
+        const w = await writeTouch({ anthropic: deps.anthropic, model: WRITER_MODEL, lead, rows, personal, verdict, touch: nd.touch, base: r.text, today: now, channel: emailPerson ? "email" : "sms" })
         if (w.action === "hold") {
           // Nothing goes out; the slot is used up and the clock restarts.
           const holds = (lead.autopilot_holds || 0) + 1
@@ -562,25 +680,48 @@ async function runAutopilot(sb, deps) {
         changed = w.changed
       }
 
-      const from = await deps.resolveReplyLine(sb, lead.caller_phone).catch(() => null)
-      const res = await deps.sendSms(lead.caller_phone, text, from)
-      const at = new Date().toISOString()
-      await sb.from("leads").update({ drip_touch_number: nd.touch, last_drip_sent_at: at, autopilot_next_at: null, autopilot_holds: 0 }).eq("id", lead.id)
-      await sb.from("leads").insert({
-        source: lead.source,
-        source_type: lead.source_type,
-        twilio_number: null,
-        caller_phone: lead.caller_phone,
-        lead_type: "drip_imessage",
-        message: text,
-        status: lead.status,
-        name: lead.name,
-        property_address: lead.property_address,
-        // The bracket must stay first and intact — /\[autopilot #\d/ and
-        // /\[autopilot #\d.*· (SM\w+)\]/ elsewhere read it.
-        notes: `[autopilot #${nd.touch}${r.seasonal ? ` · ${r.seasonal}` : ""}${res.sid ? ` · ${res.sid}` : ""}]${edited ? editedTag(changed) : ""}`,
-      })
-      console.log(`[autopilot] SENT #${nd.touch}${edited ? ` (edited: ${changed})` : ""} → ${label} from ${res.from}`)
+      if (emailPerson) {
+        // A NEW email each time (Ryan 2026-11-23), from the mailbox they wrote to.
+        const mailbox = emailMailbox(rows)
+        const res = await deps.sendEmail({ to: lead.email, from: mailbox, subject: emailSubject(lead), body: withSignature(text) })
+        const at = new Date().toISOString()
+        await sb.from("leads").update({ drip_touch_number: nd.touch, last_drip_sent_at: at, autopilot_next_at: null, autopilot_holds: 0 }).eq("id", lead.id)
+        await sb.from("leads").insert({
+          source: lead.source,
+          source_type: lead.source_type,
+          twilio_number: null,
+          caller_phone: null,
+          email: lead.email,
+          lead_type: "drip_email",
+          message: withSignature(text),
+          status: lead.status,
+          name: lead.name,
+          property_address: lead.property_address,
+          // Bracket first and intact — /\[autopilot #\d/ counts what they received.
+          notes: `[autopilot #${nd.touch} · email${res.messageId ? ` · ${res.messageId}` : ""}]${edited ? editedTag(changed) : ""}`,
+        })
+        console.log(`[autopilot] SENT email #${nd.touch}${edited ? ` (edited: ${changed})` : ""} → ${label} from ${res.mailbox}`)
+      } else {
+        const from = await deps.resolveReplyLine(sb, lead.caller_phone).catch(() => null)
+        const res = await deps.sendSms(lead.caller_phone, text, from)
+        const at = new Date().toISOString()
+        await sb.from("leads").update({ drip_touch_number: nd.touch, last_drip_sent_at: at, autopilot_next_at: null, autopilot_holds: 0 }).eq("id", lead.id)
+        await sb.from("leads").insert({
+          source: lead.source,
+          source_type: lead.source_type,
+          twilio_number: null,
+          caller_phone: lead.caller_phone,
+          lead_type: "drip_imessage",
+          message: text,
+          status: lead.status,
+          name: lead.name,
+          property_address: lead.property_address,
+          // The bracket must stay first and intact — /\[autopilot #\d/ and
+          // /\[autopilot #\d.*· (SM\w+)\]/ elsewhere read it.
+          notes: `[autopilot #${nd.touch}${r.seasonal ? ` · ${r.seasonal}` : ""}${res.sid ? ` · ${res.sid}` : ""}]${edited ? editedTag(changed) : ""}`,
+        })
+        console.log(`[autopilot] SENT #${nd.touch}${edited ? ` (edited: ${changed})` : ""} → ${label} from ${res.from}`)
+      }
       sent++
       bump("sent")
       if (sent < MAX_SENDS_PER_PASS) {
@@ -596,7 +737,7 @@ async function runAutopilot(sb, deps) {
   return stats
 }
 
-module.exports = { runAutopilot, renderTouch, nextDue, personFacts, season, inSendWindow, firstName, streetPhrase, pacificDay, personalTexts, editedTag, LAST_TOUCH, SCHEDULE_DAYS, MAX_WRITES_PER_PASS }
+module.exports = { runAutopilot, renderTouch, renderEmail, renderFor, isEmailPerson, emailSubject, withSignature, emailMailbox, nextDue, personFacts, season, inSendWindow, firstName, streetPhrase, pacificDay, personalTexts, editedTag, LAST_TOUCH, SCHEDULE_DAYS, MAX_WRITES_PER_PASS }
 
 // ─── CLI: preview ───────────────────────────────────────────────────────────
 
@@ -617,7 +758,8 @@ if (require.main === module) {
   const fmt = (d) => d.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric", timeZone: "America/Los_Angeles" })
   ;(async () => {
     if (args[0] === "--sequence") {
-      const { data } = await sb.from("leads").select("*").eq("caller_phone", args[1]).eq("drip_campaign_type", "autopilot").limit(1)
+      const key = String(args[1] || "")
+      const { data } = await sb.from("leads").select("*").eq(key.includes("@") ? "email" : "caller_phone", key).eq("drip_campaign_type", "autopilot").limit(1)
       const lead = data && data[0]
       if (!lead) return console.log("not on autopilot")
       const first = nextDue(lead)
@@ -625,7 +767,7 @@ if (require.main === module) {
       let at = first.due
       for (let t = first.touch; t <= LAST_TOUCH; t++) {
         if (t > first.touch) at = new Date(at.getTime() + SCHEDULE_DAYS[t] * DAY)
-        const r = renderTouch(lead, t, at)
+        const r = renderFor(lead, t, at)
         console.log(`#${t} ~${fmt(at)}${r.seasonal ? ` (${r.seasonal})` : ""}\n  ${r.text}\n`)
       }
       return
@@ -659,8 +801,8 @@ if (require.main === module) {
           const i = next++
           const { lead, nd } = due[i]
           const when = nd.due.getTime() > Date.now() ? nd.due : new Date()
-          const base = renderTouch(lead, nd.touch, when).text
-          const head = `## ${lead.name || "(no name)"} · ${lead.caller_phone} · #${nd.touch} due ${fmt(nd.due)}\n  BASE:    ${base}`
+          const base = renderFor(lead, nd.touch, when).text
+          const head = `## ${lead.name || "(no name)"} · ${lead.caller_phone || lead.email} · ${isEmailPerson(lead) ? "email " : ""}#${nd.touch} due ${fmt(nd.due)}${isEmailPerson(lead) ? ` · subject "${emailSubject(lead)}"` : ""}\n  BASE:    ${base}`
           try {
             const rows = await clusterRows(sb, lead)
             const skip = rows.some((r) => r.is_dnc || r.is_junk || String(r.status || "").toLowerCase() === "dead") ? "dead / DNC / junk"
@@ -669,7 +811,7 @@ if (require.main === module) {
             if (skip) { out[i] = `${head}\n  SKIP:    ${skip} — the hourly pass takes them off autopilot`; continue }
             const personal = await personalTexts(deps, lead.caller_phone)
             const verdict = await loadVerdict(sb, lead.caller_phone)
-            const w = await writeTouch({ anthropic, model: WRITER_MODEL, lead, rows, personal, verdict, touch: nd.touch, base, today: when, tag: "[autopilot/preview]" })
+            const w = await writeTouch({ anthropic, model: WRITER_MODEL, lead, rows, personal, verdict, touch: nd.touch, base, today: when, tag: "[autopilot/preview]", channel: isEmailPerson(lead) ? "email" : "sms" })
             out[i] = w.action === "send" ? `${head}\n  SEND${w.edited ? " (edited)" : " (unchanged)"}: ${w.text}${w.edited ? `\n           ${w.changed}` : ""}`
               : w.action === "hold" ? `${head}\n  HOLD:    ${w.reason}`
               : `${head}\n  BLOCKED: ${w.problems.join("; ")}\n           ${w.text}`
@@ -687,8 +829,8 @@ if (require.main === module) {
       const nd = nextDue(lead)
       if (!nd) { console.log(`${lead.name || lead.caller_phone}: sequence finished`); continue }
       const when = nd.due.getTime() > Date.now() ? nd.due : new Date()
-      const r = renderTouch(lead, nd.touch, when)
-      console.log(`#${nd.touch} ${nd.due.getTime() > Date.now() ? `due ${fmt(nd.due)}` : "due now"} · ${lead.name || "(no name)"} · ${lead.caller_phone}\n  ${r.text}\n`)
+      const r = renderFor(lead, nd.touch, when)
+      console.log(`${isEmailPerson(lead) ? "email " : ""}#${nd.touch} ${nd.due.getTime() > Date.now() ? `due ${fmt(nd.due)}` : "due now"} · ${lead.name || "(no name)"} · ${lead.caller_phone || lead.email}\n  ${r.text}\n`)
     }
   })().catch((e) => { console.error(e); process.exit(1) })
 }

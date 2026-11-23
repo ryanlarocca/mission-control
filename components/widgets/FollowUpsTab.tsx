@@ -787,11 +787,12 @@ export function FollowUpsTab() {
       })
       const body = await res.json().catch(() => ({}))
       if (!res.ok) throw new Error(body?.error || `HTTP ${res.status}`)
-      const who = row.name || row.phone || "This lead"
+      const who = row.name || row.phone || row.email || "This lead"
       const next = body.next as { touch: number; at: string | null } | undefined
+      const kind = body.channel === "email" ? "email" : "text"
       const text = next?.at
-        ? `${who} is back on autopilot — next text (#${next.touch} of 8) around ${new Date(next.at).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric", timeZone: "America/Los_Angeles" })}.`
-        : `${who} is on autopilot — first text goes out the next weekday afternoon.`
+        ? `${who} is back on autopilot — next ${kind} (#${next.touch} of 8) around ${new Date(next.at).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric", timeZone: "America/Los_Angeles" })}.`
+        : `${who} is on autopilot — first ${kind} goes out the next weekday afternoon.`
       setUndoBar({
         text,
         run: async () => {
@@ -1695,11 +1696,13 @@ function ContactCard({ row, ...h }: { row: ContactRow } & CardHandlers) {
               <Bot className="w-3.5 h-3.5" /> Can&apos;t text
             </span>
           )}
-          {row.phone && !row.badNumber && (
+          {((row.phone && !row.badNumber) || (!row.phone && row.email)) && (
             <button
               onClick={() => h.onAutopilot(row)}
               disabled={acting}
-              title="Fixed check-in texts (now, +30 days, then every 90) — off this list until they reply"
+              title={row.phone
+                ? "Fixed check-in texts (now, +30 days, then every 90) — off this list until they reply"
+                : "Check-in emails (now, +30 days, then every 90) — off this list until they reply"}
               className="inline-flex items-center gap-1 px-2 py-1 rounded border border-sky-900/60 text-sky-300/90 hover:text-sky-100 hover:bg-sky-950/50 transition-colors disabled:opacity-60 shrink-0"
             >
               <Bot className="w-3.5 h-3.5" /> Autopilot

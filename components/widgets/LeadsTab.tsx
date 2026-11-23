@@ -1655,13 +1655,14 @@ export function LeadsTab() {
       notifyLeadChangedToParent(group.mostRecentId, ["drip_campaign_type", "recommended_followup_date"])
       void fetchLeads(true)
       if (action === "off") return { ok: true, message: "Taken off autopilot — they're on today's Follow Ups." }
-      const who = group.name || formatPhone(group.contactPhone) || "This lead"
+      const who = group.name || formatPhone(group.contactPhone) || group.email || "This lead"
       const next = data.next as { touch: number; at: string | null } | undefined
+      const kind = data.channel === "email" ? "email" : "text"
       return {
         ok: true,
         message: next?.at
-          ? `${who} is back on autopilot — next text (#${next.touch} of 8) around ${new Date(next.at).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric", timeZone: "America/Los_Angeles" })}.`
-          : `${who} is on autopilot — first text goes out the next weekday afternoon.`,
+          ? `${who} is back on autopilot — next ${kind} (#${next.touch} of 8) around ${new Date(next.at).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric", timeZone: "America/Los_Angeles" })}.`
+          : `${who} is on autopilot — first ${kind} goes out the next weekday afternoon.`,
       }
     } catch (e) {
       console.error("autopilot failed:", e)
@@ -2971,14 +2972,14 @@ function LeadCard(p: LeadCardProps) {
               {intakeRow.autopilot_hold_until && new Date(intakeRow.autopilot_hold_until).getTime() > Date.now() ? (
                 <span>
                   quiet until {new Date(intakeRow.autopilot_hold_until).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric", timeZone: "America/Los_Angeles" })}
-                  {" · "}{intakeRow.drip_touch_number ?? 0} of 8 check-in texts sent · stays off Follow Ups until they reply
+                  {" · "}{intakeRow.drip_touch_number ?? 0} of 8 check-in {group.contactPhone ? "texts" : "emails"} sent · stays off Follow Ups until they reply
                 </span>
               ) : (
                 <span>
-                  {intakeRow.drip_touch_number ?? 0} of 8 check-in texts sent
+                  {intakeRow.drip_touch_number ?? 0} of 8 check-in {group.contactPhone ? "texts" : "emails"} sent
                   {nextAutopilot
                     ? nextAutopilot.getTime() <= Date.now()
-                      ? " · next text goes out the next weekday afternoon"
+                      ? ` · next ${group.contactPhone ? "text" : "email"} goes out the next weekday afternoon`
                       : ` · next around ${nextAutopilot.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric", timeZone: "America/Los_Angeles" })}`
                     : ""}
                   {" · "}stays off Follow Ups until they reply
@@ -3322,11 +3323,13 @@ function LeadCard(p: LeadCardProps) {
                     Can&apos;t text
                   </span>
                 )}
-                {group.contactPhone && !group.isBadNumber && !group.isDnc && !group.isJunk && !group.events.some(e => e.drip_campaign_type === "autopilot") && (
+                {((group.contactPhone && !group.isBadNumber) || (!group.contactPhone && group.email)) && !group.isDnc && !group.isJunk && !group.events.some(e => e.drip_campaign_type === "autopilot") && (
                   <button
                     onClick={() => void runAutopilot("on")}
                     className="inline-flex items-center gap-1.5 px-3 py-1.5 min-h-[36px] rounded bg-sky-900/40 border border-sky-900 text-sky-200 hover:bg-sky-900/60 text-xs font-medium transition-colors"
-                    title="Fixed check-in texts (now, +30 days, then every 90) — off Follow Ups until they reply"
+                    title={group.contactPhone
+                      ? "Fixed check-in texts (now, +30 days, then every 90) — off Follow Ups until they reply"
+                      : "Check-in emails (now, +30 days, then every 90) — off Follow Ups until they reply"}
                   >
                     <Hourglass className="w-3.5 h-3.5" />
                     Autopilot

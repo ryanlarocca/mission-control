@@ -287,6 +287,26 @@ async function fetchUnansweredReplies(sb: Sb): Promise<Map<string, ReplyHit>> {
       if (hit && v.through_at && Date.parse(v.through_at) >= Date.parse(hit.at)) out.delete(`p:${v.phone}`)
     }
   }
+  // Email-only people have no judge; on autopilot, scripts/autopilot.js reads
+  // their reply instead. "Not interested" keeps them on with autopilot_since
+  // moved past the reply — that settles it the way a verdict does (a reply
+  // that needs Ryan takes them OFF autopilot, so it still pins). Same for
+  // a reply from before Ryan tapped Autopilot himself.
+  const emails = Array.from(out.keys()).filter((k) => k.startsWith("e:")).map((k) => k.slice(2))
+  if (emails.length) {
+    const { data: ap, error: apErr } = await sb
+      .from("leads")
+      .select("email, autopilot_since")
+      .eq("drip_campaign_type", "autopilot")
+      .is("caller_phone", null)
+      .in("email", emails.slice(0, 500))
+    if (apErr) console.error("[follow-ups:GET] autopilot email query failed:", apErr.message)
+    for (const r of (ap ?? []) as { email: string | null; autopilot_since: string | null }[]) {
+      const k = `e:${String(r.email || "").toLowerCase()}`
+      const hit = out.get(k)
+      if (hit && r.autopilot_since && Date.parse(r.autopilot_since) >= Date.parse(hit.at)) out.delete(k)
+    }
+  }
   return out
 }
 

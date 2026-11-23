@@ -1153,6 +1153,16 @@ async function sendDripEmail({ lead, body, subject }) {
   return { mailbox: fromMailbox, messageId: data.id || null }
 }
 
+// Autopilot emails (people with no phone, Ryan 2026-11-23): a NEW email each
+// time — no thread, no In-Reply-To — from the mailbox they first wrote to.
+async function sendAutopilotEmail({ to, from, subject, body }) {
+  if (!to) throw new Error("no email address")
+  const gmail = getGmailClient(from)
+  const raw = buildRawEmail({ to, from, subject, body })
+  const { data } = await gmail.users.messages.send({ userId: "me", requestBody: { raw } })
+  return { mailbox: from, messageId: data.id || null }
+}
+
 // ─── telegram ───────────────────────────────────────────────────────────────
 //
 // The drip engine no longer sends ANY Telegram messages (queue approvals, DNC
@@ -2049,6 +2059,7 @@ async function main() {
         live: (process.env.AUTOPILOT_LIVE || "").trim().toLowerCase() === "true",
         dryRun: DRY_RUN,
         sendSms,
+        sendEmail: sendAutopilotEmail,
         messageStatus,
         resolveReplyLine,
         fetchIMessageHistory,
@@ -2098,6 +2109,7 @@ module.exports = {
   touchBriefFor,
   writeTouchWithOpus,
   sendSms,
+  sendAutopilotEmail,
   sweepWaitingDrafts,
   dailySelfCheck,
   resolveReplyLine,

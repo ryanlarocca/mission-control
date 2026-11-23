@@ -17,6 +17,7 @@
 
 const WRITER_MODEL = "claude-opus-5-5"
 const MAX_CHARS = 320            // hard stop in code; the prompt asks for < 240, never > 300
+const MAX_EMAIL_CHARS = 600      // emails (people with no phone, 2026-11-23): prompt asks for < 450, never > 550
 const NOTES_CAP = 1800
 const HISTORY_EVENTS = 25
 
@@ -53,6 +54,7 @@ function isUndated(r) {
 
 function label(r) {
   const t = String(r.lead_type || "")
+  if (t === "drip_email") return "Automated check-in email sent as Ryan"
   if (t.startsWith("drip_")) return "Automated check-in text sent as Ryan"
   if (!r.twilio_number) {
     // Outbound rows carry no line.
@@ -157,6 +159,19 @@ Hard rules:
 
 Respond with ONLY JSON: {"text": "<the message>" or null, "changed": "<in a few words, what you changed from the scheduled text and why — or 'nothing'>"}`
 
+// Emails (people with no phone number, Ryan 2026-11-23): the same editor job
+// and the same rules — this block says how "text" maps onto an email.
+const EMAIL_NOTE = `
+
+THIS PERSON HAS NO PHONE NUMBER, SO THE SCHEDULED MESSAGE IS AN EMAIL, NOT A TEXT. Everything above still applies: wherever it says "text", read "email". Differences:
+- It goes out as a new short email with the property as the subject. Write only the body: no subject line, no greeting beyond what the scheduled email has, no sign-off — "Ryan LaRocca" is added under it automatically. So never end with Ryan's name.
+- Write the way a person writes a short email to someone they've been in touch with, not a company newsletter. Same banned phrases.
+- Aim for under 450 characters; never go over 550.`
+
+function systemPromptFor(channel) {
+  return channel === "email" ? SYSTEM_PROMPT + EMAIL_NOTE : SYSTEM_PROMPT
+}
+
 // ─── the guardrails, in code ────────────────────────────────────────────────
 
 const EMOJI = /\p{Extended_Pictographic}/u
@@ -168,12 +183,14 @@ const PHONE_7 = /(?<!\d)\d{3}[\s.-]\d{4}(?!\d)/
 function escapeRe(s) { return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") }
 
 /** Problems with a text the writer produced ([] = fine to send). */
-function checkText(text, { base, lead } = {}) {
+function checkText(text, { base, lead, channel } = {}) {
   const t = String(text || "").replace(/[‘’]/g, "'").trim()
   const b = String(base || "")
   if (!t) return ["empty text"]
   const problems = []
-  if (t.length > MAX_CHARS) problems.push(`too long (${t.length} characters, max ${MAX_CHARS})`)
+  const max = channel === "email" ? MAX_EMAIL_CHARS : MAX_CHARS
+  if (t.length > max) problems.push(`too long (${t.length} characters, max ${max})`)
+  if (channel === "email" && /(?:^|\n)\s*[-–—]?\s*Ryan(?: LaRocca)?\s*$/i.test(t)) problems.push("ends with a sign-off (it's added automatically)")
   if (t.includes("!")) problems.push("has an exclamation point")
   if (EMOJI.test(t)) problems.push("has an emoji")
   if (/http|www\.|\.com/i.test(t)) problems.push("has a link")
@@ -220,17 +237,17 @@ function parseReply(out) {
  * An API or JSON failure throws (the caller counts it as an error, sends nothing).
  * tag = the llm_usage tag ("[autopilot/preview]" from the CLI).
  */
-async function writeTouch({ anthropic, model = WRITER_MODEL, lead, rows, personal, verdict, touch, base, today = new Date(), tag = "[autopilot/write]" }) {
+async function writeTouch({ anthropic, model = WRITER_MODEL, lead, rows, personal, verdict, touch, base, today = new Date(), tag = "[autopilot/write]", channel = "sms" }) {
   const baseText = String(base || "").trim()
   const card = buildCard({ lead, rows, personal, verdict })
   const messages = [{
     role: "user",
-    content: [`Today is ${longDay(today)}.`, "", `SCHEDULED TEXT (Ryan's approved wording):\n${baseText}`, "", "THE CARD:", card].join("\n"),
+    content: [`Today is ${longDay(today)}.`, "", `SCHEDULED ${channel === "email" ? "EMAIL BODY" : "TEXT"} (Ryan's approved wording):\n${baseText}`, "", "THE CARD:", card].join("\n"),
   }]
   const ask = async () => {
     // No temperature / top_p (the model rejects them). It thinks first, so
     // only the text blocks are the answer.
-    const res = await anthropic.messages.create({ model, max_tokens: 6000, system: SYSTEM_PROMPT, messages, __tag: tag })
+    const res = await anthropic.messages.create({ model, max_tokens: 6000, system: systemPromptFor(channel), messages, __tag: tag })
     const out = (res.content || []).filter((c) => c.type === "text").map((c) => c.text || "").join("")
     return { out, reply: parseReply(out) }
   }
@@ -238,7 +255,7 @@ async function writeTouch({ anthropic, model = WRITER_MODEL, lead, rows, persona
   const judge = (reply) => {
     if (reply.text === null) return { done: { action: "hold", reason: reply.changed || "the writer chose to send nothing" } }
     if (sameText(reply.text, baseText)) return { done: { action: "send", text: baseText, changed: "nothing", edited: false } }
-    const problems = checkText(reply.text, { base: baseText, lead })
+    const problems = checkText(reply.text, { base: baseText, lead, channel })
     if (!problems.length) return { done: { action: "send", text: reply.text, changed: reply.changed || "edited", edited: true } }
     return { problems }
   }
@@ -246,7 +263,7 @@ async function writeTouch({ anthropic, model = WRITER_MODEL, lead, rows, persona
   const first = await ask()
   const r1 = judge(first.reply)
   if (r1.done) return r1.done
-  console.warn(`[autopilot/write] #${touch} ${lead.caller_phone || ""}: retrying — ${r1.problems.join("; ")}`)
+  console.warn(`[autopilot/write] #${touch} ${lead.caller_phone || lead.email || ""}: retrying — ${r1.problems.join("; ")}`)
   messages.push({ role: "assistant", content: first.out })
   messages.push({ role: "user", content: `That text breaks these rules:\n- ${r1.problems.join("\n- ")}\nFix them and reply with ONLY the corrected JSON, in the same format.` })
   const second = await ask()
@@ -255,4 +272,4 @@ async function writeTouch({ anthropic, model = WRITER_MODEL, lead, rows, persona
   return { action: "blocked", text: second.reply.text, problems: r2.problems }
 }
 
-module.exports = { buildCard, checkText, writeTouch, SYSTEM_PROMPT, WRITER_MODEL, BANNED_PHRASES, IMPORT_WINDOW_START, IMPORT_WINDOW_END, isUndated }
+module.exports = { buildCard, checkText, writeTouch, systemPromptFor, SYSTEM_PROMPT, WRITER_MODEL, BANNED_PHRASES, IMPORT_WINDOW_START, IMPORT_WINDOW_END, isUndated }
