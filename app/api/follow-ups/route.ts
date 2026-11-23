@@ -269,6 +269,24 @@ async function fetchUnansweredReplies(sb: Sb): Promise<Map<string, ReplyHit>> {
     const kind = missedCall ? "missed call" : t === "sms" ? "text" : t
     for (const k of keys) out.set(k, { at: r.created_at, kind, text })
   }
+  // The judge owns the follow-up once it has read past the reply (Ryan
+  // 2026-11-23: "the judge needs to read the transcript… and make a
+  // decision"). A verdict whose through_at is at or after the reply —
+  // the judge's own ruling, or a date Ryan set by hand (source=ryan) —
+  // settles it; the card then shows only if that date is due. A reply
+  // newer than the last ruling still pins until the judge reads it (~20 min).
+  const phones = Array.from(out.keys()).filter((k) => k.startsWith("p:")).map((k) => k.slice(2))
+  for (let i = 0; i < phones.length; i += 200) {
+    const { data: verdicts, error: vErr } = await sb
+      .from("lead_verdicts")
+      .select("phone, through_at")
+      .in("phone", phones.slice(i, i + 200))
+    if (vErr) { console.error("[follow-ups:GET] verdict query failed:", vErr.message); break }
+    for (const v of (verdicts ?? []) as { phone: string; through_at: string | null }[]) {
+      const hit = out.get(`p:${v.phone}`)
+      if (hit && v.through_at && Date.parse(v.through_at) >= Date.parse(hit.at)) out.delete(`p:${v.phone}`)
+    }
+  }
   return out
 }
 
