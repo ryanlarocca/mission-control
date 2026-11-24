@@ -3,12 +3,13 @@
 import { useEffect, useState, type FormEvent, type ReactNode } from "react"
 import { ExternalLink, X } from "lucide-react"
 import { cn } from "@/lib/utils"
-import { BOARD_LANES, BOARD_TAGS, type BoardItem, type BoardLane } from "@/lib/boardItems"
+import { BOARD_LANES, BOARD_LANE_LABEL, BOARD_TAGS, type BoardItem, type BoardLane, type BoardLogEntry } from "@/lib/boardItems"
+import { handleSessionExpired } from "@/lib/session-expired"
 import { LANE_DOT, linkHref, tagChipClass } from "./boardUi"
 
 /** Fields the sheet can change (all PATCH-able). */
 export type BoardEdit = Partial<
-  Pick<BoardItem, "title" | "next_step" | "lane" | "due_date" | "due_note" | "tag" | "link" | "waiting_on">
+  Pick<BoardItem, "title" | "next_step" | "lane" | "due_date" | "due_note" | "tag" | "link" | "waiting_on" | "on_hold">
 >
 
 const LANE_SHORT: Record<BoardLane, string> = { you: "Your move", waiting: "Waiting", me: "I'm handling" }
@@ -22,6 +23,7 @@ type Draft = {
   tag: string
   link: string
   waiting_on: string
+  on_hold: boolean
 }
 
 function toDraft(i: BoardItem): Draft {
@@ -34,6 +36,7 @@ function toDraft(i: BoardItem): Draft {
     tag: i.tag ?? "",
     link: i.link ?? "",
     waiting_on: i.waiting_on ?? "",
+    on_hold: i.on_hold,
   }
 }
 
@@ -43,7 +46,9 @@ function diff(item: BoardItem, d: Draft): BoardEdit {
   const txt = (v: string) => (v.trim() === "" ? null : v.trim())
   if (d.title.trim() && d.title.trim() !== item.title) out.title = d.title.trim()
   if (d.lane !== item.lane) out.lane = d.lane
-  const pairs: [keyof Omit<Draft, "title" | "lane">, string | null][] = [
+  const hold = d.on_hold && d.due_date.trim() !== ""
+  if (hold !== item.on_hold) out.on_hold = hold
+  const pairs: [keyof Omit<Draft, "title" | "lane" | "on_hold">, string | null][] = [
     ["next_step", item.next_step],
     ["due_date", item.due_date],
     ["due_note", item.due_note],
@@ -106,6 +111,22 @@ export function BoardSheet({
   }
 
   const savedLink = d.link.trim()
+
+  // History (board_item_log), newest first.
+  const [history, setHistory] = useState<BoardLogEntry[] | null>(null)
+  const [historyError, setHistoryError] = useState<string | null>(null)
+  useEffect(() => {
+    let live = true
+    fetch(`/api/board?history=${encodeURIComponent(item.id)}`, { cache: "no-store" })
+      .then(async res => {
+        if (handleSessionExpired(res)) return
+        const data = await res.json().catch(() => null)
+        if (!res.ok) throw new Error(data?.error || `HTTP ${res.status}`)
+        if (live) setHistory(Array.isArray(data?.entries) ? data.entries : [])
+      })
+      .catch(e => { if (live) setHistoryError(e instanceof Error ? e.message : String(e)) })
+    return () => { live = false }
+  }, [item.id])
 
   return (
     <div className="fixed inset-0 z-50 flex items-end md:items-center justify-center" role="dialog" aria-modal="true" aria-label="Edit card">
@@ -192,7 +213,7 @@ export function BoardSheet({
           )}
 
           <div className="grid grid-cols-1 sm:grid-cols-[minmax(0,1.2fr)_minmax(0,1fr)] gap-4 sm:gap-3">
-            <Field label="Date" htmlFor="board-date">
+            <Field label="Next check-in" htmlFor="board-date">
               <div className="flex gap-1.5">
                 <input
                   id="board-date"
@@ -204,7 +225,7 @@ export function BoardSheet({
                 {d.due_date && (
                   <button
                     type="button"
-                    onClick={() => set("due_date", "")}
+                    onClick={() => setD(prev => ({ ...prev, due_date: "", on_hold: false }))}
                     aria-label="Clear date"
                     className="shrink-0 w-11 min-h-[44px] rounded-lg border border-signal-border text-signal-muted flex items-center justify-center"
                   >
@@ -224,6 +245,27 @@ export function BoardSheet({
               />
             </Field>
           </div>
+
+          <button
+            type="button"
+            onClick={() => set("on_hold", !d.on_hold)}
+            disabled={!d.due_date}
+            aria-pressed={d.on_hold}
+            className={cn(
+              "w-full min-h-[48px] rounded-xl border px-3.5 flex items-center justify-between gap-3 text-left disabled:opacity-45",
+              d.on_hold ? "border-signal-accent/50 bg-signal-accent/[.07]" : "border-signal-border bg-signal-bg",
+            )}
+          >
+            <span className="min-w-0">
+              <span className="block text-[15px] md:text-sm font-semibold">On hold</span>
+              <span className="block text-[12.5px] text-signal-muted">
+                {d.due_date ? "Nothing needed from you until the check-in date; it comes back by itself." : "Set a check-in date first."}
+              </span>
+            </span>
+            <span className={cn("shrink-0 w-11 h-[26px] rounded-full p-[3px] transition-colors", d.on_hold ? "bg-signal-accent" : "bg-signal-card2")}>
+              <span className={cn("block w-5 h-5 rounded-full bg-white transition-transform", d.on_hold && "translate-x-[18px]")} />
+            </span>
+          </button>
 
           <Field label="Tag" htmlFor="board-tag">
             <input
@@ -281,6 +323,21 @@ export function BoardSheet({
               )}
             </div>
           </Field>
+
+          <div className="pt-1">
+            <div className="text-[11px] uppercase tracking-[0.08em] font-semibold text-signal-muted">History</div>
+            {historyError ? (
+              <p className="mt-2 text-sm text-[#ffb4b4]">Couldn&apos;t load the history ({historyError}).</p>
+            ) : !history ? (
+              <p className="mt-2 text-sm text-signal-muted">Loading…</p>
+            ) : history.length === 0 ? (
+              <p className="mt-2 text-sm text-signal-muted">No history yet.</p>
+            ) : (
+              <ol className="mt-2 space-y-3 border-l border-signal-border pl-3.5">
+                {history.map(h => <HistoryRow key={h.id} h={h} />)}
+              </ol>
+            )}
+          </div>
         </div>
 
         <div
@@ -304,5 +361,49 @@ export function BoardSheet({
         </div>
       </form>
     </div>
+  )
+}
+
+const PT = "America/Los_Angeles"
+
+function whenText(iso: string): string {
+  const d = new Date(iso)
+  if (Number.isNaN(d.getTime())) return ""
+  const day = d.toLocaleDateString("en-US", { timeZone: PT, weekday: "short", month: "short", day: "numeric", year: "numeric" }).replace(/^(\w+),/, "$1")
+  const time = d.toLocaleTimeString("en-US", { timeZone: PT, hour: "numeric", minute: "2-digit" })
+  return `${day} · ${time}`
+}
+
+function ymdText(ymd: string): string {
+  const d = new Date(ymd + "T12:00:00Z")
+  return d.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric", timeZone: "UTC" })
+}
+
+const KIND_TEXT: Record<string, string> = {
+  created: "Card added",
+  done: "Marked done",
+  reopened: "Reopened",
+  checked: "Checked, no change",
+}
+
+/** One dated history line: who · when, what the status said, lane + check-in. */
+function HistoryRow({ h }: { h: BoardLogEntry }) {
+  const headline = KIND_TEXT[h.kind]
+  const meta = [
+    h.lane ? BOARD_LANE_LABEL[h.lane] ?? h.lane : null,
+    h.lane === "waiting" && h.waiting_on ? `on ${h.waiting_on}` : null,
+    h.due_date ? `${h.on_hold ? "on hold until" : "check-in"} ${ymdText(h.due_date)}` : "no date",
+  ].filter(Boolean).join(" · ")
+  return (
+    <li className="relative">
+      <span className="absolute -left-[19px] top-[6px] w-[9px] h-[9px] rounded-full bg-signal-card2 border border-signal-border" aria-hidden />
+      <div className="text-[12px] text-signal-muted">
+        {whenText(h.at)}{h.by_who ? ` · ${h.by_who}` : ""}
+      </div>
+      {headline && <div className="text-[13.5px] font-semibold text-signal-ink">{headline}{h.note && h.kind === "checked" ? `: ${h.note}` : ""}</div>}
+      {h.kind !== "checked" && h.next_step && <div className="text-[13.5px] leading-[1.35] text-signal-ink/90 break-words">{h.next_step}</div>}
+      {h.kind !== "checked" && <div className="text-[12px] text-signal-muted/80">{meta}</div>}
+      {h.note && h.kind !== "checked" && <div className="text-[12px] text-signal-muted/70 italic">{h.note}</div>}
+    </li>
   )
 }

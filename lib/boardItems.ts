@@ -9,6 +9,14 @@
 //   waiting  Waiting on someone   ball is in someone else's court
 //   me       I'm handling         Claude is working it
 // A done card (status "done") shows under "Done this week" for 7 days.
+//
+// v2 (2026-11-24): every card carries a next check-in date (due_date) and the
+// lanes sort by it, soonest first; a card without one sinks to the bottom
+// marked "Needs a date". On hold (on_hold + a date) folds the card into the
+// "On hold" group until that date, when it comes back into its lane by
+// itself. A card not updated in BOARD_STALE_DAYS shows a quiet "stale" mark.
+// History: board_item_log, written by a DB trigger on every change
+// (supabase/migrations/2026-11-24_board_hold_and_history.sql).
 
 export const BOARD_LANES = ["you", "waiting", "me"] as const
 export type BoardLane = (typeof BOARD_LANES)[number]
@@ -45,6 +53,12 @@ export type BoardItem = {
   link: string | null
   status: BoardStatus
   done_at: string | null
+  /** Nothing needed from Ryan until due_date (then it comes back by itself). */
+  on_hold: boolean
+  /** Where the notes live, relative to ~/Projects/PROJECTS ("deals/261-bieber-dr.md"). */
+  notes_path: string | null
+  /** "Ryan" (board page) or "Claude" (board.mjs). */
+  updated_by: string | null
   sort_order: number
   source: string | null
   created_at: string
@@ -52,10 +66,54 @@ export type BoardItem = {
 }
 
 export const BOARD_COLS =
-  "id, key, title, next_step, lane, waiting_on, due_date, due_note, tag, link, status, done_at, sort_order, source, created_at, updated_at"
+  "id, key, title, next_step, lane, waiting_on, due_date, due_note, tag, link, status, done_at, on_hold, notes_path, updated_by, sort_order, source, created_at, updated_at"
 
 /** Days a done card stays visible under "Done this week". */
 export const BOARD_DONE_DAYS = 7
+
+/** Days without an update before a card shows the "stale" mark (Ryan, 11-24). */
+export const BOARD_STALE_DAYS = 10
+
+/** One history entry (table board_item_log). */
+export type BoardLogEntry = {
+  id: string
+  at: string
+  /** created | update | done | reopened | checked */
+  kind: string
+  by_who: string | null
+  title: string | null
+  next_step: string | null
+  lane: BoardLane | null
+  waiting_on: string | null
+  due_date: string | null
+  on_hold: boolean | null
+  note: string | null
+}
+
+export const BOARD_LOG_COLS = "id, at, kind, by_who, title, next_step, lane, waiting_on, due_date, on_hold, note"
+
+/** In the folded "On hold" group: held, with a date still in the future. */
+export function isHeld(i: Pick<BoardItem, "on_hold" | "due_date" | "status">, today = pacificToday()): boolean {
+  return i.status === "open" && i.on_hold && !!i.due_date && i.due_date > today
+}
+
+/** Was on hold and its date has come: back in its lane, flagged "Back from hold". */
+export function isBackFromHold(i: Pick<BoardItem, "on_hold" | "due_date" | "status">, today = pacificToday()): boolean {
+  return i.status === "open" && i.on_hold && !!i.due_date && i.due_date <= today
+}
+
+/** Whole days since the card was last updated (Pacific calendar days). */
+export function daysSinceUpdate(updatedAt: string, today = pacificToday()): number {
+  const d = new Date(updatedAt)
+  if (Number.isNaN(d.getTime())) return 0
+  const ymd = pacificToday(d)
+  return Math.round((Date.parse(today + "T12:00:00Z") - Date.parse(ymd + "T12:00:00Z")) / 86_400_000)
+}
+
+/** Open, not folded away on hold, and untouched for BOARD_STALE_DAYS or more. */
+export function isStale(i: BoardItem, today = pacificToday()): boolean {
+  return i.status === "open" && !isHeld(i, today) && daysSinceUpdate(i.updated_at, today) >= BOARD_STALE_DAYS
+}
 
 export function isBoardLane(v: unknown): v is BoardLane {
   return typeof v === "string" && (BOARD_LANES as readonly string[]).includes(v)
@@ -94,7 +152,7 @@ export function dueLabel(due: string | null, note: string | null, today = pacifi
   return note ? `${base} ${note}` : base
 }
 
-/** Open cards: dated first (soonest first), then undated by sort_order then newest. */
+/** Open cards: dated first (soonest check-in first), then undated (they sink, marked "Needs a date"). */
 export function sortOpen(a: BoardItem, b: BoardItem): number {
   if (a.due_date && b.due_date && a.due_date !== b.due_date) return a.due_date < b.due_date ? -1 : 1
   if (a.due_date && !b.due_date) return -1

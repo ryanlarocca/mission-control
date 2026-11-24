@@ -9,11 +9,14 @@
 // Checks: code committed + pushed, main checkout current (fast-forwards it if
 // clean), ~/Projects memo repo committed, Projects page synced, memo format
 // (📍 block size, Updated vs changelog, index date), deals index, one memory
-// folder + index links, backup health. Exit 1 when anything needs attention.
+// folder + index links, backup health, the Board (every card dated; a card
+// whose notes changed today after its last update = a project moved but its
+// card didn't). Exit 1 when anything needs attention.
 import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
 import { execFileSync, spawn } from "node:child_process"
+import { fileURLToPath } from "node:url"
 
 const HOME = os.homedir()
 const MAIN = path.join(HOME, "Projects/PROJECTS/mission-control")
@@ -116,6 +119,23 @@ try {
   const out = execFileSync(process.execPath, ["scripts/projects-sync.mjs"], { cwd: MAIN, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] })
   good(`Projects page synced (${(/upserted \d+/.exec(out) || ["ok"])[0]})`)
 } catch (e) { bad(`projects-sync failed: ${String(e.stderr || e.message).trim().split("\n").pop()}`) }
+
+// ── 7b. the Board: a project that moved today must have its card updated ────
+{
+  const boardCli = path.join(path.dirname(fileURLToPath(import.meta.url)), "board.mjs")
+  let out = null
+  try { out = execFileSync(process.execPath, [boardCli, "check", "--json"], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }) }
+  catch (e) { out = e.stdout ? String(e.stdout) : null; if (!out) bad(`Board check failed: ${String(e.stderr || e.message).trim().split("\n").pop()}`) }
+  if (out) {
+    try {
+      const r = JSON.parse(out.trim().split("\n").pop())
+      for (const p of r.problems) bad(`Board: ${p}`)
+      const extra = [r.back && `${r.back} back from hold`, r.overdue && `${r.overdue} past their check-in`, r.stale && `${r.stale} stale`].filter(Boolean).join(", ")
+      if (!r.problems.length) good(`Board: ${r.open} cards, all dated, none behind their notes${extra ? ` (morning refresh: ${extra})` : ""}`)
+    } catch { bad(`Board check printed something unexpected: ${out.slice(0, 200)}`) }
+  }
+}
+// Also ask yourself at every wrap: did this chat start a multi-week project with no card? Ask Ryan in one line.
 
 // ── 8. backup: health now, then a background run ────────────────────────────
 {

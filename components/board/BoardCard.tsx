@@ -3,7 +3,7 @@
 import type { KeyboardEvent } from "react"
 import { Check, ExternalLink } from "lucide-react"
 import { cn } from "@/lib/utils"
-import { dueLabel, type BoardItem } from "@/lib/boardItems"
+import { daysSinceUpdate, dueLabel, isBackFromHold, isHeld, isStale, type BoardItem } from "@/lib/boardItems"
 import { doneLabel, dueChipClass, linkHref, tagChipClass } from "./boardUi"
 
 /** idle = normal · checked = circle filled, card dimmed · collapsing = fading out + height → 0. */
@@ -27,8 +27,23 @@ export function BoardCard({ item, today, phase, fresh, onToggle, onOpen }: Props
   const checked = isDone || phase !== "idle"
   const leaving = phase === "collapsing"
 
-  const dateText = isDone ? doneLabel(item.done_at, today) : dueLabel(item.due_date, item.due_note, today)
-  const dateClass = isDone ? "bg-signal-card2 text-signal-muted" : dueChipClass(item, today)
+  const held = !isDone && isHeld(item, today)
+  const back = !isDone && isBackFromHold(item, today)
+  const noDate = !isDone && !item.due_date
+  const stale = !isDone && isStale(item, today)
+  const dueText = dueLabel(item.due_date, item.due_note, today)
+  const dateText = isDone
+    ? doneLabel(item.done_at, today)
+    : held
+      ? `Back ${dueText}`
+      : noDate
+        ? "Needs a date"
+        : dueText
+  const dateClass = isDone || held
+    ? "bg-signal-card2 text-signal-muted"
+    : noDate
+      ? "bg-[#f5b942]/[.12] text-[#f5b942]"
+      : dueChipClass(item, today)
   const waitingOn = !isDone && item.lane === "waiting" && item.waiting_on ? item.waiting_on : null
 
   const onKey = (e: KeyboardEvent<HTMLDivElement>) => {
@@ -97,8 +112,13 @@ export function BoardCard({ item, today, phase, fresh, onToggle, onOpen }: Props
                   {item.next_step}
                 </div>
               )}
-              {(dateText || item.tag || waitingOn) && (
+              {(dateText || item.tag || waitingOn || back || stale) && (
                 <div className="mt-[7px] flex flex-wrap items-center gap-1.5">
+                  {back && (
+                    <span className="rounded-md px-[7px] py-0.5 text-[12.5px] md:text-[11.5px] font-semibold bg-signal-accent/10 text-signal-accent">
+                      Back from hold
+                    </span>
+                  )}
                   {dateText && (
                     <span className={cn("rounded-md px-[7px] py-0.5 text-[12.5px] md:text-[11.5px] font-semibold", dateClass)}>
                       {dateText}
@@ -112,6 +132,11 @@ export function BoardCard({ item, today, phase, fresh, onToggle, onOpen }: Props
                   {waitingOn && (
                     <span className="text-[12.5px] md:text-[11.5px] text-signal-muted truncate max-w-full">
                       Waiting on: {waitingOn}
+                    </span>
+                  )}
+                  {stale && (
+                    <span className="text-[12.5px] md:text-[11.5px] text-signal-muted/70 italic">
+                      stale · {daysSinceUpdate(item.updated_at, today)} days
                     </span>
                   )}
                 </div>

@@ -14,7 +14,9 @@ import { BOARD_CSS, LANE_DOT, clockTime, headerDate, sortDone } from "./boardUi"
 // fades and collapses (cards below slide up) → it lands in Done this week,
 // with a 5 s Undo pill. Data: GET/POST/PATCH /api/board.
 
-const VERSION = "Board v1"
+// v2 (11-24): sorted by next check-in, folded "On hold" group, stale mark,
+// history in the card sheet.
+const VERSION = "Board v2"
 const CHECK_HOLD_MS = 450 // circle filled, card dimmed, before it leaves
 const COLLAPSE_MS = 320 // fade + height collapse (matches .board-collapse)
 const TOAST_MS = 5000
@@ -54,6 +56,7 @@ export function BoardView() {
   const [toast, setToast] = useState<Toast | null>(null)
   const [editing, setEditing] = useState<BoardItem | null>(null)
   const [showDone, setShowDone] = useState(false)
+  const [showHold, setShowHold] = useState(false)
   const [draft, setDraft] = useState("")
   const [adding, setAdding] = useState(false)
   // Cards added this visit sit at the top of their lane (newest first) until
@@ -304,17 +307,23 @@ export function BoardView() {
   const lanes = useMemo(() => {
     const all = items ?? []
     const byLane = {} as Record<BoardLane, BoardItem[]>
+    // On hold with a future date → the folded group (status ignored so a card
+    // mid-"done" animation stays where it is until it has collapsed).
+    const heldNow = (i: BoardItem) => i.on_hold && !!i.due_date && i.due_date > today
+    const live = (i: BoardItem) => i.status === "open" || !!anim[i.id]
     for (const l of BOARD_LANES) {
       // A card mid-animation stays in its lane until it has collapsed.
-      const inLane = all.filter(i => i.lane === l && (i.status === "open" || anim[i.id]))
+      const inLane = all.filter(i => i.lane === l && live(i) && !heldNow(i))
       const top = pinned.map(id => inLane.find(i => i.id === id)).filter((i): i is BoardItem => !!i)
       byLane[l] = [...top, ...inLane.filter(i => !pinned.includes(i.id)).sort(sortOpen)]
     }
+    const held = all.filter(i => live(i) && heldNow(i)).sort(sortOpen)
     const done = all.filter(i => i.status === "done" && !anim[i.id]).sort(sortDone)
-    return { byLane, done }
-  }, [items, anim, pinned])
+    return { byLane, held, done }
+  }, [items, anim, pinned, today])
 
-  const openCount = (items ?? []).filter(i => i.status === "open" && !anim[i.id]).length
+  const heldCount = lanes.held.filter(i => !anim[i.id]).length
+  const openCount = (items ?? []).filter(i => i.status === "open" && !anim[i.id]).length - heldCount
 
   // ---- render -------------------------------------------------------------
 
@@ -329,7 +338,7 @@ export function BoardView() {
           <div className="min-w-0 flex flex-col md:flex-row md:items-baseline md:gap-3">
             <h1 className="text-[28px] md:text-[22px] font-bold tracking-[-0.02em] leading-tight">Board</h1>
             <span className="text-[13px] text-signal-muted truncate" suppressHydrationWarning>
-              {headerDate(new Date())} · {items ? `${openCount} open` : "…"}
+              {headerDate(new Date())} · {items ? `${openCount} open${heldCount ? ` · ${heldCount} on hold` : ""}` : "…"}
             </span>
           </div>
         </div>
@@ -414,6 +423,35 @@ export function BoardView() {
               )}
             </Lane>
           ))}
+          <div className="md:space-y-3 xl:space-y-4 min-w-0">
+          <Lane
+            title="On hold"
+            dot={LANE_DOT.hold}
+            count={heldCount}
+            toggle={{ open: showHold, onToggle: () => setShowHold(v => !v), everywhere: true }}
+          >
+            {showHold ? (
+              lanes.held.length === 0 ? (
+                <Empty text="Nothing on hold." />
+              ) : (
+                lanes.held.map(i => (
+                  <BoardCard
+                    key={i.id}
+                    item={i}
+                    today={today}
+                    phase={anim[i.id] ?? "idle"}
+                    fresh={!!fresh[i.id]}
+                    onToggle={onToggle}
+                    onOpen={setEditing}
+                  />
+                ))
+              )
+            ) : (
+              <p className="px-0.5 md:px-1.5 py-3 md:py-2 text-sm text-signal-muted/80 border-b border-signal-border md:border-0">
+                {heldCount ? "Nothing needed from you until their dates. Each comes back by itself." : "Nothing on hold."}
+              </p>
+            )}
+          </Lane>
           <Lane
             title="Done this week"
             dot={LANE_DOT.done}
@@ -438,6 +476,7 @@ export function BoardView() {
               )}
             </div>
           </Lane>
+          </div>
         </div>
       )}
 
@@ -503,7 +542,7 @@ function Lane({
   title: string
   dot: string
   count: number
-  toggle?: { open: boolean; onToggle: () => void }
+  toggle?: { open: boolean; onToggle: () => void; everywhere?: boolean }
   children: React.ReactNode
 }) {
   return (
@@ -519,7 +558,7 @@ function Lane({
               type="button"
               onClick={toggle.onToggle}
               aria-expanded={toggle.open}
-              className="md:hidden min-h-[40px] px-2.5 text-[15px] font-semibold text-signal-accent"
+              className={cn("min-h-[40px] md:min-h-[32px] px-2.5 text-[15px] md:text-[13px] font-semibold text-signal-accent", !toggle.everywhere && "md:hidden")}
             >
               {toggle.open ? "Hide" : "Show"}
             </button>

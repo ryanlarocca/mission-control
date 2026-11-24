@@ -3,10 +3,11 @@
 
 import { dueTone, type BoardItem, type BoardLane } from "@/lib/boardItems"
 
-export const LANE_DOT: Record<BoardLane | "done", string> = {
+export const LANE_DOT: Record<BoardLane | "hold" | "done", string> = {
   you: "#f05252",
   waiting: "#f5b942",
   me: "#2dd4bf",
+  hold: "#7c8db5",
   done: "#4b5a7a",
 }
 
