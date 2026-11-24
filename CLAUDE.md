@@ -62,6 +62,26 @@ node scripts/board.mjs done <key>     ·   remove <key>
   whole project stands.
 - Reuse the project's `--key` so every chat updates the same card.
 
+**Board v2 (2026-11-24) — I keep the cards current, Ryan only taps done.**
+- **Every card has a next check-in date** (`--due`); lanes sort by it. A new
+  card needs one. Undated cards sink, marked "Needs a date".
+- **On hold** = nothing needed from Ryan until a date: `--hold YYYY-MM-DD`
+  folds it into the "On hold" group; it comes back by itself that day
+  ("Back from hold") → refresh it, then `--unhold` or `--hold` a new date.
+- **`--notes <path>`** links the card to its notes (`deals/<street>.md`,
+  `taxes/PROJECT_MEMO.md`, `memory/<file>.md`). `wrap-check.mjs` fails when
+  those notes changed today but the card didn't. Fix: update the card, or
+  `board.mjs touch <key> --why "..."` if nothing on the card changes.
+- **Morning refresh** (start of the daily workflow): `node scripts/board.mjs
+  review` → for each flagged card (back from hold, check-in passed or due today,
+  notes newer than the card, stale ≥10 days, last touched by Ryan) check its
+  notes / texts / email and `update` or `touch` it. For cards Ryan added or
+  edited himself, ask him one short question and fill it in; he doesn't want to
+  fill cards in himself.
+- History: every change is logged by a DB trigger (`board_item_log`);
+  `board.mjs log <key>`; on the page, tap a card → History.
+- Never mark a card done yourself (the done circle is Ryan's).
+
 ## Looking up someone's message — texts first, automatically
 
 When Ryan references a person's message, text, pitch, deal, or "what X
