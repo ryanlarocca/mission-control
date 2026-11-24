@@ -16,8 +16,8 @@ import type { SupabaseClient } from "@supabase/supabase-js"
 import { isAnonymousCaller } from "./anonymous"
 import { isSuppressed, normalizeSuppressionEmail, normalizeSuppressionPhone, type SuppressionChannel } from "./suppression"
 import {
-  autoLinkMailRecord, linkMailRecordToCluster, mailSearchCampaignId, normStreet, parseFreeAddress,
-  MAIL_RECORD_LITE_COLUMNS, type CampaignScopeLite, type MailRecordLite,
+  autoLinkMailRecord, linkMailRecordToCluster, mailSearchCampaignId, normStreet, parseFreeAddress, releaseHeldMailMatch,
+  MAIL_RECORD_LITE_COLUMNS, type HeldMailMatch, type CampaignScopeLite, type MailRecordLite,
 } from "./mailMatch"
 
 // Same list as scripts/drip-engine.js HARD_STOP_PATTERNS — keep in step.
@@ -362,9 +362,19 @@ async function creditQuietly(sb: SupabaseClient, leadId: string): Promise<void> 
 }
 
 /** Link the cluster to the mailed record the opt-out is about (exact match first, then the loose one). */
-export async function matchOptOutAddress(sb: SupabaseClient, lead: LeadIdentity, heard: string | null): Promise<OptOutRecord | null> {
+export async function matchOptOutAddress(
+  sb: SupabaseClient,
+  lead: LeadIdentity,
+  heard: string | null,
+  // Ryan's own DNC tap: he's on the card already — no "couldn't place" alert.
+  announceMiss = true
+): Promise<OptOutRecord | null> {
+  // The strict match runs quietly: a miss it would announce ("Couldn't place
+  // this address") waits for the looser opt-out match below, and goes out
+  // only if that misses too.
+  let held: HeldMailMatch | undefined
   if (!lead.mail_record_id) {
-    try { await autoLinkMailRecord(sb, lead.id, { alert: false }) } catch (e) {
+    try { held = (await autoLinkMailRecord(sb, lead.id, { alert: false }))?.held } catch (e) {
       console.warn("[dnc] mail auto-link failed:", e instanceof Error ? e.message : String(e))
     }
     const { data: again } = await sb.from("leads").select("mail_record_id").eq("id", lead.id).maybeSingle()
@@ -376,6 +386,11 @@ export async function matchOptOutAddress(sb: SupabaseClient, lead: LeadIdentity,
       await linkMailRecordToCluster(sb, lead, fuzzy.id, "auto_address", null, fuzzy.prior_pieces ?? null)
       lead.mail_record_id = fuzzy.id
       await creditQuietly(sb, lead.id)
+    }
+  }
+  if (!lead.mail_record_id && held && announceMiss) {
+    try { await releaseHeldMailMatch(sb, held) } catch (e) {
+      console.warn("[dnc] unplaced-address alert failed:", e instanceof Error ? e.message : String(e))
     }
   }
   if (!lead.mail_record_id) return null
@@ -430,7 +445,7 @@ export async function markContactDnc(
 
   let record: OptOutRecord | null = null
   try {
-    record = await matchOptOutAddress(sb, lead, heard)
+    record = await matchOptOutAddress(sb, lead, heard, opts.addedBy !== "ryan")
   } catch (e) {
     console.warn("[dnc] address match failed:", e instanceof Error ? e.message : String(e))
   }

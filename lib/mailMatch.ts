@@ -138,6 +138,19 @@ export interface MailMatchResult {
   cityCorrected?: boolean
   /** Linked by sound (see soundAlikeMatch): the card's street — and maybe the surname — was misheard. */
   soundCorrected?: boolean
+  /** `alert: false` only: the not-linked step (candidates + Telegram) waiting for releaseHeldMailMatch. */
+  held?: HeldMailMatch
+}
+
+/** What autoLinkMailRecord would have written / announced for an unlinked lead, held back by `alert: false`. */
+export interface HeldMailMatch {
+  identity: ClusterIdentityLite
+  /** The contact's other rows, as a PostgREST or-filter list. */
+  ors: string[]
+  candidates: MailRecordLite[]
+  /** True when the "couldn't place" alert is due (first time for this contact). */
+  tell: boolean
+  alertLead: { name: string | null; caller_phone: string | null; email: string | null; property_address: string | null; source: string | null }
 }
 
 const CANDIDATE_CAP = 10
@@ -571,7 +584,10 @@ export async function autoLinkMailRecord(
   sb: SupabaseClient,
   leadId: string,
   // `alert: false` — the opt-out path runs its own looser match right after
-  // and must not announce a miss it is about to resolve. `creditAlert: false`
+  // and must not announce a miss it is about to resolve: an unlinked result
+  // comes back with `held` and nothing is written or sent until the caller
+  // passes it to releaseHeldMailMatch (2026-11-24: "Couldn't place 1952 Big
+  // Ben" went out seconds before the opt-out match placed it). `creditAlert: false`
   // — the caller's own alert already names the mailing (website form).
   // `letterName` — who the caller said the letter was addressed to, when
   // that isn't them (the call/text analyzer's letter_name).
@@ -718,15 +734,27 @@ async function autoLinkInner(sb: SupabaseClient, leadId: string, opts: { alert?:
     const { data: sib } = await sb.from("leads").select("id").or(ors.join(",")).not("mail_match_candidates", "is", null).limit(1)
     told = !!sib?.length
   }
-  const tell = unplaced && !told && opts.alert !== false
+  const held: HeldMailMatch = { identity: lead, ors, candidates, tell: unplaced && !told, alertLead: { ...lead, property_address: address } }
+  if (opts.alert === false) return { ...result, held }
+  await releaseHeldMailMatch(sb, held)
+  return result
+}
+
+/**
+ * The not-linked step: candidates onto the card's picker, and the "couldn't
+ * place" alert once per contact (the candidates column doubles as the
+ * "already told him" mark — [] when nothing came close).
+ */
+export async function releaseHeldMailMatch(sb: SupabaseClient, held: HeldMailMatch): Promise<void> {
+  const { identity, ors, candidates, tell } = held
+  const leadId = identity.id
   if (candidates.length) {
-    await linkMailRecordToCluster(sb, lead, null, null, candidates.map(c => c.id))
+    await linkMailRecordToCluster(sb, identity, null, null, candidates.map(c => c.id))
   } else if (tell) {
     const q = sb.from("leads").update({ mail_match_candidates: [] })
-    await (ors.length ? q.or(`id.eq.${lead.id},${ors.join(",")}`) : q.eq("id", lead.id))
+    await (ors.length ? q.or(`id.eq.${leadId},${ors.join(",")}`) : q.eq("id", leadId))
   }
-  if (tell) await alertUnplacedAddress({ ...lead, property_address: address }, candidates)
-  return result
+  if (tell) await alertUnplacedAddress(held.alertLead, candidates)
 }
 
 /**

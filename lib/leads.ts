@@ -3516,7 +3516,9 @@ export async function applyFollowupOnlyResult(
   // another row of theirs must reach this row too.
   if (!error) {
     try {
-      await autoLinkMailRecord(sb, leadId, { letterName: result.letter_name ?? null })
+      // An opt-out's miss is held: markContactDnc below runs a looser match
+      // first and announces the miss only if that fails too.
+      await autoLinkMailRecord(sb, leadId, { letterName: result.letter_name ?? null, alert: !result.is_dnc })
     } catch (e) {
       console.warn("[mail-match] auto-link failed:", e instanceof Error ? e.message : String(e))
     }
@@ -3668,7 +3670,9 @@ export async function applyAnalyzeCallResult(
   // another row of theirs must reach this row too.
   if (!error) {
     try {
-      await autoLinkMailRecord(sb, leadId, { letterName: result.letter_name ?? null })
+      // An opt-out's miss is held: markContactDnc below runs a looser match
+      // first and announces the miss only if that fails too.
+      await autoLinkMailRecord(sb, leadId, { letterName: result.letter_name ?? null, alert: !result.is_dnc })
     } catch (e) {
       console.warn("[mail-match] auto-link failed:", e instanceof Error ? e.message : String(e))
     }
