@@ -11,11 +11,13 @@ import {
   VOICE_TEST_OWNER_CELL,
   VOICE_TEST_COACH_NOTE,
   VOICE_TEST_VOICE,
+  bakeoffOption,
   callbackTimingNote,
   callerIdNote,
   pickAuditionVoice,
 } from "@/lib/voiceTest"
 import { watchCall } from "@/lib/voiceTestWatch"
+import { acceptRealtimeCall, watchRealtimeCall } from "@/lib/voiceTestRealtime"
 import { jackieTagsFromSipHeaders, mergeJackieCall, returningCallerNote } from "@/lib/jackie"
 import { getLeadsClient } from "@/lib/leads"
 
@@ -84,10 +86,10 @@ export async function POST(request: Request) {
     return new NextResponse("bad json", { status: 400 })
   }
 
-  // `live.call.incoming` is the deprecated name. The project webhook may be
-  // subscribed to Realtime's `realtime.call.incoming` instead (the dashboard
-  // defaults to it); that event carries `call_id`, which we try as the Live
-  // session id — a refusal surfaces in Telegram with OpenAI's reason.
+  // `live.call.incoming` is the deprecated name. `realtime.call.incoming`
+  // (the dashboard default, data.call_id) can't be accepted as a Live session
+  // (404, 10-25); since 11-25 it's only used for bake-off option 3 and
+  // ignored for every other call, below.
   const known = ["live.transport.incoming", "live.call.incoming", "realtime.call.incoming"]
   if (!event.type || !known.includes(event.type)) {
     return NextResponse.json({ ignored: event.type ?? null })
@@ -110,9 +112,20 @@ export async function POST(request: Request) {
   const timing: string[] = []
   if (tags.line) timing.push(`line ${tags.line}`)
 
+  // Model bake-off (test line only, lib/voiceTest VOICE_BAKEOFF). One pending
+  // call emits both live.transport.incoming and — if the project webhook is
+  // subscribed to it — realtime.call.incoming; exactly one may accept. Option
+  // 3 belongs to the Realtime event, everything else to the Live one.
+  const option = testLine ? bakeoffOption(tags.pick) : null
+  const realtimeEvent = event.type === "realtime.call.incoming"
+  if (realtimeEvent !== (option?.api === "realtime")) {
+    return NextResponse.json({ ignored: event.type, pick: option?.digit ?? null })
+  }
+  if (option) timing.push(`🔢 option ${option.digit}: ${option.model}`)
+
   // Voice audition: Ryan's cell rotates through lib/voiceTest VOICE_AUDITION.
   let voice = VOICE_TEST_VOICE
-  if (coach) {
+  if (coach && !option) {
     try {
       const pick = await pickAuditionVoice(sessionId)
       if (pick) {
@@ -147,6 +160,19 @@ export async function POST(request: Request) {
     callbackTimingNote() +
     returning +
     (coach ? VOICE_TEST_COACH_NOTE : "")
+
+  if (option?.api === "realtime") {
+    const res = await acceptRealtimeCall({ callId: sessionId, apiKey, model: option.model, instructions })
+    if (!res.ok) {
+      const detail = (await res.text()).slice(0, 300)
+      console.error(`[voice-test] realtime accept failed ${res.status}: ${detail}`)
+      await sendTelegramAlert(`⚠️ AI test line option 3: OpenAI refused the ${option.model} pick-up (${res.status}) — caller ${caller || "unknown"}\n${detail}`)
+      return NextResponse.json({ accepted: false })
+    }
+    timing.push(`accepted +${((Date.now() - t0) / 1000).toFixed(1)}s`)
+    waitUntil(watchRealtimeCall({ callId: sessionId, apiKey, t0, timing }))
+    return NextResponse.json({ accepted: true, api: "realtime" })
+  }
   const accept = (withVoice: string) =>
     fetch(`${OPENAI_BASE}/live/sessions/${encodeURIComponent(sessionId)}/accept`, {
       method: "POST",
@@ -154,7 +180,7 @@ export async function POST(request: Request) {
       body: JSON.stringify({
         session: {
           type: "live",
-          model: VOICE_TEST_MODEL,
+          model: option?.model ?? VOICE_TEST_MODEL,
           instructions,
           audio: { output: { voice: withVoice } },
           delegation: {

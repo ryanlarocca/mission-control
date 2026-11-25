@@ -30,11 +30,14 @@ export type JackieCallTags = {
   line: string
   /** Lead row the call belongs to (production lines). */
   leadId?: string | null
+  /** Test line only: which model-bakeoff option the caller pressed (1–3). */
+  pick?: string | null
 }
 
 export function jackieSipUri(tags: JackieCallTags): string {
   const headers = new URLSearchParams({ "x-lrg-line": tags.line })
   if (tags.leadId) headers.set("x-lrg-lead", tags.leadId)
+  if (tags.pick) headers.set("x-lrg-pick", tags.pick)
   // secure=true = SRTP. TLS alone only encrypts signaling, and OpenAI
   // answers plain RTP with 488 Not Acceptable Here (measured 10-27).
   return `sip:${OPENAI_SIP_PROJECT}@sip.api.openai.com;transport=tls;secure=true?${headers.toString()}`
@@ -67,6 +70,7 @@ export function jackieTagsFromSipHeaders(sipHeaders: unknown): {
   line: string | null
   leadId: string | null
   twilioCallSid: string | null
+  pick: string | null
 } {
   const get = (name: string): string | null => {
     if (!Array.isArray(sipHeaders)) return null
@@ -78,6 +82,7 @@ export function jackieTagsFromSipHeaders(sipHeaders: unknown): {
     line: get("x-lrg-line"),
     leadId: leadId && /^[0-9a-f-]{36}$/i.test(leadId) ? leadId : null,
     twilioCallSid: get("x-twilio-callsid"),
+    pick: get("x-lrg-pick"),
   }
 }
 

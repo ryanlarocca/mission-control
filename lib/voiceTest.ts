@@ -16,6 +16,21 @@ export const VOICE_TEST_NUMBER = "+14083372785"
 export const VOICE_TEST_MODEL = "gpt-live-1"
 export const VOICE_TEST_VOICE = "marin"
 
+// Model bake-off on the test line (Ryan, 11-25): a keypad menu picks the
+// model, everything else (script, voice, opener) stays Jackie's. Same voice
+// on every option so only the model differs; the audition rotation is off
+// for a bake-off call. "live" options use the GPT-Live accept + watcher;
+// "realtime" goes through lib/voiceTestRealtime.ts.
+export type BakeoffOption = { digit: string; model: string; api: "live" | "realtime"; spoken: string }
+export const VOICE_BAKEOFF: BakeoffOption[] = [
+  { digit: "1", model: "gpt-live-1", api: "live", spoken: "GPT Live 1, Jackie's model today" },
+  { digit: "2", model: "gpt-live-1.1", api: "live", spoken: "GPT Live 1.1, the new one" },
+  { digit: "3", model: "gpt-realtime-2.1", api: "realtime", spoken: "GPT Realtime 2.1" },
+]
+export function bakeoffOption(digit: string | null | undefined): BakeoffOption | null {
+  return VOICE_BAKEOFF.find((o) => o.digit === digit) ?? null
+}
+
 // Voice audition (10-26): each call from Ryan's cell gets the next voice in
 // this list (everyone else gets VOICE_TEST_VOICE). The position — and an
 // optional override list for the finalists round — lives in inbox_settings
