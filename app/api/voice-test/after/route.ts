@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server"
-import { parseTwilioBody, sendTelegramAlert } from "@/lib/leads"
+import { parseTwilioBody, sendOpsAlert } from "@/lib/leads"
 
 // <Dial><Sip> action for the test line: Jackie's leg ended. A leg that never
 // connected (OpenAI refused, timed out, SIP error) is the case the mailer
@@ -22,7 +22,7 @@ export async function POST(request: Request) {
   }
   const sipCode = params.get("DialSipResponseCode") || "?"
   const from = params.get("From") || "unknown"
-  await sendTelegramAlert(
+  await sendOpsAlert(
     `⚠️ AI test line: the hand-off to Jackie didn't connect (Twilio ${status || "no status"}, SIP ${sipCode}) — caller ${from}. On a mailer line this caller would have gone to voicemail.`,
   )
   return xml(`<?xml version="1.0" encoding="UTF-8"?>

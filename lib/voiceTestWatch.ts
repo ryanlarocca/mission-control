@@ -9,7 +9,7 @@
 
 import WebSocket from "ws"
 import { createHmac, timingSafeEqual } from "crypto"
-import { getLeadsClient, sendTelegramAlert } from "@/lib/leads"
+import { getLeadsClient, sendOpsAlert, sendTelegramAlert } from "@/lib/leads"
 import { mergeJackieCall } from "@/lib/jackie"
 import { CallMonitor, type MonitorState } from "@/lib/voiceCallMonitor"
 import { VOICE_TEST_GREETING, VOICE_TEST_OPENER } from "@/lib/voiceTest"
@@ -127,10 +127,14 @@ export async function watchCall(opts: {
   opener?: { timing: string[] }
   /** First hop only: test-line scripts v2–v4 get silent notes (see MonitorState.privateNotes). */
   privateNotes?: boolean
+  /** First hop only: a test-line call (its alerts go to the helper bot). */
+  testLine?: boolean
 }): Promise<void> {
   const { sessionId, apiKey, t0, hop, caller } = opts
   const startedAt = Date.now()
-  const monitor = new CallMonitor(t0, opts.state, { privateNotes: opts.privateNotes })
+  const monitor = new CallMonitor(t0, opts.state, { privateNotes: opts.privateNotes, testLine: opts.testLine })
+  // Test-line chatter goes to the helper bot; a real caller's lines stay put.
+  const alert = (text: string) => (monitor.state.testLine ? sendOpsAlert(text) : sendTelegramAlert(text))
   const timing = opts.opener?.timing ?? []
   const mark = (label: string) => timing.push(`${label} +${((Date.now() - t0) / 1000).toFixed(1)}s`)
 
@@ -153,7 +157,7 @@ export async function watchCall(opts: {
       openerReported = true
       const line = `${timing.join(" · ")} · result: ${result}`
       console.log(`[voice-test] ${line}`)
-      void sendTelegramAlert(`🧪 Test line timing: ${line}`)
+      void alert(`🧪 Test line timing: ${line}`)
     }
     const finish = (result: string) => {
       if (finished) return
@@ -255,7 +259,7 @@ export async function watchCall(opts: {
   const line = `Jackie call over at ${clock(Date.now() - t0)} — ${outcome}${hop ? ` (watcher hop ${hop})` : ""} · backend hand-offs: ${handoffs.length ? `${handoffs.length} (at ${handoffs.map(s => `${s}s`).join(", ")})` : "0"}`
   console.log(`[voice-test] ${line}`)
   await saveHandoffs(sessionId, handoffs)
-  await sendTelegramAlert(`🧪 ${line}`)
+  await alert(`🧪 ${line}`)
 }
 
 /**

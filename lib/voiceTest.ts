@@ -348,3 +348,5 @@ export const VOICE_TEST_GREETING = `Pick up the phone now. Say only: "${VOICE_TE
 // Telegram heads-up when anyone other than Ryan reaches the test line (there
 // is no caller lock — an old-letter caller could land here).
 export const VOICE_TEST_OWNER_CELL = "+14085006293"
+// Our own Outbound line: where connect-check calls to the test line come from.
+export const VOICE_TEST_CHECK_CALLER = "+16502043247"

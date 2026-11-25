@@ -1,13 +1,14 @@
 import { NextResponse } from "next/server"
 import { waitUntil } from "@vercel/functions"
 import { createHmac, timingSafeEqual } from "crypto"
-import { sendTelegramAlert } from "@/lib/leads"
+import { sendOpsAlert, sendTelegramAlert } from "@/lib/leads"
 import {
   VOICE_TEST_BACKEND_EFFORT,
   VOICE_TEST_BACKEND_MODEL,
   VOICE_TEST_GREETING,
   VOICE_TEST_INSTRUCTIONS,
   VOICE_TEST_MODEL,
+  VOICE_TEST_CHECK_CALLER,
   VOICE_TEST_OWNER_CELL,
   VOICE_TEST_COACH_NOTE,
   VOICE_TEST_VOICE,
@@ -190,12 +191,12 @@ export async function POST(request: Request) {
     // A duplicate delivery of an already-accepted call is fine.
     if (detail.includes("decision_already_made")) return NextResponse.json({ duplicate: true })
     console.error(`[voice-test] accept failed ${res.status}: ${detail}`)
-    await sendTelegramAlert(`⚠️ AI test line: OpenAI refused to pick up (${res.status}, event ${event.type}) — caller ${caller || "unknown"}\n${detail}`)
+    await (testLine ? sendOpsAlert : sendTelegramAlert)(`⚠️ AI test line: OpenAI refused to pick up (${res.status}, event ${event.type}) — caller ${caller || "unknown"}\n${detail}`)
     return NextResponse.json({ accepted: false })
   }
 
   timing.push(`accepted +${((Date.now() - t0) / 1000).toFixed(1)}s`)
-  waitUntil(watchCall({ sessionId, apiKey, t0, hop: 0, caller, twilioCallSid: tags.twilioCallSid ?? undefined, opener: { timing }, privateNotes: script !== "v1" }))
+  waitUntil(watchCall({ sessionId, apiKey, t0, hop: 0, caller, twilioCallSid: tags.twilioCallSid ?? undefined, opener: { timing }, privateNotes: script !== "v1", testLine }))
   // Lets a local observer (mini) attach its own sideband while debugging.
   waitUntil(
     Promise.resolve(
@@ -211,7 +212,9 @@ export async function POST(request: Request) {
       .catch((e) => console.error(`[voice-test] session id on lead failed: ${e instanceof Error ? e.message : e}`)))
   }
 
-  if (testLine && caller && caller !== VOICE_TEST_OWNER_CELL) {
+  // A stranger on the test line is a person, so that stays on the marketing
+  // bot; our own connect-check calls aren't.
+  if (testLine && caller && caller !== VOICE_TEST_OWNER_CELL && caller !== VOICE_TEST_CHECK_CALLER) {
     await sendTelegramAlert(`🤖 Someone other than Ryan reached the AI test line (408-337-2785): ${caller}. Recording is on the Twilio trunk.`)
   }
   return NextResponse.json({ accepted: true })

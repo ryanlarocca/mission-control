@@ -62,6 +62,11 @@ export type MonitorState = {
    * mid-caller and she stumbled for 20 s). Optional like the fields above.
    */
   privateNotes?: boolean
+  /**
+   * A test-line call: its timing and call-over lines go to the helper bot,
+   * not the marketing bot (Ryan 11-25). Optional like the fields above.
+   */
+  testLine?: boolean
 }
 
 export const WRAP_AT_MS = 10 * 60_000
@@ -139,9 +144,10 @@ export class CallMonitor {
   /** Human-readable decisions, logged when the watcher stops (not persisted). */
   notes: string[] = []
 
-  constructor(t0: number, prior?: MonitorState, opts?: { privateNotes?: boolean }) {
+  constructor(t0: number, prior?: MonitorState, opts?: { privateNotes?: boolean; testLine?: boolean }) {
     this.state = prior ?? {
       privateNotes: opts?.privateNotes || undefined,
+      testLine: opts?.testLine || undefined,
       t0,
       spoke: false,
       outputText: "",
