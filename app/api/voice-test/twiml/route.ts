@@ -29,7 +29,10 @@ export async function POST(request: Request) {
   const digits = params.get("Digits")
   const option = bakeoffOption(digits)
   if (option) {
-    return xml(jackieDialTwiml({ tags: { line: "test", pick: option.digit }, action: `${PROD_BASE}/api/voice-test/after` }))
+    // Two quiet seconds before she picks up: the caller has just pressed a
+    // key and needs the phone back at their ear before her "Hello?".
+    const dial = jackieDialTwiml({ tags: { line: "test", pick: option.digit }, action: `${PROD_BASE}/api/voice-test/after` })
+    return xml(dial.replace("<Dial ", `<Pause length="2"/>\n  <Dial `))
   }
   // Menu timed out (or a key that isn't on it, second time round): plain Jackie.
   if (url.searchParams.get("menu") === "done") {
