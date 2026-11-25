@@ -24,12 +24,21 @@ describe("test-line scripts", () => {
       "Interruption policy:",
       "Delegation policy:",
       "The caller ends the call",
+      // follow-up questions (Ryan 11-25): rapport, she may start, never an interview
+      "You can start it yourself",
+      "Never announce that you have questions",
+      "never an interview",
+      "Never give advice or an opinion",
+      "A short or flat answer",
+      "ask once at most, and only when they've said they might sell",
+      "It only becomes a question for Ryan when they ask what he would do about it",
+      "A swear word or one rude remark isn't a reason to end a call",
     ]) expect(text).toContain(must)
     // gpt-live-1 only; 1.1 takes plain "Do not delegate when:".
     expect(text).not.toContain("SpawnThinking")
     expect(text).not.toContain("within one business day.")
     // OpenAI caps instructions at 16,384 tokens; stay far under with the per-call notes added.
-    expect(text.split(/\s+/).length).toBeLessThan(3200)
+    expect(text.split(/\s+/).length).toBeLessThan(3800)
   })
 
   it("the coach note still points at a rule that exists", () => {
@@ -52,9 +61,9 @@ describe("test-line scripts", () => {
     expect(callerIdNoteV2("+14085550142")).toContain("Don't ask them for a number")
   })
 
-  it("the menu offers four scripts, and only those digits pick one", () => {
-    expect(VOICE_BAKEOFF.map((o) => o.script)).toEqual(["v1", "v2", "v3", "v4"])
-    expect(bakeoffOption("3")?.script).toBe("v3")
+  it("the blind menu offers the two finalists, and only those digits pick one", () => {
+    expect(VOICE_BAKEOFF.map((o) => o.script).sort()).toEqual(["v3", "v4"])
+    expect(bakeoffOption("3")).toBeNull()
     expect(bakeoffOption("9")).toBeNull()
     expect(bakeoffOption(null)).toBeNull()
   })

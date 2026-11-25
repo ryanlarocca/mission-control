@@ -118,7 +118,12 @@ export async function POST(request: Request) {
   // script this call gets. Every other line gets v1.
   const option = testLine ? bakeoffOption(tags.pick) : null
   const script = option?.script ?? "v1"
-  if (option) timing.push(`🔢 option ${option.digit}: script ${script}`)
+  // Blind test: the timing line reaches Telegram, so it carries the digit
+  // only. The script name goes to the server log.
+  if (option) {
+    timing.push(`🔢 option ${option.digit}`)
+    console.log(`[voice-test] blind test: option ${option.digit} = script ${script}`)
+  }
 
   // Voice audition: Ryan's cell rotates through lib/voiceTest VOICE_AUDITION.
   let voice = VOICE_TEST_VOICE

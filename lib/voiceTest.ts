@@ -16,18 +16,20 @@ export const VOICE_TEST_NUMBER = "+14083372785"
 export const VOICE_TEST_MODEL = "gpt-live-1.1" // 11-25: Ryan picked 1.1 in the bake-off ("crisper, less robotic")
 export const VOICE_TEST_VOICE = "marin"
 
-// Script side test on the test line (Ryan, 11-25): a keypad menu picks the
-// script; model, voice and opener are the same on all four, so the script is
-// the only difference. Test line only: the mailer lines always get v1 (the
-// pick is ignored there). The earlier model bake-off (gpt-live-1 vs 1.1 vs
-// gpt-realtime-2.1) ended with 1.1; its Realtime path was removed.
+// Blind script test on the test line (Ryan, 11-25): "press 1 or 2", and the
+// menu doesn't say which script is which, so he judges by ear and the
+// mapping is revealed afterwards. Don't put the script name in anything he
+// sees (menu wording, Telegram lines); it goes to the server log only.
+// Model, voice and opener are the same on both. Test line only: the mailer
+// lines always get v1, and so does a test-line call with no key pressed.
+// Earlier rounds the same day: a model bake-off (gpt-live-1.1 won) and a
+// four-script round (v1 live, v2 rewrite, v3 from the calls, v4 blend) that
+// left v3 and v4 as the finalists.
 export type JackieScript = "v1" | "v2" | "v3" | "v4"
-export type BakeoffOption = { digit: string; script: JackieScript; spoken: string }
+export type BakeoffOption = { digit: string; script: JackieScript }
 export const VOICE_BAKEOFF: BakeoffOption[] = [
-  { digit: "1", script: "v1", spoken: "the current Jackie" },
-  { digit: "2", script: "v2", spoken: "the rewrite" },
-  { digit: "3", script: "v3", spoken: "the one built from the calls" },
-  { digit: "4", script: "v4", spoken: "the blend" },
+  { digit: "1", script: "v4" },
+  { digit: "2", script: "v3" },
 ]
 export function bakeoffOption(digit: string | null | undefined): BakeoffOption | null {
   return VOICE_BAKEOFF.find((o) => o.digit === digit) ?? null
