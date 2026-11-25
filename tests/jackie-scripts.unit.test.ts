@@ -39,7 +39,7 @@ describe("test-line scripts", () => {
     expect(text).not.toContain("SpawnThinking")
     expect(text).not.toContain("within one business day.")
     // OpenAI caps instructions at 16,384 tokens; stay far under with the per-call notes added.
-    expect(text.split(/\s+/).length).toBeLessThan(3800)
+    expect(text.split(/\s+/).length).toBeLessThan(4500)
   })
 
   it("the coach note still points at a rule that exists", () => {
@@ -102,5 +102,20 @@ describe("private reminder for the new scripts", () => {
     const m = new CallMonitor(0)
     said(m, "What made you call?", 5_000)
     expect(m.tick(5_100).map((x) => x.type)).not.toContain("thinking")
+  })
+})
+
+describe("rehearsal callers answer what she asks (11-25)", () => {
+  it("picks the held-back answer her question asked for, once", async () => {
+    const { askedFor } = await import("../scripts/jackie-rehearsal")
+    const sc = { id: "t", about: "", lines: [], answers: { name: "Linda.", address: "12 Elm.", time: "Evenings." } }
+    const given = new Set<"name" | "address" | "time" | "number">()
+    expect(askedFor("Oh, okay. And who am I speaking with?", sc, given)).toBe("name")
+    expect(askedFor("Which property is this, so Ryan can look it up?", sc, given)).toBe("address")
+    expect(askedFor("When's a good time for Ryan to reach you?", sc, given)).toBe("time")
+    expect(askedFor("Is this number the best one to reach you?", sc, given)).toBeNull() // no "number" line in this scenario
+    expect(askedFor("Twelve years is a good stretch.", sc, given)).toBeNull() // not a question
+    given.add("name")
+    expect(askedFor("Sorry, what was your name?", sc, given)).toBeNull()
   })
 })

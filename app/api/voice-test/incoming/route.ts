@@ -18,7 +18,7 @@ import {
   pickAuditionVoice,
 } from "@/lib/voiceTest"
 import { watchCall } from "@/lib/voiceTestWatch"
-import { JACKIE_BACKEND_INSTRUCTIONS, JACKIE_V2_INSTRUCTIONS, callerIdNoteV2 } from "@/lib/jackieScriptV2"
+import { JACKIE_BACKEND_INSTRUCTIONS, JACKIE_V2_INSTRUCTIONS, callbackTimingNoteV2, callerIdNoteV2 } from "@/lib/jackieScriptV2"
 import { JACKIE_V3_INSTRUCTIONS, JACKIE_V4_INSTRUCTIONS } from "@/lib/jackieScriptV3"
 import { jackieTagsFromSipHeaders, mergeJackieCall, returningCallerNote } from "@/lib/jackie"
 import { getLeadsClient } from "@/lib/leads"
@@ -166,8 +166,7 @@ export async function POST(request: Request) {
     : VOICE_TEST_INSTRUCTIONS
   const instructions =
     base +
-    (script === "v1" ? callerIdNote(caller) : callerIdNoteV2(caller)) +
-    callbackTimingNote() +
+    (script === "v1" ? callerIdNote(caller) + callbackTimingNote() : callerIdNoteV2(caller) + callbackTimingNoteV2()) +
     returning +
     (coach ? VOICE_TEST_COACH_NOTE : "")
   const accept = (withVoice: string) =>

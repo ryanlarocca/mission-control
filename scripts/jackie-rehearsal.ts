@@ -40,7 +40,34 @@ import { sendVoice, toPhoneMp3 } from "./jackie-audio"
 
 // hiddenCallerId: the call comes in blocked, so her script gets the "number is
 // hidden, ask for the best number" note instead of a caller number.
-type Scenario = { id: string; about: string; lines: string[]; hiddenCallerId?: boolean }
+// answers (11-25): lines the caller only says when she asks for that thing
+// (their name, the address, a good time, whether this number is best), each
+// at most once. Without them a fixed script can't answer "and your name?",
+// she asks again, and the run reads as a repeat that the script caused.
+export type AnswerKey = "name" | "address" | "time" | "number"
+export type Scenario = { id: string; about: string; lines: string[]; hiddenCallerId?: boolean; answers?: Partial<Record<AnswerKey, string>> }
+
+const ASKS: [AnswerKey, RegExp][] = [
+  ["name", /\b(your (first |last )?name|who('s| is| am i) (calling|speaking|this)|who do i have|may i ask who|catch your name)\b/i],
+  ["address", /\b(address|which (house|property|place|home|one)|what (house|property|place)|where('s| is) (the|it|that))\b/i],
+  ["time", /\b(good time|best time|what time|when('s| is| would| should| can| could| works))\b/i],
+  ["number", /\b(best (number|one)|number you('re| are) calling from|this number|good number)\b/i],
+]
+/** Which of the caller's held-back answers her last words asked for, if any. */
+export function askedFor(heard: string, sc: Scenario, given: Set<AnswerKey>): AnswerKey | null {
+  const tail = heard.trim().slice(-220)
+  if (!tail.includes("?")) return null
+  for (const [k, re] of ASKS) if (sc.answers?.[k] && !given.has(k) && re.test(tail)) return k
+  return null
+}
+
+/** How a run differs from the live v1 set-up (test-line scripts v2–v4). */
+export type RehearseOpts = {
+  /** Sent once she's heard asking why they called. Default: v1's commentary REASON_NOTE (when the guard is on). */
+  reasonNote?: { channel: "commentary" | "thinking"; content: string } | null
+  /** Prompt for the backend model (delegation.responses.instructions). */
+  backendInstructions?: string
+}
 
 // Made-up callers shaped like real ones. Lines are fixed (the caller doesn't
 // adapt), so each one must make sense whatever Jackie said before it.
@@ -175,7 +202,7 @@ function arg(name: string): string | null {
   return i >= 0 ? process.argv[i + 1] ?? null : null
 }
 
-function loadEnv(): void {
+export function loadEnv(): void {
   const here = path.dirname(new URL(import.meta.url).pathname)
   for (const f of [path.resolve(here, "../.env.local"), path.resolve(process.cwd(), ".env.local")]) {
     if (fs.existsSync(f)) { process.loadEnvFile(f); return }
@@ -218,7 +245,7 @@ function trimTrailingSilence(pcm: Buffer): Buffer {
 }
 
 type Turn = { line: string; waitMs: number | null }
-type Rehearsal = { transcript: string; turns: Turn[]; greetingMs: number | null; handoffs: number; pcm: Buffer; audioStats: string }
+export type Rehearsal = { transcript: string; turns: Turn[]; greetingMs: number | null; handoffs: number; pcm: Buffer; audioStats: string }
 
 /**
  * The whole call as one mono track at RATE. The caller's mic stream is the
@@ -258,8 +285,12 @@ function mixCall(mic: Buffer[], her: { atMs: number; pcm: Buffer }[]): { pcm: Bu
   return { pcm: out, stats: `${(total / 2 / RATE).toFixed(1)} s, clipped samples: ${clipped}\nRMS per second (caller|Jackie, % of full scale): ${perSec.join(" ")}` }
 }
 
-async function rehearse(sc: Scenario, instructions: string, key: string): Promise<Rehearsal> {
+export async function rehearse(sc: Scenario, instructions: string, key: string, opts: RehearseOpts = {}): Promise<Rehearsal> {
   const lines = await Promise.all(sc.lines.map(l => speak(l, key)))
+  const answerPcm: Partial<Record<AnswerKey, Buffer>> = {}
+  for (const k of Object.keys(sc.answers ?? {}) as AnswerKey[]) answerPcm[k] = await speak(sc.answers![k]!, key)
+  const given = new Set<AnswerKey>()
+  const reasonNote = opts.reasonNote === undefined ? (GUARD ? { channel: "commentary" as const, content: REASON_NOTE } : null) : opts.reasonNote
   return new Promise((resolve, reject) => {
     const ws = new WebSocket("wss://api.openai.com/v1/live/sessions", { headers: { Authorization: `Bearer ${key}` } })
     let sentMs = 0 // input timeline: ms of audio streamed so far
@@ -299,6 +330,17 @@ async function rehearse(sc: Scenario, instructions: string, key: string): Promis
       replyStartMs = null
       script.push(`Caller: ${sc.lines[i]}`)
     }
+    // She asked for something the caller is holding back: answer it now and
+    // stay on the same story line.
+    const sayAnswer = (k: AnswerKey) => {
+      if (heard.trim()) script.push(`Jackie: ${heard.trim()}`)
+      heard = ""
+      given.add(k)
+      playing = answerPcm[k]!
+      playPos = 0
+      replyStartMs = null
+      script.push(`Caller: ${sc.answers![k]}`)
+    }
 
     let streamStart = 0
     // One 100 ms chunk of "microphone": the caller's line when it's their
@@ -322,7 +364,9 @@ async function rehearse(sc: Scenario, instructions: string, key: string): Promis
       }
       const replied = replyStartMs !== null
       if (replied && herQuiet) {
-        if (lineIdx + 1 < lines.length) startLine(lineIdx + 1)
+        const asked = askedFor(heard, sc, given)
+        if (asked) sayAnswer(asked)
+        else if (lineIdx + 1 < lines.length) startLine(lineIdx + 1)
         else finish()
       } else if (!replied && sentMs - lineEndMs >= NO_REPLY_GIVE_UP_MS) {
         turns.push({ line: sc.lines[lineIdx], waitMs: null })
@@ -338,7 +382,7 @@ async function rehearse(sc: Scenario, instructions: string, key: string): Promis
           model: VOICE_TEST_MODEL,
           instructions,
           audio: { format: { type: "audio/pcm", rate: RATE }, output: { voice: VOICE_TEST_VOICE } },
-          delegation: { type: "responses", responses: { model: VOICE_TEST_BACKEND_MODEL, reasoning: { effort: VOICE_TEST_BACKEND_EFFORT } } },
+          delegation: { type: "responses", responses: { model: VOICE_TEST_BACKEND_MODEL, reasoning: { effort: VOICE_TEST_BACKEND_EFFORT }, ...(opts.backendInstructions ? { instructions: opts.backendInstructions } : {}) } },
           input: [{ type: "message", role: "developer", content: [{ type: "input_text", text: greeting }] }],
         },
       }))
@@ -365,9 +409,9 @@ async function rehearse(sc: Scenario, instructions: string, key: string): Promis
           if (typeof m.delta === "string") heard += m.delta
           // The live watcher's reminder (lib/voiceCallMonitor REASON_NOTE): once
           // she's asked why they called, tell her it's spent. --no-guard = script alone.
-          if (GUARD && !reasonNoted && asksReason(heard)) {
+          if (reasonNote && !reasonNoted && asksReason(heard)) {
             reasonNoted = true
-            ws.send(JSON.stringify({ type: "session.commentary.append", delegation_id: null, content: REASON_NOTE }))
+            ws.send(JSON.stringify({ type: `session.${reasonNote.channel}.append`, event_id: `reason_${Date.now()}`, delegation_id: null, content: reasonNote.content }))
           }
           const start = typeof m.start_ms === "number" ? m.start_ms : null
           const end = typeof m.end_ms === "number" ? m.end_ms : null
@@ -467,4 +511,5 @@ async function main(): Promise<void> {
   }
 }
 
-main().catch(e => { console.error(e); process.exit(1) })
+// Run only as a script; scripts/jackie-scorecard.ts imports rehearse().
+if (process.argv[1]?.endsWith("jackie-rehearsal.ts")) main().catch(e => { console.error(e); process.exit(1) })
