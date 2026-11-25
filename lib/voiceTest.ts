@@ -13,7 +13,7 @@ import { getLeadsClient } from "@/lib/leads"
 
 export const VOICE_TEST_NUMBER = "+14083372785"
 
-export const VOICE_TEST_MODEL = "gpt-live-1"
+export const VOICE_TEST_MODEL = "gpt-live-1.1" // 11-25: Ryan picked 1.1 in the bake-off ("crisper, less robotic")
 export const VOICE_TEST_VOICE = "marin"
 
 // Model bake-off on the test line (Ryan, 11-25): a keypad menu picks the
@@ -23,8 +23,8 @@ export const VOICE_TEST_VOICE = "marin"
 // "realtime" goes through lib/voiceTestRealtime.ts.
 export type BakeoffOption = { digit: string; model: string; api: "live" | "realtime"; spoken: string }
 export const VOICE_BAKEOFF: BakeoffOption[] = [
-  { digit: "1", model: "gpt-live-1", api: "live", spoken: "GPT Live 1, Jackie's model today" },
-  { digit: "2", model: "gpt-live-1.1", api: "live", spoken: "GPT Live 1.1, the new one" },
+  { digit: "1", model: "gpt-live-1", api: "live", spoken: "GPT Live 1, the old model" },
+  { digit: "2", model: "gpt-live-1.1", api: "live", spoken: "GPT Live 1.1, Jackie's model now" },
   { digit: "3", model: "gpt-realtime-2.1", api: "realtime", spoken: "GPT Realtime 2.1" },
 ]
 export function bakeoffOption(digit: string | null | undefined): BakeoffOption | null {
