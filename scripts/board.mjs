@@ -245,14 +245,17 @@ if (!cmd || cmd === "list") {
   if (cmd === "check") {
     // wrap-check: hard problems = notes moved today but the card didn't; cards with no date.
     const recent = (f) => f.mtime && ptDay(f.mtime) === TODAY
-    const problems = []
+    const problems = [], behind = []
     for (const c of cards) {
       const moved = c.ahead.filter(recent)
-      if (moved.length) problems.push(`${c.key}: ${moved.map((f) => f.rel).join(", ")} changed today after the card's last update — update the card (or board.mjs touch ${c.key} --why "...")`)
+      if (moved.length) {
+        problems.push(`${c.key}: ${moved.map((f) => f.rel).join(", ")} changed today after the card's last update — update the card (or board.mjs touch ${c.key} --why "...")`)
+        behind.push({ key: c.key, title: c.title, files: moved.map((f) => ({ rel: f.rel, mtime: f.mtime.toISOString() })) })
+      }
       if (!c.due_date) problems.push(`${c.key}: no check-in date`)
     }
     const info = { overdue: cards.filter((c) => c.due_date && c.due_date < TODAY && !c.on_hold).length, back: cards.filter(backFromHold).length, stale: cards.filter((c) => !isHeld(c) && ago(c.updated_at) >= STALE_DAYS).length }
-    if (flags.json) console.log(JSON.stringify({ open: cards.length, problems, ...info }))
+    if (flags.json) console.log(JSON.stringify({ open: cards.length, problems, behind, ...info }))
     else { console.log(problems.length ? problems.join("\n") : "Board: every card dated, no notes ahead of their cards"); console.log(info) }
     process.exit(problems.length ? 1 : 0)
   }

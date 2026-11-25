@@ -116,10 +116,22 @@ texts" — don't repeat it.)
 6. Save durable learnings to agent memory — one folder:
    `~/.claude/projects/-Users-ryanlarocca-Projects-PROJECTS-mission-control/memory/`
    (the others are symlinks to it).
-7. Commit + push this repo; commit the `~/Projects` repo.
-8. Run `node scripts/wrap-check.mjs` — it verifies all of the above,
-   fast-forwards the main checkout, refreshes the Projects page and
-   starts a silent Drive backup. Done when it says **All clear**.
+7. Commit + push this repo. Do **not** hand-commit the `~/Projects`
+   memo/deal files: the wrap check saves them (next step).
+8. Run `node scripts/wrap-check.mjs` — it saves the notes, verifies all of
+   the above, fast-forwards the main checkout, refreshes the Projects page
+   and starts a silent Drive backup. Done when it says **All clear**.
+
+**Several chats wrapping at once (2026-11-24).** The memo repo and the
+Board are shared, so the check sees every chat's open notes. It handles
+that itself: one wrap at a time (a lock), it waits for files changed in the
+last 45 s, then commits every open memo/deal file in one neutral commit and
+fixes the index dates. Never commit another chat's memo or deal file by
+hand, and never `board.mjs touch` a card just to clear a warning. If the
+check says a file is still being written, or a card's notes changed minutes
+ago, another chat is mid-wrap: run the check again in a minute. A card whose
+notes changed a while ago and was left behind: read those notes and update
+the card properly, whichever chat you are.
 
 ## Repo conventions
 

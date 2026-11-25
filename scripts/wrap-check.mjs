@@ -5,6 +5,16 @@
 //
 //   node scripts/wrap-check.mjs              # from the worktree you worked in (or the main checkout)
 //   node scripts/wrap-check.mjs --no-backup  # skip the background backup
+//   node scripts/wrap-check.mjs --no-save    # look only: don't commit the shared notes
+//
+// SEVERAL CHATS CAN WRAP AT ONCE (2026-11-24). The memo repo and the Board are
+// shared, so this check sees every chat's open notes. It saves them itself:
+// it takes a lock (one wrap at a time), waits for files that changed in the
+// last 45 s to settle, then commits every open memo/deal file in ONE neutral
+// commit and fixes the index dates. So: never hand-commit another chat's memo
+// or deal file to get to "All clear". Run this check; it does it safely. If it
+// says a file is still being written, or a card's notes just changed, another
+// chat is mid-wrap: run the check again in a minute.
 //
 // Checks: code committed + pushed, main checkout current (fast-forwards it if
 // clean), ~/Projects memo repo committed, Projects page synced, memo format
@@ -17,6 +27,7 @@ import os from "node:os"
 import path from "node:path"
 import { execFileSync, spawn } from "node:child_process"
 import { fileURLToPath } from "node:url"
+import { saveSharedNotes, openNotes } from "./wrap-notes.mjs"
 
 const HOME = os.homedir()
 const MAIN = path.join(HOME, "Projects/PROJECTS/mission-control")
@@ -56,12 +67,43 @@ if (here) {
   } else if (local) good(`Main checkout current (${local.slice(0, 7)})`)
 }
 
-// ── 3. ~/Projects memo repo (local-only, no remote) ─────────────────────────
+// ── 3. ~/Projects memo repo (local-only, no remote): save the notes for every open chat ──
+const NOTE_PATHS = ["PROJECTS/MEMO_INDEX.md", "PROJECTS/*/PROJECT_MEMO.md", "PROJECTS/*/CHANGELOG.md", "PROJECTS/*/WHERE_WE_LEFT_OFF_ARCHIVE.md", "PROJECTS/deals"]
+/** "Last touched" in MEMO_INDEX trails a memo's Updated date → set it (mechanical, so no chat has to). */
+function bumpIndexDates() {
+  const p = path.join(MEMOS, "MEMO_INDEX.md")
+  const lines = fs.readFileSync(p, "utf8").split("\n")
+  let changed = 0
+  for (const dir of fs.readdirSync(MEMOS)) {
+    const memoPath = path.join(MEMOS, dir, "PROJECT_MEMO.md")
+    if (dir.startsWith("_") || !fs.existsSync(memoPath)) continue
+    const updated = /\*\*Updated:\*\*\s*(\d{4}-\d{2}-\d{2})/.exec(fs.readFileSync(memoPath, "utf8"))?.[1]
+    const i = lines.findIndex((l) => l.includes(`](${dir}/PROJECT_MEMO.md)`))
+    const m = i >= 0 && /\|\s*(\d{4}-\d{2}-\d{2})\s*\|\s*$/.exec(lines[i])
+    if (updated && m && updated > m[1]) { lines[i] = lines[i].replace(/\|\s*\d{4}-\d{2}-\d{2}\s*\|\s*$/, `| ${updated} |`); changed++ }
+  }
+  if (changed) fs.writeFileSync(p, lines.join("\n"))
+  return changed
+}
 {
-  const st = tryGit(PROJECTS_REPO, "status", "--porcelain", "--", "PROJECTS/MEMO_INDEX.md", "PROJECTS/*/PROJECT_MEMO.md", "PROJECTS/*/CHANGELOG.md", "PROJECTS/*/WHERE_WE_LEFT_OFF_ARCHIVE.md", "PROJECTS/deals")
-  if (st === null) bad("Couldn't read the ~/Projects repo")
-  else if (st) bad(`Memo repo has uncommitted memo/deal files — commit them (git -C ~/Projects add <files> && git commit):\n${st.split("\n").map((l) => "     " + l).join("\n")}`)
-  else good("Memos + deals committed in ~/Projects")
+  const short = (rels) => rels.map((r) => r.replace(/^PROJECTS\//, "")).join(", ")
+  if (args.has("--no-save")) {
+    let open = null
+    try { open = openNotes(PROJECTS_REPO, NOTE_PATHS) } catch { /* below */ }
+    if (open === null) bad("Couldn't read the ~/Projects repo")
+    else if (open.length) bad(`Memo repo has uncommitted memo/deal files (run without --no-save to save them): ${short(open.map((f) => f.rel))}`)
+    else good("Memos + deals committed in ~/Projects")
+  } else {
+    let bumped = 0
+    const r = saveSharedNotes({ repo: PROJECTS_REPO, pathspecs: NOTE_PATHS, lockDir: path.join(HOME, ".claude/wrap-check.lock"), before: () => { bumped = bumpIndexDates() } })
+    if (!r.locked) bad("Another chat's wrap held the notes lock for 2 minutes. Run the check again.")
+    else if (r.error) bad(`Couldn't save the notes in ~/Projects: ${r.error}`)
+    else {
+      if (r.committed.length) good(`Notes saved for every open chat: ${r.committed.length} file(s) in one commit (${r.commit}): ${short(r.committed)}${bumped ? ` · ${bumped} index date(s) fixed` : ""}`)
+      else good("Memos + deals committed in ~/Projects")
+      if (r.fresh.length) bad(`Still being written right now (another chat is mid-wrap), left alone: ${r.fresh.map((f) => `${f.rel.replace(/^PROJECTS\//, "")} (${f.ageSec} s ago)`).join(", ")}. Run the check again in a minute.`)
+    }
+  }
 }
 
 // ── 4. memo format ──────────────────────────────────────────────────────────
@@ -129,7 +171,18 @@ try {
   if (out) {
     try {
       const r = JSON.parse(out.trim().split("\n").pop())
-      for (const p of r.problems) bad(`Board: ${p}`)
+      const FRESH_MIN = 10
+      const behind = new Map((r.behind || []).map((b) => [b.key, b]))
+      for (const p of r.problems) {
+        const b = behind.get(p.split(":")[0])
+        if (!b || !/changed today after/.test(p)) { bad(`Board: ${p}`); continue }
+        const newest = Math.max(...b.files.map((f) => Date.parse(f.mtime)))
+        const min = Math.round((Date.now() - newest) / 60000)
+        const at = new Date(newest).toLocaleTimeString("en-US", { timeZone: "America/Los_Angeles", hour: "numeric", minute: "2-digit" })
+        const files = b.files.map((f) => f.rel).join(", ")
+        if (min < FRESH_MIN) bad(`Board: ${b.key} ("${b.title}"): its notes (${files}) changed ${min} min ago. If that project is yours, update its card. If not, another chat is wrapping it right now: run the check again in a few minutes.`)
+        else bad(`Board: ${b.key} ("${b.title}"): its notes (${files}) changed at ${at} and the card wasn't updated since. Whichever chat you are: read those notes and bring the card up to date (board.mjs update ${b.key} --next "status · next step" --due …), or board.mjs touch ${b.key} --why "…" only if the card is still right.`)
+      }
       const extra = [r.back && `${r.back} back from hold`, r.overdue && `${r.overdue} past their check-in`, r.stale && `${r.stale} stale`].filter(Boolean).join(", ")
       if (!r.problems.length) good(`Board: ${r.open} cards, all dated, none behind their notes${extra ? ` (morning refresh: ${extra})` : ""}`)
     } catch { bad(`Board check printed something unexpected: ${out.slice(0, 200)}`) }
