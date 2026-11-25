@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest"
 import { CallMonitor } from "@/lib/voiceCallMonitor"
-import { JACKIE_V2_INSTRUCTIONS, REASON_NOTE_V2, callerIdNoteV2 } from "@/lib/jackieScriptV2"
+import { INTRO_NUDGE_V2, JACKIE_V2_INSTRUCTIONS, REASON_NOTE_V2, callerIdNoteV2 } from "@/lib/jackieScriptV2"
 import { JACKIE_V3_INSTRUCTIONS, JACKIE_V4_INSTRUCTIONS, buildJackieV4 } from "@/lib/jackieScriptV3"
 import { VOICE_BAKEOFF, VOICE_TEST_COACH_NOTE, bakeoffOption } from "@/lib/voiceTest"
 
@@ -25,7 +25,8 @@ describe("test-line scripts", () => {
       "Delegation policy:",
       "The caller ends the call",
       // follow-up questions (Ryan 11-25): rapport, she may start, never an interview
-      "You can start it yourself",
+      "your next move is an open, easy question about the house",
+      "you're not there to look into it",
       "Never announce that you have questions",
       "never an interview",
       "Never give advice or an opinion",
@@ -84,6 +85,18 @@ describe("private reminder for the new scripts", () => {
     const second = new CallMonitor(0, JSON.parse(JSON.stringify(first.state)))
     said(second, "What made you call?", 5_000)
     expect(second.tick(5_100).map((x) => x.type)).toContain("thinking")
+  })
+  it("silent caller: prompted at 6 s, not 3, and not at all once she's said her name", () => {
+    const quiet = new CallMonitor(0, undefined, { privateNotes: true })
+    said(quiet, "Hello?", 1_000)
+    expect(quiet.tick(5_000)).toEqual([])
+    expect(quiet.tick(8_000)).toEqual([{ type: "commentary", content: INTRO_NUDGE_V2 }])
+    const named = new CallMonitor(0, undefined, { privateNotes: true })
+    said(named, "Hello? This is Jackie, how can I help?", 1_000)
+    expect(named.tick(8_000)).toEqual([])
+    const live = new CallMonitor(0)
+    said(live, "Hello?", 1_000)
+    expect(live.tick(5_000).map((x) => x.type)).toEqual(["commentary"])
   })
   it("the live script still gets its commentary note", () => {
     const m = new CallMonitor(0)

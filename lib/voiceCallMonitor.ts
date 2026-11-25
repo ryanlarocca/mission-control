@@ -9,7 +9,7 @@
 // - Dead air: check in at ~20 s of silence, goodbye if still nothing, hang up.
 // - Soft wrap at 10 min, hard hangup at 11 min.
 
-import { REASON_NOTE_V2 } from "@/lib/jackieScriptV2"
+import { INTRO_NUDGE_V2, REASON_NOTE_V2 } from "@/lib/jackieScriptV2"
 
 export type MonitorAction =
   | { type: "commentary"; content: string }
@@ -62,6 +62,8 @@ export type MonitorState = {
    * mid-caller and she stumbled for 20 s). Optional like the fields above.
    */
   privateNotes?: boolean
+  /** New scripts only: she has said her name, so the silent-caller prompt isn't needed. */
+  introduced?: boolean
   /**
    * A test-line call: its timing and call-over lines go to the helper bot,
    * not the marketing bot (Ryan 11-25). Optional like the fields above.
@@ -75,6 +77,8 @@ const GOODBYE_GRACE_MS = 2_500 // caller silence after her goodbye before we han
 const GOODBYE_MAX_WAIT_MS = 8_000 // noisy line: hang up anyway
 const LOUD_INPUT_HOLD_MS = 1_200 // caller audio this recent = they may be talking
 const INTRO_AFTER_MS = 3_000 // caller silent after her "Hello?" → she says who she is
+// New scripts (11-25): 3 s read as impatient ("Hello? Hi! Are you still there?").
+const INTRO_AFTER_MS_V2 = 6_000
 const INTRO_NUDGE = `The caller hasn't said anything since you picked up. Say now: "This is Jackie, how can I help you?" Then listen. That counts as your introduction; don't give it again.`
 // 11-13: the script alone still let her re-ask "what made you call" in 1 of 5
 // rehearsals (and 3 of 3 before the script change), so the moment she's heard
@@ -204,6 +208,7 @@ export class CallMonitor {
         if (now - s.lastOutputTextAt > TEXT_GAP_MS) s.outputText = ""
         s.outputText += text
         s.lastOutputTextAt = now
+        if (s.privateNotes && !s.introduced && /\bjackie\b/i.test(s.outputText)) s.introduced = true
         if (!s.reasonAsked && asksReason(s.outputText)) {
           s.reasonAsked = true
           s.reasonNoteDue = true
@@ -288,9 +293,11 @@ export class CallMonitor {
       // up on someone mid-sentence).
       const lastActivity = Math.max(s.lastInputTextAt, s.lastOutputLoudAt, s.playbackEndAt)
       const quiet = now - lastActivity
-      if (!s.introNudged && s.lastInputTextAt === 0 && quiet >= INTRO_AFTER_MS && now - s.lastLoudInputAt >= LOUD_INPUT_HOLD_MS) {
+      if (!s.introNudged && s.lastInputTextAt === 0 && quiet >= (s.privateNotes ? INTRO_AFTER_MS_V2 : INTRO_AFTER_MS) && now - s.lastLoudInputAt >= LOUD_INPUT_HOLD_MS) {
         s.introNudged = true
-        actions.push({ type: "commentary", content: INTRO_NUDGE })
+        // New scripts: nothing to prompt if she's already said who she is.
+        if (!s.privateNotes) actions.push({ type: "commentary", content: INTRO_NUDGE })
+        else if (!s.introduced) actions.push({ type: "commentary", content: INTRO_NUDGE_V2 })
       }
       if (s.quietStage === 0 && quiet >= CHECK_IN_AFTER_MS) {
         s.quietStage = 1

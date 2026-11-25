@@ -18,7 +18,7 @@ import {
   pickAuditionVoice,
 } from "@/lib/voiceTest"
 import { watchCall } from "@/lib/voiceTestWatch"
-import { JACKIE_V2_INSTRUCTIONS, callerIdNoteV2 } from "@/lib/jackieScriptV2"
+import { JACKIE_BACKEND_INSTRUCTIONS, JACKIE_V2_INSTRUCTIONS, callerIdNoteV2 } from "@/lib/jackieScriptV2"
 import { JACKIE_V3_INSTRUCTIONS, JACKIE_V4_INSTRUCTIONS } from "@/lib/jackieScriptV3"
 import { jackieTagsFromSipHeaders, mergeJackieCall, returningCallerNote } from "@/lib/jackie"
 import { getLeadsClient } from "@/lib/leads"
@@ -110,13 +110,16 @@ export async function POST(request: Request) {
   // call never gets it, even from Ryan's cell.
   const tags = jackieTagsFromSipHeaders(event.data?.sip_headers)
   const testLine = !tags.line || tags.line === "test"
-  const coach = testLine && caller === VOICE_TEST_OWNER_CELL
+  // A script-test call (a menu digit) is never in coach mode: Ryan plays a
+  // stranger from the first word, without having to say "coach mode off".
+  const pick = testLine ? bakeoffOption(tags.pick) : null
+  const coach = testLine && caller === VOICE_TEST_OWNER_CELL && !pick
   const timing: string[] = []
   if (tags.line) timing.push(`line ${tags.line}`)
 
   // Script side test (test line only, lib/voiceTest VOICE_BAKEOFF): which
   // script this call gets. Every other line gets v1.
-  const option = testLine ? bakeoffOption(tags.pick) : null
+  const option = pick
   const script = option?.script ?? "v1"
   // Blind test: the timing line reaches Telegram, so it carries the digit
   // only. The script name goes to the server log.
@@ -127,7 +130,7 @@ export async function POST(request: Request) {
 
   // Voice audition: Ryan's cell rotates through lib/voiceTest VOICE_AUDITION.
   let voice = VOICE_TEST_VOICE
-  if (coach && !option) {
+  if (coach) {
     try {
       const pick = await pickAuditionVoice(sessionId)
       if (pick) {
@@ -179,7 +182,12 @@ export async function POST(request: Request) {
           audio: { output: { voice: withVoice } },
           delegation: {
             type: "responses",
-            responses: { model: VOICE_TEST_BACKEND_MODEL, reasoning: { effort: VOICE_TEST_BACKEND_EFFORT } },
+            responses: {
+              model: VOICE_TEST_BACKEND_MODEL,
+              reasoning: { effort: VOICE_TEST_BACKEND_EFFORT },
+              // Script-test calls only until it's proven on the phone: a refused accept ends the call.
+              ...(option ? { instructions: JACKIE_BACKEND_INSTRUCTIONS } : {}),
+            },
           },
           input: [
             { type: "message", role: "developer", content: [{ type: "input_text", text: VOICE_TEST_GREETING }] },

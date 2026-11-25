@@ -28,8 +28,8 @@ export const VOICE_TEST_VOICE = "marin"
 export type JackieScript = "v1" | "v2" | "v3" | "v4"
 export type BakeoffOption = { digit: string; script: JackieScript }
 export const VOICE_BAKEOFF: BakeoffOption[] = [
-  { digit: "1", script: "v4" },
-  { digit: "2", script: "v3" },
+  { digit: "1", script: "v3" },
+  { digit: "2", script: "v4" },
 ]
 export function bakeoffOption(digit: string | null | undefined): BakeoffOption | null {
   return VOICE_BAKEOFF.find((o) => o.digit === digit) ?? null
