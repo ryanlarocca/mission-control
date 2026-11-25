@@ -8,6 +8,7 @@ import { getLeadsClient, getMailboxForSource } from "@/lib/leads"
 import { sidecarHeaders } from "../sidecar"
 import { fetchContactThread } from "@/lib/relationship-messages"
 import { ryanNotes } from "@/lib/lead-notes"
+import { contactPhone } from "@/lib/anonymous"
 
 export interface ThreadItem {
   at: string          // ISO
@@ -239,7 +240,7 @@ export async function buildLeadContext(leadId: string, opts: { live?: boolean } 
   if (!anchor) return null
 
   let q = sb.from("leads").select(LEAD_COLS).order("created_at", { ascending: true }).limit(60)
-  if (anchor.caller_phone) q = q.eq("caller_phone", anchor.caller_phone)
+  if (contactPhone(anchor.caller_phone)) q = q.eq("caller_phone", anchor.caller_phone!)
   else if (anchor.email) q = q.eq("email", anchor.email)
   else q = q.eq("id", anchor.id)
   const { data: rowsRaw } = await q.returns<LeadRow[]>()

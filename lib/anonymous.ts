@@ -17,3 +17,15 @@ export function isAnonymousCaller(phone: string | null | undefined): boolean {
   if (!phone) return false
   return ANONYMOUS_CALLER_VALUES.has(phone.trim().toLowerCase())
 }
+
+/**
+ * The caller_phone as a contact key: null for a blocked caller ID. Use it
+ * anywhere rows are grouped "by phone" (cluster history, DNC, dead/junk,
+ * drips, offers, summaries) — every blocked caller shares the placeholder,
+ * so matching on it treats strangers as one person (2026-11-25: a hidden-ID
+ * call got another caller's "stop mailing me" history and was DNC'd).
+ */
+export function contactPhone(phone: string | null | undefined): string | null {
+  if (!phone || isAnonymousCaller(phone)) return null
+  return phone
+}

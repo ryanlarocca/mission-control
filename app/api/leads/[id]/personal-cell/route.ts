@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server"
 import { getLeadsClient } from "@/lib/leads"
+import { contactPhone } from "@/lib/anonymous"
 
 // "Personal cell" toggle on the lead card.
 //
@@ -25,7 +26,7 @@ async function clusterIds(
   email: string | null,
 ): Promise<string[]> {
   const orParts: string[] = []
-  if (phone) orParts.push(`caller_phone.eq.${phone}`)
+  if (contactPhone(phone)) orParts.push(`caller_phone.eq.${phone}`)
   if (email) orParts.push(`email.eq.${email}`)
   if (orParts.length === 0) return [id]
   const { data } = await sb.from("leads").select("id").or(orParts.join(","))

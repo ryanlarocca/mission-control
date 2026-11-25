@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server"
 import { markDraftSent } from "@/lib/reply/record"
 import { getLeadsClient, getMailboxForSource, encodeEmailHeader, detectOfferFromText, applyDetectedOfferToCluster, registerManualTouch, resolveMailbox } from "@/lib/leads"
 import { getGmailClient } from "@/lib/gmail"
+import { contactPhone } from "@/lib/anonymous"
 
 // Phase 7C — Part 6: send a manual email to a lead from the lead card.
 //
@@ -80,7 +81,7 @@ export async function POST(
     let recipientEmail: string | null = lead.email ?? null
     if (!recipientEmail) {
       let sibQ = sb.from("leads").select("email").not("email", "is", null).limit(1)
-      if (lead.caller_phone) sibQ = sibQ.eq("caller_phone", lead.caller_phone)
+      if (contactPhone(lead.caller_phone)) sibQ = sibQ.eq("caller_phone", lead.caller_phone!)
       else if (lead.gmail_thread_id) sibQ = sibQ.eq("gmail_thread_id", lead.gmail_thread_id)
       else sibQ = sibQ.eq("id", id) // no cluster key — this just re-checks the row
       const { data: sib } = await sibQ

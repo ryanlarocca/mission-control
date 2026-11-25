@@ -9,6 +9,7 @@
 import { completeText, extractJsonObject, SONNET, hasLlmKey } from "@/lib/llm"
 import { getLeadsClient } from "@/lib/leads"
 import { pacificDate } from "@/lib/pacificDate"
+import { contactPhone } from "@/lib/anonymous"
 
 export interface CoachFacts {
   offer_amount: number | null
@@ -90,7 +91,7 @@ export async function landCoachFacts(draftId: string, sentBody: string): Promise
       if (!facts) return
       // The cluster, the way buildLeadContext finds it.
       let q = sb.from("leads").select("id, notes, twilio_number, created_at").order("created_at", { ascending: false }).limit(60)
-      if (anchor.caller_phone) q = q.eq("caller_phone", anchor.caller_phone)
+      if (contactPhone(anchor.caller_phone)) q = q.eq("caller_phone", anchor.caller_phone!)
       else if (anchor.email) q = q.eq("email", anchor.email)
       else q = q.eq("id", anchor.id)
       const { data: rowsRaw } = await q.returns<{ id: string; notes: string | null; twilio_number: string | null; created_at: string }[]>()

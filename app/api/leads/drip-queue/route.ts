@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server"
 import { getLeadsClient, registerManualTouch } from "@/lib/leads"
+import { contactPhone } from "@/lib/anonymous"
 
 // Drip queue: read pending/approved/skipped touches for the Mission
 // Control approval UI. Auth-gated by middleware.
@@ -161,14 +162,14 @@ export async function PATCH(request: NextRequest) {
         .eq("id", queueRow.lead_id)
         .maybeSingle()
 
-      if (leadRow?.caller_phone || leadRow?.email) {
+      if (contactPhone(leadRow?.caller_phone) || leadRow?.email) {
         let q = sb
           .from("leads")
           .select("id, lead_type, created_at")
           .gt("created_at", queueRow.created_at)
           .limit(1)
-        if (leadRow.caller_phone) q = q.eq("caller_phone", leadRow.caller_phone)
-        else q = q.eq("email", leadRow.email!)
+        if (contactPhone(leadRow!.caller_phone)) q = q.eq("caller_phone", leadRow!.caller_phone!)
+        else q = q.eq("email", leadRow!.email!)
 
         const { data: newer } = await q
         const stale = (newer || []).some(

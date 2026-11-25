@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server"
 import { getLeadsClient, haltOutreachForCluster } from "@/lib/leads"
 import { clearContactDnc } from "@/lib/dnc"
+import { contactPhone } from "@/lib/anonymous"
 
 // Phase 7C — Part 6 + Part 9: DNC button on the lead card.
 //
@@ -66,7 +67,7 @@ export async function POST(
     let mailRecordId: string | null = lead.mail_record_id ?? null
     if (!mailRecordId) {
       const ors: string[] = []
-      if (lead.caller_phone) ors.push(`caller_phone.eq.${lead.caller_phone}`)
+      if (contactPhone(lead.caller_phone)) ors.push(`caller_phone.eq.${lead.caller_phone}`)
       if (lead.gmail_thread_id) ors.push(`gmail_thread_id.eq.${lead.gmail_thread_id}`)
       if (lead.email) ors.push(`email.eq.${String(lead.email).toLowerCase()}`)
       if (ors.length) {

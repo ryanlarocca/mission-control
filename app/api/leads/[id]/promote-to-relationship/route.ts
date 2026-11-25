@@ -3,6 +3,7 @@ import { ryanNotes } from "@/lib/lead-notes"
 import { getLeadsClient, haltOutreachForCluster } from "@/lib/leads"
 import { isValidCategory, RELATIONSHIP_CATEGORIES } from "@/lib/crms"
 import { pacificDate } from "@/lib/pacificDate"
+import { contactPhone } from "@/lib/anonymous"
 
 // Promote a lead into the Relationships (Book of Business) Supabase table.
 // Used when a caller turns out to be a referral source rather than a seller
@@ -87,7 +88,7 @@ export async function POST(
     // 1115 Mariposa). Context lives across the cluster: the inbound
     // voicemail's ai_summary, each call's ai_notes, Ryan's typed notes.
     const clusterOr: string[] = []
-    if (lead.caller_phone) clusterOr.push(`caller_phone.eq.${lead.caller_phone}`)
+    if (contactPhone(lead.caller_phone)) clusterOr.push(`caller_phone.eq.${lead.caller_phone}`)
     if (lead.email) clusterOr.push(`email.eq.${lead.email}`)
     type ClusterRow = {
       id: string; name: string | null; email: string | null; created_at: string; lead_type: string | null
@@ -182,7 +183,7 @@ export async function POST(
       : promoMarker
 
     const orParts: string[] = []
-    if (lead.caller_phone) orParts.push(`caller_phone.eq.${lead.caller_phone}`)
+    if (contactPhone(lead.caller_phone)) orParts.push(`caller_phone.eq.${lead.caller_phone}`)
     if (lead.email) orParts.push(`email.eq.${lead.email}`)
     let clusterIds = [lead.id]
     if (orParts.length > 0) {

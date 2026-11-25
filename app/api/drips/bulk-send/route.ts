@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server"
 import { PLACEHOLDER_RE } from "@/lib/reply-client"
 import { sidecarHeaders } from "@/lib/sidecar"
 import { getLeadsClient } from "@/lib/leads"
+import { contactPhone } from "@/lib/anonymous"
 
 // Bulk send a list of drip_queue ids: flip each pending row to approved
 // (with staleness check), then ONE call to the sidecar /drip-trigger-drain
@@ -52,10 +53,10 @@ export async function POST(request: NextRequest) {
     if (blank) { failed.push({ id, error: `fill in ${blank[0]} first` }); continue }
 
     const lead = leadById.get(qr.lead_id as string)
-    if (lead?.caller_phone || lead?.email) {
+    if (contactPhone(lead?.caller_phone) || lead?.email) {
       let q = sb.from("leads").select("id, lead_type").gt("created_at", qr.created_at as string).limit(5)
-      if (lead.caller_phone) q = q.eq("caller_phone", lead.caller_phone)
-      else q = q.eq("email", lead.email!)
+      if (contactPhone(lead!.caller_phone)) q = q.eq("caller_phone", lead!.caller_phone!)
+      else q = q.eq("email", lead!.email!)
       const { data: newer } = await q
       const stale = (newer || []).some(r => r.lead_type && !(r.lead_type as string).startsWith("drip_"))
       if (stale) {

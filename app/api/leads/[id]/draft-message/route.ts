@@ -3,6 +3,7 @@ import { ryanNotes as ownNotes } from "@/lib/lead-notes"
 import { sidecarHeaders } from "@/lib/sidecar"
 import { getLeadsClient, getMailboxForSource } from "@/lib/leads"
 import { completeText, extractJsonObject, hasLlmKey, SONNET } from "@/lib/llm"
+import { contactPhone } from "@/lib/anonymous"
 
 // Phase 7C — Part 7: on-demand draft generator. Click "Draft Text" or
 // "Draft Email" on a lead card → AI returns a contextual draft. NOT
@@ -144,7 +145,7 @@ export async function POST(
       .select("created_at, lead_type, twilio_number, message")
       .order("created_at", { ascending: true })
       .limit(40)
-    if (anchor.caller_phone) q = q.eq("caller_phone", anchor.caller_phone)
+    if (contactPhone(anchor.caller_phone)) q = q.eq("caller_phone", anchor.caller_phone!)
     else if (anchor.email) q = q.eq("email", anchor.email)
     else q = q.eq("id", anchor.id)
     const { data: events } = await q.returns<ContextRow[]>()

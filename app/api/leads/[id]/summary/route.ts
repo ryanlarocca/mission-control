@@ -10,6 +10,7 @@ import {
 } from "@/lib/leads"
 import { completeText, extractJsonObject, hasLlmKey, SONNET } from "@/lib/llm"
 import { pacificDate } from "@/lib/pacificDate"
+import { contactPhone } from "@/lib/anonymous"
 
 // Phase 7D — cached lead summary, multi-event variant.
 //
@@ -98,8 +99,8 @@ export async function POST(
       .select("id, created_at, lead_type, twilio_number, caller_phone, email, message, source, campaign_label, property_address, name")
       .order("created_at", { ascending: true })
       .limit(80)
-    if (anchor.caller_phone) {
-      eventsQuery = eventsQuery.eq("caller_phone", anchor.caller_phone)
+    if (contactPhone(anchor.caller_phone)) {
+      eventsQuery = eventsQuery.eq("caller_phone", anchor.caller_phone!)
     } else if (anchor.email) {
       eventsQuery = eventsQuery.eq("email", anchor.email)
     } else {

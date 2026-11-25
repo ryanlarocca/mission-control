@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server"
 import { PLACEHOLDER_RE } from "@/lib/reply-client"
 import { sidecarHeaders } from "@/lib/sidecar"
 import { getLeadsClient } from "@/lib/leads"
+import { contactPhone } from "@/lib/anonymous"
 
 // Immediate-send for a pending, approved, or failed drip_queue row. Flips
 // status to approved (for pending/failed — clearing the prior error), kicks
@@ -64,10 +65,10 @@ export async function POST(request: NextRequest, { params }: { params: { id: str
           .select("caller_phone, email")
           .eq("id", row.lead_id)
           .maybeSingle()
-        if (lead?.caller_phone || lead?.email) {
+        if (contactPhone(lead?.caller_phone) || lead?.email) {
           let q = sb.from("leads").select("id, lead_type").gt("created_at", row.created_at).limit(5)
-          if (lead.caller_phone) q = q.eq("caller_phone", lead.caller_phone)
-          else q = q.eq("email", lead.email!)
+          if (contactPhone(lead!.caller_phone)) q = q.eq("caller_phone", lead!.caller_phone!)
+          else q = q.eq("email", lead!.email!)
           const { data: newer } = await q
           const stale = (newer || []).some(r => r.lead_type && !(r.lead_type as string).startsWith("drip_"))
           if (stale) {

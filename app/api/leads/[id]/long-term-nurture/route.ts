@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server"
 import { getLeadsClient, haltOutreachForCluster, dedupeClusterStamps } from "@/lib/leads"
 import { pacificDatePlusDays } from "@/lib/pacificDate"
+import { contactPhone } from "@/lib/anonymous"
 
 // "Move to long-term nurture" — the right move for a lead who explicitly
 // said "not now, maybe in a year or two" (Kiko Ohata 2026-05-17 was the
@@ -58,7 +59,7 @@ export async function POST(
     // string — write a more accurate one ourselves first.
     try {
       const orParts: string[] = []
-      if (lead.caller_phone) orParts.push(`caller_phone.eq.${lead.caller_phone}`)
+      if (contactPhone(lead.caller_phone)) orParts.push(`caller_phone.eq.${lead.caller_phone}`)
       if (lead.email) orParts.push(`email.eq.${lead.email}`)
       let clusterIds: string[]
       if (orParts.length > 0) {

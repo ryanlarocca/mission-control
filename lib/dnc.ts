@@ -62,6 +62,8 @@ export function isCourtesyReply(text: string | null | undefined): boolean {
 }
 
 function phoneVariants(phone: string | null | undefined): string[] {
+  // A blocked caller ID is a shared placeholder, not anyone's number.
+  if (isAnonymousCaller(phone)) return []
   const ten = normalizeSuppressionPhone(phone)
   const out = new Set<string>()
   if (phone && phone.trim()) out.add(phone.trim())
@@ -335,11 +337,9 @@ interface LeadIdentity {
   mail_record_id: string | null
 }
 
-const ANON = new Set(["anonymous", "restricted", "unavailable", "private", "unknown"])
-
 function clusterOr(lead: Pick<LeadIdentity, "id" | "caller_phone" | "email" | "gmail_thread_id">): string {
   const ors = [`id.eq.${lead.id}`]
-  if (lead.caller_phone && !ANON.has(lead.caller_phone.trim().toLowerCase())) ors.push(`caller_phone.eq.${lead.caller_phone}`)
+  if (lead.caller_phone && !isAnonymousCaller(lead.caller_phone)) ors.push(`caller_phone.eq.${lead.caller_phone}`)
   if (lead.gmail_thread_id) ors.push(`gmail_thread_id.eq.${lead.gmail_thread_id}`)
   if (lead.email) ors.push(`email.ilike.${lead.email.toLowerCase()}`)
   return ors.join(",")

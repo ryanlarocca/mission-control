@@ -14,6 +14,7 @@ import {
   type LeadFlagField,
 } from "@/lib/leads"
 import { bestNumbersFor } from "@/lib/leadPhones"
+import { contactPhone } from "@/lib/anonymous"
 
 // Columns no screen reads from the list (2026-11-10) — the coach, Jackie and
 // ladder bookkeeping is used server-side or through its own endpoint. Dropped
@@ -403,7 +404,7 @@ export async function PATCH(request: NextRequest) {
     for (const f of ["name", "email", "property_address"] as const) {
       if (f in update) identityUpdate[f] = update[f]
     }
-    if (Object.keys(identityUpdate).length > 0 && data.caller_phone) {
+    if (Object.keys(identityUpdate).length > 0 && contactPhone(data.caller_phone)) {
       try {
         const { error: propErr } = await sb
           .from("leads")
@@ -431,7 +432,7 @@ export async function PATCH(request: NextRequest) {
     if (supersedingFollowup) {
       try {
         const orParts: string[] = []
-        if (data.caller_phone) orParts.push(`caller_phone.eq.${data.caller_phone}`)
+        if (contactPhone(data.caller_phone)) orParts.push(`caller_phone.eq.${data.caller_phone}`)
         if (data.email) orParts.push(`email.eq.${data.email}`)
         if (orParts.length > 0) {
           const { data: siblings } = await sb.from("leads").select("id").or(orParts.join(","))

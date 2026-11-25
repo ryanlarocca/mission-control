@@ -6,6 +6,7 @@ import { NextRequest } from "next/server"
 import { getLeadsClient } from "@/lib/leads"
 import type { Plan } from "./plan"
 import { pacificDatePlusDays } from "@/lib/pacificDate"
+import { contactPhone } from "@/lib/anonymous"
 
 export async function executePlanServer(leadId: string, plan: Plan | null | undefined): Promise<string | null> {
   if (!leadId || !plan) return null
@@ -59,7 +60,7 @@ export async function closeLeadDead(leadId: string): Promise<string> {
   if (!lead) throw new Error("lead not found")
   const { checkContactDnc, explicitOptOutPhrase, markContactDnc } = await import("@/lib/dnc")
   const ors = [`id.eq.${leadId}`]
-  if (lead.caller_phone) ors.push(`caller_phone.eq.${lead.caller_phone}`)
+  if (contactPhone(lead.caller_phone)) ors.push(`caller_phone.eq.${lead.caller_phone}`)
   if (lead.email) ors.push(`email.ilike.${String(lead.email).toLowerCase()}`)
   const { data: lastIn } = await sb
     .from("leads")

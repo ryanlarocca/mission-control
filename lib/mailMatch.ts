@@ -13,6 +13,7 @@
 // mailSearchCampaignId.
 import type { SupabaseClient } from "@supabase/supabase-js"
 import { creditMailPerson, WEBSITE_LINE } from "./mailCredit"
+import { isAnonymousCaller } from "./anonymous"
 
 const SUFFIX: Record<string, string> = {
   STREET: "ST", AVENUE: "AVE", DRIVE: "DR", ROAD: "RD", BOULEVARD: "BLVD", COURT: "CT",
@@ -489,7 +490,6 @@ export interface ClusterIdentityLite {
   gmail_thread_id?: string | null
 }
 
-const ANON = new Set(["anonymous", "restricted", "unavailable", "private", "unknown"])
 
 /** Write the link (or clear it) on every row that shares the lead's cluster key. Returns rows updated. */
 export async function linkMailRecordToCluster(
@@ -503,7 +503,7 @@ export async function linkMailRecordToCluster(
   priorPieces: number | null = null
 ): Promise<number> {
   const ors: string[] = []
-  if (lead.caller_phone && !ANON.has(lead.caller_phone.trim().toLowerCase())) ors.push(`caller_phone.eq.${lead.caller_phone}`)
+  if (lead.caller_phone && !isAnonymousCaller(lead.caller_phone)) ors.push(`caller_phone.eq.${lead.caller_phone}`)
   if (lead.gmail_thread_id) ors.push(`gmail_thread_id.eq.${lead.gmail_thread_id}`)
   if (lead.email) ors.push(`email.eq.${lead.email.toLowerCase()}`)
   const patch: Record<string, unknown> = {
@@ -614,7 +614,7 @@ async function autoLinkInner(sb: SupabaseClient, leadId: string, opts: { alert?:
   // Runs before the name/address check so a fresh event row from a returning
   // caller picks up the cluster's link at intake, like source/status do.
   const ors: string[] = []
-  if (lead.caller_phone && !ANON.has(String(lead.caller_phone).trim().toLowerCase())) ors.push(`caller_phone.eq.${lead.caller_phone}`)
+  if (lead.caller_phone && !isAnonymousCaller(String(lead.caller_phone))) ors.push(`caller_phone.eq.${lead.caller_phone}`)
   if (lead.gmail_thread_id) ors.push(`gmail_thread_id.eq.${lead.gmail_thread_id}`)
   if (lead.email) ors.push(`email.eq.${String(lead.email).toLowerCase()}`)
   if (ors.length) {

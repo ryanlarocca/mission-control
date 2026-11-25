@@ -2,7 +2,7 @@ import type { AlertSubject } from "./alertSubject"
 import { createClient, type SupabaseClient } from "@supabase/supabase-js"
 import { sidecarHeaders } from "./sidecar"
 import emailCampaigns from "@/config/email-campaigns.json"
-import { isAnonymousCaller } from "./anonymous"
+import { isAnonymousCaller, contactPhone } from "./anonymous"
 import { CARD_LINE } from "./card-line"
 import { LEAD_MOMENT_RUBRIC, isLeadMoment } from "@/lib/reply/moments"
 import { completeText, extractJsonObject, hasLlmKey, SONNET } from "./llm"
@@ -945,7 +945,7 @@ export async function applyDetectedOfferToCluster(
   // stamped, do nothing (Ryan's earlier pencil edit or a prior analyzer
   // pass wins).
   const orParts: string[] = []
-  if (args.caller_phone) orParts.push(`caller_phone.eq.${args.caller_phone}`)
+  if (contactPhone(args.caller_phone)) orParts.push(`caller_phone.eq.${args.caller_phone}`)
   if (args.email) orParts.push(`email.eq.${args.email}`)
   if (args.gmail_thread_id) orParts.push(`gmail_thread_id.eq.${args.gmail_thread_id}`)
   if (orParts.length === 0) {
@@ -1053,7 +1053,7 @@ export async function dedupeClusterStamps(
   // some-but-not-all identifiers (e.g. a phone row + an email-only row
   // with the same email).
   const orParts: string[] = []
-  if (caller_phone) orParts.push(`caller_phone.eq.${caller_phone}`)
+  if (contactPhone(caller_phone)) orParts.push(`caller_phone.eq.${caller_phone}`)
   if (email) orParts.push(`email.eq.${email}`)
   if (gmail_thread_id) orParts.push(`gmail_thread_id.eq.${gmail_thread_id}`)
   if (orParts.length === 0) return { kept: null, unstamped: [], skipped: true }
@@ -1123,7 +1123,7 @@ export async function haltOutreachForCluster(
   // Find every leads-table row in the cluster (same phone OR same email).
   // Falls back to just the flagged row if neither identifier is set.
   const orParts: string[] = []
-  if (flaggedLead.caller_phone) orParts.push(`caller_phone.eq.${flaggedLead.caller_phone}`)
+  if (contactPhone(flaggedLead.caller_phone)) orParts.push(`caller_phone.eq.${flaggedLead.caller_phone}`)
   if (flaggedLead.email) orParts.push(`email.eq.${flaggedLead.email}`)
   let clusterIds: string[]
   if (orParts.length > 0) {
@@ -1192,7 +1192,7 @@ export async function registerManualTouch(
   // Resolve the cluster — same phone OR same email — so the reset lands on
   // whichever sibling row actually carries the drip campaign.
   const orParts: string[] = []
-  if (lead.caller_phone) orParts.push(`caller_phone.eq.${lead.caller_phone}`)
+  if (contactPhone(lead.caller_phone)) orParts.push(`caller_phone.eq.${lead.caller_phone}`)
   if (lead.email) orParts.push(`email.eq.${lead.email}`)
   let clusterIds: string[]
   if (orParts.length > 0) {
@@ -1364,7 +1364,7 @@ export async function lookupLeadName(
   sb: SupabaseClient,
   phone: string | null | undefined
 ): Promise<string | null> {
-  if (!phone) return null
+  if (!contactPhone(phone)) return null
   try {
     const { data, error } = await sb
       .from("leads")
@@ -2172,6 +2172,19 @@ export async function processRecordingBackground(args: {
     // badge + a 6-month nurture follow-up instead of a blank badge and no
     // follow-up forever.
     let analysis: AnalyzeCallResult | null = null
+    // Hidden caller ID: read the number they said on the call FIRST (once —
+    // reused by the card update below), so the analyzer gets THAT person's
+    // history. The "Anonymous" placeholder itself never keys history
+    // (fetchClusterHistory → contactPhone): every blocked caller shares it.
+    let spokenCallback: { number: string | null; unclear: boolean } | null = null
+    if (direction === "inbound" && isAnonymousCaller(callerPhone) && transcription && leadId) {
+      try {
+        const { extractSpokenCallback } = await import("@/lib/spokenNumber")
+        spokenCallback = await extractSpokenCallback(transcription)
+      } catch (e) {
+        console.error(`[spoken-number] extract threw for ${leadId}:`, e)
+      }
+    }
     if (direction === "inbound" && leadId) {
       if (transcription) {
         try {
@@ -2181,7 +2194,7 @@ export async function processRecordingBackground(args: {
           // from earlier rows in the cluster.
           const sb = getLeadsClient()
           const clusterHistory = await fetchClusterHistory(sb, {
-            callerPhone,
+            callerPhone: spokenCallback?.number ?? callerPhone,
             excludeId: leadId,
           })
           analysis = await analyzeCallTranscript(transcription, { clusterHistory, cardDetails: await liveCardDetails() })
@@ -2350,8 +2363,8 @@ export async function processRecordingBackground(args: {
     let spokenUnclear = false
     if (direction === "inbound" && isAnonymousCaller(callerPhone) && transcription && leadId && !analysis?.is_dnc && !jackieOptedOut) {
       try {
-        const { extractSpokenCallback, adoptSpokenNumber } = await import("@/lib/spokenNumber")
-        const spoken = await extractSpokenCallback(transcription)
+        const { adoptSpokenNumber } = await import("@/lib/spokenNumber")
+        const spoken = spokenCallback ?? { number: null, unclear: false }
         if (spoken.number) {
           const adopted = await adoptSpokenNumber(getLeadsClient(), leadId, spoken.number, {
             ownNumbers: Array.from(OWNED_NUMBERS).concat(envOwnedLast10()),
@@ -2698,7 +2711,7 @@ async function invalidateClusterSummary(
 ): Promise<void> {
   try {
     let invQ = sb.from("leads").update({ ai_summary_generated_at: null })
-    if (who?.caller_phone) invQ = invQ.eq("caller_phone", who.caller_phone)
+    if (contactPhone(who?.caller_phone)) invQ = invQ.eq("caller_phone", who!.caller_phone!)
     else if (who?.email) invQ = invQ.eq("email", who.email)
     else return
     const { error: invErr } = await invQ
@@ -2827,8 +2840,8 @@ export async function fetchClusterHistory(
     .select("id, created_at, lead_type, twilio_number, message")
     .order("created_at", { ascending: true })
     .limit(40)
-  if (opts.callerPhone) {
-    q = q.eq("caller_phone", opts.callerPhone)
+  if (contactPhone(opts.callerPhone)) {
+    q = q.eq("caller_phone", opts.callerPhone!)
   } else if (opts.email) {
     q = q.eq("email", opts.email)
   } else {
