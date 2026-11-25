@@ -125,10 +125,12 @@ export async function watchCall(opts: {
   twilioCallSid?: string
   state?: MonitorState
   opener?: { timing: string[] }
+  /** First hop only: test-line scripts v2–v4 get silent notes (see MonitorState.privateNotes). */
+  privateNotes?: boolean
 }): Promise<void> {
   const { sessionId, apiKey, t0, hop, caller } = opts
   const startedAt = Date.now()
-  const monitor = new CallMonitor(t0, opts.state)
+  const monitor = new CallMonitor(t0, opts.state, { privateNotes: opts.privateNotes })
   const timing = opts.opener?.timing ?? []
   const mark = (label: string) => timing.push(`${label} +${((Date.now() - t0) / 1000).toFixed(1)}s`)
 
@@ -182,9 +184,9 @@ export async function watchCall(opts: {
       if (finished || hangupReason || handingOff) return
       const now = Date.now()
       for (const action of monitor.tick(now)) {
-        if (action.type === "commentary" && ws.readyState === WebSocket.OPEN) {
+        if ((action.type === "commentary" || action.type === "thinking") && ws.readyState === WebSocket.OPEN) {
           ws.send(JSON.stringify({
-            type: "session.commentary.append",
+            type: action.type === "thinking" ? "session.thinking.append" : "session.commentary.append",
             event_id: `monitor_${now}`,
             delegation_id: null,
             content: action.content,

@@ -9,9 +9,9 @@ import { VOICE_BAKEOFF, bakeoffOption } from "@/lib/voiceTest"
 // will — a <Dial><Sip> from inside a normal Twilio call (lib/jackie.ts). No
 // cell ring here: the test line is for talking to Jackie.
 //
-// 11-25 model bake-off: the call opens on a keypad menu (lib/voiceTest
+// 11-25 script side test: the call opens on a keypad menu (lib/voiceTest
 // VOICE_BAKEOFF). The pressed digit rides to the accept route as the
-// x-lrg-pick SIP header. No key within a few seconds → Jackie as usual.
+// x-lrg-pick SIP header. No key within a few seconds → the live script.
 
 function xml(body: string): NextResponse {
   return new NextResponse(body, { headers: { "Content-Type": "text/xml" } })

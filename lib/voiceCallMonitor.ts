@@ -9,8 +9,12 @@
 // - Dead air: check in at ~20 s of silence, goodbye if still nothing, hang up.
 // - Soft wrap at 10 min, hard hangup at 11 min.
 
+import { REASON_NOTE_V2 } from "@/lib/jackieScriptV2"
+
 export type MonitorAction =
   | { type: "commentary"; content: string }
+  // A note she can use but shouldn't speak (session.thinking.append).
+  | { type: "thinking"; content: string }
   | { type: "hangup"; reason: string }
 
 export type MonitorState = {
@@ -51,6 +55,13 @@ export type MonitorState = {
    */
   reasonAsked?: boolean
   reasonNoteDue?: boolean
+  /**
+   * Test-line scripts v2–v4 (11-25): the "you've asked why they called"
+   * reminder goes out as a silent thinking note in their wording, not as
+   * commentary (a channel the model paraphrases aloud; on 11-25 it landed
+   * mid-caller and she stumbled for 20 s). Optional like the fields above.
+   */
+  privateNotes?: boolean
 }
 
 export const WRAP_AT_MS = 10 * 60_000
@@ -128,8 +139,9 @@ export class CallMonitor {
   /** Human-readable decisions, logged when the watcher stops (not persisted). */
   notes: string[] = []
 
-  constructor(t0: number, prior?: MonitorState) {
+  constructor(t0: number, prior?: MonitorState, opts?: { privateNotes?: boolean }) {
     this.state = prior ?? {
+      privateNotes: opts?.privateNotes || undefined,
       t0,
       spoke: false,
       outputText: "",
@@ -249,7 +261,7 @@ export class CallMonitor {
 
     if (s.reasonNoteDue) {
       s.reasonNoteDue = false
-      actions.push({ type: "commentary", content: REASON_NOTE })
+      actions.push(s.privateNotes ? { type: "thinking", content: REASON_NOTE_V2 } : { type: "commentary", content: REASON_NOTE })
     }
 
     const speakingDone = now >= s.playbackEndAt + 300 && now - s.lastOutputLoudAt >= 700

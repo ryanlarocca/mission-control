@@ -16,16 +16,18 @@ export const VOICE_TEST_NUMBER = "+14083372785"
 export const VOICE_TEST_MODEL = "gpt-live-1.1" // 11-25: Ryan picked 1.1 in the bake-off ("crisper, less robotic")
 export const VOICE_TEST_VOICE = "marin"
 
-// Model bake-off on the test line (Ryan, 11-25): a keypad menu picks the
-// model, everything else (script, voice, opener) stays Jackie's. Same voice
-// on every option so only the model differs; the audition rotation is off
-// for a bake-off call. "live" options use the GPT-Live accept + watcher;
-// "realtime" goes through lib/voiceTestRealtime.ts.
-export type BakeoffOption = { digit: string; model: string; api: "live" | "realtime"; spoken: string }
+// Script side test on the test line (Ryan, 11-25): a keypad menu picks the
+// script; model, voice and opener are the same on all four, so the script is
+// the only difference. Test line only: the mailer lines always get v1 (the
+// pick is ignored there). The earlier model bake-off (gpt-live-1 vs 1.1 vs
+// gpt-realtime-2.1) ended with 1.1; its Realtime path was removed.
+export type JackieScript = "v1" | "v2" | "v3" | "v4"
+export type BakeoffOption = { digit: string; script: JackieScript; spoken: string }
 export const VOICE_BAKEOFF: BakeoffOption[] = [
-  { digit: "1", model: "gpt-live-1", api: "live", spoken: "GPT Live 1, the old model" },
-  { digit: "2", model: "gpt-live-1.1", api: "live", spoken: "GPT Live 1.1, Jackie's model now" },
-  { digit: "3", model: "gpt-realtime-2.1", api: "realtime", spoken: "GPT Realtime 2.1" },
+  { digit: "1", script: "v1", spoken: "the current Jackie" },
+  { digit: "2", script: "v2", spoken: "the rewrite" },
+  { digit: "3", script: "v3", spoken: "the one built from the calls" },
+  { digit: "4", script: "v4", spoken: "the blend" },
 ]
 export function bakeoffOption(digit: string | null | undefined): BakeoffOption | null {
   return VOICE_BAKEOFF.find((o) => o.digit === digit) ?? null
