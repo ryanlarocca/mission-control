@@ -10,7 +10,7 @@
 import WebSocket from "ws"
 import { createHmac, timingSafeEqual } from "crypto"
 import { getLeadsClient, sendOpsAlert, sendTelegramAlert } from "@/lib/leads"
-import { mergeJackieCall } from "@/lib/jackie"
+import { mergeJackieCall, type JackieEnding } from "@/lib/jackie"
 import { CallMonitor, type MonitorState } from "@/lib/voiceCallMonitor"
 import { VOICE_TEST_GREETING, VOICE_TEST_OPENER } from "@/lib/voiceTest"
 
@@ -263,17 +263,30 @@ export async function watchCall(opts: {
   })
 
   if (outcome === "handed off") return
+  // How it ended, in the terms the after-call verdict uses (lib/jackie
+  // jackieOutcomeLine). A caller-side hang-up is read off the monitor.
+  const ending: JackieEnding =
+    outcome === "caller hung up" ? monitor.endingRead(Date.now())
+    : outcome === "Jackie hung up (goodbye)" ? "goodbye"
+    : outcome === "Jackie hung up (dead air)" ? "dead_air"
+    : outcome === "Jackie hung up (11-minute limit)" ? "limit"
+    : "broke"
   const handoffs = monitor.state.delegations ?? []
   const line = `Jackie call over at ${clock(Date.now() - t0)} — ${outcome}${hop ? ` (watcher hop ${hop})` : ""} · backend hand-offs: ${handoffs.length ? `${handoffs.length} (at ${handoffs.map(s => `${s}s`).join(", ")})` : "0"}`
   console.log(`[voice-test] ${line}`)
-  await saveHandoffs(sessionId, handoffs)
-  const plain =
-    outcome === "caller hung up" ? "the caller hung up"
-    : outcome === "Jackie hung up (goodbye)" ? "she said goodbye and hung up"
-    : outcome === "Jackie hung up (dead air)" ? "the line went quiet and she hung up"
-    : outcome === "Jackie hung up (11-minute limit)" ? "it reached the 11-minute limit"
-    : outcome
-  await alert(monitor.state.testLine ? `🧪 ${line}` : `🤖 Jackie's call ended after ${clock(Date.now() - t0)} — ${plain}${caller ? ` — ${caller}` : ""}`)
+  await saveHandoffs(sessionId, handoffs, ending)
+  // What's known the second it ends. The verdict (good call, hostile, hung
+  // up on her…) comes with the summary once the recording has been read.
+  const plain: Record<JackieEnding, string> = {
+    goodbye: "👋 ended on a goodbye",
+    mid_sentence: "✂️ the caller hung up while she was talking",
+    no_goodbye: "✂️ the caller hung up without a goodbye",
+    nobody: "🤫 nobody spoke",
+    dead_air: "🤫 the line went quiet and she hung up",
+    limit: "⚠️ it reached the 11-minute limit",
+    broke: `⚠️ ${outcome}`,
+  }
+  await alert(monitor.state.testLine ? `🧪 ${line} · ending: ${ending}` : `🤖 Jackie's call (${clock(Date.now() - t0)}) — ${plain[ending]}${caller ? ` — ${caller}` : ""}`)
 }
 
 /**
@@ -285,19 +298,20 @@ export async function watchCall(opts: {
  * write on both sides), so wait it out, then read back and write again if
  * a concurrent write dropped ours.
  */
-async function saveHandoffs(sessionId: string, handoffs: number[]): Promise<void> {
+async function saveHandoffs(sessionId: string, handoffs: number[], ending: JackieEnding): Promise<void> {
   try {
     const sb = getLeadsClient()
     const { data } = await sb.from("leads").select("id").eq("jackie_call->>session_id", sessionId).limit(1)
     const leadId = data?.[0]?.id as string | undefined
     if (!leadId) return
-    const patch = { handoffs: handoffs.length, handoff_at_s: handoffs }
+    const patch = { handoffs: handoffs.length, handoff_at_s: handoffs, ending }
     for (let attempt = 1; attempt <= 3; attempt++) {
       await new Promise(r => setTimeout(r, attempt === 1 ? 6_000 : 3_000))
       await mergeJackieCall(sb, leadId, patch)
       await new Promise(r => setTimeout(r, 2_000))
       const { data: back } = await sb.from("leads").select("jackie_call").eq("id", leadId).maybeSingle()
-      if ((back?.jackie_call as Record<string, unknown> | null)?.handoffs === handoffs.length) return
+      const saved = back?.jackie_call as Record<string, unknown> | null
+      if (saved?.handoffs === handoffs.length && saved?.ending === ending) return
     }
     console.error(`[voice-test] hand-offs for ${leadId} didn't stick after 3 writes`)
   } catch (e) {

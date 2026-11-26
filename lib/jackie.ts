@@ -315,6 +315,51 @@ export type JackieCallReview = {
   not_selling?: boolean
   /** How she handled the caller — read by jackieCheckLine. */
   check?: JackieCheck
+  /** How the call went (2026-11-25) — read by jackieOutcomeLine. Absent on calls reviewed before. */
+  outcome?: JackieOutcome | null
+  /** A few words on the moment that decided it ("right after she said she's an AI"). */
+  outcome_note?: string | null
+}
+
+/** The reviewer's read of the call. "Something broke" and "nobody spoke" also come from the watcher (JackieEnding). */
+export type JackieOutcome = "good" | "friendly" | "opt_out" | "hostile" | "hung_up" | "nobody"
+const JACKIE_OUTCOMES: JackieOutcome[] = ["good", "friendly", "opt_out", "hostile", "hung_up", "nobody"]
+
+/** How the line ended, from the live watcher (lib/voiceCallMonitor endingRead + who hung up). Saved as jackie_call.ending. */
+export type JackieEnding = "goodbye" | "mid_sentence" | "no_goodbye" | "nobody" | "dead_air" | "limit" | "broke"
+
+/**
+ * The verdict line for the Telegram card (Ryan, 2026-11-25: "it always says
+ * the caller hung up. It doesn't give me a good indication of if the call was
+ * successful or not"). The reviewer judges tone and result from the
+ * transcript; the watcher knows what a transcript can't show: whether she
+ * was mid-sentence when the line dropped. Null when neither has a read.
+ */
+export function jackieOutcomeLine(
+  review: Pick<JackieCallReview, "outcome" | "outcome_note" | "opted_out"> | null | undefined,
+  ending: JackieEnding | null | undefined,
+): string | null {
+  const o = review?.outcome ?? null
+  const clicked = ending === "mid_sentence"
+  let label: string | null =
+    o === "hostile" ? "🔥 Hostile"
+    : review?.opted_out || o === "opt_out" ? "🚫 Opt-out"
+    : ending === "limit" ? "⚠️ Hit the 11-minute limit"
+    : ending === "broke" ? "⚠️ Something broke on the call"
+    // The reviewer's "nobody" yields to the watcher: words from the caller and
+    // then a click is someone leaving, not an empty line.
+    : ending === "nobody" || (o === "nobody" && !clicked && ending !== "no_goodbye") ? "🤫 Nobody there"
+    : o === "good" ? "✅ Good call"
+    : o === "friendly" ? "👋 Friendly, no callback"
+    : o === "hung_up" || clicked || ending === "no_goodbye" ? "✂️ Hung up on her"
+    : ending === "dead_air" ? "🤫 The line went quiet"
+    : null
+  if (!label) return null
+  const note = review?.outcome_note?.trim()
+  if (note) label += ` — ${note}`
+  // The click itself, when the label doesn't already say it.
+  if (clicked) label += label.startsWith("✂️") ? " (while she was talking)" : " · they clicked off while she was talking"
+  return label
 }
 
 /** The per-call grade (2026-11-05). Null = didn't apply on this call. */
@@ -379,13 +424,15 @@ Answer in JSON only:
   "pushed_after_no": true if, after the caller said they weren't selling, Jackie kept pushing: asked about selling again, asked for their address or name more than once, or made a second offer after they declined. Her ONE low-pressure offer right after they say they're not selling ("want me to have Ryan give you a call with a number?") is expected and is not pushing,
   "skipped_address": true only if ALL of these hold: the caller said yes to a call from Ryan and then stayed on the line for at least one more exchange (not someone saying "just have him call me" and goodbye in the same breath); none of Jackie's lines asks for the address, the street, or which property it is; and the caller never said a street address (a property already on file that the caller confirmed counts as said). Otherwise false,
   "offered_removal_unprompted": true if Jackie offered to take them off the mailing list when the caller hadn't complained about the letters or asked to stop them,
+  "outcome": how the call went, exactly one of: "good" (it reached a natural end and the caller agreed to a call from Ryan or left what he needs to call them back), "friendly" (it ended politely with no callback: not selling, just curious, they'll call back themselves, or they wanted Ryan and politely declined to leave a message before saying bye), "opt_out" (they asked to come off the list and it ended calmly), "hostile" (the caller was angry, abusive or threatening, swearing at Jackie or about the letters, whatever else happened on the call), "hung_up" (the caller left abruptly, with no goodbye or cutting her off, before the call reached a natural end), "nobody" (the caller never said anything meaningful: silence, a wrong number, a recording or a robocall; a caller who asked for Ryan or asked a question and then dropped off without another word is "hung_up", not "nobody"). Curt is not hostile: a short, businesslike caller who leaves a number is "good",
+  "outcome_note": the moment or reason that decided it, in plain words, 10 words at most, no names, addresses or phone numbers ("right after she said she's an AI", "asked for Ryan, wouldn't leave a message", "callback set for tomorrow morning", "swore about getting letters", "curious what it's worth, not selling"); null if there is nothing to add,
   "repeated_question": if Jackie asked the caller for the same thing more than once, in the same or different words, a few words naming what and how many times ("why they called ×3", "the address ×2"); otherwise null. Asking what made them call, what's on their mind with the place, what's going on with the property, what's changed, and why they're selling are all ONE question (why they called): two or more of those in a call is a repeat, even when the caller's first answer was short ("the letter"). Not a repeat: her easy questions about the house itself (how long they've had it, who's living there, what shape it's in) and follow-ups on something the caller just told her, which are different questions from each other and from why they called; asking for something once more because she plainly didn't hear it; asking for a missing piece (the city, an area code); asking for a name a second time later in the call after the caller dodged it; the callback-number check at the end
 }
 
 Transcript:
 ${transcript.slice(0, 20000)}`
   try {
-    const out = await completeText({ prompt, model: SONNET, maxTokens: 700, thinking: false, tag: "[jackie-review]" })
+    const out = await completeText({ prompt, model: SONNET, maxTokens: 800, thinking: false, tag: "[jackie-review]" })
     const j = JSON.parse(extractJsonObject(out.text)) as Partial<JackieCallReview> & Record<string, unknown>
     const date = typeof j.callback_date === "string" && /^\d{4}-\d{2}-\d{2}$/.test(j.callback_date) && j.callback_date >= ymd ? j.callback_date : null
     return {
@@ -397,6 +444,8 @@ ${transcript.slice(0, 20000)}`
       opted_out: j.opted_out === true,
       opt_out_address: typeof j.opt_out_address === "string" && j.opt_out_address.trim() ? j.opt_out_address.trim().slice(0, 160) : null,
       not_selling: j.not_selling === true,
+      outcome: JACKIE_OUTCOMES.includes(j.outcome as JackieOutcome) ? (j.outcome as JackieOutcome) : null,
+      outcome_note: typeof j.outcome_note === "string" && j.outcome_note.trim() ? j.outcome_note.trim().slice(0, 90) : null,
       check: {
         answered_first_question: typeof j.answered_first_question === "boolean" ? j.answered_first_question : null,
         asked_selling_too_early: j.asked_selling_too_early === true,

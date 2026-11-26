@@ -69,7 +69,25 @@ export type MonitorState = {
    * not the marketing bot (Ryan 11-25). Optional like the fields above.
    */
   testLine?: boolean
+  /**
+   * For reading how a call ended (2026-11-25): the caller's last words, and
+   * when they last said something like a goodbye or a thank-you. Optional
+   * like the fields above.
+   */
+  inputTail?: string
+  callerGoodbyeAt?: number
 }
+
+/**
+ * How the call was ending when the line dropped. Ryan, 11-25: "caller hung
+ * up" on every call says nothing: was it winding down, or did they click
+ * off while she was mid-sentence?
+ */
+export type CallEnding = "goodbye" | "mid_sentence" | "no_goodbye" | "nobody"
+// A caller's sign-off for this purpose: the goodbyes above, or a thank-you.
+const CALLER_SIGNOFF_RE = /\b(thanks|thank you|appreciate it)\b/i
+const SIGNOFF_WINDOW_MS = 15_000 // a goodbye this recent = the call was winding down
+const TALKING_WINDOW_MS = 1_200 // her audio this recent = she was mid-sentence
 
 export const WRAP_AT_MS = 10 * 60_000
 export const CAP_AT_MS = 11 * 60_000
@@ -230,8 +248,14 @@ export class CallMonitor {
       }
       case "session.input_transcript.delta": {
         if (!text.trim()) break
+        // Only what they're saying now counts as a sign-off: the tail starts
+        // over after a pause, so an early "thanks for picking up" isn't read
+        // as a goodbye half a minute later.
+        const carried = now - s.lastInputTextAt <= TEXT_GAP_MS * 3 ? s.inputTail ?? "" : ""
         s.lastInputTextAt = now
         s.quietStage = 0
+        s.inputTail = `${carried}${text}`.slice(-120)
+        if (CALLER_GOODBYE_RE.test(s.inputTail) || CALLER_SIGNOFF_RE.test(s.inputTail)) s.callerGoodbyeAt = now
         if (s.goodbye) {
           s.goodbye.input += ` ${text}`
           if (isSubstantive(s.goodbye.input)) {
@@ -321,6 +345,16 @@ export class CallMonitor {
       return [...actions, ...this.end("dead air")]
     }
     return actions
+  }
+
+  /** Read at the moment the caller's line drops (not when Jackie hangs up). */
+  endingRead(now: number): CallEnding {
+    const s = this.state
+    if (s.lastInputTextAt === 0) return "nobody"
+    if (s.goodbye) return "goodbye"
+    if (s.callerGoodbyeAt && now - s.callerGoodbyeAt <= SIGNOFF_WINDOW_MS) return "goodbye"
+    if (now < s.playbackEndAt || now - s.lastOutputLoudAt < TALKING_WINDOW_MS) return "mid_sentence"
+    return "no_goodbye"
   }
 
   private note(now: number, text: string): void {

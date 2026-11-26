@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest"
 import { CallMonitor } from "@/lib/voiceCallMonitor"
+import { jackieOutcomeLine } from "@/lib/jackie"
 import { INTRO_NUDGE_V2, JACKIE_V2_INSTRUCTIONS, REASON_NOTE_V2, callbackTimingNoteV2, callerIdNoteV2 } from "@/lib/jackieScriptV2"
 import { JACKIE_V3_INSTRUCTIONS, JACKIE_V4_INSTRUCTIONS, buildJackieV4, jackieScriptSetup } from "@/lib/jackieScriptV3"
 import { JACKIE_LIVE_SCRIPT, VOICE_BAKEOFF, VOICE_TEST_COACH_NOTE, bakeoffOption } from "@/lib/voiceTest"
@@ -136,5 +137,79 @@ describe("rehearsal callers answer what she asks (11-25)", () => {
     expect(askedFor("Twelve years is a good stretch.", sc, given)).toBeNull() // not a question
     given.add("name")
     expect(askedFor("Sorry, what was your name?", sc, given)).toBeNull()
+  })
+})
+
+// 2026-11-25: "it always says the caller hung up" — how a call ended.
+describe("how a call ended", () => {
+  const heard = (m: CallMonitor, type: "in" | "out", text: string, at: number) =>
+    m.onEvent({ type: type === "in" ? "session.input_transcript.delta" : "session.output_transcript.delta", delta: text }, at)
+  const talking = (m: CallMonitor, at: number) => { m.state.lastOutputLoudAt = at }
+
+  it("nobody: the caller never said a word", () => {
+    const m = new CallMonitor(0)
+    heard(m, "out", "Hello?", 1_000)
+    expect(m.endingRead(9_000)).toBe("nobody")
+  })
+  it("goodbye: she said hers, or the caller signed off in the last few seconds", () => {
+    const a = new CallMonitor(0)
+    heard(a, "in", "I got your letter.", 3_000)
+    heard(a, "out", "Ryan will call you tomorrow. Take care.", 20_000)
+    expect(a.endingRead(21_000)).toBe("goodbye")
+    const b = new CallMonitor(0)
+    heard(b, "in", "Okay. Thank you.", 30_000)
+    talking(b, 31_500) // she's answering as they hang up: still a wind-down
+    expect(b.endingRead(32_000)).toBe("goodbye")
+  })
+  it("mid-sentence: no goodbye from anyone and she was talking when the line dropped", () => {
+    const m = new CallMonitor(0)
+    heard(m, "in", "Is this a real person or a machine", 4_000)
+    heard(m, "out", "No, I'm an AI assistant. I answer the phone when", 6_000)
+    talking(m, 7_400)
+    expect(m.endingRead(8_000)).toBe("mid_sentence")
+  })
+  it("no goodbye: the line was quiet and nobody had signed off", () => {
+    const m = new CallMonitor(0)
+    heard(m, "in", "I will call back.", 4_000)
+    heard(m, "out", "Sure.", 5_000)
+    talking(m, 5_500)
+    expect(m.endingRead(12_000)).toBe("no_goodbye")
+  })
+  it("an old thank-you doesn't make a later hang-up a goodbye", () => {
+    const m = new CallMonitor(0)
+    heard(m, "in", "Thanks for picking up.", 3_000)
+    heard(m, "in", "Why are you people writing to me", 40_000)
+    talking(m, 44_500)
+    expect(m.endingRead(45_000)).toBe("mid_sentence")
+  })
+})
+
+describe("the verdict line on the call alert", () => {
+  it("names the result, with the reviewer's note", () => {
+    expect(jackieOutcomeLine({ outcome: "good", outcome_note: "callback set for tomorrow morning" }, "goodbye")).toBe("✅ Good call — callback set for tomorrow morning")
+    expect(jackieOutcomeLine({ outcome: "friendly", outcome_note: "curious what it's worth, not selling" }, "goodbye")).toBe("👋 Friendly, no callback — curious what it's worth, not selling")
+    expect(jackieOutcomeLine({ outcome: "opt_out", outcome_note: null }, "goodbye")).toBe("🚫 Opt-out")
+  })
+  it("hostile wins over everything else; an opt-out flag wins over a plain read", () => {
+    expect(jackieOutcomeLine({ outcome: "hostile", outcome_note: "swore about getting letters", opted_out: true }, "mid_sentence")).toBe("🔥 Hostile — swore about getting letters · they clicked off while she was talking")
+    expect(jackieOutcomeLine({ outcome: "friendly", opted_out: true }, "goodbye")).toBe("🚫 Opt-out")
+  })
+  it("hung up on her: from the reviewer, or from the click alone", () => {
+    expect(jackieOutcomeLine({ outcome: "hung_up", outcome_note: "right after she said she's an AI" }, "mid_sentence")).toBe("✂️ Hung up on her — right after she said she's an AI (while she was talking)")
+    expect(jackieOutcomeLine({ outcome: "hung_up", outcome_note: "asked for Ryan, wouldn't leave a message" }, "no_goodbye")).toBe("✂️ Hung up on her — asked for Ryan, wouldn't leave a message")
+    expect(jackieOutcomeLine(null, "mid_sentence")).toBe("✂️ Hung up on her (while she was talking)")
+  })
+  it("a good call stays good when they click off as she's wrapping up", () => {
+    expect(jackieOutcomeLine({ outcome: "good", outcome_note: null }, "mid_sentence")).toBe("✅ Good call · they clicked off while she was talking")
+  })
+  it("nobody there, and things that broke", () => {
+    expect(jackieOutcomeLine({ outcome: "nobody" }, "dead_air")).toBe("🤫 Nobody there")
+    expect(jackieOutcomeLine(null, "nobody")).toBe("🤫 Nobody there")
+    // she heard words and then a click: someone left, whatever the reviewer made of a 15-second transcript
+    expect(jackieOutcomeLine({ outcome: "nobody", outcome_note: "cut off after asking if she's real" }, "mid_sentence")).toBe("✂️ Hung up on her — cut off after asking if she's real (while she was talking)")
+    expect(jackieOutcomeLine({ outcome: "good" }, "limit")).toBe("⚠️ Hit the 11-minute limit")
+    expect(jackieOutcomeLine(null, "broke")).toBe("⚠️ Something broke on the call")
+    expect(jackieOutcomeLine(null, null)).toBeNull()
+    expect(jackieOutcomeLine({ outcome: null }, "goodbye")).toBeNull()
   })
 })

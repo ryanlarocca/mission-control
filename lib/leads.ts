@@ -2282,18 +2282,22 @@ export async function processRecordingBackground(args: {
     // Every call is also graded (check + timing) and the card says what
     // went wrong, if anything (jackieCheckLine).
     let jackieLines: string[] = []
+    // Kept for the verdict line on the alert (lib/jackie jackieOutcomeLine).
+    let jackieReview: { outcome?: string | null; outcome_note?: string | null; opted_out?: boolean } | null = null
     // Asked Jackie to come off the list — also when there's no analysis to flag.
     let jackieOptedOut = false
     if (args.jackie && leadId && transcription) {
       try {
         const { jackieCheckLine, mergeJackieCall, nextBusinessDay, reviewJackieCall } = await import("@/lib/jackie")
+        jackieReview = null
         const { OWED_PREFIX } = await import("@/lib/next-touch")
         const review = await reviewJackieCall(transcription)
+        jackieReview = review
         jackieOptedOut = review?.opted_out === true
         const sb = getLeadsClient()
         await mergeJackieCall(sb, leadId, {
           ...(review
-            ? { intake_complete: review.intake_complete, got_address: review.got_address ?? false, callback_when: review.callback_when, callback_date: review.callback_date, spanish: review.spanish, not_selling: review.not_selling ?? false, check: review.check ?? null, reviewed_at: new Date().toISOString() }
+            ? { intake_complete: review.intake_complete, got_address: review.got_address ?? false, callback_when: review.callback_when, callback_date: review.callback_date, spanish: review.spanish, not_selling: review.not_selling ?? false, check: review.check ?? null, outcome: review.outcome ?? null, outcome_note: review.outcome_note ?? null, reviewed_at: new Date().toISOString() }
             : { review_failed: true }),
           ...(jackieTiming ? { timing: jackieTiming } : {}),
         })
@@ -2423,10 +2427,18 @@ export async function processRecordingBackground(args: {
     const whoLines: string[] = []
     try {
       const html = (t: string) => t.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
-      let q = getLeadsClient().from("leads").select("id, name, property_address, mail_record_id").order("created_at", { ascending: false }).limit(20)
+      let q = getLeadsClient().from("leads").select("id, name, property_address, mail_record_id, jackie_call").order("created_at", { ascending: false }).limit(20)
       q = reachPhone && !isAnonymousCaller(reachPhone) ? q.or(`id.eq.${leadId},caller_phone.eq.${reachPhone}`) : q.eq("id", leadId)
       const { data: rows } = await q
-      const known = (rows ?? []) as { id: string; name: string | null; property_address: string | null; mail_record_id: string | null }[]
+      const known = (rows ?? []) as { id: string; name: string | null; property_address: string | null; mail_record_id: string | null; jackie_call: { ending?: string } | null }[]
+      // How it went, first (Ryan 2026-11-25): the reviewer's read plus what
+      // the live watcher saw when the line dropped.
+      if (args.jackie) {
+        const { jackieOutcomeLine } = await import("@/lib/jackie")
+        const ending = known.find(r => r.id === leadId)?.jackie_call?.ending ?? null
+        const verdict = jackieOutcomeLine(jackieReview as never, ending as never)
+        if (verdict) whoLines.push(`<b>${html(verdict)}</b>`)
+      }
       const name = known.find(r => r.name?.trim())?.name?.trim()
       const withAddress = known.find(r => r.property_address?.trim())
       if (name) whoLines.push(`👤 <b>${html(name)}</b>`)
