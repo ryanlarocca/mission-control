@@ -9,8 +9,8 @@ import { VOICE_BAKEOFF, bakeoffOption } from "@/lib/voiceTest"
 // will — a <Dial><Sip> from inside a normal Twilio call (lib/jackie.ts). No
 // cell ring here: the test line is for talking to Jackie.
 //
-// 11-25 blind script test: the call opens on a keypad menu that doesn't
-// name the scripts (lib/voiceTest VOICE_BAKEOFF). The pressed digit rides to the accept route as the
+// 11-25 script test: the call opens on a keypad menu (lib/voiceTest
+// VOICE_BAKEOFF). The pressed digit rides to the accept route as the
 // x-lrg-pick SIP header. No key within a few seconds → the live script.
 
 function xml(body: string): NextResponse {
@@ -39,7 +39,7 @@ export async function POST(request: Request) {
     return xml(jackieDialTwiml({ tags: { line: "test" }, action: `${PROD_BASE}/api/voice-test/after` }))
   }
 
-  const prompt = `Press ${VOICE_BAKEOFF.map((o) => o.digit).join(" or ")}.`
+  const prompt = VOICE_BAKEOFF.map((o) => `Press ${o.digit} for ${o.spoken}.`).join(" ")
   return xml(`<?xml version="1.0" encoding="UTF-8"?>
 <Response>
   <Gather numDigits="1" timeout="6" action="${twimlAttr(SELF)}" method="POST">

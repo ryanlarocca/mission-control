@@ -121,12 +121,7 @@ export async function POST(request: Request) {
   // script this call gets. Every other line gets v1.
   const option = pick
   const script = option?.script ?? "v1"
-  // Blind test: the timing line reaches Telegram, so it carries the digit
-  // only. The script name goes to the server log.
-  if (option) {
-    timing.push(`🔢 option ${option.digit}`)
-    console.log(`[voice-test] blind test: option ${option.digit} = script ${script}`)
-  }
+  if (option) timing.push(`🔢 option ${option.digit}: script ${script}`)
 
   // Voice audition: Ryan's cell rotates through lib/voiceTest VOICE_AUDITION.
   let voice = VOICE_TEST_VOICE
@@ -184,8 +179,8 @@ export async function POST(request: Request) {
             responses: {
               model: VOICE_TEST_BACKEND_MODEL,
               reasoning: { effort: VOICE_TEST_BACKEND_EFFORT },
-              // Script-test calls only until it's proven on the phone: a refused accept ends the call.
-              ...(option ? { instructions: JACKIE_BACKEND_INSTRUCTIONS } : {}),
+              // New scripts only (the live one is untouched until Ryan switches it).
+              ...(script !== "v1" ? { instructions: JACKIE_BACKEND_INSTRUCTIONS } : {}),
             },
           },
           input: [

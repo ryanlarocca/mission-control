@@ -62,8 +62,8 @@ describe("test-line scripts", () => {
     expect(callerIdNoteV2("+14085550142")).toContain("Don't ask them for a number")
   })
 
-  it("the blind menu offers the two finalists, and only those digits pick one", () => {
-    expect(VOICE_BAKEOFF.map((o) => o.script).sort()).toEqual(["v3", "v4"])
+  it("the menu offers the new script and the live one, and only those digits pick one", () => {
+    expect(VOICE_BAKEOFF.map((o) => o.script)).toEqual(["v4", "v1"])
     expect(bakeoffOption("3")).toBeNull()
     expect(bakeoffOption("9")).toBeNull()
     expect(bakeoffOption(null)).toBeNull()

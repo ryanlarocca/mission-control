@@ -52,8 +52,9 @@ export function toPhoneMp3(pcm: Buffer, out: string): void {
   fs.rmSync(`${out}.wav`)
 }
 
-export async function sendVoice(file: string, caption: string): Promise<void> {
-  const token = process.env.CAMPAIGN_BOT_TOKEN || process.env.TELEGRAM_BOT_TOKEN
+// ops: post from the helper bot (test and rehearsal output, Ryan 11-25).
+export async function sendVoice(file: string, caption: string, opts?: { ops?: boolean }): Promise<void> {
+  const token = (opts?.ops ? process.env.OPS_BOT_TOKEN : undefined) || process.env.CAMPAIGN_BOT_TOKEN || process.env.TELEGRAM_BOT_TOKEN
   const chatId = process.env.TELEGRAM_CHAT_ID
   if (!token || !chatId) throw new Error("no Telegram bot token / chat id")
   const form = new FormData()
