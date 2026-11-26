@@ -16,21 +16,24 @@ export const VOICE_TEST_NUMBER = "+14083372785"
 export const VOICE_TEST_MODEL = "gpt-live-1.1" // 11-25: Ryan picked 1.1 in the bake-off ("crisper, less robotic")
 export const VOICE_TEST_VOICE = "marin"
 
-// Script test on the test line (Ryan, 11-25): a keypad menu picks the script.
-// 1 = the new one (v4: guidance for the conversation, exact instructions for
-// the mechanics), 2 = the live one (v1) for comparison. Model, voice and
-// opener are the same on both. Test line only: the mailer lines always get
-// v1, and so does a test-line call with no key pressed.
-// How it got here, all 11-25: a model bake-off (gpt-live-1.1 won); a
-// four-script round (v1 live, v2 rewrite, v3 from the calls, v4 blend); two
-// blind rounds of v3 against v4; then scripts/jackie-scorecard.ts, v1 against
-// v4 over 30 rehearsal calls each.
+// Which script Jackie runs on every line. v4 since 2026-11-25 (Ryan: "I like
+// the new Jackie. Let's go ahead and use this one."): guidance for the
+// conversation, exact instructions for the mechanics. Text in
+// lib/jackieScriptV2.ts (base) + lib/jackieScriptV3.ts (buildJackieV4);
+// assembled per call by jackieScriptSetup. To roll back, set this to "v1"
+// (VOICE_TEST_INSTRUCTIONS below, the script that ran 11-03 → 11-25).
+// How v4 was picked, all on 11-25: a model bake-off (gpt-live-1.1), a
+// four-script round by ear, two blind rounds, then scripts/jackie-scorecard.ts
+// (v1 vs v4, 30 rehearsal calls each) and Ryan's own calls.
 export type JackieScript = "v1" | "v2" | "v3" | "v4"
+export const JACKIE_LIVE_SCRIPT: JackieScript = "v4"
+
+// Test-line keypad menu for comparing scripts or models by ear: list options
+// here and the test line opens with "Press 1 for …". Empty = no menu, the
+// test line goes straight to the live script. A menu-digit call is never in
+// coach mode. Test line only: other lines ignore the pick.
 export type BakeoffOption = { digit: string; script: JackieScript; spoken: string }
-export const VOICE_BAKEOFF: BakeoffOption[] = [
-  { digit: "1", script: "v4", spoken: "the new Jackie" },
-  { digit: "2", script: "v1", spoken: "the current Jackie" },
-]
+export const VOICE_BAKEOFF: BakeoffOption[] = []
 export function bakeoffOption(digit: string | null | undefined): BakeoffOption | null {
   return VOICE_BAKEOFF.find((o) => o.digit === digit) ?? null
 }

@@ -36,6 +36,8 @@ import {
 } from "../lib/voiceTest"
 import { jackieCheckLine, reviewJackieCall } from "../lib/jackie"
 import { REASON_NOTE, asksReason } from "../lib/voiceCallMonitor"
+import { jackieScriptSetup } from "../lib/jackieScriptV3"
+import { JACKIE_LIVE_SCRIPT } from "../lib/voiceTest"
 import { sendVoice, toPhoneMp3 } from "./jackie-audio"
 
 // hiddenCallerId: the call comes in blocked, so her script gets the "number is
@@ -466,14 +468,18 @@ async function main(): Promise<void> {
   const label = (arg("--label") ?? ref ?? "working-tree").replace(/[^A-Za-z0-9._-]+/g, "_")
   const outDir = path.join("/tmp/jackie-rehearsal-audio", label)
   fs.mkdirSync(outDir, { recursive: true })
-  console.log(`Jackie rehearsal — script ${ref ?? "working tree"} (${base.split(/\s+/).length} words), ${scenarios.length} scenario(s) × ${runs} run(s)\n`)
+  console.log(`Jackie rehearsal — script ${ref ?? (firstWords ? "v1 + trial FIRST WORDS" : `live (${JACKIE_LIVE_SCRIPT})`)} (${base.split(/\s+/).length} words in v1), ${scenarios.length} scenario(s) × ${runs} run(s)\n`)
 
   type Row = { id: string; run: number; jackieTurns: number; handoffs: number; slowest: string; check: string | null; checkJson: string; mp3: string; caption: string }
   const rows: Row[] = []
   for (const sc of scenarios) {
-    const instructions = base + callerIdNote(sc.hiddenCallerId ? "Anonymous" : CALLER_PHONE) + callbackTimingNote()
+    // No --script-from / --first-words: the script the lines run today,
+    // assembled the way the accept route does it. Otherwise the v1 text as given.
+    const live = !ref && !firstWords ? jackieScriptSetup(JACKIE_LIVE_SCRIPT, sc.hiddenCallerId ? "Anonymous" : CALLER_PHONE) : null
+    const instructions = live ? live.instructions : base + callerIdNote(sc.hiddenCallerId ? "Anonymous" : CALLER_PHONE) + callbackTimingNote()
+    const opts: RehearseOpts = live?.newStyle ? { reasonNote: GUARD ? { channel: "thinking", content: live.reasonNote! } : null, backendInstructions: live.backendInstructions! } : {}
     for (let n = 1; n <= runs; n++) {
-      const run = await rehearse(sc, instructions, key)
+      const run = await rehearse(sc, instructions, key, opts)
       const waits = run.turns.map(t => (t.waitMs === null ? "no reply" : `${(t.waitMs / 1000).toFixed(1)} s`))
       const review = await reviewJackieCall(run.transcript)
       const slow = run.turns.reduce<{ s: number; i: number } | null>((w, t, i) => (t.waitMs !== null && (!w || t.waitMs / 1000 > w.s) ? { s: t.waitMs / 1000, i } : w), null)

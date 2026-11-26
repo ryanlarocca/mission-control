@@ -5,21 +5,18 @@ import { sendOpsAlert, sendTelegramAlert } from "@/lib/leads"
 import {
   VOICE_TEST_BACKEND_EFFORT,
   VOICE_TEST_BACKEND_MODEL,
+  JACKIE_LIVE_SCRIPT,
   VOICE_TEST_GREETING,
-  VOICE_TEST_INSTRUCTIONS,
   VOICE_TEST_MODEL,
   VOICE_TEST_CHECK_CALLER,
   VOICE_TEST_OWNER_CELL,
   VOICE_TEST_COACH_NOTE,
   VOICE_TEST_VOICE,
   bakeoffOption,
-  callbackTimingNote,
-  callerIdNote,
   pickAuditionVoice,
 } from "@/lib/voiceTest"
 import { watchCall } from "@/lib/voiceTestWatch"
-import { JACKIE_BACKEND_INSTRUCTIONS, JACKIE_V2_INSTRUCTIONS, callbackTimingNoteV2, callerIdNoteV2 } from "@/lib/jackieScriptV2"
-import { JACKIE_V3_INSTRUCTIONS, JACKIE_V4_INSTRUCTIONS } from "@/lib/jackieScriptV3"
+import { jackieScriptSetup } from "@/lib/jackieScriptV3"
 import { jackieTagsFromSipHeaders, mergeJackieCall, returningCallerNote } from "@/lib/jackie"
 import { getLeadsClient } from "@/lib/leads"
 
@@ -117,10 +114,11 @@ export async function POST(request: Request) {
   const timing: string[] = []
   if (tags.line) timing.push(`line ${tags.line}`)
 
-  // Script side test (test line only, lib/voiceTest VOICE_BAKEOFF): which
-  // script this call gets. Every other line gets v1.
+  // Which script this call gets: the live one, unless a test-line menu digit
+  // picked another (lib/voiceTest VOICE_BAKEOFF).
   const option = pick
-  const script = option?.script ?? "v1"
+  const script = option?.script ?? JACKIE_LIVE_SCRIPT
+  const setup = jackieScriptSetup(script, caller)
   if (option) timing.push(`🔢 option ${option.digit}: script ${script}`)
 
   // Voice audition: Ryan's cell rotates through lib/voiceTest VOICE_AUDITION.
@@ -154,16 +152,7 @@ export async function POST(request: Request) {
       console.error(`[voice-test] returning-caller lookup failed: ${e instanceof Error ? e.message : e}`)
     }
   }
-  const base =
-    script === "v2" ? JACKIE_V2_INSTRUCTIONS
-    : script === "v3" ? JACKIE_V3_INSTRUCTIONS
-    : script === "v4" ? JACKIE_V4_INSTRUCTIONS
-    : VOICE_TEST_INSTRUCTIONS
-  const instructions =
-    base +
-    (script === "v1" ? callerIdNote(caller) + callbackTimingNote() : callerIdNoteV2(caller) + callbackTimingNoteV2()) +
-    returning +
-    (coach ? VOICE_TEST_COACH_NOTE : "")
+  const instructions = setup.instructions + returning + (coach ? VOICE_TEST_COACH_NOTE : "")
   const accept = (withVoice: string) =>
     fetch(`${OPENAI_BASE}/live/sessions/${encodeURIComponent(sessionId)}/accept`, {
       method: "POST",
@@ -179,8 +168,7 @@ export async function POST(request: Request) {
             responses: {
               model: VOICE_TEST_BACKEND_MODEL,
               reasoning: { effort: VOICE_TEST_BACKEND_EFFORT },
-              // New scripts only (the live one is untouched until Ryan switches it).
-              ...(script !== "v1" ? { instructions: JACKIE_BACKEND_INSTRUCTIONS } : {}),
+              ...(setup.backendInstructions ? { instructions: setup.backendInstructions } : {}),
             },
           },
           input: [
@@ -203,7 +191,7 @@ export async function POST(request: Request) {
   }
 
   timing.push(`accepted +${((Date.now() - t0) / 1000).toFixed(1)}s`)
-  waitUntil(watchCall({ sessionId, apiKey, t0, hop: 0, caller, twilioCallSid: tags.twilioCallSid ?? undefined, opener: { timing }, privateNotes: script !== "v1", testLine }))
+  waitUntil(watchCall({ sessionId, apiKey, t0, hop: 0, caller, twilioCallSid: tags.twilioCallSid ?? undefined, opener: { timing }, privateNotes: setup.newStyle, testLine }))
   // Lets a local observer (mini) attach its own sideband while debugging.
   waitUntil(
     Promise.resolve(

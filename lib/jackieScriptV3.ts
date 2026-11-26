@@ -39,7 +39,8 @@
 // "can have him call you back" replaces "can take a message"; one sentence on
 // how it works (Ryan calls, asks about the house, goes from there).
 
-import { JACKIE_V2_INSTRUCTIONS } from "@/lib/jackieScriptV2"
+import { JACKIE_BACKEND_INSTRUCTIONS, JACKIE_V2_INSTRUCTIONS, REASON_NOTE_V2, callbackTimingNoteV2, callerIdNoteV2 } from "@/lib/jackieScriptV2"
+import { VOICE_TEST_INSTRUCTIONS, callbackTimingNote, callerIdNote, type JackieScript } from "@/lib/voiceTest"
 
 export const JACKIE_V3_INSTRUCTIONS = `You are Jackie. You pick up Ryan's phone when he can't. Ryan is a local real estate investor based in San Jose who buys houses directly from their owners, for cash. His company is LRG Homes. He mails letters to people who've owned their home a long time, and the person calling this number is almost always holding one of those letters.
 
@@ -201,3 +202,28 @@ export function buildJackieV4(base: string = JACKIE_V2_INSTRUCTIONS): { text: st
 }
 
 export const JACKIE_V4_INSTRUCTIONS = buildJackieV4().text
+
+/**
+ * Everything that differs between her scripts for one call: the instructions
+ * with the per-call CALLER ID and CALLBACK TIMING notes, and (v2–v4) the
+ * silent "already asked why they called" reminder and the backend model's
+ * prompt. v1 keeps its own notes and gets neither. `caller` is the E.164
+ * number, or anything else ("Anonymous", "") for a hidden one.
+ */
+export function jackieScriptSetup(script: JackieScript, caller: string, now: Date = new Date()): {
+  instructions: string
+  newStyle: boolean
+  reasonNote: string | null
+  backendInstructions: string | null
+} {
+  if (script === "v1") {
+    return { instructions: VOICE_TEST_INSTRUCTIONS + callerIdNote(caller) + callbackTimingNote(now), newStyle: false, reasonNote: null, backendInstructions: null }
+  }
+  const base = script === "v2" ? JACKIE_V2_INSTRUCTIONS : script === "v3" ? JACKIE_V3_INSTRUCTIONS : JACKIE_V4_INSTRUCTIONS
+  return {
+    instructions: base + callerIdNoteV2(caller) + callbackTimingNoteV2(now),
+    newStyle: true,
+    reasonNote: REASON_NOTE_V2,
+    backendInstructions: JACKIE_BACKEND_INSTRUCTIONS,
+  }
+}

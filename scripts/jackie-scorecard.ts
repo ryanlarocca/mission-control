@@ -16,9 +16,8 @@
 
 import fs from "node:fs"
 import path from "node:path"
-import { VOICE_TEST_INSTRUCTIONS, callbackTimingNote, callerIdNote, type JackieScript } from "../lib/voiceTest"
-import { JACKIE_BACKEND_INSTRUCTIONS, JACKIE_V2_INSTRUCTIONS, REASON_NOTE_V2, callbackTimingNoteV2, callerIdNoteV2 } from "../lib/jackieScriptV2"
-import { JACKIE_V3_INSTRUCTIONS, JACKIE_V4_INSTRUCTIONS } from "../lib/jackieScriptV3"
+import { JACKIE_LIVE_SCRIPT, type JackieScript } from "../lib/voiceTest"
+import { jackieScriptSetup } from "../lib/jackieScriptV3"
 import { completeText, extractJsonObject } from "../lib/llm"
 import { sendOpsAlert } from "../lib/leads"
 import { loadEnv, rehearse, type RehearseOpts, type Scenario } from "./jackie-rehearsal"
@@ -119,15 +118,12 @@ const CALLERS: Caller[] = [
 
 type ScriptSetup = { label: string; instructions: (hidden: boolean) => string; opts: RehearseOpts }
 function setup(script: JackieScript): ScriptSetup {
-  if (script === "v1") {
-    return { label: "current (v1)", instructions: (h) => VOICE_TEST_INSTRUCTIONS + callerIdNote(h ? "Anonymous" : CALLER_PHONE) + callbackTimingNote(), opts: {} }
-  }
-  const timing = callbackTimingNoteV2()
-  const base = script === "v2" ? JACKIE_V2_INSTRUCTIONS : script === "v3" ? JACKIE_V3_INSTRUCTIONS : JACKIE_V4_INSTRUCTIONS
+  const label = script === "v1" ? "previous (v1)" : script === JACKIE_LIVE_SCRIPT ? `live (${script})` : script
+  const one = jackieScriptSetup(script, CALLER_PHONE)
   return {
-    label: script === "v4" ? "new (v4)" : script,
-    instructions: (h) => base + callerIdNoteV2(h ? "Anonymous" : CALLER_PHONE) + timing,
-    opts: { reasonNote: { channel: "thinking", content: REASON_NOTE_V2 }, backendInstructions: JACKIE_BACKEND_INSTRUCTIONS },
+    label,
+    instructions: (h) => jackieScriptSetup(script, h ? "Anonymous" : CALLER_PHONE).instructions,
+    opts: one.newStyle ? { reasonNote: { channel: "thinking", content: one.reasonNote! }, backendInstructions: one.backendInstructions! } : {},
   }
 }
 

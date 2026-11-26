@@ -9,8 +9,8 @@ import { VOICE_BAKEOFF, bakeoffOption } from "@/lib/voiceTest"
 // will — a <Dial><Sip> from inside a normal Twilio call (lib/jackie.ts). No
 // cell ring here: the test line is for talking to Jackie.
 //
-// 11-25 script test: the call opens on a keypad menu (lib/voiceTest
-// VOICE_BAKEOFF). The pressed digit rides to the accept route as the
+// When lib/voiceTest VOICE_BAKEOFF lists options (script or model
+// comparisons), the call opens on a keypad menu. The pressed digit rides to the accept route as the
 // x-lrg-pick SIP header. No key within a few seconds → the live script.
 
 function xml(body: string): NextResponse {
@@ -34,8 +34,9 @@ export async function POST(request: Request) {
     const dial = jackieDialTwiml({ tags: { line: "test", pick: option.digit }, action: `${PROD_BASE}/api/voice-test/after` })
     return xml(dial.replace("<Dial ", `<Pause length="2"/>\n  <Dial `))
   }
-  // Menu timed out (or a key that isn't on it, second time round): plain Jackie.
-  if (url.searchParams.get("menu") === "done") {
+  // No menu configured, or it timed out (or a key that isn't on it, second
+  // time round): straight to Jackie on the live script.
+  if (VOICE_BAKEOFF.length === 0 || url.searchParams.get("menu") === "done") {
     return xml(jackieDialTwiml({ tags: { line: "test" }, action: `${PROD_BASE}/api/voice-test/after` }))
   }
 

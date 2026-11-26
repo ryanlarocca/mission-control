@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest"
 import { CallMonitor } from "@/lib/voiceCallMonitor"
-import { INTRO_NUDGE_V2, JACKIE_V2_INSTRUCTIONS, REASON_NOTE_V2, callerIdNoteV2 } from "@/lib/jackieScriptV2"
-import { JACKIE_V3_INSTRUCTIONS, JACKIE_V4_INSTRUCTIONS, buildJackieV4 } from "@/lib/jackieScriptV3"
-import { VOICE_BAKEOFF, VOICE_TEST_COACH_NOTE, bakeoffOption } from "@/lib/voiceTest"
+import { INTRO_NUDGE_V2, JACKIE_V2_INSTRUCTIONS, REASON_NOTE_V2, callbackTimingNoteV2, callerIdNoteV2 } from "@/lib/jackieScriptV2"
+import { JACKIE_V3_INSTRUCTIONS, JACKIE_V4_INSTRUCTIONS, buildJackieV4, jackieScriptSetup } from "@/lib/jackieScriptV3"
+import { JACKIE_LIVE_SCRIPT, VOICE_BAKEOFF, VOICE_TEST_COACH_NOTE, bakeoffOption } from "@/lib/voiceTest"
 
 // Script side test on the test line (2026-11-25): v2 rewrite, v3 from the
 // calls, v4 blend. These guard the pieces that must survive any rewording.
@@ -62,9 +62,28 @@ describe("test-line scripts", () => {
     expect(callerIdNoteV2("+14085550142")).toContain("Don't ask them for a number")
   })
 
-  it("the menu offers the new script and the live one, and only those digits pick one", () => {
-    expect(VOICE_BAKEOFF.map((o) => o.script)).toEqual(["v4", "v1"])
-    expect(bakeoffOption("3")).toBeNull()
+  it("v4 is live on every line, assembled with its own notes; v1 stays as the rollback", () => {
+    expect(JACKIE_LIVE_SCRIPT).toBe("v4")
+    const live = jackieScriptSetup(JACKIE_LIVE_SCRIPT, "+14085550142", new Date("2026-11-25T20:00:00Z"))
+    expect(live.instructions.startsWith(JACKIE_V4_INSTRUCTIONS)).toBe(true)
+    expect(live.instructions).toContain("CALLER ID\nThe caller is calling from (408) 555-0142")
+    expect(live.instructions).toContain("Ryan will call them today or tomorrow")
+    expect(live.instructions).not.toContain("within one business day.")
+    expect(live.newStyle && live.reasonNote && live.backendInstructions).toBeTruthy()
+    expect(jackieScriptSetup(JACKIE_LIVE_SCRIPT, "Anonymous").instructions).toContain("The caller's number is hidden")
+    const old = jackieScriptSetup("v1", "+14085550142")
+    expect(old.newStyle).toBe(false)
+    expect(old.backendInstructions).toBeNull()
+    expect(old.instructions).toContain("You are Jackie, the receptionist for LRG Homes")
+  })
+  it("callback timing in everyday words: Friday afternoon says Monday, Saturday evening says Monday", () => {
+    expect(callbackTimingNoteV2(new Date("2026-11-27T22:00:00Z"))).toContain("today or Monday")
+    expect(callbackTimingNoteV2(new Date("2026-11-29T03:00:00Z"))).toContain("he'll call them Monday")
+    expect(callbackTimingNoteV2(new Date("2026-11-26T03:30:00Z"))).toContain("Ryan will call them tomorrow")
+  })
+  it("no test-line menu while nothing is being compared", () => {
+    expect(VOICE_BAKEOFF).toEqual([])
+    expect(bakeoffOption("1")).toBeNull()
     expect(bakeoffOption("9")).toBeNull()
     expect(bakeoffOption(null)).toBeNull()
   })
