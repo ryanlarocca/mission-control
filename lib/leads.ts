@@ -2416,7 +2416,29 @@ export async function processRecordingBackground(args: {
     const header = args.jackie
       ? `🤖 Jackie took a call — <b>${source}</b> — ${shownPhone}`
       : `🎙️ New voicemail — <b>${source}</b> — ${shownPhone}`
-    const captionLines = [header, ...(jackieLines.length ? ["", ...jackieLines] : [])]
+    // Who and which house, right under the header (Ryan, 2026-11-25: he looks
+    // the house up from the alert and calls back). Read now, after the
+    // analysis and the mail match, so a street corrected from the mailing
+    // list is the one shown; an earlier row of the same caller fills a gap.
+    const whoLines: string[] = []
+    try {
+      const html = (t: string) => t.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+      let q = getLeadsClient().from("leads").select("id, name, property_address, mail_record_id").order("created_at", { ascending: false }).limit(20)
+      q = reachPhone && !isAnonymousCaller(reachPhone) ? q.or(`id.eq.${leadId},caller_phone.eq.${reachPhone}`) : q.eq("id", leadId)
+      const { data: rows } = await q
+      const known = (rows ?? []) as { id: string; name: string | null; property_address: string | null; mail_record_id: string | null }[]
+      const name = known.find(r => r.name?.trim())?.name?.trim()
+      const withAddress = known.find(r => r.property_address?.trim())
+      if (name) whoLines.push(`👤 <b>${html(name)}</b>`)
+      if (withAddress) {
+        const address = withAddress.property_address!.trim()
+        const onList = known.some(r => r.mail_record_id)
+        whoLines.push(`🏠 <a href="https://www.google.com/search?q=${encodeURIComponent(address)}">${html(address)}</a>${onList ? "" : " (as heard, not matched to a letter)"}`)
+      }
+    } catch (e) {
+      console.error(`[recording-bg] name/address lines failed for ${leadId}:`, e)
+    }
+    const captionLines = [header, ...whoLines, ...(jackieLines.length ? ["", ...jackieLines] : [])]
     if (spokenUnclear) captionLines.push("", "☎️ They gave a callback number, but it couldn't be read cleanly — check the recording.")
     // A Jackie call runs minutes, and Telegram cuts captions at 1,024
     // chars — so her summary goes first and the transcript last.

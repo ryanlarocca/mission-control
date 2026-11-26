@@ -49,19 +49,22 @@ describe("pieceMismatchLabel", () => {
 })
 
 // Minimal mail_records stand-in: .from().select().eq()...limit() resolves to the rows matching every eq()
-// and every like() (prefix patterns only: "314 %").
+// and every like() (SQL LIKE with % wildcards: "314 %", "% MARLOWE CT", "% FRAUSTO%").
 function fakeSb(rows: Record<string, unknown>[]): SupabaseClient {
   const from = () => {
     const filters: [string, unknown][] = []
-    const prefixes: [string, string][] = []
+    const likes: [string, RegExp][] = []
     const q = {
       select: () => q,
       limit: () => q,
       eq: (col: string, v: unknown) => { filters.push([col, v]); return q },
-      like: (col: string, pattern: string) => { prefixes.push([col, pattern.replace(/%$/, "")]); return q },
+      like: (col: string, pattern: string) => {
+        likes.push([col, new RegExp(`^${pattern.split("%").map(p => p.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join(".*")}$`)])
+        return q
+      },
       ilike: () => { filters.push(["parcels", "__never__"]); return q }, // parcel search: no multi-parcel rows here
       then: (res: (v: { data: unknown[] }) => unknown) => res({
-        data: rows.filter(r => filters.every(([c, v]) => r[c] === v) && prefixes.every(([c, p]) => String(r[c] ?? "").startsWith(p))),
+        data: rows.filter(r => filters.every(([c, v]) => r[c] === v) && likes.every(([c, re]) => re.test(String(r[c] ?? "")))),
       }),
     }
     return q
@@ -229,5 +232,49 @@ describe("letterNameMatch — the name the letter was addressed to (2026-11-20)"
   it("skips the other piece and one-word names", () => {
     expect(letterNameMatch("Krishna Singh and Family Trust", rows, "B").winner).toBeNull()
     expect(letterNameMatch("Singh", rows).winner).toBeNull()
+  })
+})
+
+// 2026-11-25: a caller said "my property at Marlowe Court" and his own
+// name. The letter was addressed "<first owner> & <him>", so the surname
+// column held the other owner's name and the card offered a different house.
+describe("suggestMailRecord: a street with no house number, and second owners", () => {
+  const rec = (id: string, owner: string, street: string, city: string, surname: string) => ({
+    id, campaign_id: "c1", record_id: `NOO26-${id}`, owner_name: owner,
+    site_address: street, site_city: city, site_zip: "95121",
+    site_street_norm: normStreet(street), site_city_norm: city.toUpperCase(), mail_line_norm: "1 ELSEWHERE AVE", mail_city_norm: "SAN JOSE",
+    owner_surname_norm: surname, owner_name_norm: owner.toUpperCase().replace(/[^A-Z0-9 ]/g, " ").replace(/\s+/g, " ").trim(),
+  })
+  const HIS = rec("his", "Ana Solis & Ricardo Avelar", "1555 Marlowe Ct", "San Jose", "SOLIS")
+  const NEIGHBOR = rec("nbr", "Wei Chen", "1561 Marlowe Ct", "San Jose", "CHEN")
+  const NAMESAKE = rec("same", "Maria Avelar & Maria L Avelar 2009 Trust", "13630 Highwood Dr", "San Jose", "AVELAR")
+
+  it("street name + the caller's surname as the SECOND owner = that house", async () => {
+    const r = await suggestMailRecord(fakeSb([HIS, NEIGHBOR, NAMESAKE]), { campaignId: "c1", propertyAddress: "Marlowe Court", name: "Richard Avelar" })
+    expect(r.record?.id).toBe("his")
+    expect(r.method).toBe("auto_surname")
+  })
+  it("street name alone: the street's houses are offered, nothing is linked", async () => {
+    const r = await suggestMailRecord(fakeSb([HIS, NEIGHBOR, NAMESAKE]), { campaignId: "c1", propertyAddress: "Marlowe Court", name: null })
+    expect(r.record).toBeNull()
+    expect(r.candidates.map(c => c.id).sort()).toEqual(["his", "nbr"])
+  })
+  it("a bare street word still finds the street", async () => {
+    const r = await suggestMailRecord(fakeSb([HIS, NEIGHBOR, NAMESAKE]), { campaignId: "c1", propertyAddress: "Marlowe", name: "Richard Avelar" })
+    expect(r.record?.id).toBe("his")
+  })
+  it("surname only: both letters carrying the name are offered, first owner or second", async () => {
+    const r = await suggestMailRecord(fakeSb([HIS, NEIGHBOR, NAMESAKE]), { campaignId: "c1", propertyAddress: null, name: "Richard Avelar" })
+    expect(r.record).toBeNull()
+    expect(r.candidates.map(c => c.id).sort()).toEqual(["his", "same"])
+  })
+  it("a surname that is only part of another word doesn't count", async () => {
+    const r = await suggestMailRecord(fakeSb([rec("x", "Ana Avelares", "9 Oak St", "San Jose", "AVELARES")]), { campaignId: "c1", propertyAddress: null, name: "Richard Avelar" })
+    expect(r.candidates).toEqual([])
+  })
+  it("a house number still goes down the exact-address path", async () => {
+    const r = await suggestMailRecord(fakeSb([HIS, NEIGHBOR]), { campaignId: "c1", propertyAddress: "1561 Marlowe Ct, San Jose", name: "Richard Avelar" })
+    expect(r.record?.id).toBe("nbr")
+    expect(r.method).toBe("auto_address")
   })
 })

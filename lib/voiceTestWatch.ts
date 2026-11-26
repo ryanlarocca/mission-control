@@ -157,7 +157,15 @@ export async function watchCall(opts: {
       openerReported = true
       const line = `${timing.join(" · ")} · result: ${result}`
       console.log(`[voice-test] ${line}`)
-      void alert(`🧪 Test line timing: ${line}`)
+      // The timing breakdown is for the test line (helper bot). On a real
+      // call Ryan gets it in plain words (11-25: "it says test line").
+      const secs = ((Date.now() - t0) / 1000).toFixed(1)
+      const who = caller ? ` — ${caller}` : ""
+      void alert(
+        monitor.state.testLine ? `🧪 Test line timing: ${line}`
+        : result === "ok" ? `🤖 Jackie picked up (${secs} s)${who}`
+        : `⚠️ Jackie answered but hasn't spoken (${result})${who}`,
+      )
     }
     const finish = (result: string) => {
       if (finished) return
@@ -259,7 +267,13 @@ export async function watchCall(opts: {
   const line = `Jackie call over at ${clock(Date.now() - t0)} — ${outcome}${hop ? ` (watcher hop ${hop})` : ""} · backend hand-offs: ${handoffs.length ? `${handoffs.length} (at ${handoffs.map(s => `${s}s`).join(", ")})` : "0"}`
   console.log(`[voice-test] ${line}`)
   await saveHandoffs(sessionId, handoffs)
-  await alert(`🧪 ${line}`)
+  const plain =
+    outcome === "caller hung up" ? "the caller hung up"
+    : outcome === "Jackie hung up (goodbye)" ? "she said goodbye and hung up"
+    : outcome === "Jackie hung up (dead air)" ? "the line went quiet and she hung up"
+    : outcome === "Jackie hung up (11-minute limit)" ? "it reached the 11-minute limit"
+    : outcome
+  await alert(monitor.state.testLine ? `🧪 ${line}` : `🤖 Jackie's call ended after ${clock(Date.now() - t0)} — ${plain}${caller ? ` — ${caller}` : ""}`)
 }
 
 /**

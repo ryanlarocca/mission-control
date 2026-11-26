@@ -447,12 +447,51 @@ export async function suggestMailRecord(
   }
 
   const surname = normSurname(input.name)
-  if (surname && surname.length >= 3) {
-    const rows = cityFilter(await fetchBy("owner_surname_norm", surname), addr.city, "either")
-    if (rows.length === 1 && addr.city) return { record: strip(rows)[0], method: "auto_surname", candidates: [] }
-    if (rows.length >= 1) return { record: null, method: null, candidates: strip(rows).slice(0, CANDIDATE_CAP) }
+
+  // A street with no house number ("my property at Marlowe Court",
+  // 2026-11-25): the mailed houses on that street. When the caller's surname
+  // is one of an owner's names there, on either side of the "&", that house
+  // is the house. Otherwise the street's houses are offered on the card.
+  let onStreet: MatchRow[] = []
+  const streetWords = addr.street.split(" ").filter(Boolean)
+  if (!addr.hasNumber && streetWords.length && addr.street.length >= 4 && /[A-Z]/.test(addr.street)) {
+    // "MARLOWE CT" ends the stored "1555 MARLOWE CT"; a bare "MARLOWE" sits in the middle.
+    const patterns = streetWords.length >= 2 ? [`% ${addr.street}`] : [`% ${addr.street} %`, `% ${addr.street}`]
+    const seen = new Set<string>()
+    for (const pattern of patterns) {
+      let q = sb.from("mail_records").select(cols).like("site_street_norm", pattern).limit(50)
+      if (input.campaignId) q = q.eq("campaign_id", input.campaignId)
+      const { data } = await q
+      for (const r of (data ?? []) as unknown as MatchRow[]) if (!seen.has(r.id)) { seen.add(r.id); onStreet.push(r) }
+    }
+    onStreet = cityFilter(onStreet, addr.city, "site")
+    if (surname && surname.length >= 3) {
+      const named = onStreet.filter(r => ownerNameTokens(r.owner_name).includes(surname))
+      if (named.length === 1) return { record: strip(named)[0], method: "auto_surname", candidates: [] }
+    }
   }
-  return { record: null, method: null, candidates: strip(near).slice(0, SOUND_CANDIDATE_CAP) }
+
+  if (surname && surname.length >= 3) {
+    // owner_surname_norm holds the first owner's surname only. A letter to
+    // "Ana Solis & Ricardo Avelar" files under SOLIS, so a caller named
+    // Avelar was offered a different Avelar (2026-11-25): read every name
+    // on the letter.
+    const first = await fetchBy("owner_surname_norm", surname)
+    let q = sb.from("mail_records").select(`${cols}, owner_name_norm`).like("owner_name_norm", `% ${surname}%`).limit(50)
+    if (input.campaignId) q = q.eq("campaign_id", input.campaignId)
+    const { data: more } = await q
+    const have = new Set(first.map(r => r.id))
+    const others = ((more ?? []) as unknown as (MatchRow & { owner_name_norm?: string | null })[])
+      .filter(r => !have.has(r.id) && ownerNameTokens(r.owner_name).includes(surname))
+      .map(({ owner_name_norm: _n, ...rest }) => rest as MatchRow)
+    const rows = cityFilter([...first, ...others], addr.city, "either")
+    if (rows.length === 1 && addr.city) return { record: strip(rows)[0], method: "auto_surname", candidates: [] }
+    if (rows.length >= 1) {
+      const ids = new Set(rows.map(r => r.id))
+      return { record: null, method: null, candidates: strip([...rows, ...onStreet.filter(r => !ids.has(r.id))]).slice(0, CANDIDATE_CAP) }
+    }
+  }
+  return { record: null, method: null, candidates: strip(near.length ? near : onStreet).slice(0, SOUND_CANDIDATE_CAP) }
 }
 
 /** Split a `parcels` entry ("342-39-031 1257 Woodview Ter, Los Altos") into street / city. */
