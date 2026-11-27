@@ -96,6 +96,10 @@ export async function POST(request: Request) {
     try {
       const sb = getLeadsClient()
       const who = await resolveOfficeCaller(sb, from, bodyText)
+      if (who.kind === "ignore") {
+        console.warn(`[sms] office line: dropped a verification-code text from unknown ${from}`)
+        return new NextResponse(EMPTY_TWIML, { headers: { "Content-Type": "text/xml" } })
+      }
       if (who.kind === "relationship") {
         await logInboundTextTouch(sb, who, bodyText, to)
         const escaped = alertQuote(bodyText)

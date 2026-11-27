@@ -3,6 +3,7 @@ import {
   formatUsPhone,
   isOfficeLine,
   isPlaceholderName,
+  isVerificationCodeText,
   last10,
   resolveOfficeCaller,
   signedPhones,
@@ -71,6 +72,16 @@ describe("resolveOfficeCaller", () => {
     expect(who).toMatchObject({ kind: "relationship", id: "new-relationships", isNew: true, placeholderName: true, name: "(408) 555-1234" })
     expect(inserted).toHaveLength(1)
     expect(inserted[0]).toMatchObject({ table: "relationships", phone: "+14085551234", category: NEW_CONTACT_CATEGORY, tier: "C", source: NEW_CONTACT_SOURCE, status: "active" })
+  })
+  it("a stranger's login code → ignored, no card made (2026-11-27 Facebook code)", async () => {
+    const inserted: Record<string, unknown>[] = []
+    const sb = fakeSb({ relationships: [], leads: [] }, inserted)
+    expect(await resolveOfficeCaller(sb, "+12019048789", "FB-99918 é o teu código de confirmação do Facebook")).toEqual({ kind: "ignore" })
+    expect(inserted).toHaveLength(0)
+  })
+  it("a login code from someone already on a card still lands on their card", async () => {
+    const sb = fakeSb({ relationships: [{ id: "r1", name: "Kelly Ray", category: "Agent", tier: "B", status: "active" }] })
+    expect(await resolveOfficeCaller(sb, "+14085551234", "G-123456 is your Google verification code")).toMatchObject({ kind: "relationship", id: "r1" })
   })
   it("an unusable number falls through to the lead path without touching the DB", async () => {
     const sb = fakeSb({})
@@ -146,5 +157,31 @@ describe("resolveOfficeCaller — signed number", () => {
     const inserted: Record<string, unknown>[] = []
     const who = await resolveOfficeCaller(signedSb({ "4083092868": [luis, { ...luis, id: "r-2" }] }, [], inserted), "+16509556008", blast)
     expect(who).toMatchObject({ isNew: true })
+  })
+})
+
+describe("isVerificationCodeText", () => {
+  it("catches automated login codes, any language", () => {
+    for (const t of [
+      "FB-99918 é o teu código de confirmação do Facebook",
+      "G-123456 is your Google verification code.",
+      "Your Uber code is 4821. Never share this code.",
+      "482913 is your Instagram code. Don't share it.",
+      "Tu código de verificación es 558201",
+      "Votre code de vérification est 774120",
+      "Use 9921 as your one-time passcode",
+      "Your Microsoft account security code is 88213",
+    ]) expect(isVerificationCodeText(t), t).toBe(true)
+  })
+  it("leaves real messages alone", () => {
+    for (const t of [
+      "Hi Ryan, this is Mike from Compass. Got your card at the open house.",
+      "What's the verification code for the lockbox?",
+      "Lockbox code is 4821, house is at 123 Main St",
+      "Your gate code is 1234 for the showing tomorrow",
+      "Call me at 408-555-1234 about the property",
+      "Here is my confirmation code question — can you call?",
+      "",
+    ]) expect(isVerificationCodeText(t), t).toBe(false)
   })
 })

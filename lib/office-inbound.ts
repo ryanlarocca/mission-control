@@ -16,6 +16,8 @@ import { queueInboundNote } from "./inboundFacts"
 
 export type OfficeCaller =
   | { kind: "lead" }
+  /** An unknown number sent only a login / verification code — no card, no alert. */
+  | { kind: "ignore" }
   | {
       kind: "relationship"
       id: string
@@ -77,6 +79,32 @@ export function signedPhones(body: string, sender: string): string[] {
   return out
 }
 
+// An automated login / verification code ("FB-99918 é o teu código de
+// confirmação do Facebook", "G-123456 is your Google verification code",
+// "Your Uber code is 4821"). Needs BOTH a code-word phrase and a 4–8 digit
+// code, and stays short — a person mentioning a code in a real message
+// ("what's the verification code for the lockbox?") has no digits and passes.
+// A property access code from an agent ("lockbox code is 4821") is real
+// business and never counts.
+const CODE_PHRASES: RegExp[] = [
+  /\b(verification|confirmation|security|login|log-in|sign[- ]?in|one[- ]time|access|authentication|auth|activation|2fa|otp)\s+(code|pin|passcode|password)\b/i,
+  /\byour\s+([\w.'-]+\s+){0,3}(code|passcode|pin|otp)\s+is\b/i,
+  /\bis\s+your\s+([\w.'-]+\s+){0,3}(code|passcode|pin|otp)\b/i,
+  /\b(otp|passcode)\b/i,
+  // Portuguese / Spanish / French / Italian
+  /c[oó]digo\s+(de\s+)?(confirma[cç][aã]o|verifica[cç][aã]o|seguran[cç]a|acesso|confirmaci[oó]n|verificaci[oó]n|seguridad|acceso)/i,
+  /(?:^|\s)(es|é)\s+(o\s+)?(tu|teu|seu|su)\s+c[oó]digo(?:\s|$)/i,
+  /\bcode\s+de\s+(confirmation|v[ée]rification|s[ée]curit[ée])\b/i,
+  /\bcodice\s+di\s+(verifica|conferma|sicurezza)\b/i,
+]
+export function isVerificationCodeText(body: string): boolean {
+  const text = body.trim()
+  if (!text || text.length > 300) return false
+  if (/\b(lock\s?box|supra|gate|door|garage|keypad|key\s?safe|alarm|combo|unit|property|house|showing)\b/i.test(text)) return false
+  if (!/(?<![\d-])(?:[A-Z]{1,3}-)?\d{4,8}(?!\d)/.test(text)) return false
+  return CODE_PHRASES.some(re => re.test(text))
+}
+
 // Resolve who's calling/texting an office line. Never throws — a lookup
 // failure resolves to "lead" so the caller falls through to the intake
 // path that already exists (we'd rather log a lead than drop a call).
@@ -119,7 +147,10 @@ export async function resolveOfficeCaller(sb: SupabaseClient, phone: string, bod
       const signed = await relationshipBySignedPhone(sb, phone, body)
       if (signed) return signed
     }
-    // 4. Nobody — create the Relationships contact.
+    // 4. Nobody. A stranger's login code (a Facebook / Google code sent to
+    //    our number by mistake, 2026-11-27) is not a contact — drop it.
+    if (body && isVerificationCodeText(body)) return { kind: "ignore" }
+    // 5. Nobody — create the Relationships contact.
     return await createRelationshipForCaller(sb, phone)
   } catch (e) {
     console.error("[office-inbound] resolve failed, falling back to lead path:", e instanceof Error ? e.message : String(e))
